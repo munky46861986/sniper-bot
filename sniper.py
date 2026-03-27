@@ -16,8 +16,8 @@ nest_asyncio.apply()
 
 # ===================== CONFIG ===============================
 
-TOKEN = os.getenv("")
-CHAT_ID = int(os.getenv("", "0"))
+TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = int(os.getenv("CHAT_ID", "0"))
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN mancante")
