@@ -1,11 +1,13 @@
 # ============================================================
-# 🚀 SNIPER v27.1b-final TEST — SMART AMBO PATCH
-# Base v27.1 + ambi intelligenti su ambata 15
+# 🚀 SNIPER v27.1b-final — SMART AMBO + ANTI-STOP 15
+# Base v27.1 + ambi intelligenti + filtro anti-stop sul 15
+# PATCH TECNICHE: robustezza parser + reason supporti + debug 15
+# GitHub Actions ready
 # ============================================================
 
-
-
 import asyncio
+import os
+import time
 import requests
 import re
 from collections import defaultdict
@@ -17,14 +19,11 @@ nest_asyncio.apply()
 
 # ===================== CONFIG ===============================
 
-import os
-
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID", "0"))
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN mancante")
-
 if not CHAT_ID:
     raise RuntimeError("CHAT_ID mancante")
 
@@ -42,6 +41,13 @@ HISTORY_MAX = 160
 
 WARMUP_WINDOW = 60
 PROFILE_UPDATE_EVERY = 10
+
+MAX_RUNTIME_SEC = 5 * 60 * 60 + 50 * 60  # 5h 50m
+
+# ===================== AMBI PATCH ===========================
+
+SECOND_AMBO_MIN_PAIR = 3
+SECOND_AMBO_MIN_PRESSURE = 8
 
 # ===================== BASE WEIGHTS =========================
 
@@ -62,7 +68,7 @@ MIN_SCORE_RESTART = 4.8
 
 LOW_PRESSURE_BLOCK = 4.0
 
-# v27 core logic
+# core logic
 W_CORE_5_TO_15 = 2.6
 W_CORE_15_TO_5 = 1.9
 W_SIDE_15_TO_50 = 1.0
@@ -98,13 +104,18 @@ PAIR_WEIGHT = 0.4
 # ============================================================
 
 def parse_site():
-    r = requests.get(URL, headers=HEADERS, timeout=15)
-    soup = BeautifulSoup(r.text, "html.parser")
+    try:
+        r = requests.get(URL, headers=HEADERS, timeout=15)
+        r.raise_for_status()
+    except requests.RequestException as ex:
+        raise RuntimeError(f"Errore fetch sito: {ex}") from ex
 
+    soup = BeautifulSoup(r.text, "html.parser")
     out = {}
 
     for t in soup.find_all("table"):
-        m = re.search(r"[Nn]\.?\s*(\d+)", t.get_text(" ", strip=True))
+        text = t.get_text(" ", strip=True)
+        m = re.search(r"[Nn]\.?\s*(\d+)", text)
         if not m:
             continue
 
@@ -120,6 +131,9 @@ def parse_site():
 
         if len(nums) >= 20:
             out[e] = nums[:20]
+
+    if not out:
+        raise RuntimeError("Nessuna estrazione valida trovata nel parsing HTML")
 
     return sorted(out.items())
 
@@ -137,7 +151,7 @@ class SNIPER271:
         self.start = None
         self.colpi = 0
         self.max_colpi_cycle = MAX_COLPI_NORMAL
-        self.mode = None  # NORMAL / SUPER_MOMENTUM / RESTART
+        self.mode = None
 
         self.recent_results = []
         self.last_play_numbers = []
@@ -147,13 +161,13 @@ class SNIPER271:
         self.leader_presence_history = []
         self.leader_conversion_history = []
 
-    # ===================== TELEGRAM ==========================
+        # diagnostica
+        self.last_support_reason = "N/A"
+        self.last_15_snapshot = {}
 
     async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
         await asyncio.sleep(0.15)
-
-    # ===================== HISTORY ===========================
 
     def update_history(self, nums):
         self.last_draws.append(nums)
@@ -169,8 +183,6 @@ class SNIPER271:
         self.last_play_numbers.append(n)
         if len(self.last_play_numbers) > 6:
             self.last_play_numbers.pop(0)
-
-    # ===================== FEATURES ==========================
 
     def heat(self, n, draws=None):
         if draws is None:
@@ -249,15 +261,12 @@ class SNIPER271:
         if same_n >= 2:
             pen += 1.5
 
-        # 50 non va rincorso troppo vicino
         if n == 50:
             same_50 = sum(1 for x in self.last_play_numbers[-2:] if x == 50)
             if same_50 >= 1:
                 pen += 1.8
 
         return -pen
-
-    # ===================== PROFILE ENGINE ====================
 
     def pair_score_raw(self, pair_counts, a, b):
         key = tuple(sorted((a, b)))
@@ -274,7 +283,7 @@ class SNIPER271:
         freq = {n: 0.0 for n in TARGET}
         recent_tail = window[-20:] if len(window) >= 20 else window
 
-        for i, d in enumerate(window):
+        for d in window:
             w = 1.0
             if d in recent_tail:
                 w = 1.5
@@ -460,8 +469,6 @@ class SNIPER271:
 
         return bonus
 
-    # ===================== ROTATION ENGINE ===================
-
     def core_rotation_bonus(self, n):
         if not self.last_draws:
             return 0.0
@@ -504,12 +511,9 @@ class SNIPER271:
 
         return round(pair_sum * PAIR_WEIGHT / 10.0, 2)
 
-    # ===================== SUPPORTS PATCH ====================
-
     def supports_for_ambata(self, a):
         pressure = self.cluster_pressure()
 
-        # ===================== AMBATA 15 =====================
         if a == 15:
             p50 = self.pair_score(15, 50)
             p5 = self.pair_score(15, 5)
@@ -520,35 +524,47 @@ class SNIPER271:
             l50 = self.lag(50)
             l5 = self.lag(5)
 
-            # 1) cluster forte -> entrambi
+            snapshot = {
+                "pressure": round(pressure, 2),
+                "pair15_50": p50,
+                "pair15_5": p5,
+                "heat50": h50,
+                "heat5": h5,
+                "lag50": l50,
+                "lag5": l5,
+            }
+            self.last_15_snapshot = snapshot
+
             if (
                 pressure >= 14 and
                 p50 >= 3 and p5 >= 3 and
                 h50 > 0 and h5 > 0
             ):
+                self.last_support_reason = "DUAL_SUPPORT_STRONG_CLUSTER"
                 return 50, 5
 
-            # 2) 50 dominante -> solo 15-50
             if (
                 p50 >= p5 and
                 (h50 >= h5 or l50 <= l5) and
                 pressure >= 10
             ):
+                self.last_support_reason = "AMBO_15_50_DOMINANT"
                 return 50, None
 
-            # 3) 5 dominante -> solo 15-5
             if (
                 p5 > p50 or
                 (h5 > h50 and l5 <= l50)
             ):
+                self.last_support_reason = "AMBO_15_5_CONTINUITY"
                 return 5, None
 
-            # 4) fallback
             if pressure >= 12:
+                self.last_support_reason = "FALLBACK_15_50_BY_PRESSURE"
                 return 50, None
+
+            self.last_support_reason = "FALLBACK_15_5_DEFAULT"
             return 5, None
 
-        # ===================== AMBATA 50 =====================
         if a == 50:
             p15 = self.pair_score(50, 15)
             p5 = self.pair_score(50, 5)
@@ -556,28 +572,27 @@ class SNIPER271:
             if p15 >= p5:
                 s1 = 15
                 s2 = 5 if (p5 >= 4 and pressure >= 10) else None
+                self.last_support_reason = "SUPPORT_50_PREFERS_15"
             else:
                 s1 = 5
                 s2 = 15 if (p15 >= 4 and pressure >= 10) else None
+                self.last_support_reason = "SUPPORT_50_PREFERS_5"
 
             return s1, s2
 
-        # ===================== AMBATA 5 ======================
         if a == 5:
-            p15 = self.pair_score(5, 15)
             p50 = self.pair_score(5, 50)
-
             s1 = 15
             s2 = 50 if (p50 >= 4 and pressure >= 10) else None
+            self.last_support_reason = "SUPPORT_5_PREFERS_15"
             return s1, s2
 
-        # ===================== AMBATA 10 =====================
         if a == 10:
+            self.last_support_reason = "SUPPORT_10_TO_15"
             return 15, None
 
+        self.last_support_reason = "NO_SUPPORT"
         return None, None
-
-    # ===================== MOMENTUM ==========================
 
     def super_momentum_target_smart(self, cluster_nums):
         s = set(cluster_nums)
@@ -609,8 +624,6 @@ class SNIPER271:
             return leader_conv, "CONVERSION_FALLBACK"
 
         return None, "NO_SUPER_PLAY"
-
-    # ===================== RESTART MODE ======================
 
     def choose_restart_play(self):
         gap = self.cluster_gap()
@@ -678,8 +691,6 @@ class SNIPER271:
 
         return rows[0]["n"], rows, "OK"
 
-    # ===================== PROFILE MESSAGES ==================
-
     async def send_profile(self, app, title="🧠 WARMUP ANALYSIS"):
         if not self.profile:
             return
@@ -711,8 +722,6 @@ class SNIPER271:
             f"🔄 TOP ROTATIONS\n{trans_txt}\n\n"
             f"💥 TOP PAIRS\n{pair_txt}"
         )
-
-    # ===================== NORMAL SCORING ====================
 
     def choose_ambata_normal(self):
         gap = self.cluster_gap()
@@ -772,11 +781,51 @@ class SNIPER271:
 
             if n == 15:
                 score += 1.0
+
                 if any(x in self.last_cluster_nums() for x in [5, 10]):
                     score += 1.2
 
+                pair15_5 = self.pair_score(15, 5)
+                pair15_50 = self.pair_score(15, 50)
+
+                if pair15_5 >= 4 or pair15_50 >= 4:
+                    score += 1.0
+
+                h5 = self.heat(5)
+                h50 = self.heat(50)
+                l5 = self.lag(5)
+                l50 = self.lag(50)
+
+                support_5_alive = (h5 >= 1) or (l5 <= 4) or (pair15_5 >= 3)
+                support_50_alive = (h50 >= 1) or (l50 <= 4) or (pair15_50 >= 3)
+
+                self.last_15_snapshot = {
+                    "state": state,
+                    "pressure": round(pressure, 2),
+                    "pair15_5": pair15_5,
+                    "pair15_50": pair15_50,
+                    "heat5": h5,
+                    "heat50": h50,
+                    "lag5": l5,
+                    "lag50": l50,
+                    "support_5_alive": support_5_alive,
+                    "support_50_alive": support_50_alive,
+                    "isolated_15_flag": (not support_5_alive and not support_50_alive),
+                }
+
+                if not support_5_alive and not support_50_alive:
+                    score -= 3.2
+
+                elif (not support_50_alive) and (h5 == 0 and l5 > 5 and pair15_5 < 3):
+                    score -= 2.0
+
+                if h == 0 and dom == 0 and rot >= 3.0:
+                    if not support_5_alive and not support_50_alive:
+                        score -= 2.5
+
             if n == 10:
                 score += W_PENALTY_10
+
                 ok_heat = h >= 5
                 ok_dom = dom >= 2
                 ok_rot = rot >= 1.5
@@ -839,8 +888,6 @@ class SNIPER271:
 
         return rows[0]["n"], rows, "OK"
 
-    # ===================== RESET =============================
-
     def reset_cycle(self):
         self.A = None
         self.S1 = None
@@ -849,8 +896,6 @@ class SNIPER271:
         self.colpi = 0
         self.max_colpi_cycle = MAX_COLPI_NORMAL
         self.mode = None
-
-    # ===================== MAIN ==============================
 
     async def on_new(self, app, e, nums):
         gap_before = self.cluster_gap()
@@ -911,6 +956,13 @@ class SNIPER271:
                 self.mode = "SUPER_MOMENTUM"
                 self.push_play_number(A)
 
+                extra_15 = ""
+                if A == 15 and self.last_15_snapshot:
+                    extra_15 = (
+                        f"\n• support_reason={self.last_support_reason}"
+                        f"\n• 15_snapshot={self.last_15_snapshot}"
+                    )
+
                 await self.tg(
                     app,
                     "🚀 SUPER MOMENTUM PLAY\n"
@@ -920,9 +972,10 @@ class SNIPER271:
                     f"• leader_conversion={self.profile.get('leader_conversion', 'n/a') if self.profile else 'n/a'}\n"
                     f"• reason={reason_super}\n"
                     f"• AMBATA {A}\n"
-                    f"• AMBO1 {A}-{self.S1}" +
-                    (f"\n• AMBO2 {A}-{self.S2}" if self.S2 is not None else "") +
-                    f"\n• da {self.start} per {self.max_colpi_cycle} colpi"
+                    f"• AMBO1 {A}-{self.S1}"
+                    + (f"\n• AMBO2 {A}-{self.S2}" if self.S2 is not None else "")
+                    + f"\n• da {self.start} per {self.max_colpi_cycle} colpi"
+                    + extra_15
                 )
                 return
             else:
@@ -957,9 +1010,10 @@ class SNIPER271:
                 "🔁 RESTART PLAY\n"
                 f"• reason={reason_restart}\n"
                 f"• AMBATA {A_restart}\n"
-                f"• AMBO1 {A_restart}-{self.S1}" +
-                (f"\n• AMBO2 {A_restart}-{self.S2}" if self.S2 is not None else "") +
-                f"\n• da {self.start} per {self.max_colpi_cycle} colpi\n\n"
+                f"• AMBO1 {A_restart}-{self.S1}"
+                + (f"\n• AMBO2 {A_restart}-{self.S2}" if self.S2 is not None else "")
+                + f"\n• support_reason={self.last_support_reason}"
+                + f"\n• da {self.start} per {self.max_colpi_cycle} colpi\n\n"
                 f"📊 DEBUG\n{debug_txt}"
             )
             return
@@ -1010,13 +1064,23 @@ class SNIPER271:
             ]
         )
 
+        extra_15 = ""
+        if A == 15 and self.last_15_snapshot:
+            extra_15 = (
+                f"\n• support_reason={self.last_support_reason}"
+                f"\n• 15_snapshot={self.last_15_snapshot}"
+            )
+        else:
+            extra_15 = f"\n• support_reason={self.last_support_reason}"
+
         await self.tg(
             app,
             "🎯 PLAY NORMAL\n"
             f"• AMBATA {A}\n"
-            f"• AMBO1 {A}-{self.S1}" +
-            (f"\n• AMBO2 {A}-{self.S2}" if self.S2 is not None else "") +
-            f"\n• da {self.start} per {self.max_colpi_cycle} colpi\n\n"
+            f"• AMBO1 {A}-{self.S1}"
+            + (f"\n• AMBO2 {A}-{self.S2}" if self.S2 is not None else "")
+            + extra_15
+            + f"\n• da {self.start} per {self.max_colpi_cycle} colpi\n\n"
             f"📊 DEBUG\n{debug_txt}"
         )
 
@@ -1025,6 +1089,7 @@ class SNIPER271:
 bot = SNIPER271()
 
 async def live():
+    start_ts = time.time()
     app = ApplicationBuilder().token(TOKEN).build()
 
     es = parse_site()
@@ -1033,10 +1098,14 @@ async def live():
         bot.max_e = max(bot.max_e, e)
 
     bot.profile = bot.analyze_cluster_profile()
-    await bot.tg(app, "🚀 SNIPER v27.1b-final TEST AVVIATO — Smart Ambo Patch")
+    await bot.tg(app, "🚀 SNIPER v27.1b-final AVVIATO — Smart Ambo + Anti-Stop 15")
     await bot.send_profile(app, "🧠 WARMUP ANALYSIS")
 
     while True:
+        if time.time() - start_ts >= MAX_RUNTIME_SEC:
+            await bot.tg(app, "⏹ Arresto automatico prima del limite GitHub Actions")
+            break
+
         try:
             es = parse_site()
             for e, nums in es:
@@ -1049,4 +1118,6 @@ async def live():
 
         await asyncio.sleep(LOOP_SEC)
 
-asyncio.run(live()) 
+
+if __name__ == "__main__":
+    asyncio.run(live())
