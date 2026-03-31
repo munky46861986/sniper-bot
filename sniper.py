@@ -1,8 +1,15 @@
+# ============================================================
+# 🚀 SNIPER v27.1 — CONVERSION FLOW ENGINE PATCHED
+# v27 + patch precise dai log reali
+# PATCH DIAGNOSTICHE: CSV + play_id + support_quality
+# ============================================================
+
 import asyncio
-import os
-import time
 import requests
 import re
+import csv
+import os
+from datetime import datetime
 from collections import defaultdict
 from bs4 import BeautifulSoup
 from telegram.ext import ApplicationBuilder
@@ -10,13 +17,10 @@ import nest_asyncio
 
 nest_asyncio.apply()
 
-TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = int(os.getenv("CHAT_ID", "0"))
+# ===================== CONFIG ===============================
 
-if not TOKEN:
-    raise RuntimeError("BOT_TOKEN mancante")
-if not CHAT_ID:
-    raise RuntimeError("CHAT_ID mancante")
+TOKEN = "INSERISCI_TOKEN_NUOVO"
+CHAT_ID = 902155181
 
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
@@ -33,7 +37,11 @@ HISTORY_MAX = 160
 WARMUP_WINDOW = 60
 PROFILE_UPDATE_EVERY = 10
 
-MAX_RUNTIME_SEC = 5 * 60 * 60 + 50 * 60
+LOG_DIR = "logs"
+PLAY_LOG_CSV = os.path.join(LOG_DIR, "sniper_play_log.csv")
+SHOT_LOG_CSV = os.path.join(LOG_DIR, "sniper_shot_log.csv")
+
+# ===================== BASE WEIGHTS =========================
 
 W_HEAT = 1.8
 W_LAG = 0.6
@@ -52,6 +60,7 @@ MIN_SCORE_RESTART = 4.8
 
 LOW_PRESSURE_BLOCK = 4.0
 
+# v27 core logic
 W_CORE_5_TO_15 = 2.6
 W_CORE_15_TO_5 = 1.9
 W_SIDE_15_TO_50 = 1.0
@@ -84,10 +93,10 @@ W_PENALTY_50_THIN = -0.8
 
 PAIR_WEIGHT = 0.4
 
+# ============================================================
 
 def parse_site():
     r = requests.get(URL, headers=HEADERS, timeout=15)
-    r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
 
     out = {}
@@ -112,8 +121,10 @@ def parse_site():
 
     return sorted(out.items())
 
+# ============================================================
 
 class SNIPER271:
+
     def __init__(self):
         self.max_e = 0
         self.last_draws = []
@@ -124,7 +135,7 @@ class SNIPER271:
         self.start = None
         self.colpi = 0
         self.max_colpi_cycle = MAX_COLPI_NORMAL
-        self.mode = None
+        self.mode = None  # NORMAL / SUPER_MOMENTUM / RESTART
 
         self.recent_results = []
         self.last_play_numbers = []
@@ -134,9 +145,175 @@ class SNIPER271:
         self.leader_presence_history = []
         self.leader_conversion_history = []
 
+        # diagnostica
+        self.play_id = 0
+        self.active_play_id = None
+        self.active_play_meta = {}
+
+        os.makedirs(LOG_DIR, exist_ok=True)
+        self._init_csv_logs()
+
+    # ===================== DIAGNOSTICA =======================
+
+    def _init_csv_logs(self):
+        if not os.path.exists(PLAY_LOG_CSV):
+            with open(PLAY_LOG_CSV, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow([
+                    "ts", "play_id", "open_extraction", "mode",
+                    "ambata", "ambo1", "ambo2",
+                    "state", "pressure", "gap",
+                    "heat_5", "heat_10", "heat_15", "heat_50",
+                    "lag_5", "lag_10", "lag_15", "lag_50",
+                    "dom_5", "dom_10", "dom_15", "dom_50",
+                    "leader_presence", "leader_conversion",
+                    "support_quality", "result"
+                ])
+
+        if not os.path.exists(SHOT_LOG_CSV):
+            with open(SHOT_LOG_CSV, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow([
+                    "ts", "play_id", "eval_extraction", "colpo",
+                    "ambata", "ambo1", "ambo2",
+                    "hit_ambata", "hit_ambo1", "hit_ambo2"
+                ])
+
+    def _now_str(self):
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _current_metrics(self):
+        return {
+            "pressure": round(self.cluster_pressure(), 2),
+            "gap": self.cluster_gap(),
+            "state": self.profile.get("state", "n/a") if self.profile else "n/a",
+            "leader_presence": self.profile.get("leader_presence", "n/a") if self.profile else "n/a",
+            "leader_conversion": self.profile.get("leader_conversion", "n/a") if self.profile else "n/a",
+            "heat_5": self.heat(5),
+            "heat_10": self.heat(10),
+            "heat_15": self.heat(15),
+            "heat_50": self.heat(50),
+            "lag_5": self.lag(5),
+            "lag_10": self.lag(10),
+            "lag_15": self.lag(15),
+            "lag_50": self.lag(50),
+            "dom_5": self.dominance_count(5, 6),
+            "dom_10": self.dominance_count(10, 6),
+            "dom_15": self.dominance_count(15, 6),
+            "dom_50": self.dominance_count(50, 6),
+        }
+
+    def support_quality_label(self, ambata, s1, s2):
+        def alive(n):
+            if n is None:
+                return False
+            return self.heat(n) >= 3 or self.lag(n) <= 4 or self.dominance_count(n, 6) >= 2
+
+        a1 = alive(s1)
+        a2 = alive(s2)
+
+        if s1 is None and s2 is None:
+            return "NO_SUPPORTS"
+        if a1 and (s2 is None or a2):
+            return "SUPPORTS_GOOD"
+        if a1 or a2:
+            return "SUPPORTS_MIXED"
+        return "SUPPORTS_WEAK"
+
+    def open_play_log(self, extraction_open, mode, ambata, ambo1, ambo2):
+        self.play_id += 1
+        self.active_play_id = self.play_id
+
+        m = self._current_metrics()
+        support_quality = self.support_quality_label(ambata, ambo1, ambo2)
+
+        self.active_play_meta = {
+            "open_extraction": extraction_open,
+            "mode": mode,
+            "ambata": ambata,
+            "ambo1": ambo1,
+            "ambo2": ambo2,
+            "support_quality": support_quality,
+            **m
+        }
+
+        with open(PLAY_LOG_CSV, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                self._now_str(),
+                self.active_play_id,
+                extraction_open,
+                mode,
+                ambata,
+                ambo1,
+                ambo2,
+                m["state"],
+                m["pressure"],
+                m["gap"],
+                m["heat_5"], m["heat_10"], m["heat_15"], m["heat_50"],
+                m["lag_5"], m["lag_10"], m["lag_15"], m["lag_50"],
+                m["dom_5"], m["dom_10"], m["dom_15"], m["dom_50"],
+                m["leader_presence"], m["leader_conversion"],
+                support_quality,
+                "OPEN"
+            ])
+
+    def log_shot(self, eval_extraction, colpo, hit_ambata, hit_ambo1, hit_ambo2):
+        if self.active_play_id is None:
+            return
+
+        with open(SHOT_LOG_CSV, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                self._now_str(),
+                self.active_play_id,
+                eval_extraction,
+                colpo,
+                self.A,
+                self.S1,
+                self.S2,
+                int(hit_ambata),
+                int(hit_ambo1),
+                int(hit_ambo2)
+            ])
+
+    def close_play_log(self, result):
+        if self.active_play_id is None:
+            return
+
+        m = self.active_play_meta
+
+        with open(PLAY_LOG_CSV, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                self._now_str(),
+                self.active_play_id,
+                m.get("open_extraction"),
+                m.get("mode"),
+                m.get("ambata"),
+                m.get("ambo1"),
+                m.get("ambo2"),
+                m.get("state"),
+                m.get("pressure"),
+                m.get("gap"),
+                m.get("heat_5"), m.get("heat_10"), m.get("heat_15"), m.get("heat_50"),
+                m.get("lag_5"), m.get("lag_10"), m.get("lag_15"), m.get("lag_50"),
+                m.get("dom_5"), m.get("dom_10"), m.get("dom_15"), m.get("dom_50"),
+                m.get("leader_presence"), m.get("leader_conversion"),
+                m.get("support_quality"),
+                result
+            ])
+
+        self.active_play_id = None
+        self.active_play_meta = {}
+
+    # ===================== TELEGRAM ==========================
+
     async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
         await asyncio.sleep(0.15)
+
+    # ===================== HISTORY ===========================
 
     def update_history(self, nums):
         self.last_draws.append(nums)
@@ -152,6 +329,8 @@ class SNIPER271:
         self.last_play_numbers.append(n)
         if len(self.last_play_numbers) > 6:
             self.last_play_numbers.pop(0)
+
+    # ===================== FEATURES ==========================
 
     def heat(self, n, draws=None):
         if draws is None:
@@ -237,6 +416,8 @@ class SNIPER271:
 
         return -pen
 
+    # ===================== PROFILE ENGINE ====================
+
     def pair_score_raw(self, pair_counts, a, b):
         key = tuple(sorted((a, b)))
         return pair_counts.get(key, 0)
@@ -252,8 +433,10 @@ class SNIPER271:
         freq = {n: 0.0 for n in TARGET}
         recent_tail = window[-20:] if len(window) >= 20 else window
 
-        for d in window:
-            w = 1.5 if d in recent_tail else 1.0
+        for i, d in enumerate(window):
+            w = 1.0
+            if d in recent_tail:
+                w = 1.5
             for n in TARGET:
                 if n in d:
                     freq[n] += w
@@ -415,16 +598,19 @@ class SNIPER271:
                 bonus += W_STATE_DENSE_5
             if n == 50:
                 bonus -= 1.0
+
         elif state == "FLOW":
             if n == 15:
                 bonus += W_STATE_FLOW_15
             if n == 5:
                 bonus += W_STATE_FLOW_5
+
         elif state == "THIN":
             if n == 50:
                 bonus += W_STATE_THIN_50
             if n == 10:
                 bonus -= 0.8
+
         elif state == "RESTART":
             if n == 50:
                 bonus += W_STATE_RESTART_50
@@ -432,6 +618,8 @@ class SNIPER271:
                 bonus += W_STATE_RESTART_15
 
         return bonus
+
+    # ===================== ROTATION ENGINE ===================
 
     def core_rotation_bonus(self, n):
         if not self.last_draws:
@@ -469,11 +657,15 @@ class SNIPER271:
         for m in TARGET:
             if m != n:
                 ps = self.pair_score(n, m)
+
                 if n == 15 or m == 15:
                     ps *= 1.4
+
                 pair_sum += ps
 
         return round(pair_sum * PAIR_WEIGHT / 10.0, 2)
+
+    # ===================== SUPPORTS ==========================
 
     def primary_support(self, a):
         if a == 50:
@@ -514,6 +706,8 @@ class SNIPER271:
             return self.primary_support(a), None
         return None, None
 
+    # ===================== MOMENTUM ==========================
+
     def super_momentum_target_smart(self, cluster_nums):
         s = set(cluster_nums)
         if len(s) < 3:
@@ -544,6 +738,8 @@ class SNIPER271:
             return leader_conv, "CONVERSION_FALLBACK"
 
         return None, "NO_SUPER_PLAY"
+
+    # ===================== RESTART MODE ======================
 
     def choose_restart_play(self):
         gap = self.cluster_gap()
@@ -611,6 +807,8 @@ class SNIPER271:
 
         return rows[0]["n"], rows, "OK"
 
+    # ===================== PROFILE MESSAGES ==================
+
     async def send_profile(self, app, title="🧠 WARMUP ANALYSIS"):
         if not self.profile:
             return
@@ -642,6 +840,8 @@ class SNIPER271:
             f"🔄 TOP ROTATIONS\n{trans_txt}\n\n"
             f"💥 TOP PAIRS\n{pair_txt}"
         )
+
+    # ===================== NORMAL SCORING ====================
 
     def choose_ambata_normal(self):
         gap = self.cluster_gap()
@@ -706,6 +906,7 @@ class SNIPER271:
 
             if n == 10:
                 score += W_PENALTY_10
+
                 ok_heat = h >= 5
                 ok_dom = dom >= 2
                 ok_rot = rot >= 1.5
@@ -757,6 +958,7 @@ class SNIPER271:
 
         if len(rows) >= 2:
             diff_needed = MIN_DIFF_SCORE
+
             if rows[0]["n"] == 10:
                 diff_needed = 2.2
 
@@ -768,6 +970,8 @@ class SNIPER271:
 
         return rows[0]["n"], rows, "OK"
 
+    # ===================== RESET =============================
+
     def reset_cycle(self):
         self.A = None
         self.S1 = None
@@ -776,6 +980,8 @@ class SNIPER271:
         self.colpi = 0
         self.max_colpi_cycle = MAX_COLPI_NORMAL
         self.mode = None
+
+    # ===================== MAIN ==============================
 
     async def on_new(self, app, e, nums):
         gap_before = self.cluster_gap()
@@ -795,6 +1001,7 @@ class SNIPER271:
 
         s = set(nums)
 
+        # ---------------- ACTIVE PLAY ----------------
         if self.A is not None:
             if e >= self.start:
                 self.colpi += 1
@@ -802,6 +1009,8 @@ class SNIPER271:
                 hitA = self.A in s
                 hit1 = self.S1 in s if self.S1 is not None else False
                 hit2 = self.S2 in s if self.S2 is not None else False
+
+                self.log_shot(e, self.colpi, hitA, hitA and hit1, hitA and hit2)
 
                 if hitA and hit1:
                     await self.tg(app, f"💥 HIT AMBO {self.A}-{self.S1}")
@@ -812,16 +1021,19 @@ class SNIPER271:
                 if hitA:
                     await self.tg(app, f"🔥 HIT AMBATA {self.A} ({self.mode})")
                     self.push_result("HIT")
+                    self.close_play_log("HIT")
                     self.reset_cycle()
                     return
 
                 if self.colpi >= self.max_colpi_cycle:
                     await self.tg(app, f"🛑 STOP {self.A} ({self.mode})")
                     self.push_result("STOP")
+                    self.close_play_log("STOP")
                     self.reset_cycle()
                     return
             return
 
+        # ---------------- SUPER MOMENTUM ----------------
         cluster_nums = [x for x in nums if x in TARGET]
         cluster_count = len(cluster_nums)
 
@@ -835,6 +1047,7 @@ class SNIPER271:
                 self.max_colpi_cycle = MAX_COLPI_SUPER
                 self.mode = "SUPER_MOMENTUM"
                 self.push_play_number(A)
+                self.open_play_log(self.start, self.mode, self.A, self.S1, self.S2)
 
                 await self.tg(
                     app,
@@ -847,6 +1060,7 @@ class SNIPER271:
                     f"• AMBATA {A}\n"
                     f"• AMBO1 {A}-{self.S1}" +
                     (f"\n• AMBO2 {A}-{self.S2}" if self.S2 is not None else "") +
+                    f"\n• supports_quality={self.support_quality_label(A, self.S1, self.S2)}" +
                     f"\n• da {self.start} per {self.max_colpi_cycle} colpi"
                 )
                 return
@@ -858,6 +1072,7 @@ class SNIPER271:
                     f"• reason={reason_super}"
                 )
 
+        # ---------------- RESTART PLAY ----------------
         A_restart, debug_restart, reason_restart = self.choose_restart_play()
         if A_restart is not None:
             self.A = A_restart
@@ -867,6 +1082,7 @@ class SNIPER271:
             self.max_colpi_cycle = MAX_COLPI_RESTART
             self.mode = "RESTART"
             self.push_play_number(A_restart)
+            self.open_play_log(self.start, self.mode, self.A, self.S1, self.S2)
 
             debug_txt = "\n".join(
                 [
@@ -884,11 +1100,13 @@ class SNIPER271:
                 f"• AMBATA {A_restart}\n"
                 f"• AMBO1 {A_restart}-{self.S1}" +
                 (f"\n• AMBO2 {A_restart}-{self.S2}" if self.S2 is not None else "") +
+                f"\n• supports_quality={self.support_quality_label(A_restart, self.S1, self.S2)}" +
                 f"\n• da {self.start} per {self.max_colpi_cycle} colpi\n\n"
                 f"📊 DEBUG\n{debug_txt}"
             )
             return
 
+        # ---------------- NORMAL PLAY ----------------
         if len(self.last_draws) < 10:
             return
 
@@ -925,6 +1143,7 @@ class SNIPER271:
         self.max_colpi_cycle = MAX_COLPI_NORMAL
         self.mode = "NORMAL"
         self.push_play_number(A)
+        self.open_play_log(self.start, self.mode, self.A, self.S1, self.S2)
 
         debug_txt = "\n".join(
             [
@@ -941,16 +1160,16 @@ class SNIPER271:
             f"• AMBATA {A}\n"
             f"• AMBO1 {A}-{self.S1}" +
             (f"\n• AMBO2 {A}-{self.S2}" if self.S2 is not None else "") +
+            f"\n• supports_quality={self.support_quality_label(A, self.S1, self.S2)}" +
             f"\n• da {self.start} per {self.max_colpi_cycle} colpi\n\n"
             f"📊 DEBUG\n{debug_txt}"
         )
 
+# ===================== LOOP ================================
 
 bot = SNIPER271()
 
-
 async def live():
-    start_ts = time.time()
     app = ApplicationBuilder().token(TOKEN).build()
 
     es = parse_site()
@@ -959,14 +1178,10 @@ async def live():
         bot.max_e = max(bot.max_e, e)
 
     bot.profile = bot.analyze_cluster_profile()
-    await bot.tg(app, "🚀 SNIPER v27.1 AVVIATO su GitHub Actions")
+    await bot.tg(app, "🚀 SNIPER v27.1 AVVIATO — Conversion Flow Engine Patched")
     await bot.send_profile(app)
 
     while True:
-        if time.time() - start_ts >= MAX_RUNTIME_SEC:
-            await bot.tg(app, "⏹ Arresto automatico prima del limite GitHub Actions")
-            break
-
         try:
             es = parse_site()
             for e, nums in es:
@@ -979,6 +1194,4 @@ async def live():
 
         await asyncio.sleep(LOOP_SEC)
 
-
-if __name__ == "__main__":
-    asyncio.run(live())
+asyncio.run(live())
