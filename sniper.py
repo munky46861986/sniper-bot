@@ -19,8 +19,13 @@ nest_asyncio.apply()
 
 # ===================== CONFIG ===============================
 
-TOKEN = "INSERISCI_TOKEN_NUOVO"
-CHAT_ID = 902155181
+import os
+
+TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = int(os.getenv("CHAT_ID"))
+
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN mancante")
 
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
