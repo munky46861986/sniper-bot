@@ -1,7 +1,8 @@
 # ============================================================
-# 🚀 SNIPER v27.1 — CONVERSION FLOW ENGINE PATCHED
-# v27 + patch precise dai log reali
+# 🚀 SNIPER v27.1b — CONVERSION FLOW ENGINE PATCHED
+# v27 + patch dai log reali
 # PATCH DIAGNOSTICHE: CSV + play_id + support_quality
+# PATCH FLOW: anti-falso-15 + supporti semantici + 50 valorizzato
 # ============================================================
 
 import asyncio
@@ -18,8 +19,6 @@ import nest_asyncio
 nest_asyncio.apply()
 
 # ===================== CONFIG ===============================
-
-import os
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
@@ -209,19 +208,45 @@ class SNIPER271:
         }
 
     def support_quality_label(self, ambata, s1, s2):
-        def alive(n):
+        def support_score(n):
             if n is None:
-                return False
-            return self.heat(n) >= 3 or self.lag(n) <= 4 or self.dominance_count(n, 6) >= 2
+                return -999
 
-        a1 = alive(s1)
-        a2 = alive(s2)
+            h = self.heat(n)
+            l = self.lag(n)
+            d = self.dominance_count(n, 6)
+
+            pair_component = self.pair_score(ambata, n)
+            rot_component = self.transition_score(ambata, n) + self.transition_score(n, ambata)
+
+            score = 0.0
+            score += h * 1.2
+            score -= l * 0.35
+            score += d * 1.2
+            score += pair_component * 0.9
+            score += rot_component * 0.25
+
+            return round(score, 2)
 
         if s1 is None and s2 is None:
             return "NO_SUPPORTS"
-        if a1 and (s2 is None or a2):
+
+        sc1 = support_score(s1) if s1 is not None else -999
+        sc2 = support_score(s2) if s2 is not None else -999
+
+        if s2 is None:
+            if sc1 >= 6.5:
+                return "SUPPORTS_GOOD"
+            elif sc1 >= 3.5:
+                return "SUPPORTS_MIXED"
+            return "SUPPORTS_WEAK"
+
+        strong_count = sum(1 for x in [sc1, sc2] if x >= 5.5)
+        medium_count = sum(1 for x in [sc1, sc2] if x >= 3.5)
+
+        if strong_count == 2:
             return "SUPPORTS_GOOD"
-        if a1 or a2:
+        if strong_count == 1 or medium_count == 2:
             return "SUPPORTS_MIXED"
         return "SUPPORTS_WEAK"
 
@@ -705,10 +730,70 @@ class SNIPER271:
         return None
 
     def supports_for_ambata(self, a):
-        if a in (5, 15, 50):
-            return self.primary_support(a), self.secondary_support(a)
+        pressure = self.cluster_pressure()
+
+        # ===================== AMBATA 15 =====================
+        if a == 15:
+            p50 = self.pair_score(15, 50)
+            p5 = self.pair_score(15, 5)
+
+            h50 = self.heat(50)
+            h5 = self.heat(5)
+
+            l50 = self.lag(50)
+            l5 = self.lag(5)
+
+            d50 = self.dominance_count(50, 6)
+            d5 = self.dominance_count(5, 6)
+
+            support50_live = (h50 >= 2) or (l50 <= 4) or (d50 >= 2) or (p50 >= 3)
+            support5_live = (h5 >= 2) or (l5 <= 4) or (d5 >= 2) or (p5 >= 3)
+
+            if pressure >= 14 and support50_live and support5_live and p50 >= 3 and p5 >= 3:
+                if p50 >= p5:
+                    return 50, 5
+                return 5, 50
+
+            if support50_live and (not support5_live):
+                return 50, None
+
+            if support50_live and support5_live:
+                if p50 >= p5 and (h50 >= h5 or l50 <= l5):
+                    return 50, 5 if pressure >= 12 and p5 >= 3 else None
+                return 5, 50 if pressure >= 12 and p50 >= 3 else None
+
+            if support5_live:
+                return 5, None
+
+            if p5 >= p50:
+                return 5, None
+            return 50, None
+
+        # ===================== AMBATA 50 =====================
+        if a == 50:
+            p15 = self.pair_score(50, 15)
+            p5 = self.pair_score(50, 5)
+
+            s1 = 15 if p15 >= p5 else 5
+            s2 = 5 if s1 == 15 and p5 >= 3 and pressure >= 10 else None
+            if s1 == 5 and p15 >= 3 and pressure >= 10:
+                s2 = 15
+            return s1, s2
+
+        # ===================== AMBATA 5 =====================
+        if a == 5:
+            p15 = self.pair_score(5, 15)
+            p10 = self.pair_score(5, 10)
+            p50 = self.pair_score(5, 50)
+
+            s1 = 15 if p15 >= p10 else 10
+            s2 = 50 if p50 >= 4 and pressure >= 10 else None
+            return s1, s2
+
+        # ===================== AMBATA 10 =====================
         if a == 10:
-            return self.primary_support(a), None
+            return 15, None
+
         return None, None
 
     # ===================== MOMENTUM ==========================
@@ -800,6 +885,8 @@ class SNIPER271:
                 "pair": round(pairb, 2),
                 "over": round(over, 2),
                 "state": state,
+                "structure_bias": round(reg + pairb, 2),
+                "life_bias": round((h * 1.2) - (l * 0.35) + (1.0 if dom >= 2 else 0.0), 2),
             })
 
         rows = sorted(rows, key=lambda x: x["score"], reverse=True)
@@ -906,8 +993,34 @@ class SNIPER271:
 
             if n == 15:
                 score += 1.0
+
                 if any(x in self.last_cluster_nums() for x in [5, 10]):
                     score += 1.2
+
+                pair15_5 = self.pair_score(15, 5)
+                pair15_50 = self.pair_score(15, 50)
+
+                if pair15_5 >= 4 or pair15_50 >= 4:
+                    score += 1.0
+
+                h5 = self.heat(5)
+                h50 = self.heat(50)
+                l5 = self.lag(5)
+                l50 = self.lag(50)
+                d5 = self.dominance_count(5, 6)
+                d50 = self.dominance_count(50, 6)
+
+                support_5_alive = (h5 >= 2) or (l5 <= 4) or (d5 >= 2) or (pair15_5 >= 3)
+                support_50_alive = (h50 >= 2) or (l50 <= 4) or (d50 >= 2) or (pair15_50 >= 3)
+
+                if not support_5_alive and not support_50_alive:
+                    score -= 3.4
+                elif (not support_50_alive) and (h5 == 0 and l5 > 5 and pair15_5 < 3):
+                    score -= 2.2
+
+                if h <= 1 and dom == 0 and rot >= 3.0 and reg >= 3.0:
+                    if not support_5_alive and not support_50_alive:
+                        score -= 2.8
 
             if n == 10:
                 score += W_PENALTY_10
@@ -925,13 +1038,25 @@ class SNIPER271:
                 if gap <= 1:
                     score += W_PENALTY_50_ACTIVE
                 elif state == "RESTART":
-                    score += 2.4
+                    score += 2.6
                 elif gap >= 3:
                     score += 0.8
                 elif state == "THIN":
                     score += W_PENALTY_50_THIN
                 else:
                     score -= 0.8
+
+                if h >= 5 and l <= 4:
+                    score += 1.4
+
+                if dom >= 2:
+                    score += 0.7
+
+                if self.profile and self.profile.get("leader_conversion") == 50:
+                    score += 0.8
+
+                if self.profile and self.profile.get("leader_presence") == 50:
+                    score += 0.5
 
             score += rot
             score += reg
@@ -951,6 +1076,8 @@ class SNIPER271:
                 "pair": round(pairb, 2),
                 "over": round(over, 2),
                 "state": state,
+                "structure_bias": round(rot + reg + pairb, 2),
+                "life_bias": round((h * W_HEAT) - (l * W_LAG) + (W_DOMINANCE if dom >= 3 else 0), 2),
             })
 
         rows = sorted(rows, key=lambda x: x["score"], reverse=True)
@@ -1093,7 +1220,7 @@ class SNIPER271:
                 [
                     f"{r['n']}: score={r['score']} heat={r['heat']} lag={r['lag']} dom={r['dom']} "
                     f"gap={r['gap']} pressure={r['pressure']} reg={r['reg']} pair={r['pair']} "
-                    f"over={r['over']} state={r['state']}"
+                    f"over={r['over']} state={r['state']} sb={r['structure_bias']} lb={r['life_bias']}"
                     for r in debug_restart
                 ]
             )
@@ -1123,7 +1250,8 @@ class SNIPER271:
                     [
                         f"{r['n']}: score={r['score']} heat={r['heat']} lag={r['lag']} dom={r['dom']} "
                         f"gap={r['gap']} pressure={r['pressure']} rot={r['rot']} reg={r['reg']} "
-                        f"pair={r['pair']} over={r['over']} state={r['state']}"
+                        f"pair={r['pair']} over={r['over']} state={r['state']} "
+                        f"sb={r['structure_bias']} lb={r['life_bias']}"
                         for r in debug_rows
                     ]
                 )
@@ -1154,7 +1282,8 @@ class SNIPER271:
             [
                 f"{r['n']}: score={r['score']} heat={r['heat']} lag={r['lag']} dom={r['dom']} "
                 f"gap={r['gap']} pressure={r['pressure']} rot={r['rot']} reg={r['reg']} "
-                f"pair={r['pair']} over={r['over']} state={r['state']}"
+                f"pair={r['pair']} over={r['over']} state={r['state']} "
+                f"sb={r['structure_bias']} lb={r['life_bias']}"
                 for r in debug_rows
             ]
         )
@@ -1183,7 +1312,7 @@ async def live():
         bot.max_e = max(bot.max_e, e)
 
     bot.profile = bot.analyze_cluster_profile()
-    await bot.tg(app, "🚀 SNIPER v27.1 AVVIATO — Conversion Flow Engine Patched")
+    await bot.tg(app, "🚀 SNIPER v27.1b AVVIATO — Conversion Flow Engine Patched")
     await bot.send_profile(app)
 
     while True:
