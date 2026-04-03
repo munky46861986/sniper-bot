@@ -1,8 +1,6 @@
 # ============================================================
-# 🚀 SNIPER v27.1b — CONVERSION FLOW ENGINE PATCHED
-# v27 + patch dai log reali
-# PATCH DIAGNOSTICHE: CSV + play_id + support_quality
-# PATCH FLOW: anti-falso-15 + supporti semantici + 50 valorizzato
+# 🚀 SNIPER v27.1c — CONVERSION FLOW ENGINE ULTRA PATCHED
+# v27.1b + patch profonde dai log reali
 # ============================================================
 
 import asyncio
@@ -64,7 +62,7 @@ MIN_SCORE_RESTART = 4.8
 
 LOW_PRESSURE_BLOCK = 4.0
 
-# v27 core logic
+# core logic
 W_CORE_5_TO_15 = 2.6
 W_CORE_15_TO_5 = 1.9
 W_SIDE_15_TO_50 = 1.0
@@ -96,6 +94,11 @@ W_PENALTY_50_ACTIVE = -2.2
 W_PENALTY_50_THIN = -0.8
 
 PAIR_WEIGHT = 0.4
+
+# nuovi filtri
+MIN_LIFE_BIAS_15 = 2.2
+MIN_LIFE_BIAS_50 = 3.0
+MIN_SUPER_SUPPORT = 4.5
 
 # ============================================================
 
@@ -139,7 +142,7 @@ class SNIPER271:
         self.start = None
         self.colpi = 0
         self.max_colpi_cycle = MAX_COLPI_NORMAL
-        self.mode = None  # NORMAL / SUPER_MOMENTUM / RESTART
+        self.mode = None
 
         self.recent_results = []
         self.last_play_numbers = []
@@ -149,7 +152,6 @@ class SNIPER271:
         self.leader_presence_history = []
         self.leader_conversion_history = []
 
-        # diagnostica
         self.play_id = 0
         self.active_play_id = None
         self.active_play_meta = {}
@@ -207,32 +209,32 @@ class SNIPER271:
             "dom_50": self.dominance_count(50, 6),
         }
 
+    def support_score(self, ambata, n):
+        if n is None:
+            return -999.0
+
+        h = self.heat(n)
+        l = self.lag(n)
+        d = self.dominance_count(n, 6)
+
+        pair_component = self.pair_score(ambata, n)
+        rot_component = self.transition_score(ambata, n) + self.transition_score(n, ambata)
+
+        score = 0.0
+        score += h * 1.2
+        score -= l * 0.35
+        score += d * 1.2
+        score += pair_component * 0.9
+        score += rot_component * 0.25
+
+        return round(score, 2)
+
     def support_quality_label(self, ambata, s1, s2):
-        def support_score(n):
-            if n is None:
-                return -999
-
-            h = self.heat(n)
-            l = self.lag(n)
-            d = self.dominance_count(n, 6)
-
-            pair_component = self.pair_score(ambata, n)
-            rot_component = self.transition_score(ambata, n) + self.transition_score(n, ambata)
-
-            score = 0.0
-            score += h * 1.2
-            score -= l * 0.35
-            score += d * 1.2
-            score += pair_component * 0.9
-            score += rot_component * 0.25
-
-            return round(score, 2)
-
         if s1 is None and s2 is None:
             return "NO_SUPPORTS"
 
-        sc1 = support_score(s1) if s1 is not None else -999
-        sc2 = support_score(s2) if s2 is not None else -999
+        sc1 = self.support_score(ambata, s1) if s1 is not None else -999
+        sc2 = self.support_score(ambata, s2) if s2 is not None else -999
 
         if s2 is None:
             if sc1 >= 6.5:
@@ -241,8 +243,8 @@ class SNIPER271:
                 return "SUPPORTS_MIXED"
             return "SUPPORTS_WEAK"
 
-        strong_count = sum(1 for x in [sc1, sc2] if x >= 5.5)
-        medium_count = sum(1 for x in [sc1, sc2] if x >= 3.5)
+        strong_count = sum(1 for x in [sc1, sc2] if x >= 6.0)
+        medium_count = sum(1 for x in [sc1, sc2] if x >= 4.0)
 
         if strong_count == 2:
             return "SUPPORTS_GOOD"
@@ -445,6 +447,15 @@ class SNIPER271:
                 pen += 1.8
 
         return -pen
+
+    def consecutive_stops(self):
+        c = 0
+        for r in reversed(self.recent_results):
+            if r == "STOP":
+                c += 1
+            else:
+                break
+        return c
 
     # ===================== PROFILE ENGINE ====================
 
@@ -687,52 +698,17 @@ class SNIPER271:
         for m in TARGET:
             if m != n:
                 ps = self.pair_score(n, m)
-
                 if n == 15 or m == 15:
                     ps *= 1.4
-
                 pair_sum += ps
 
         return round(pair_sum * PAIR_WEIGHT / 10.0, 2)
 
     # ===================== SUPPORTS ==========================
 
-    def primary_support(self, a):
-        if a == 50:
-            p15 = self.pair_score(50, 15)
-            p5 = self.pair_score(50, 5)
-            return 15 if p15 >= p5 else 5
-
-        if a == 5:
-            p15 = self.pair_score(5, 15)
-            p10 = self.pair_score(5, 10)
-            return 15 if p15 >= p10 else 10
-
-        if a == 15:
-            p50 = self.pair_score(15, 50)
-            p5 = self.pair_score(15, 5)
-            return 50 if p50 >= p5 else 5
-
-        if a == 10:
-            return 15
-
-        return None
-
-    def secondary_support(self, a):
-        if a == 50:
-            return 5 if self.primary_support(a) != 5 else 15
-        if a == 5:
-            return 10 if self.primary_support(a) != 10 else 15
-        if a == 15:
-            return 5 if self.primary_support(a) != 5 else 50
-        if a == 10:
-            return None
-        return None
-
     def supports_for_ambata(self, a):
         pressure = self.cluster_pressure()
 
-        # ===================== AMBATA 15 =====================
         if a == 15:
             p50 = self.pair_score(15, 50)
             p5 = self.pair_score(15, 5)
@@ -754,7 +730,7 @@ class SNIPER271:
                     return 50, 5
                 return 5, 50
 
-            if support50_live and (not support5_live):
+            if support50_live and not support5_live:
                 return 50, None
 
             if support50_live and support5_live:
@@ -769,7 +745,6 @@ class SNIPER271:
                 return 5, None
             return 50, None
 
-        # ===================== AMBATA 50 =====================
         if a == 50:
             p15 = self.pair_score(50, 15)
             p5 = self.pair_score(50, 5)
@@ -780,7 +755,6 @@ class SNIPER271:
                 s2 = 15
             return s1, s2
 
-        # ===================== AMBATA 5 =====================
         if a == 5:
             p15 = self.pair_score(5, 15)
             p10 = self.pair_score(5, 10)
@@ -790,7 +764,6 @@ class SNIPER271:
             s2 = 50 if p50 >= 4 and pressure >= 10 else None
             return s1, s2
 
-        # ===================== AMBATA 10 =====================
         if a == 10:
             return 15, None
 
@@ -817,7 +790,8 @@ class SNIPER271:
             pair_support += self.pair_score(missing, a)
 
         if pressure >= 6 and state != "THIN" and pair_support >= 3:
-            return missing, "MISSING_OK"
+            if self.support_score(missing, self.supports_for_ambata(missing)[0]) >= MIN_SUPER_SUPPORT:
+                return missing, "MISSING_OK"
 
         if leader_conv == 10 and pressure < 8:
             return None, "CONV10_NOT_STRONG_ENOUGH"
@@ -825,7 +799,9 @@ class SNIPER271:
         if leader_conv != missing and leader_conv in TARGET:
             if leader_conv in s and pressure < 9:
                 return None, "LEADER_INSIDE_TRIGGER"
-            return leader_conv, "CONVERSION_FALLBACK"
+            s1, _ = self.supports_for_ambata(leader_conv)
+            if self.support_score(leader_conv, s1) >= MIN_SUPER_SUPPORT:
+                return leader_conv, "CONVERSION_FALLBACK"
 
         return None, "NO_SUPER_PLAY"
 
@@ -896,6 +872,9 @@ class SNIPER271:
 
         if rows[0]["score"] < MIN_SCORE_RESTART:
             return None, rows, "LOW_RESTART_SCORE"
+
+        if rows[0]["n"] == 50 and rows[0]["life_bias"] < 2.5:
+            return None, rows, "RESTART_50_WEAK_LIFE"
 
         return rows[0]["n"], rows, "OK"
 
@@ -1063,6 +1042,23 @@ class SNIPER271:
             score += pairb
             score += over
 
+            structure_bias = round(rot + reg + pairb, 2)
+            life_bias = round((h * W_HEAT) - (l * W_LAG) + (W_DOMINANCE if dom >= 3 else 0), 2)
+
+            # filtro anti-stop di fila: dopo 2 stop, niente play "di struttura"
+            if self.consecutive_stops() >= 2:
+                if life_bias < 4.5:
+                    score -= 2.5
+                if n == 15 and structure_bias > life_bias:
+                    score -= 2.0
+
+            # filtro specifico
+            if n == 15 and life_bias < MIN_LIFE_BIAS_15 and structure_bias > 7.0:
+                score -= 2.2
+
+            if n == 50 and life_bias < MIN_LIFE_BIAS_50 and state != "RESTART":
+                score -= 1.8
+
             rows.append({
                 "n": n,
                 "score": round(score, 2),
@@ -1076,8 +1072,8 @@ class SNIPER271:
                 "pair": round(pairb, 2),
                 "over": round(over, 2),
                 "state": state,
-                "structure_bias": round(rot + reg + pairb, 2),
-                "life_bias": round((h * W_HEAT) - (l * W_LAG) + (W_DOMINANCE if dom >= 3 else 0), 2),
+                "structure_bias": structure_bias,
+                "life_bias": life_bias,
             })
 
         rows = sorted(rows, key=lambda x: x["score"], reverse=True)
@@ -1090,7 +1086,6 @@ class SNIPER271:
 
         if len(rows) >= 2:
             diff_needed = MIN_DIFF_SCORE
-
             if rows[0]["n"] == 10:
                 diff_needed = 2.2
 
@@ -1099,6 +1094,12 @@ class SNIPER271:
 
         if rows[0]["gap"] == 1 and rows[0]["score"] < 6.3:
             return None, rows, "GAP1_WEAK"
+
+        if rows[0]["n"] == 15 and rows[0]["life_bias"] < MIN_LIFE_BIAS_15 and rows[0]["structure_bias"] > rows[0]["life_bias"]:
+            return None, rows, "15_STRUCTURAL_ONLY"
+
+        if rows[0]["n"] == 50 and rows[0]["life_bias"] < MIN_LIFE_BIAS_50 and rows[0]["state"] != "RESTART":
+            return None, rows, "50_WEAK_LIFE"
 
         return rows[0]["n"], rows, "OK"
 
@@ -1133,7 +1134,6 @@ class SNIPER271:
 
         s = set(nums)
 
-        # ---------------- ACTIVE PLAY ----------------
         if self.A is not None:
             if e >= self.start:
                 self.colpi += 1
@@ -1165,7 +1165,6 @@ class SNIPER271:
                     return
             return
 
-        # ---------------- SUPER MOMENTUM ----------------
         cluster_nums = [x for x in nums if x in TARGET]
         cluster_count = len(cluster_nums)
 
@@ -1204,7 +1203,6 @@ class SNIPER271:
                     f"• reason={reason_super}"
                 )
 
-        # ---------------- RESTART PLAY ----------------
         A_restart, debug_restart, reason_restart = self.choose_restart_play()
         if A_restart is not None:
             self.A = A_restart
@@ -1238,7 +1236,6 @@ class SNIPER271:
             )
             return
 
-        # ---------------- NORMAL PLAY ----------------
         if len(self.last_draws) < 10:
             return
 
@@ -1312,7 +1309,7 @@ async def live():
         bot.max_e = max(bot.max_e, e)
 
     bot.profile = bot.analyze_cluster_profile()
-    await bot.tg(app, "🚀 SNIPER v27.1b AVVIATO — Conversion Flow Engine Patched")
+    await bot.tg(app, "🚀 SNIPER v27.1c AVVIATO — Ultra Patched")
     await bot.send_profile(app)
 
     while True:
