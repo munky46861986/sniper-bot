@@ -1,6 +1,8 @@
 # ============================================================
 # 🚀 SNIPER v27.1c — CONVERSION FLOW ENGINE ULTRA PATCHED
 # v27.1b + patch profonde dai log reali
+# PATCH TECH: dedup / supporti più severi / filtro 15 isolato
+# / anti-stop seriale / early stop play deboli
 # ============================================================
 
 import asyncio
@@ -100,6 +102,23 @@ MIN_LIFE_BIAS_15 = 2.2
 MIN_LIFE_BIAS_50 = 3.0
 MIN_SUPER_SUPPORT = 4.5
 
+# patch segnali / anti-stop
+ALIVE_HEAT_MIN = 2
+ALIVE_LAG_MAX = 6
+ALIVE_DOM_MIN = 1
+
+STRONG_ALIVE_HEAT = 3
+STRONG_ALIVE_LAG = 5
+
+ISOLATED_15_SCORE_PENALTY = 4.2
+STRUCTURAL_ONLY_15_PENALTY = 3.2
+REENTRY_15_AFTER_STOP_BLOCK = 2
+
+SECOND_SHOT_EARLY_STOP_PRESSURE = 9.0
+SECOND_SHOT_WEAK_LIFE_MAX = 3.8
+
+MAX_RECENT_DRAWS_IDS = 20
+
 # ============================================================
 
 def parse_site():
@@ -155,6 +174,10 @@ class SNIPER271:
         self.play_id = 0
         self.active_play_id = None
         self.active_play_meta = {}
+
+        self.recent_extraction_ids = []
+        self.last_stop_number = None
+        self.last_stop_count_same = 0
 
         os.makedirs(LOG_DIR, exist_ok=True)
         self._init_csv_logs()
@@ -233,24 +256,38 @@ class SNIPER271:
         if s1 is None and s2 is None:
             return "NO_SUPPORTS"
 
-        sc1 = self.support_score(ambata, s1) if s1 is not None else -999
-        sc2 = self.support_score(ambata, s2) if s2 is not None else -999
+        scores = []
+        supports = []
 
-        if s2 is None:
-            if sc1 >= 6.5:
+        for s in [s1, s2]:
+            if s is None:
+                continue
+            supports.append(s)
+            scores.append(self.support_alive_score(ambata, s))
+
+        if not scores:
+            return "NO_SUPPORTS"
+
+        strong = sum(1 for x in scores if x >= 5.8)
+        medium = sum(1 for x in scores if x >= 3.8)
+        weak = sum(1 for x in scores if x < 2.2)
+
+        if ambata == 15:
+            alive_supports = sum(1 for s in supports if self.is_semi_alive(s))
+
+            if alive_supports >= 2 and strong >= 1:
                 return "SUPPORTS_GOOD"
-            elif sc1 >= 3.5:
+            if alive_supports >= 1 and (medium >= 1 or strong >= 1):
                 return "SUPPORTS_MIXED"
             return "SUPPORTS_WEAK"
 
-        strong_count = sum(1 for x in [sc1, sc2] if x >= 6.0)
-        medium_count = sum(1 for x in [sc1, sc2] if x >= 4.0)
-
-        if strong_count == 2:
+        if strong >= 2:
             return "SUPPORTS_GOOD"
-        if strong_count == 1 or medium_count == 2:
+        if strong >= 1 or medium >= 2:
             return "SUPPORTS_MIXED"
-        return "SUPPORTS_WEAK"
+        if weak == len(scores):
+            return "SUPPORTS_WEAK"
+        return "SUPPORTS_MIXED"
 
     def open_play_log(self, extraction_open, mode, ambata, ambo1, ambo2):
         self.play_id += 1
@@ -336,6 +373,7 @@ class SNIPER271:
                 result
             ])
 
+        self.update_stop_memory(result)
         self.active_play_id = None
         self.active_play_meta = {}
 
@@ -457,6 +495,79 @@ class SNIPER271:
                 break
         return c
 
+    def remember_extraction_id(self, e):
+        self.recent_extraction_ids.append(e)
+        if len(self.recent_extraction_ids) > MAX_RECENT_DRAWS_IDS:
+            self.recent_extraction_ids.pop(0)
+
+    def is_duplicate_extraction(self, e):
+        return e in self.recent_extraction_ids
+
+    def is_alive(self, n):
+        h = self.heat(n)
+        l = self.lag(n)
+        d = self.dominance_count(n, 6)
+        return h >= ALIVE_HEAT_MIN and l <= ALIVE_LAG_MAX and d >= ALIVE_DOM_MIN
+
+    def is_semi_alive(self, n):
+        h = self.heat(n)
+        l = self.lag(n)
+        d = self.dominance_count(n, 6)
+        return (h >= ALIVE_HEAT_MIN and l <= ALIVE_LAG_MAX) or d >= 2
+
+    def is_strong_alive(self, n):
+        h = self.heat(n)
+        l = self.lag(n)
+        return h >= STRONG_ALIVE_HEAT and l <= STRONG_ALIVE_LAG
+
+    def support_alive_score(self, ambata, n):
+        if n is None:
+            return -999.0
+
+        h = self.heat(n)
+        l = self.lag(n)
+        d = self.dominance_count(n, 6)
+        ps = self.pair_score(ambata, n)
+        ts = self.transition_score(ambata, n) + self.transition_score(n, ambata)
+
+        score = 0.0
+        score += h * 1.5
+        score -= l * 0.45
+        score += d * 1.1
+        score += ps * 0.6
+        score += ts * 0.18
+
+        return round(score, 2)
+
+    def should_block_15_isolated(self):
+        h5 = self.heat(5)
+        h50 = self.heat(50)
+        l5 = self.lag(5)
+        l50 = self.lag(50)
+        d5 = self.dominance_count(5, 6)
+        d50 = self.dominance_count(50, 6)
+        p15_5 = self.pair_score(15, 5)
+        p15_50 = self.pair_score(15, 50)
+
+        alive_5 = (h5 >= 2 and l5 <= 6) or d5 >= 2 or (p15_5 >= 4 and h5 >= 1)
+        alive_50 = (h50 >= 2 and l50 <= 6) or d50 >= 2 or (p15_50 >= 4 and h50 >= 1)
+
+        return not (alive_5 or alive_50)
+
+    def update_stop_memory(self, result):
+        if self.A is None:
+            return
+
+        if result == "STOP":
+            if self.last_stop_number == self.A:
+                self.last_stop_count_same += 1
+            else:
+                self.last_stop_number = self.A
+                self.last_stop_count_same = 1
+        else:
+            self.last_stop_number = None
+            self.last_stop_count_same = 0
+
     # ===================== PROFILE ENGINE ====================
 
     def pair_score_raw(self, pair_counts, a, b):
@@ -474,10 +585,8 @@ class SNIPER271:
         freq = {n: 0.0 for n in TARGET}
         recent_tail = window[-20:] if len(window) >= 20 else window
 
-        for i, d in enumerate(window):
-            w = 1.0
-            if d in recent_tail:
-                w = 1.5
+        for d in window:
+            w = 1.5 if d in recent_tail else 1.0
             for n in TARGET:
                 if n in d:
                     freq[n] += w
@@ -710,58 +819,54 @@ class SNIPER271:
         pressure = self.cluster_pressure()
 
         if a == 15:
-            p50 = self.pair_score(15, 50)
-            p5 = self.pair_score(15, 5)
+            score_50 = self.support_alive_score(15, 50)
+            score_5 = self.support_alive_score(15, 5)
 
-            h50 = self.heat(50)
-            h5 = self.heat(5)
+            alive_50 = self.is_semi_alive(50)
+            alive_5 = self.is_semi_alive(5)
 
-            l50 = self.lag(50)
-            l5 = self.lag(5)
-
-            d50 = self.dominance_count(50, 6)
-            d5 = self.dominance_count(5, 6)
-
-            support50_live = (h50 >= 2) or (l50 <= 4) or (d50 >= 2) or (p50 >= 3)
-            support5_live = (h5 >= 2) or (l5 <= 4) or (d5 >= 2) or (p5 >= 3)
-
-            if pressure >= 14 and support50_live and support5_live and p50 >= 3 and p5 >= 3:
-                if p50 >= p5:
+            if pressure >= 16 and alive_50 and alive_5 and score_50 >= 4.0 and score_5 >= 4.0:
+                if score_50 >= score_5:
                     return 50, 5
                 return 5, 50
 
-            if support50_live and not support5_live:
+            if alive_50 and not alive_5:
                 return 50, None
 
-            if support50_live and support5_live:
-                if p50 >= p5 and (h50 >= h5 or l50 <= l5):
-                    return 50, 5 if pressure >= 12 and p5 >= 3 else None
-                return 5, 50 if pressure >= 12 and p50 >= 3 else None
-
-            if support5_live:
+            if alive_5 and not alive_50:
                 return 5, None
 
-            if p5 >= p50:
-                return 5, None
-            return 50, None
+            if alive_50 and alive_5:
+                if score_50 >= score_5 + 1.0:
+                    return 50, 5 if pressure >= 14 and score_5 >= 4.0 else None
+                if score_5 >= score_50 + 1.0:
+                    return 5, 50 if pressure >= 14 and score_50 >= 4.0 else None
+
+                if self.heat(50) > self.heat(5):
+                    return 50, 5 if pressure >= 15 else None
+                return 5, 50 if pressure >= 15 else None
+
+            return None, None
 
         if a == 50:
-            p15 = self.pair_score(50, 15)
-            p5 = self.pair_score(50, 5)
+            s15 = self.support_alive_score(50, 15)
+            s5 = self.support_alive_score(50, 5)
 
-            s1 = 15 if p15 >= p5 else 5
-            s2 = 5 if s1 == 15 and p5 >= 3 and pressure >= 10 else None
-            if s1 == 5 and p15 >= 3 and pressure >= 10:
-                s2 = 15
+            if s5 >= s15:
+                s1 = 5
+                s2 = 15 if s15 >= 3.8 and pressure >= 11 else None
+            else:
+                s1 = 15
+                s2 = 5 if s5 >= 3.8 and pressure >= 11 else None
             return s1, s2
 
         if a == 5:
-            p15 = self.pair_score(5, 15)
-            p10 = self.pair_score(5, 10)
-            p50 = self.pair_score(5, 50)
+            s10 = self.support_alive_score(5, 10)
+            s15 = self.support_alive_score(5, 15)
+            s50 = self.support_alive_score(5, 50)
 
-            s1 = 15 if p15 >= p10 else 10
-            s2 = 50 if p50 >= 4 and pressure >= 10 else None
+            s1 = 10 if s10 >= s15 else 15
+            s2 = 50 if s50 >= 4.2 and pressure >= 11 else None
             return s1, s2
 
         if a == 10:
@@ -785,22 +890,29 @@ class SNIPER271:
         state = self.profile.get("state", "FLOW") if self.profile else "FLOW"
         leader_conv = self.profile.get("leader_conversion", missing) if self.profile else missing
 
-        pair_support = 0
-        for a in s:
-            pair_support += self.pair_score(missing, a)
+        pair_support = sum(self.pair_score(missing, a) for a in s)
 
-        if pressure >= 6 and state != "THIN" and pair_support >= 3:
-            if self.support_score(missing, self.supports_for_ambata(missing)[0]) >= MIN_SUPER_SUPPORT:
-                return missing, "MISSING_OK"
+        s1, _ = self.supports_for_ambata(missing)
+        support_ok = s1 is not None and self.support_alive_score(missing, s1) >= MIN_SUPER_SUPPORT
+
+        if missing == 15 and self.should_block_15_isolated():
+            return None, "MISSING_15_ISOLATED"
+
+        if pressure >= 6 and state != "THIN" and pair_support >= 3 and support_ok:
+            return missing, "MISSING_OK"
 
         if leader_conv == 10 and pressure < 8:
             return None, "CONV10_NOT_STRONG_ENOUGH"
 
         if leader_conv != missing and leader_conv in TARGET:
+            if leader_conv == 15 and self.should_block_15_isolated():
+                return None, "LEADER_15_ISOLATED"
+
             if leader_conv in s and pressure < 9:
                 return None, "LEADER_INSIDE_TRIGGER"
+
             s1, _ = self.supports_for_ambata(leader_conv)
-            if self.support_score(leader_conv, s1) >= MIN_SUPER_SUPPORT:
+            if s1 is not None and self.support_alive_score(leader_conv, s1) >= MIN_SUPER_SUPPORT:
                 return leader_conv, "CONVERSION_FALLBACK"
 
         return None, "NO_SUPER_PLAY"
@@ -982,24 +1094,22 @@ class SNIPER271:
                 if pair15_5 >= 4 or pair15_50 >= 4:
                     score += 1.0
 
-                h5 = self.heat(5)
-                h50 = self.heat(50)
-                l5 = self.lag(5)
-                l50 = self.lag(50)
-                d5 = self.dominance_count(5, 6)
-                d50 = self.dominance_count(50, 6)
+                alive_5 = self.is_semi_alive(5)
+                alive_50 = self.is_semi_alive(50)
 
-                support_5_alive = (h5 >= 2) or (l5 <= 4) or (d5 >= 2) or (pair15_5 >= 3)
-                support_50_alive = (h50 >= 2) or (l50 <= 4) or (d50 >= 2) or (pair15_50 >= 3)
+                if not alive_5 and not alive_50:
+                    score -= ISOLATED_15_SCORE_PENALTY
 
-                if not support_5_alive and not support_50_alive:
-                    score -= 3.4
-                elif (not support_50_alive) and (h5 == 0 and l5 > 5 and pair15_5 < 3):
-                    score -= 2.2
+                if self.should_block_15_isolated():
+                    score -= ISOLATED_15_SCORE_PENALTY
 
                 if h <= 1 and dom == 0 and rot >= 3.0 and reg >= 3.0:
-                    if not support_5_alive and not support_50_alive:
-                        score -= 2.8
+                    if not alive_5 and not alive_50:
+                        score -= STRUCTURAL_ONLY_15_PENALTY
+
+                if self.last_stop_number == 15 and self.last_stop_count_same >= REENTRY_15_AFTER_STOP_BLOCK:
+                    if not (self.is_alive(5) or self.is_alive(50)):
+                        score -= 3.5
 
             if n == 10:
                 score += W_PENALTY_10
@@ -1045,6 +1155,16 @@ class SNIPER271:
             structure_bias = round(rot + reg + pairb, 2)
             life_bias = round((h * W_HEAT) - (l * W_LAG) + (W_DOMINANCE if dom >= 3 else 0), 2)
 
+            if n == 15 and self.should_block_15_isolated():
+                score -= 2.8
+
+            if n == 15 and structure_bias > life_bias + 3.0 and life_bias < 3.2:
+                score -= 2.6
+
+            if n == 15 and self.last_stop_number == 15 and self.last_stop_count_same >= REENTRY_15_AFTER_STOP_BLOCK:
+                if life_bias < 4.6:
+                    score -= 2.8
+
             # filtro anti-stop di fila: dopo 2 stop, niente play "di struttura"
             if self.consecutive_stops() >= 2:
                 if life_bias < 4.5:
@@ -1052,7 +1172,6 @@ class SNIPER271:
                 if n == 15 and structure_bias > life_bias:
                     score -= 2.0
 
-            # filtro specifico
             if n == 15 and life_bias < MIN_LIFE_BIAS_15 and structure_bias > 7.0:
                 score -= 2.2
 
@@ -1101,6 +1220,16 @@ class SNIPER271:
         if rows[0]["n"] == 50 and rows[0]["life_bias"] < MIN_LIFE_BIAS_50 and rows[0]["state"] != "RESTART":
             return None, rows, "50_WEAK_LIFE"
 
+        if rows[0]["n"] == 15 and self.should_block_15_isolated():
+            return None, rows, "15_ISOLATED"
+
+        if rows[0]["n"] == 15 and self.last_stop_number == 15 and self.last_stop_count_same >= REENTRY_15_AFTER_STOP_BLOCK:
+            if rows[0]["life_bias"] < 4.6:
+                return None, rows, "15_REENTRY_BLOCK"
+
+        if rows[0]["n"] == 15 and rows[0]["structure_bias"] > rows[0]["life_bias"] + 3.0 and rows[0]["life_bias"] < 3.2:
+            return None, rows, "15_FAKE_STRUCTURE"
+
         return rows[0]["n"], rows, "OK"
 
     # ===================== RESET =============================
@@ -1117,6 +1246,10 @@ class SNIPER271:
     # ===================== MAIN ==============================
 
     async def on_new(self, app, e, nums):
+        if self.is_duplicate_extraction(e):
+            return
+        self.remember_extraction_id(e)
+
         gap_before = self.cluster_gap()
         self.update_history(nums)
         self.draws_since_profile_update += 1
@@ -1157,7 +1290,27 @@ class SNIPER271:
                     self.reset_cycle()
                     return
 
-                if self.colpi >= self.max_colpi_cycle:
+                early_stop = False
+
+                if self.colpi == 2 and self.mode == "NORMAL":
+                    pressure_now = self.cluster_pressure()
+
+                    target_life_bias = {
+                        5: (self.heat(5) * W_HEAT) - (self.lag(5) * W_LAG),
+                        10: (self.heat(10) * W_HEAT) - (self.lag(10) * W_LAG),
+                        15: (self.heat(15) * W_HEAT) - (self.lag(15) * W_LAG),
+                        50: (self.heat(50) * W_HEAT) - (self.lag(50) * W_LAG),
+                    }[self.A]
+
+                    sq = self.support_quality_label(self.A, self.S1, self.S2)
+
+                    if pressure_now < SECOND_SHOT_EARLY_STOP_PRESSURE and target_life_bias <= SECOND_SHOT_WEAK_LIFE_MAX:
+                        early_stop = True
+
+                    if self.A == 15 and sq == "SUPPORTS_WEAK":
+                        early_stop = True
+
+                if early_stop or self.colpi >= self.max_colpi_cycle:
                     await self.tg(app, f"🛑 STOP {self.A} ({self.mode})")
                     self.push_result("STOP")
                     self.close_play_log("STOP")
