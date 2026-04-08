@@ -1,8 +1,13 @@
 # ============================================================
 # 🚀 SNIPER v27.1c — CONVERSION FLOW ENGINE ULTRA PATCHED
 # v27.1b + patch profonde dai log reali
-# PATCH TECH: dedup / supporti più severi / filtro 15 isolato
-# / anti-stop seriale / early stop play deboli
+# PATCH:
+# - dedup estrazioni
+# - support quality -> REAL_ALIVE / FAKE_ALIVE / DEAD
+# - filtro 15 isolato
+# - supporti 15 scelti con vita reale
+# - memoria stop seriali
+# - early stop su play deboli
 # ============================================================
 
 import asyncio
@@ -97,7 +102,7 @@ W_PENALTY_50_THIN = -0.8
 
 PAIR_WEIGHT = 0.4
 
-# nuovi filtri
+# filtri preesistenti
 MIN_LIFE_BIAS_15 = 2.2
 MIN_LIFE_BIAS_50 = 3.0
 MIN_SUPER_SUPPORT = 4.5
@@ -118,6 +123,18 @@ SECOND_SHOT_EARLY_STOP_PRESSURE = 9.0
 SECOND_SHOT_WEAK_LIFE_MAX = 3.8
 
 MAX_RECENT_DRAWS_IDS = 20
+
+# support quality patch
+REAL_ALIVE_MIN_SCORE = 5.2
+FAKE_ALIVE_MIN_SCORE = 2.4
+
+REAL_HEAT_MIN = 2
+REAL_LAG_MAX = 6
+REAL_DOM_MIN = 1
+
+FAKE_SB_ADVANTAGE = 2.5
+DEAD_HEAT_MAX = 1
+DEAD_LAG_MIN = 8
 
 # ============================================================
 
@@ -252,42 +269,132 @@ class SNIPER271:
 
         return round(score, 2)
 
-    def support_quality_label(self, ambata, s1, s2):
-        if s1 is None and s2 is None:
-            return "NO_SUPPORTS"
+    def support_structure_bias(self, ambata, n):
+        if n is None:
+            return -999.0
 
-        scores = []
+        pair_component = self.pair_score(ambata, n)
+        rot_component = self.transition_score(ambata, n) + self.transition_score(n, ambata)
+
+        score = 0.0
+        score += pair_component * 0.9
+        score += rot_component * 0.25
+        return round(score, 2)
+
+    def support_life_bias(self, n):
+        if n is None:
+            return -999.0
+
+        h = self.heat(n)
+        l = self.lag(n)
+        d = self.dominance_count(n, 6)
+
+        score = 0.0
+        score += h * 1.2
+        score -= l * 0.35
+        score += d * 1.2
+        return round(score, 2)
+
+    def support_state_label(self, ambata, n):
+        if n is None:
+            return "DEAD"
+
+        h = self.heat(n)
+        l = self.lag(n)
+        d = self.dominance_count(n, 6)
+
+        life = self.support_life_bias(n)
+        struct = self.support_structure_bias(ambata, n)
+        total = self.support_score(ambata, n)
+
+        if h <= DEAD_HEAT_MAX and l >= DEAD_LAG_MIN and d == 0:
+            return "DEAD"
+
+        if (
+            life >= 2.2
+            and h >= REAL_HEAT_MIN
+            and l <= REAL_LAG_MAX
+            and d >= REAL_DOM_MIN
+            and total >= REAL_ALIVE_MIN_SCORE
+        ):
+            return "REAL_ALIVE"
+
+        if struct >= life + FAKE_SB_ADVANTAGE and total >= FAKE_ALIVE_MIN_SCORE:
+            return "FAKE_ALIVE"
+
+        if total >= REAL_ALIVE_MIN_SCORE and h >= 1 and l <= 7:
+            return "REAL_ALIVE"
+
+        if total >= FAKE_ALIVE_MIN_SCORE:
+            return "FAKE_ALIVE"
+
+        return "DEAD"
+
+    def support_state_details(self, ambata, n):
+        if n is None:
+            return {
+                "label": "DEAD",
+                "score": -999.0,
+                "life": -999.0,
+                "struct": -999.0,
+                "heat": 0,
+                "lag": 99,
+                "dom": 0,
+            }
+
+        return {
+            "label": self.support_state_label(ambata, n),
+            "score": self.support_score(ambata, n),
+            "life": self.support_life_bias(n),
+            "struct": self.support_structure_bias(ambata, n),
+            "heat": self.heat(n),
+            "lag": self.lag(n),
+            "dom": self.dominance_count(n, 6),
+        }
+
+    def support_quality_label(self, ambata, s1, s2):
+        labels = []
         supports = []
+
+        for s in [s1, s2]:
+            if s is not None:
+                supports.append(s)
+                labels.append(self.support_state_label(ambata, s))
+
+        if not labels:
+            return "DEAD"
+
+        real_count = sum(1 for x in labels if x == "REAL_ALIVE")
+        fake_count = sum(1 for x in labels if x == "FAKE_ALIVE")
+
+        if ambata == 15:
+            if real_count >= 1:
+                return "REAL_ALIVE"
+            if fake_count >= 1:
+                return "FAKE_ALIVE"
+            return "DEAD"
+
+        if real_count >= 1:
+            return "REAL_ALIVE"
+        if fake_count >= 1:
+            return "FAKE_ALIVE"
+        return "DEAD"
+
+    def support_quality_debug_text(self, ambata, s1, s2):
+        parts = []
 
         for s in [s1, s2]:
             if s is None:
                 continue
-            supports.append(s)
-            scores.append(self.support_alive_score(ambata, s))
 
-        if not scores:
-            return "NO_SUPPORTS"
+            d = self.support_state_details(ambata, s)
+            parts.append(
+                f"{s}: {d['label']} "
+                f"score={d['score']} life={d['life']} struct={d['struct']} "
+                f"heat={d['heat']} lag={d['lag']} dom={d['dom']}"
+            )
 
-        strong = sum(1 for x in scores if x >= 5.8)
-        medium = sum(1 for x in scores if x >= 3.8)
-        weak = sum(1 for x in scores if x < 2.2)
-
-        if ambata == 15:
-            alive_supports = sum(1 for s in supports if self.is_semi_alive(s))
-
-            if alive_supports >= 2 and strong >= 1:
-                return "SUPPORTS_GOOD"
-            if alive_supports >= 1 and (medium >= 1 or strong >= 1):
-                return "SUPPORTS_MIXED"
-            return "SUPPORTS_WEAK"
-
-        if strong >= 2:
-            return "SUPPORTS_GOOD"
-        if strong >= 1 or medium >= 2:
-            return "SUPPORTS_MIXED"
-        if weak == len(scores):
-            return "SUPPORTS_WEAK"
-        return "SUPPORTS_MIXED"
+        return "\n".join(parts) if parts else "no_supports"
 
     def open_play_log(self, extraction_open, mode, ambata, ambo1, ambo2):
         self.play_id += 1
@@ -520,25 +627,6 @@ class SNIPER271:
         l = self.lag(n)
         return h >= STRONG_ALIVE_HEAT and l <= STRONG_ALIVE_LAG
 
-    def support_alive_score(self, ambata, n):
-        if n is None:
-            return -999.0
-
-        h = self.heat(n)
-        l = self.lag(n)
-        d = self.dominance_count(n, 6)
-        ps = self.pair_score(ambata, n)
-        ts = self.transition_score(ambata, n) + self.transition_score(n, ambata)
-
-        score = 0.0
-        score += h * 1.5
-        score -= l * 0.45
-        score += d * 1.1
-        score += ps * 0.6
-        score += ts * 0.18
-
-        return round(score, 2)
-
     def should_block_15_isolated(self):
         h5 = self.heat(5)
         h50 = self.heat(50)
@@ -585,7 +673,7 @@ class SNIPER271:
         freq = {n: 0.0 for n in TARGET}
         recent_tail = window[-20:] if len(window) >= 20 else window
 
-        for d in window:
+        for i, d in enumerate(window):
             w = 1.5 if d in recent_tail else 1.0
             for n in TARGET:
                 if n in d:
@@ -874,6 +962,25 @@ class SNIPER271:
 
         return None, None
 
+    def support_alive_score(self, ambata, n):
+        if n is None:
+            return -999.0
+
+        h = self.heat(n)
+        l = self.lag(n)
+        d = self.dominance_count(n, 6)
+        ps = self.pair_score(ambata, n)
+        ts = self.transition_score(ambata, n) + self.transition_score(n, ambata)
+
+        score = 0.0
+        score += h * 1.5
+        score -= l * 0.45
+        score += d * 1.1
+        score += ps * 0.6
+        score += ts * 0.18
+
+        return round(score, 2)
+
     # ===================== MOMENTUM ==========================
 
     def super_momentum_target_smart(self, cluster_nums):
@@ -1111,6 +1218,14 @@ class SNIPER271:
                     if not (self.is_alive(5) or self.is_alive(50)):
                         score -= 3.5
 
+                sq15 = self.support_quality_label(15, *self.supports_for_ambata(15))
+                if sq15 == "DEAD":
+                    score -= 4.0
+                elif sq15 == "FAKE_ALIVE":
+                    score -= 2.2
+                elif sq15 == "REAL_ALIVE":
+                    score += 0.8
+
             if n == 10:
                 score += W_PENALTY_10
 
@@ -1165,7 +1280,6 @@ class SNIPER271:
                 if life_bias < 4.6:
                     score -= 2.8
 
-            # filtro anti-stop di fila: dopo 2 stop, niente play "di struttura"
             if self.consecutive_stops() >= 2:
                 if life_bias < 4.5:
                     score -= 2.5
@@ -1307,7 +1421,9 @@ class SNIPER271:
                     if pressure_now < SECOND_SHOT_EARLY_STOP_PRESSURE and target_life_bias <= SECOND_SHOT_WEAK_LIFE_MAX:
                         early_stop = True
 
-                    if self.A == 15 and sq == "SUPPORTS_WEAK":
+                    if self.A == 15 and sq == "DEAD":
+                        early_stop = True
+                    elif self.A == 15 and sq == "FAKE_ALIVE" and pressure_now < 11:
                         early_stop = True
 
                 if early_stop or self.colpi >= self.max_colpi_cycle:
@@ -1345,7 +1461,8 @@ class SNIPER271:
                     f"• AMBO1 {A}-{self.S1}" +
                     (f"\n• AMBO2 {A}-{self.S2}" if self.S2 is not None else "") +
                     f"\n• supports_quality={self.support_quality_label(A, self.S1, self.S2)}" +
-                    f"\n• da {self.start} per {self.max_colpi_cycle} colpi"
+                    f"\n• da {self.start} per {self.max_colpi_cycle} colpi\n\n"
+                    f"🧩 SUPPORTS\n{self.support_quality_debug_text(A, self.S1, self.S2)}"
                 )
                 return
             else:
@@ -1385,6 +1502,7 @@ class SNIPER271:
                 (f"\n• AMBO2 {A_restart}-{self.S2}" if self.S2 is not None else "") +
                 f"\n• supports_quality={self.support_quality_label(A_restart, self.S1, self.S2)}" +
                 f"\n• da {self.start} per {self.max_colpi_cycle} colpi\n\n"
+                f"🧩 SUPPORTS\n{self.support_quality_debug_text(A_restart, self.S1, self.S2)}\n\n"
                 f"📊 DEBUG\n{debug_txt}"
             )
             return
@@ -1446,6 +1564,7 @@ class SNIPER271:
             (f"\n• AMBO2 {A}-{self.S2}" if self.S2 is not None else "") +
             f"\n• supports_quality={self.support_quality_label(A, self.S1, self.S2)}" +
             f"\n• da {self.start} per {self.max_colpi_cycle} colpi\n\n"
+            f"🧩 SUPPORTS\n{self.support_quality_debug_text(A, self.S1, self.S2)}\n\n"
             f"📊 DEBUG\n{debug_txt}"
         )
 
