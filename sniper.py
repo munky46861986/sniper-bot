@@ -1,13 +1,7 @@
 # ============================================================
-# 🚀 SNIPER v27.1c — CONVERSION FLOW ENGINE ULTRA PATCHED
-# v27.1b + patch profonde dai log reali
-# PATCH:
-# - dedup estrazioni
-# - support quality -> REAL_ALIVE / FAKE_ALIVE / DEAD
-# - filtro 15 isolato
-# - supporti 15 scelti con vita reale
-# - memoria stop seriali
-# - early stop su play deboli
+# 🚀 SNIPER v27.1g — CONVERSION FLOW ENGINE ULTRA PATCHED
+# base v27.1c + REAL_ALIVE / FAKE_ALIVE / DEAD
+# + mini patch chirurgica anti-15-dead-supports
 # ============================================================
 
 import asyncio
@@ -102,7 +96,7 @@ W_PENALTY_50_THIN = -0.8
 
 PAIR_WEIGHT = 0.4
 
-# filtri preesistenti
+# filtri principali
 MIN_LIFE_BIAS_15 = 2.2
 MIN_LIFE_BIAS_50 = 3.0
 MIN_SUPER_SUPPORT = 4.5
@@ -135,6 +129,11 @@ REAL_DOM_MIN = 1
 FAKE_SB_ADVANTAGE = 2.5
 DEAD_HEAT_MAX = 1
 DEAD_LAG_MIN = 8
+
+# mini patch chirurgica 15
+BLOCK_15_DEAD_SUPPORTS = True
+BLOCK_15_FAKE_LOW_PRESSURE = True
+MIN_PRESSURE_15_FAKE = 11.0
 
 # ============================================================
 
@@ -249,247 +248,6 @@ class SNIPER271:
             "dom_50": self.dominance_count(50, 6),
         }
 
-    def support_score(self, ambata, n):
-        if n is None:
-            return -999.0
-
-        h = self.heat(n)
-        l = self.lag(n)
-        d = self.dominance_count(n, 6)
-
-        pair_component = self.pair_score(ambata, n)
-        rot_component = self.transition_score(ambata, n) + self.transition_score(n, ambata)
-
-        score = 0.0
-        score += h * 1.2
-        score -= l * 0.35
-        score += d * 1.2
-        score += pair_component * 0.9
-        score += rot_component * 0.25
-
-        return round(score, 2)
-
-    def support_structure_bias(self, ambata, n):
-        if n is None:
-            return -999.0
-
-        pair_component = self.pair_score(ambata, n)
-        rot_component = self.transition_score(ambata, n) + self.transition_score(n, ambata)
-
-        score = 0.0
-        score += pair_component * 0.9
-        score += rot_component * 0.25
-        return round(score, 2)
-
-    def support_life_bias(self, n):
-        if n is None:
-            return -999.0
-
-        h = self.heat(n)
-        l = self.lag(n)
-        d = self.dominance_count(n, 6)
-
-        score = 0.0
-        score += h * 1.2
-        score -= l * 0.35
-        score += d * 1.2
-        return round(score, 2)
-
-    def support_state_label(self, ambata, n):
-        if n is None:
-            return "DEAD"
-
-        h = self.heat(n)
-        l = self.lag(n)
-        d = self.dominance_count(n, 6)
-
-        life = self.support_life_bias(n)
-        struct = self.support_structure_bias(ambata, n)
-        total = self.support_score(ambata, n)
-
-        if h <= DEAD_HEAT_MAX and l >= DEAD_LAG_MIN and d == 0:
-            return "DEAD"
-
-        if (
-            life >= 2.2
-            and h >= REAL_HEAT_MIN
-            and l <= REAL_LAG_MAX
-            and d >= REAL_DOM_MIN
-            and total >= REAL_ALIVE_MIN_SCORE
-        ):
-            return "REAL_ALIVE"
-
-        if struct >= life + FAKE_SB_ADVANTAGE and total >= FAKE_ALIVE_MIN_SCORE:
-            return "FAKE_ALIVE"
-
-        if total >= REAL_ALIVE_MIN_SCORE and h >= 1 and l <= 7:
-            return "REAL_ALIVE"
-
-        if total >= FAKE_ALIVE_MIN_SCORE:
-            return "FAKE_ALIVE"
-
-        return "DEAD"
-
-    def support_state_details(self, ambata, n):
-        if n is None:
-            return {
-                "label": "DEAD",
-                "score": -999.0,
-                "life": -999.0,
-                "struct": -999.0,
-                "heat": 0,
-                "lag": 99,
-                "dom": 0,
-            }
-
-        return {
-            "label": self.support_state_label(ambata, n),
-            "score": self.support_score(ambata, n),
-            "life": self.support_life_bias(n),
-            "struct": self.support_structure_bias(ambata, n),
-            "heat": self.heat(n),
-            "lag": self.lag(n),
-            "dom": self.dominance_count(n, 6),
-        }
-
-    def support_quality_label(self, ambata, s1, s2):
-        labels = []
-        supports = []
-
-        for s in [s1, s2]:
-            if s is not None:
-                supports.append(s)
-                labels.append(self.support_state_label(ambata, s))
-
-        if not labels:
-            return "DEAD"
-
-        real_count = sum(1 for x in labels if x == "REAL_ALIVE")
-        fake_count = sum(1 for x in labels if x == "FAKE_ALIVE")
-
-        if ambata == 15:
-            if real_count >= 1:
-                return "REAL_ALIVE"
-            if fake_count >= 1:
-                return "FAKE_ALIVE"
-            return "DEAD"
-
-        if real_count >= 1:
-            return "REAL_ALIVE"
-        if fake_count >= 1:
-            return "FAKE_ALIVE"
-        return "DEAD"
-
-    def support_quality_debug_text(self, ambata, s1, s2):
-        parts = []
-
-        for s in [s1, s2]:
-            if s is None:
-                continue
-
-            d = self.support_state_details(ambata, s)
-            parts.append(
-                f"{s}: {d['label']} "
-                f"score={d['score']} life={d['life']} struct={d['struct']} "
-                f"heat={d['heat']} lag={d['lag']} dom={d['dom']}"
-            )
-
-        return "\n".join(parts) if parts else "no_supports"
-
-    def open_play_log(self, extraction_open, mode, ambata, ambo1, ambo2):
-        self.play_id += 1
-        self.active_play_id = self.play_id
-
-        m = self._current_metrics()
-        support_quality = self.support_quality_label(ambata, ambo1, ambo2)
-
-        self.active_play_meta = {
-            "open_extraction": extraction_open,
-            "mode": mode,
-            "ambata": ambata,
-            "ambo1": ambo1,
-            "ambo2": ambo2,
-            "support_quality": support_quality,
-            **m
-        }
-
-        with open(PLAY_LOG_CSV, "a", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow([
-                self._now_str(),
-                self.active_play_id,
-                extraction_open,
-                mode,
-                ambata,
-                ambo1,
-                ambo2,
-                m["state"],
-                m["pressure"],
-                m["gap"],
-                m["heat_5"], m["heat_10"], m["heat_15"], m["heat_50"],
-                m["lag_5"], m["lag_10"], m["lag_15"], m["lag_50"],
-                m["dom_5"], m["dom_10"], m["dom_15"], m["dom_50"],
-                m["leader_presence"], m["leader_conversion"],
-                support_quality,
-                "OPEN"
-            ])
-
-    def log_shot(self, eval_extraction, colpo, hit_ambata, hit_ambo1, hit_ambo2):
-        if self.active_play_id is None:
-            return
-
-        with open(SHOT_LOG_CSV, "a", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow([
-                self._now_str(),
-                self.active_play_id,
-                eval_extraction,
-                colpo,
-                self.A,
-                self.S1,
-                self.S2,
-                int(hit_ambata),
-                int(hit_ambo1),
-                int(hit_ambo2)
-            ])
-
-    def close_play_log(self, result):
-        if self.active_play_id is None:
-            return
-
-        m = self.active_play_meta
-
-        with open(PLAY_LOG_CSV, "a", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow([
-                self._now_str(),
-                self.active_play_id,
-                m.get("open_extraction"),
-                m.get("mode"),
-                m.get("ambata"),
-                m.get("ambo1"),
-                m.get("ambo2"),
-                m.get("state"),
-                m.get("pressure"),
-                m.get("gap"),
-                m.get("heat_5"), m.get("heat_10"), m.get("heat_15"), m.get("heat_50"),
-                m.get("lag_5"), m.get("lag_10"), m.get("lag_15"), m.get("lag_50"),
-                m.get("dom_5"), m.get("dom_10"), m.get("dom_15"), m.get("dom_50"),
-                m.get("leader_presence"), m.get("leader_conversion"),
-                m.get("support_quality"),
-                result
-            ])
-
-        self.update_stop_memory(result)
-        self.active_play_id = None
-        self.active_play_meta = {}
-
-    # ===================== TELEGRAM ==========================
-
-    async def tg(self, app, msg):
-        await app.bot.send_message(chat_id=CHAT_ID, text=msg)
-        await asyncio.sleep(0.15)
-
     # ===================== HISTORY ===========================
 
     def update_history(self, nums):
@@ -506,6 +264,12 @@ class SNIPER271:
         self.last_play_numbers.append(n)
         if len(self.last_play_numbers) > 6:
             self.last_play_numbers.pop(0)
+
+    # ===================== TELEGRAM ==========================
+
+    async def tg(self, app, msg):
+        await app.bot.send_message(chat_id=CHAT_ID, text=msg)
+        await asyncio.sleep(0.15)
 
     # ===================== FEATURES ==========================
 
@@ -627,35 +391,6 @@ class SNIPER271:
         l = self.lag(n)
         return h >= STRONG_ALIVE_HEAT and l <= STRONG_ALIVE_LAG
 
-    def should_block_15_isolated(self):
-        h5 = self.heat(5)
-        h50 = self.heat(50)
-        l5 = self.lag(5)
-        l50 = self.lag(50)
-        d5 = self.dominance_count(5, 6)
-        d50 = self.dominance_count(50, 6)
-        p15_5 = self.pair_score(15, 5)
-        p15_50 = self.pair_score(15, 50)
-
-        alive_5 = (h5 >= 2 and l5 <= 6) or d5 >= 2 or (p15_5 >= 4 and h5 >= 1)
-        alive_50 = (h50 >= 2 and l50 <= 6) or d50 >= 2 or (p15_50 >= 4 and h50 >= 1)
-
-        return not (alive_5 or alive_50)
-
-    def update_stop_memory(self, result):
-        if self.A is None:
-            return
-
-        if result == "STOP":
-            if self.last_stop_number == self.A:
-                self.last_stop_count_same += 1
-            else:
-                self.last_stop_number = self.A
-                self.last_stop_count_same = 1
-        else:
-            self.last_stop_number = None
-            self.last_stop_count_same = 0
-
     # ===================== PROFILE ENGINE ====================
 
     def pair_score_raw(self, pair_counts, a, b):
@@ -673,7 +408,7 @@ class SNIPER271:
         freq = {n: 0.0 for n in TARGET}
         recent_tail = window[-20:] if len(window) >= 20 else window
 
-        for i, d in enumerate(window):
+        for d in window:
             w = 1.5 if d in recent_tail else 1.0
             for n in TARGET:
                 if n in d:
@@ -901,7 +636,184 @@ class SNIPER271:
 
         return round(pair_sum * PAIR_WEIGHT / 10.0, 2)
 
+    # ===================== SUPPORT QUALITY ===================
+
+    def support_score(self, ambata, n):
+        if n is None:
+            return -999.0
+
+        h = self.heat(n)
+        l = self.lag(n)
+        d = self.dominance_count(n, 6)
+
+        pair_component = self.pair_score(ambata, n)
+        rot_component = self.transition_score(ambata, n) + self.transition_score(n, ambata)
+
+        score = 0.0
+        score += h * 1.2
+        score -= l * 0.35
+        score += d * 1.2
+        score += pair_component * 0.9
+        score += rot_component * 0.25
+
+        return round(score, 2)
+
+    def support_structure_bias(self, ambata, n):
+        if n is None:
+            return -999.0
+
+        pair_component = self.pair_score(ambata, n)
+        rot_component = self.transition_score(ambata, n) + self.transition_score(n, ambata)
+
+        score = 0.0
+        score += pair_component * 0.9
+        score += rot_component * 0.25
+        return round(score, 2)
+
+    def support_life_bias(self, n):
+        if n is None:
+            return -999.0
+
+        h = self.heat(n)
+        l = self.lag(n)
+        d = self.dominance_count(n, 6)
+
+        score = 0.0
+        score += h * 1.2
+        score -= l * 0.35
+        score += d * 1.2
+        return round(score, 2)
+
+    def support_state_label(self, ambata, n):
+        if n is None:
+            return "DEAD"
+
+        h = self.heat(n)
+        l = self.lag(n)
+        d = self.dominance_count(n, 6)
+
+        life = self.support_life_bias(n)
+        struct = self.support_structure_bias(ambata, n)
+        total = self.support_score(ambata, n)
+
+        if h <= DEAD_HEAT_MAX and l >= DEAD_LAG_MIN and d == 0:
+            return "DEAD"
+
+        if (
+            life >= 2.2
+            and h >= REAL_HEAT_MIN
+            and l <= REAL_LAG_MAX
+            and d >= REAL_DOM_MIN
+            and total >= REAL_ALIVE_MIN_SCORE
+        ):
+            return "REAL_ALIVE"
+
+        if struct >= life + FAKE_SB_ADVANTAGE and total >= FAKE_ALIVE_MIN_SCORE:
+            return "FAKE_ALIVE"
+
+        if total >= REAL_ALIVE_MIN_SCORE and h >= 1 and l <= 7:
+            return "REAL_ALIVE"
+
+        if total >= FAKE_ALIVE_MIN_SCORE:
+            return "FAKE_ALIVE"
+
+        return "DEAD"
+
+    def support_state_details(self, ambata, n):
+        if n is None:
+            return {
+                "label": "DEAD",
+                "score": -999.0,
+                "life": -999.0,
+                "struct": -999.0,
+                "heat": 0,
+                "lag": 99,
+                "dom": 0,
+            }
+
+        return {
+            "label": self.support_state_label(ambata, n),
+            "score": self.support_score(ambata, n),
+            "life": self.support_life_bias(n),
+            "struct": self.support_structure_bias(ambata, n),
+            "heat": self.heat(n),
+            "lag": self.lag(n),
+            "dom": self.dominance_count(n, 6),
+        }
+
+    def support_quality_label(self, ambata, s1, s2):
+        labels = []
+        for s in [s1, s2]:
+            if s is not None:
+                labels.append(self.support_state_label(ambata, s))
+
+        if not labels:
+            return "DEAD"
+
+        real_count = sum(1 for x in labels if x == "REAL_ALIVE")
+        fake_count = sum(1 for x in labels if x == "FAKE_ALIVE")
+
+        if ambata == 15:
+            if real_count >= 1:
+                return "REAL_ALIVE"
+            if fake_count >= 1:
+                return "FAKE_ALIVE"
+            return "DEAD"
+
+        if real_count >= 1:
+            return "REAL_ALIVE"
+        if fake_count >= 1:
+            return "FAKE_ALIVE"
+        return "DEAD"
+
+    def support_quality_debug_text(self, ambata, s1, s2):
+        parts = []
+        for s in [s1, s2]:
+            if s is None:
+                continue
+            d = self.support_state_details(ambata, s)
+            parts.append(
+                f"{s}: {d['label']} "
+                f"score={d['score']} life={d['life']} struct={d['struct']} "
+                f"heat={d['heat']} lag={d['lag']} dom={d['dom']}"
+            )
+        return "\n".join(parts) if parts else "no_supports"
+
+    def should_block_15_isolated(self):
+        h5 = self.heat(5)
+        h50 = self.heat(50)
+        l5 = self.lag(5)
+        l50 = self.lag(50)
+        d5 = self.dominance_count(5, 6)
+        d50 = self.dominance_count(50, 6)
+        p15_5 = self.pair_score(15, 5)
+        p15_50 = self.pair_score(15, 50)
+
+        alive_5 = (h5 >= 2 and l5 <= 6) or d5 >= 2 or (p15_5 >= 4 and h5 >= 1)
+        alive_50 = (h50 >= 2 and l50 <= 6) or d50 >= 2 or (p15_50 >= 4 and h50 >= 1)
+
+        return not (alive_5 or alive_50)
+
     # ===================== SUPPORTS ==========================
+
+    def support_alive_score(self, ambata, n):
+        if n is None:
+            return -999.0
+
+        h = self.heat(n)
+        l = self.lag(n)
+        d = self.dominance_count(n, 6)
+        ps = self.pair_score(ambata, n)
+        ts = self.transition_score(ambata, n) + self.transition_score(n, ambata)
+
+        score = 0.0
+        score += h * 1.5
+        score -= l * 0.45
+        score += d * 1.1
+        score += ps * 0.6
+        score += ts * 0.18
+
+        return round(score, 2)
 
     def supports_for_ambata(self, a):
         pressure = self.cluster_pressure()
@@ -961,25 +873,6 @@ class SNIPER271:
             return 15, None
 
         return None, None
-
-    def support_alive_score(self, ambata, n):
-        if n is None:
-            return -999.0
-
-        h = self.heat(n)
-        l = self.lag(n)
-        d = self.dominance_count(n, 6)
-        ps = self.pair_score(ambata, n)
-        ts = self.transition_score(ambata, n) + self.transition_score(n, ambata)
-
-        score = 0.0
-        score += h * 1.5
-        score -= l * 0.45
-        score += d * 1.1
-        score += ps * 0.6
-        score += ts * 0.18
-
-        return round(score, 2)
 
     # ===================== MOMENTUM ==========================
 
@@ -1218,11 +1111,15 @@ class SNIPER271:
                     if not (self.is_alive(5) or self.is_alive(50)):
                         score -= 3.5
 
-                sq15 = self.support_quality_label(15, *self.supports_for_ambata(15))
+                s1_15, s2_15 = self.supports_for_ambata(15)
+                sq15 = self.support_quality_label(15, s1_15, s2_15)
+
                 if sq15 == "DEAD":
-                    score -= 4.0
+                    score -= 6.0
                 elif sq15 == "FAKE_ALIVE":
                     score -= 2.2
+                    if pressure < MIN_PRESSURE_15_FAKE:
+                        score -= 2.2
                 elif sq15 == "REAL_ALIVE":
                     score += 0.8
 
@@ -1328,8 +1225,18 @@ class SNIPER271:
         if rows[0]["gap"] == 1 and rows[0]["score"] < 6.3:
             return None, rows, "GAP1_WEAK"
 
-        if rows[0]["n"] == 15 and rows[0]["life_bias"] < MIN_LIFE_BIAS_15 and rows[0]["structure_bias"] > rows[0]["life_bias"]:
-            return None, rows, "15_STRUCTURAL_ONLY"
+        if rows[0]["n"] == 15:
+            s1_15, s2_15 = self.supports_for_ambata(15)
+            sq15 = self.support_quality_label(15, s1_15, s2_15)
+
+            if BLOCK_15_DEAD_SUPPORTS and sq15 == "DEAD":
+                return None, rows, "15_DEAD_SUPPORTS"
+
+            if BLOCK_15_FAKE_LOW_PRESSURE and sq15 == "FAKE_ALIVE" and rows[0]["pressure"] < MIN_PRESSURE_15_FAKE:
+                return None, rows, "15_FAKE_SUPPORTS"
+
+            if rows[0]["life_bias"] < MIN_LIFE_BIAS_15 and rows[0]["structure_bias"] > rows[0]["life_bias"]:
+                return None, rows, "15_STRUCTURAL_ONLY"
 
         if rows[0]["n"] == 50 and rows[0]["life_bias"] < MIN_LIFE_BIAS_50 and rows[0]["state"] != "RESTART":
             return None, rows, "50_WEAK_LIFE"
@@ -1345,6 +1252,110 @@ class SNIPER271:
             return None, rows, "15_FAKE_STRUCTURE"
 
         return rows[0]["n"], rows, "OK"
+
+    # ===================== PLAY LOG ==========================
+
+    def open_play_log(self, extraction_open, mode, ambata, ambo1, ambo2):
+        self.play_id += 1
+        self.active_play_id = self.play_id
+
+        m = self._current_metrics()
+        support_quality = self.support_quality_label(ambata, ambo1, ambo2)
+
+        self.active_play_meta = {
+            "open_extraction": extraction_open,
+            "mode": mode,
+            "ambata": ambata,
+            "ambo1": ambo1,
+            "ambo2": ambo2,
+            "support_quality": support_quality,
+            **m
+        }
+
+        with open(PLAY_LOG_CSV, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                self._now_str(),
+                self.active_play_id,
+                extraction_open,
+                mode,
+                ambata,
+                ambo1,
+                ambo2,
+                m["state"],
+                m["pressure"],
+                m["gap"],
+                m["heat_5"], m["heat_10"], m["heat_15"], m["heat_50"],
+                m["lag_5"], m["lag_10"], m["lag_15"], m["lag_50"],
+                m["dom_5"], m["dom_10"], m["dom_15"], m["dom_50"],
+                m["leader_presence"], m["leader_conversion"],
+                support_quality,
+                "OPEN"
+            ])
+
+    def log_shot(self, eval_extraction, colpo, hit_ambata, hit_ambo1, hit_ambo2):
+        if self.active_play_id is None:
+            return
+
+        with open(SHOT_LOG_CSV, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                self._now_str(),
+                self.active_play_id,
+                eval_extraction,
+                colpo,
+                self.A,
+                self.S1,
+                self.S2,
+                int(hit_ambata),
+                int(hit_ambo1),
+                int(hit_ambo2)
+            ])
+
+    def update_stop_memory(self, result):
+        if self.A is None:
+            return
+
+        if result == "STOP":
+            if self.last_stop_number == self.A:
+                self.last_stop_count_same += 1
+            else:
+                self.last_stop_number = self.A
+                self.last_stop_count_same = 1
+        else:
+            self.last_stop_number = None
+            self.last_stop_count_same = 0
+
+    def close_play_log(self, result):
+        if self.active_play_id is None:
+            return
+
+        m = self.active_play_meta
+
+        with open(PLAY_LOG_CSV, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                self._now_str(),
+                self.active_play_id,
+                m.get("open_extraction"),
+                m.get("mode"),
+                m.get("ambata"),
+                m.get("ambo1"),
+                m.get("ambo2"),
+                m.get("state"),
+                m.get("pressure"),
+                m.get("gap"),
+                m.get("heat_5"), m.get("heat_10"), m.get("heat_15"), m.get("heat_50"),
+                m.get("lag_5"), m.get("lag_10"), m.get("lag_15"), m.get("lag_50"),
+                m.get("dom_5"), m.get("dom_10"), m.get("dom_15"), m.get("dom_50"),
+                m.get("leader_presence"), m.get("leader_conversion"),
+                m.get("support_quality"),
+                result
+            ])
+
+        self.update_stop_memory(result)
+        self.active_play_id = None
+        self.active_play_meta = {}
 
     # ===================== RESET =============================
 
@@ -1423,7 +1434,7 @@ class SNIPER271:
 
                     if self.A == 15 and sq == "DEAD":
                         early_stop = True
-                    elif self.A == 15 and sq == "FAKE_ALIVE" and pressure_now < 11:
+                    elif self.A == 15 and sq == "FAKE_ALIVE" and pressure_now < MIN_PRESSURE_15_FAKE:
                         early_stop = True
 
                 if early_stop or self.colpi >= self.max_colpi_cycle:
@@ -1440,8 +1451,29 @@ class SNIPER271:
         if cluster_count >= 3:
             A, reason_super = self.super_momentum_target_smart(cluster_nums)
             if A is not None:
+                S1, S2 = self.supports_for_ambata(A)
+                sq = self.support_quality_label(A, S1, S2)
+
+                if A == 15 and BLOCK_15_DEAD_SUPPORTS and sq == "DEAD":
+                    await self.tg(
+                        app,
+                        "⏸ NO SUPER MOMENTUM\n"
+                        f"• trigger={sorted(cluster_nums)}\n"
+                        "• reason=15_DEAD_SUPPORTS"
+                    )
+                    return
+
+                if A == 15 and BLOCK_15_FAKE_LOW_PRESSURE and sq == "FAKE_ALIVE" and self.cluster_pressure() < MIN_PRESSURE_15_FAKE:
+                    await self.tg(
+                        app,
+                        "⏸ NO SUPER MOMENTUM\n"
+                        f"• trigger={sorted(cluster_nums)}\n"
+                        "• reason=15_FAKE_SUPPORTS"
+                    )
+                    return
+
                 self.A = A
-                self.S1, self.S2 = self.supports_for_ambata(A)
+                self.S1, self.S2 = S1, S2
                 self.start = e + 1
                 self.colpi = 0
                 self.max_colpi_cycle = MAX_COLPI_SUPER
@@ -1475,8 +1507,19 @@ class SNIPER271:
 
         A_restart, debug_restart, reason_restart = self.choose_restart_play()
         if A_restart is not None:
+            S1, S2 = self.supports_for_ambata(A_restart)
+            sq = self.support_quality_label(A_restart, S1, S2)
+
+            if A_restart == 15 and BLOCK_15_DEAD_SUPPORTS and sq == "DEAD":
+                await self.tg(app, "⏸ NO RESTART PLAY\n• reason=15_DEAD_SUPPORTS")
+                return
+
+            if A_restart == 15 and BLOCK_15_FAKE_LOW_PRESSURE and sq == "FAKE_ALIVE" and self.cluster_pressure() < MIN_PRESSURE_15_FAKE:
+                await self.tg(app, "⏸ NO RESTART PLAY\n• reason=15_FAKE_SUPPORTS")
+                return
+
             self.A = A_restart
-            self.S1, self.S2 = self.supports_for_ambata(A_restart)
+            self.S1, self.S2 = S1, S2
             self.start = e + 1
             self.colpi = 0
             self.max_colpi_cycle = MAX_COLPI_RESTART
@@ -1537,8 +1580,49 @@ class SNIPER271:
                 )
             return
 
+        S1, S2 = self.supports_for_ambata(A)
+        sq = self.support_quality_label(A, S1, S2)
+
+        if A == 15 and BLOCK_15_DEAD_SUPPORTS and sq == "DEAD":
+            debug_txt = "\n".join(
+                [
+                    f"{r['n']}: score={r['score']} heat={r['heat']} lag={r['lag']} dom={r['dom']} "
+                    f"gap={r['gap']} pressure={r['pressure']} rot={r['rot']} reg={r['reg']} "
+                    f"pair={r['pair']} over={r['over']} state={r['state']} "
+                    f"sb={r['structure_bias']} lb={r['life_bias']}"
+                    for r in debug_rows
+                ]
+            )
+            await self.tg(
+                app,
+                "⏸ NO PLAY NORMAL\n"
+                "• reason=15_DEAD_SUPPORTS\n\n"
+                f"🧩 SUPPORTS\n{self.support_quality_debug_text(A, S1, S2)}\n\n"
+                f"📊 DEBUG\n{debug_txt}"
+            )
+            return
+
+        if A == 15 and BLOCK_15_FAKE_LOW_PRESSURE and sq == "FAKE_ALIVE" and self.cluster_pressure() < MIN_PRESSURE_15_FAKE:
+            debug_txt = "\n".join(
+                [
+                    f"{r['n']}: score={r['score']} heat={r['heat']} lag={r['lag']} dom={r['dom']} "
+                    f"gap={r['gap']} pressure={r['pressure']} rot={r['rot']} reg={r['reg']} "
+                    f"pair={r['pair']} over={r['over']} state={r['state']} "
+                    f"sb={r['structure_bias']} lb={r['life_bias']}"
+                    for r in debug_rows
+                ]
+            )
+            await self.tg(
+                app,
+                "⏸ NO PLAY NORMAL\n"
+                "• reason=15_FAKE_SUPPORTS\n\n"
+                f"🧩 SUPPORTS\n{self.support_quality_debug_text(A, S1, S2)}\n\n"
+                f"📊 DEBUG\n{debug_txt}"
+            )
+            return
+
         self.A = A
-        self.S1, self.S2 = self.supports_for_ambata(A)
+        self.S1, self.S2 = S1, S2
         self.start = e + 1
         self.colpi = 0
         self.max_colpi_cycle = MAX_COLPI_NORMAL
@@ -1581,7 +1665,7 @@ async def live():
         bot.max_e = max(bot.max_e, e)
 
     bot.profile = bot.analyze_cluster_profile()
-    await bot.tg(app, "🚀 SNIPER v27.1c AVVIATO — Ultra Patched")
+    await bot.tg(app, "🚀 SNIPER v27.1g AVVIATO — Ultra Patched")
     await bot.send_profile(app)
 
     while True:
