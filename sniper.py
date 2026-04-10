@@ -1,7 +1,12 @@
 # ============================================================
-# 🚀 SNIPER v27.1h — SIGNAL ANALYZER
-# parsing + profile + support quality + dedup + cooldown
-# NO AUTO PLAY
+# 🚀 SNIPER v28.0 — LIVE SIGNAL ANALYZER LEGAL
+# Live analyzer su estrazioni 10eLotto 5 minuti
+# - parsing live
+# - cluster profile
+# - supporti REAL_ALIVE / FAKE_ALIVE / DEAD
+# - setup FORTE / MEDIO / DEBOLE
+# - tracking esito entro 3 colpi
+# - log CSV completo
 # ============================================================
 
 import asyncio
@@ -9,6 +14,8 @@ import requests
 import re
 import csv
 import os
+import json
+import hashlib
 from datetime import datetime
 from collections import defaultdict
 from bs4 import BeautifulSoup
@@ -20,10 +27,15 @@ nest_asyncio.apply()
 # ===================== CONFIG ===============================
 
 TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = int(os.getenv("CHAT_ID"))
+CHAT_ID_RAW = os.getenv("CHAT_ID")
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN mancante")
+
+if not CHAT_ID_RAW:
+    raise RuntimeError("CHAT_ID mancante")
+
+CHAT_ID = int(CHAT_ID_RAW)
 
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
@@ -32,14 +44,22 @@ TARGET = [5, 10, 15, 50]
 
 LOOP_SEC = 60
 HISTORY_MAX = 160
-
 WARMUP_WINDOW = 60
 PROFILE_UPDATE_EVERY = 10
+TRACK_HORIZON_COLPI = 3
 
 LOG_DIR = "logs"
-SIGNAL_LOG_CSV = os.path.join(LOG_DIR, "sniper_signal_log.csv")
+SETUP_LOG_CSV = os.path.join(LOG_DIR, "sniper_setup_log.csv")
+FOLLOWUP_LOG_CSV = os.path.join(LOG_DIR, "sniper_followup_log.csv")
+STATE_FILE = os.path.join(LOG_DIR, "sniper_analyzer_state.json")
 
-# ===================== BASE WEIGHTS =========================
+MAX_RECENT_DRAW_IDS = 50
+
+# alert policy
+ALERT_STRONG_ONLY = False
+SEND_PROFILE_UPDATES = True
+
+# ===================== WEIGHTS ==============================
 
 W_HEAT = 1.8
 W_LAG = 0.6
@@ -54,11 +74,8 @@ W_OVERPLAY = -2.0
 
 MIN_SCORE_NORMAL = 5.8
 MIN_DIFF_SCORE = 1.5
-MIN_SCORE_RESTART = 4.8
-
 LOW_PRESSURE_BLOCK = 4.0
 
-# core logic
 W_CORE_5_TO_15 = 2.6
 W_CORE_15_TO_5 = 1.9
 W_SIDE_15_TO_50 = 1.0
@@ -72,7 +89,6 @@ W_PRESENCE_WEAK = -1.0
 W_CONVERSION_LEADER = 2.4
 W_CONVERSION_SECOND = 1.0
 W_CONVERSION_WEAK = -1.2
-
 W_PERSISTENCE = 1.0
 
 W_STATE_DENSE_15 = 1.7
@@ -91,40 +107,25 @@ W_PENALTY_50_THIN = -0.8
 
 PAIR_WEIGHT = 0.4
 
-# filtri principali
 MIN_LIFE_BIAS_15 = 2.2
 MIN_LIFE_BIAS_50 = 3.0
-MIN_SUPER_SUPPORT = 4.5
 
-# patch segnali / anti-rumore
 ALIVE_HEAT_MIN = 2
 ALIVE_LAG_MAX = 6
 ALIVE_DOM_MIN = 1
 
-STRONG_ALIVE_HEAT = 3
-STRONG_ALIVE_LAG = 5
-
 ISOLATED_15_SCORE_PENALTY = 4.2
 STRUCTURAL_ONLY_15_PENALTY = 3.2
-REENTRY_15_AFTER_STOP_BLOCK = 2
 
-MAX_RECENT_DRAWS_IDS = 20
-
-# support quality patch
 REAL_ALIVE_MIN_SCORE = 5.2
 FAKE_ALIVE_MIN_SCORE = 2.4
-
 REAL_HEAT_MIN = 2
 REAL_LAG_MAX = 6
 REAL_DOM_MIN = 1
-
 FAKE_SB_ADVANTAGE = 2.5
 DEAD_HEAT_MAX = 1
 DEAD_LAG_MIN = 8
 
-# analyzer policy
-BLOCK_15_DEAD_SUPPORTS = True
-BLOCK_15_FAKE_LOW_PRESSURE = True
 MIN_PRESSURE_15_FAKE = 11.0
 
 # ============================================================
@@ -156,13 +157,18 @@ def parse_site():
 
     return sorted(out.items())
 
+
+def draw_fingerprint(e: int, nums: list[int]) -> str:
+    raw = f"{e}-{'-'.join(map(str, nums))}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
 # ============================================================
 
-class SNIPER271HAnalyzer:
+class SignalAnalyzer:
     def __init__(self):
         self.max_e = 0
         self.last_draws = []
-
         self.profile = {}
         self.draws_since_profile_update = 0
         self.leader_presence_history = []
@@ -171,52 +177,112 @@ class SNIPER271HAnalyzer:
         self.recent_results = []
         self.last_signal_numbers = []
 
-        self.recent_extraction_ids = []
-        self.last_stop_number = None
-        self.last_stop_count_same = 0
-        self.last_hit_number = None
-        self.last_hit_extraction = None
+        self.recent_draw_ids = []
+        self.recent_fingerprints = []
+
+        self.setup_id = 0
+        self.open_setups = []
 
         os.makedirs(LOG_DIR, exist_ok=True)
         self._init_csv_logs()
 
-    # ===================== LOGS ==============================
+    # ===================== FILE STATE =======================
+
+    def _save_state(self):
+        data = {
+            "max_e": self.max_e,
+            "draws_since_profile_update": self.draws_since_profile_update,
+            "leader_presence_history": self.leader_presence_history[-6:],
+            "leader_conversion_history": self.leader_conversion_history[-6:],
+            "recent_results": self.recent_results[-8:],
+            "last_signal_numbers": self.last_signal_numbers[-6:],
+            "recent_draw_ids": self.recent_draw_ids[-MAX_RECENT_DRAW_IDS:],
+            "recent_fingerprints": self.recent_fingerprints[-MAX_RECENT_DRAW_IDS:],
+            "setup_id": self.setup_id,
+            "open_setups": self.open_setups,
+            "last_draws": self.last_draws[-HISTORY_MAX:],
+        }
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def _load_state(self):
+        if not os.path.exists(STATE_FILE):
+            return
+
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            self.max_e = data.get("max_e", 0)
+            self.draws_since_profile_update = data.get("draws_since_profile_update", 0)
+            self.leader_presence_history = data.get("leader_presence_history", [])[-6:]
+            self.leader_conversion_history = data.get("leader_conversion_history", [])[-6:]
+            self.recent_results = data.get("recent_results", [])[-8:]
+            self.last_signal_numbers = data.get("last_signal_numbers", [])[-6:]
+            self.recent_draw_ids = data.get("recent_draw_ids", [])[-MAX_RECENT_DRAW_IDS:]
+            self.recent_fingerprints = data.get("recent_fingerprints", [])[-MAX_RECENT_DRAW_IDS:]
+            self.setup_id = data.get("setup_id", 0)
+            self.open_setups = data.get("open_setups", [])
+            self.last_draws = data.get("last_draws", [])[-HISTORY_MAX:]
+        except Exception:
+            pass
+
+    # ===================== DIAGNOSTICA =======================
 
     def _init_csv_logs(self):
-        if not os.path.exists(SIGNAL_LOG_CSV):
-            with open(SIGNAL_LOG_CSV, "w", newline="", encoding="utf-8") as f:
+        if not os.path.exists(SETUP_LOG_CSV):
+            with open(SETUP_LOG_CSV, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 w.writerow([
-                    "ts", "extraction", "candidate", "support1", "support2",
-                    "decision", "reason", "state", "pressure", "gap",
-                    "life_bias", "structure_bias", "support_quality"
+                    "ts", "setup_id", "open_extraction",
+                    "candidate", "support1", "support2",
+                    "setup_quality", "support_quality",
+                    "state", "pressure", "gap",
+                    "heat_5", "heat_10", "heat_15", "heat_50",
+                    "lag_5", "lag_10", "lag_15", "lag_50",
+                    "dom_5", "dom_10", "dom_15", "dom_50",
+                    "leader_presence", "leader_conversion",
+                    "life_bias", "structure_bias",
+                    "reason"
+                ])
+
+        if not os.path.exists(FOLLOWUP_LOG_CSV):
+            with open(FOLLOWUP_LOG_CSV, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow([
+                    "ts", "setup_id", "eval_extraction", "colpo",
+                    "candidate", "support1", "support2",
+                    "candidate_seen", "support1_seen", "support2_seen",
+                    "candidate_plus_s1", "candidate_plus_s2"
                 ])
 
     def _now_str(self):
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    def log_signal(self, extraction, candidate, support1, support2, decision, reason, state, pressure, gap, life_bias, structure_bias, support_quality):
-        with open(SIGNAL_LOG_CSV, "a", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow([
-                self._now_str(),
-                extraction,
-                candidate,
-                support1,
-                support2,
-                decision,
-                reason,
-                state,
-                pressure,
-                gap,
-                round(life_bias, 2),
-                round(structure_bias, 2),
-                support_quality
-            ])
+    def _current_metrics(self):
+        return {
+            "pressure": round(self.cluster_pressure(), 2),
+            "gap": self.cluster_gap(),
+            "state": self.profile.get("state", "n/a") if self.profile else "n/a",
+            "leader_presence": self.profile.get("leader_presence", "n/a") if self.profile else "n/a",
+            "leader_conversion": self.profile.get("leader_conversion", "n/a") if self.profile else "n/a",
+            "heat_5": self.heat(5),
+            "heat_10": self.heat(10),
+            "heat_15": self.heat(15),
+            "heat_50": self.heat(50),
+            "lag_5": self.lag(5),
+            "lag_10": self.lag(10),
+            "lag_15": self.lag(15),
+            "lag_50": self.lag(50),
+            "dom_5": self.dominance_count(5, 6),
+            "dom_10": self.dominance_count(10, 6),
+            "dom_15": self.dominance_count(15, 6),
+            "dom_50": self.dominance_count(50, 6),
+        }
 
     # ===================== TELEGRAM ==========================
 
-    async def tg(self, app, msg):
+    async def tg(self, app, msg: str):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
         await asyncio.sleep(0.15)
 
@@ -237,19 +303,26 @@ class SNIPER271HAnalyzer:
         if len(self.last_signal_numbers) > 6:
             self.last_signal_numbers.pop(0)
 
-    def remember_extraction_id(self, e):
-        self.recent_extraction_ids.append(e)
-        if len(self.recent_extraction_ids) > MAX_RECENT_DRAWS_IDS:
-            self.recent_extraction_ids.pop(0)
+    def remember_draw(self, e, nums):
+        self.recent_draw_ids.append(e)
+        self.recent_draw_ids = self.recent_draw_ids[-MAX_RECENT_DRAW_IDS:]
 
-    def is_duplicate_extraction(self, e):
-        return e in self.recent_extraction_ids
+        fp = draw_fingerprint(e, nums)
+        self.recent_fingerprints.append(fp)
+        self.recent_fingerprints = self.recent_fingerprints[-MAX_RECENT_DRAW_IDS:]
+
+    def is_duplicate_draw(self, e, nums):
+        if e in self.recent_draw_ids:
+            return True
+        fp = draw_fingerprint(e, nums)
+        return fp in self.recent_fingerprints
 
     # ===================== FEATURES ==========================
 
     def heat(self, n, draws=None):
         if draws is None:
             draws = self.last_draws
+
         weights = [5, 4, 3, 2, 1]
         h = 0
         for i, w in enumerate(weights):
@@ -262,6 +335,7 @@ class SNIPER271HAnalyzer:
     def lag(self, n, draws=None):
         if draws is None:
             draws = self.last_draws
+
         lag = 0
         for d in reversed(draws[:-1]):
             lag += 1
@@ -272,6 +346,7 @@ class SNIPER271HAnalyzer:
     def cluster_gap(self, draws=None):
         if draws is None:
             draws = self.last_draws
+
         gap = 0
         for d in reversed(draws):
             if any(x in d for x in TARGET):
@@ -298,6 +373,7 @@ class SNIPER271HAnalyzer:
     def cluster_pressure(self, draws=None):
         if draws is None:
             draws = self.last_draws
+
         if not draws:
             return 0.0
 
@@ -313,7 +389,7 @@ class SNIPER271HAnalyzer:
     def overplay_penalty(self, n):
         pen = 0.0
 
-        if len(self.recent_results) >= 2 and self.recent_results[-2:] == ["STOP", "STOP"]:
+        if len(self.recent_results) >= 2 and self.recent_results[-2:] == ["FAIL", "FAIL"]:
             pen += abs(W_OVERPLAY)
 
         same_n = sum(1 for x in self.last_signal_numbers[-3:] if x == n)
@@ -327,10 +403,10 @@ class SNIPER271HAnalyzer:
 
         return -pen
 
-    def consecutive_stops(self):
+    def consecutive_fails(self):
         c = 0
         for r in reversed(self.recent_results):
-            if r == "STOP":
+            if r == "FAIL":
                 c += 1
             else:
                 break
@@ -545,6 +621,50 @@ class SNIPER271HAnalyzer:
 
         return bonus
 
+    # ===================== ROTATION ENGINE ===================
+
+    def core_rotation_bonus(self, n):
+        if not self.last_draws:
+            return 0.0
+
+        last_cluster = self.last_cluster_nums()
+        bonus = 0.0
+
+        if 5 in last_cluster and n == 15:
+            bonus += W_CORE_5_TO_15
+        if 15 in last_cluster and n == 5:
+            bonus += W_CORE_15_TO_5
+
+        if 15 in last_cluster and n == 50:
+            bonus += W_SIDE_15_TO_50
+        if 5 in last_cluster and n == 10:
+            bonus += W_SIDE_5_TO_10
+        if 10 in last_cluster and n == 15:
+            bonus += W_SIDE_10_TO_15
+
+        for a in last_cluster:
+            ts = self.transition_score(a, n)
+            if ts >= 7:
+                bonus += 1.5
+            elif ts >= 4:
+                bonus += 0.7
+
+        return bonus
+
+    def pair_bonus_for_candidate(self, n):
+        if not self.profile:
+            return 0.0
+
+        pair_sum = 0.0
+        for m in TARGET:
+            if m != n:
+                ps = self.pair_score(n, m)
+                if n == 15 or m == 15:
+                    ps *= 1.4
+                pair_sum += ps
+
+        return round(pair_sum * PAIR_WEIGHT / 10.0, 2)
+
     # ===================== SUPPORT QUALITY ===================
 
     def support_score(self, ambata, n):
@@ -570,6 +690,7 @@ class SNIPER271HAnalyzer:
     def support_structure_bias(self, ambata, n):
         if n is None:
             return -999.0
+
         pair_component = self.pair_score(ambata, n)
         rot_component = self.transition_score(ambata, n) + self.transition_score(n, ambata)
         return round(pair_component * 0.9 + rot_component * 0.25, 2)
@@ -577,6 +698,7 @@ class SNIPER271HAnalyzer:
     def support_life_bias(self, n):
         if n is None:
             return -999.0
+
         h = self.heat(n)
         l = self.lag(n)
         d = self.dominance_count(n, 6)
@@ -652,15 +774,7 @@ class SNIPER271HAnalyzer:
         fake_count = sum(1 for x in labels if x == "FAKE_ALIVE")
 
         if ambata == 15:
-            real_strong = 0
-            for s in [s1, s2]:
-                if s is None:
-                    continue
-                d = self.support_state_details(ambata, s)
-                if d["label"] == "REAL_ALIVE" and d["life"] >= 4.0:
-                    real_strong += 1
-
-            if real_strong >= 1:
+            if real_count >= 1:
                 return "REAL_ALIVE"
             if fake_count >= 1:
                 return "FAKE_ALIVE"
@@ -684,6 +798,21 @@ class SNIPER271HAnalyzer:
                 f"heat={d['heat']} lag={d['lag']} dom={d['dom']}"
             )
         return "\n".join(parts) if parts else "no_supports"
+
+    def should_block_15_isolated(self):
+        h5 = self.heat(5)
+        h50 = self.heat(50)
+        l5 = self.lag(5)
+        l50 = self.lag(50)
+        d5 = self.dominance_count(5, 6)
+        d50 = self.dominance_count(50, 6)
+        p15_5 = self.pair_score(15, 5)
+        p15_50 = self.pair_score(15, 50)
+
+        alive_5 = (h5 >= 2 and l5 <= 6) or d5 >= 2 or (p15_5 >= 4 and h5 >= 1)
+        alive_50 = (h50 >= 2 and l50 <= 6) or d50 >= 2 or (p15_50 >= 4 and h50 >= 1)
+
+        return not (alive_5 or alive_50)
 
     # ===================== SUPPORTS ==========================
 
@@ -710,73 +839,54 @@ class SNIPER271HAnalyzer:
         pressure = self.cluster_pressure()
 
         if a == 15:
-            d50 = self.support_state_details(15, 50)
-            d5 = self.support_state_details(15, 5)
+            score_50 = self.support_alive_score(15, 50)
+            score_5 = self.support_alive_score(15, 5)
 
-            if d50["label"] == "DEAD" and d5["label"] == "DEAD":
-                return None, None
+            alive_50 = self.is_semi_alive(50)
+            alive_5 = self.is_semi_alive(5)
 
-            if d50["label"] == "REAL_ALIVE" and d5["label"] == "REAL_ALIVE":
-                if d50["life"] >= d5["life"] + 1.0 or pressure >= 14:
-                    return 50, 5 if d5["life"] >= 4.0 else None
-                return 5, 50 if d50["life"] >= 4.0 and pressure >= 15 else None
+            if pressure >= 16 and alive_50 and alive_5 and score_50 >= 4.0 and score_5 >= 4.0:
+                if score_50 >= score_5:
+                    return 50, 5
+                return 5, 50
 
-            if d50["label"] == "REAL_ALIVE" and d5["label"] != "REAL_ALIVE":
+            if alive_50 and not alive_5:
                 return 50, None
 
-            if d5["label"] == "REAL_ALIVE" and d50["label"] != "REAL_ALIVE":
+            if alive_5 and not alive_50:
                 return 5, None
 
-            if d50["label"] == "FAKE_ALIVE" and pressure >= 13 and d50["struct"] >= 6.0:
-                return 50, None
+            if alive_50 and alive_5:
+                if score_50 >= score_5 + 1.0:
+                    return 50, 5 if pressure >= 14 and score_5 >= 4.0 else None
+                if score_5 >= score_50 + 1.0:
+                    return 5, 50 if pressure >= 14 and score_50 >= 4.0 else None
 
-            if d5["label"] == "FAKE_ALIVE" and pressure >= 12 and d5["struct"] >= 5.0:
-                return 5, None
+                if self.heat(50) > self.heat(5):
+                    return 50, 5 if pressure >= 15 else None
+                return 5, 50 if pressure >= 15 else None
 
             return None, None
 
         if a == 50:
-            d15 = self.support_state_details(50, 15)
-            d5 = self.support_state_details(50, 5)
+            s15 = self.support_alive_score(50, 15)
+            s5 = self.support_alive_score(50, 5)
 
-            if d5["label"] == "REAL_ALIVE" and d5["life"] >= d15["life"] - 0.5:
+            if s5 >= s15:
                 s1 = 5
-            elif d15["label"] == "REAL_ALIVE":
-                s1 = 15
+                s2 = 15 if s15 >= 3.8 and pressure >= 11 else None
             else:
-                s1 = 5 if d5["score"] >= d15["score"] else 15
-
-            s2 = None
-            if s1 == 5 and d15["label"] == "REAL_ALIVE" and pressure >= 11:
-                s2 = 15
-            elif s1 == 15 and d5["label"] == "REAL_ALIVE" and pressure >= 11:
-                s2 = 5
-
+                s1 = 15
+                s2 = 5 if s5 >= 3.8 and pressure >= 11 else None
             return s1, s2
 
         if a == 5:
-            d10 = self.support_state_details(5, 10)
-            d15 = self.support_state_details(5, 15)
-            d50 = self.support_state_details(5, 50)
+            s10 = self.support_alive_score(5, 10)
+            s15 = self.support_alive_score(5, 15)
+            s50 = self.support_alive_score(5, 50)
 
-            if d10["label"] == "REAL_ALIVE" and d10["life"] >= d15["life"] - 0.5:
-                s1 = 10
-            elif d15["label"] == "REAL_ALIVE":
-                s1 = 15
-            elif d10["label"] == "FAKE_ALIVE" and d15["label"] != "REAL_ALIVE":
-                s1 = 10
-            else:
-                s1 = 15 if d15["score"] >= d10["score"] else 10
-
-            s2 = None
-            if d50["label"] == "REAL_ALIVE" and pressure >= 11:
-                s2 = 50
-            elif d50["label"] == "FAKE_ALIVE" and d50["struct"] >= 5.5 and pressure >= 13:
-                s2 = 50
-
-            if s2 == s1:
-                s2 = None
-
+            s1 = 10 if s10 >= s15 else 15
+            s2 = 50 if s50 >= 4.2 and pressure >= 11 else None
             return s1, s2
 
         if a == 10:
@@ -784,64 +894,23 @@ class SNIPER271HAnalyzer:
 
         return None, None
 
-    # ===================== SCORING ===========================
+    # ===================== CANDIDATE SCORING ================
 
-    def core_rotation_bonus(self, n):
-        if not self.last_draws:
-            return 0.0
-
-        last_cluster = self.last_cluster_nums()
-        bonus = 0.0
-
-        if 5 in last_cluster and n == 15:
-            bonus += W_CORE_5_TO_15
-        if 15 in last_cluster and n == 5:
-            bonus += W_CORE_15_TO_5
-
-        if 15 in last_cluster and n == 50:
-            bonus += W_SIDE_15_TO_50
-        if 5 in last_cluster and n == 10:
-            bonus += W_SIDE_5_TO_10
-        if 10 in last_cluster and n == 15:
-            bonus += W_SIDE_10_TO_15
-
-        for a in last_cluster:
-            ts = self.transition_score(a, n)
-            if ts >= 7:
-                bonus += 1.5
-            elif ts >= 4:
-                bonus += 0.7
-
-        return bonus
-
-    def pair_bonus_for_candidate(self, n):
-        if not self.profile:
-            return 0.0
-
-        pair_sum = 0.0
-        for m in TARGET:
-            if m != n:
-                ps = self.pair_score(n, m)
-                if n == 15 or m == 15:
-                    ps *= 1.4
-                pair_sum += ps
-
-        return round(pair_sum * PAIR_WEIGHT / 10.0, 2)
-
-    def candidate_block_reason(self, candidate, rows):
+    def setup_quality(self, candidate, rows):
         top = rows[0]
         s1, s2 = self.supports_for_candidate(candidate)
         sq = self.support_quality_label(candidate, s1, s2)
 
-        if candidate == 15 and BLOCK_15_DEAD_SUPPORTS and sq == "DEAD":
-            return "15_DEAD_SUPPORTS"
-        if candidate == 15 and BLOCK_15_FAKE_LOW_PRESSURE and sq == "FAKE_ALIVE" and top["pressure"] < MIN_PRESSURE_15_FAKE:
-            return "15_FAKE_SUPPORTS"
-        if candidate == 15 and top["life_bias"] < MIN_LIFE_BIAS_15 and top["structure_bias"] > top["life_bias"]:
-            return "15_STRUCTURAL_ONLY"
-        if candidate == 50 and top["life_bias"] < MIN_LIFE_BIAS_50 and top["state"] != "RESTART":
-            return "50_WEAK_LIFE"
-        return None
+        if candidate == 15 and sq == "DEAD":
+            return "DEBOLE"
+        if candidate == 15 and sq == "FAKE_ALIVE" and top["pressure"] < MIN_PRESSURE_15_FAKE:
+            return "DEBOLE"
+
+        if top["score"] >= 12.0 and sq == "REAL_ALIVE":
+            return "FORTE"
+        if top["score"] >= 8.0 and sq in ("REAL_ALIVE", "FAKE_ALIVE"):
+            return "MEDIO"
+        return "DEBOLE"
 
     def choose_candidate_normal(self):
         gap = self.cluster_gap()
@@ -901,14 +970,48 @@ class SNIPER271HAnalyzer:
 
             if n == 15:
                 score += 1.0
+
                 if any(x in self.last_cluster_nums() for x in [5, 10]):
                     score += 1.2
 
+                pair15_5 = self.pair_score(15, 5)
+                pair15_50 = self.pair_score(15, 50)
+
+                if pair15_5 >= 4 or pair15_50 >= 4:
+                    score += 1.0
+
+                alive_5 = self.is_semi_alive(5)
+                alive_50 = self.is_semi_alive(50)
+
+                if not alive_5 and not alive_50:
+                    score -= ISOLATED_15_SCORE_PENALTY
+
+                if self.should_block_15_isolated():
+                    score -= ISOLATED_15_SCORE_PENALTY
+
+                if h <= 1 and dom == 0 and rot >= 3.0 and reg >= 3.0:
+                    if not alive_5 and not alive_50:
+                        score -= STRUCTURAL_ONLY_15_PENALTY
+
+                s1_15, s2_15 = self.supports_for_candidate(15)
+                sq15 = self.support_quality_label(15, s1_15, s2_15)
+
+                if sq15 == "DEAD":
+                    score -= 6.0
+                elif sq15 == "FAKE_ALIVE":
+                    score -= 2.2
+                    if pressure < MIN_PRESSURE_15_FAKE:
+                        score -= 2.2
+                elif sq15 == "REAL_ALIVE":
+                    score += 0.8
+
             if n == 10:
                 score += W_PENALTY_10
+
                 ok_heat = h >= 5
                 ok_dom = dom >= 2
                 ok_rot = rot >= 1.5
+
                 if ok_heat and ok_dom and ok_rot:
                     score += 2.2
                 else:
@@ -928,10 +1031,13 @@ class SNIPER271HAnalyzer:
 
                 if h >= 5 and l <= 4:
                     score += 1.4
+
                 if dom >= 2:
                     score += 0.7
+
                 if self.profile and self.profile.get("leader_conversion") == 50:
                     score += 0.8
+
                 if self.profile and self.profile.get("leader_presence") == 50:
                     score += 0.5
 
@@ -940,15 +1046,23 @@ class SNIPER271HAnalyzer:
             structure_bias = round(rot + reg + pairb, 2)
             life_bias = round((h * W_HEAT) - (l * W_LAG) + (W_DOMINANCE if dom >= 3 else 0), 2)
 
-            # cooldown sul 5
-            if n == 5:
-                recent_same_5 = sum(1 for x in self.last_signal_numbers[-3:] if x == 5)
-                if recent_same_5 >= 2 and life_bias < 8.5:
-                    score -= 1.8
-                if self.last_stop_number == 5 and self.last_stop_count_same >= 1 and life_bias < 8.0:
-                    score -= 1.6
-                if self.last_hit_number == 5 and life_bias < 8.2:
-                    score -= 1.2
+            if n == 15 and self.should_block_15_isolated():
+                score -= 2.8
+
+            if n == 15 and structure_bias > life_bias + 3.0 and life_bias < 3.2:
+                score -= 2.6
+
+            if self.consecutive_fails() >= 2:
+                if life_bias < 4.5:
+                    score -= 2.5
+                if n == 15 and structure_bias > life_bias:
+                    score -= 2.0
+
+            if n == 15 and life_bias < MIN_LIFE_BIAS_15 and structure_bias > 7.0:
+                score -= 2.2
+
+            if n == 50 and life_bias < MIN_LIFE_BIAS_50 and state != "RESTART":
+                score -= 1.8
 
             rows.append({
                 "n": n,
@@ -985,11 +1099,106 @@ class SNIPER271HAnalyzer:
         if rows[0]["gap"] == 1 and rows[0]["score"] < 6.3:
             return None, rows, "GAP1_WEAK"
 
-        block_reason = self.candidate_block_reason(rows[0]["n"], rows)
-        if block_reason:
-            return None, rows, block_reason
+        if rows[0]["n"] == 15:
+            s1_15, s2_15 = self.supports_for_candidate(15)
+            sq15 = self.support_quality_label(15, s1_15, s2_15)
+
+            if sq15 == "DEAD":
+                return None, rows, "15_DEAD_SUPPORTS"
+
+            if sq15 == "FAKE_ALIVE" and rows[0]["pressure"] < MIN_PRESSURE_15_FAKE:
+                return None, rows, "15_FAKE_SUPPORTS"
+
+            if rows[0]["life_bias"] < MIN_LIFE_BIAS_15 and rows[0]["structure_bias"] > rows[0]["life_bias"]:
+                return None, rows, "15_STRUCTURAL_ONLY"
+
+        if rows[0]["n"] == 50 and rows[0]["life_bias"] < MIN_LIFE_BIAS_50 and rows[0]["state"] != "RESTART":
+            return None, rows, "50_WEAK_LIFE"
+
+        if rows[0]["n"] == 15 and self.should_block_15_isolated():
+            return None, rows, "15_ISOLATED"
+
+        if rows[0]["n"] == 15 and rows[0]["structure_bias"] > rows[0]["life_bias"] + 3.0 and rows[0]["life_bias"] < 3.2:
+            return None, rows, "15_FAKE_STRUCTURE"
 
         return rows[0]["n"], rows, "OK"
+
+    # ===================== SETUP LOG =========================
+
+    def open_setup(self, extraction_open, candidate, support1, support2, reason, rows):
+        self.setup_id += 1
+        m = self._current_metrics()
+        setup_quality = self.setup_quality(candidate, rows)
+        support_quality = self.support_quality_label(candidate, support1, support2)
+        top = rows[0]
+
+        with open(SETUP_LOG_CSV, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                self._now_str(), self.setup_id, extraction_open,
+                candidate, support1, support2,
+                setup_quality, support_quality,
+                m["state"], m["pressure"], m["gap"],
+                m["heat_5"], m["heat_10"], m["heat_15"], m["heat_50"],
+                m["lag_5"], m["lag_10"], m["lag_15"], m["lag_50"],
+                m["dom_5"], m["dom_10"], m["dom_15"], m["dom_50"],
+                m["leader_presence"], m["leader_conversion"],
+                top["life_bias"], top["structure_bias"],
+                reason
+            ])
+
+        self.open_setups.append({
+            "setup_id": self.setup_id,
+            "open_extraction": extraction_open,
+            "candidate": candidate,
+            "support1": support1,
+            "support2": support2,
+            "remaining": TRACK_HORIZON_COLPI,
+            "confirmed": False,
+            "setup_quality": setup_quality,
+        })
+
+    def follow_setup(self, eval_extraction, nums):
+        if not self.open_setups:
+            return []
+
+        s = set(nums)
+        completed = []
+
+        for item in self.open_setups:
+            c = item["candidate"]
+            s1 = item["support1"]
+            s2 = item["support2"]
+
+            candidate_seen = c in s
+            s1_seen = s1 in s if s1 is not None else False
+            s2_seen = s2 in s if s2 is not None else False
+
+            with open(FOLLOWUP_LOG_CSV, "a", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow([
+                    self._now_str(),
+                    item["setup_id"],
+                    eval_extraction,
+                    TRACK_HORIZON_COLPI - item["remaining"] + 1,
+                    c, s1, s2,
+                    int(candidate_seen),
+                    int(s1_seen),
+                    int(s2_seen),
+                    int(candidate_seen and s1_seen),
+                    int(candidate_seen and s2_seen),
+                ])
+
+            if candidate_seen:
+                item["confirmed"] = True
+
+            item["remaining"] -= 1
+
+            if item["remaining"] <= 0:
+                completed.append(item)
+
+        self.open_setups = [x for x in self.open_setups if x["remaining"] > 0]
+        return completed
 
     # ===================== PROFILE MESSAGES ==================
 
@@ -1028,23 +1237,45 @@ class SNIPER271HAnalyzer:
     # ===================== MAIN ==============================
 
     async def on_new(self, app, e, nums):
-        if self.is_duplicate_extraction(e):
+        if self.is_duplicate_draw(e, nums):
             return
-        self.remember_extraction_id(e)
 
+        self.remember_draw(e, nums)
         self.update_history(nums)
         self.draws_since_profile_update += 1
 
         if self.draws_since_profile_update >= PROFILE_UPDATE_EVERY:
             self.profile = self.analyze_cluster_profile()
             self.draws_since_profile_update = 0
-            await self.send_profile(app, "🔄 CLUSTER PROFILE UPDATE")
+            if SEND_PROFILE_UPDATES:
+                await self.send_profile(app, "🔄 CLUSTER PROFILE UPDATE")
 
         await self.tg(
             app,
             f"📌 Estrazione {e}\n"
             f"🎱 {', '.join(f'{x:02d}' for x in nums)}"
         )
+
+        completed = self.follow_setup(e, nums)
+        for item in completed:
+            if item["confirmed"]:
+                self.push_result("CONFIRMED")
+                await self.tg(
+                    app,
+                    "✅ SETUP CONFERMATO ENTRO 3 COLPI\n"
+                    f"• setup_id = {item['setup_id']}\n"
+                    f"• candidate_cluster = {item['candidate']}\n"
+                    f"• setup_quality = {item['setup_quality']}"
+                )
+            else:
+                self.push_result("FAIL")
+                await self.tg(
+                    app,
+                    "❌ SETUP NON CONFERMATO ENTRO 3 COLPI\n"
+                    f"• setup_id = {item['setup_id']}\n"
+                    f"• candidate_cluster = {item['candidate']}\n"
+                    f"• setup_quality = {item['setup_quality']}"
+                )
 
         if len(self.last_draws) < 10:
             return
@@ -1064,34 +1295,25 @@ class SNIPER271HAnalyzer:
                 )
                 await self.tg(
                     app,
-                    "⏸ SIGNAL BLOCKED\n"
-                    f"• reason={reason}\n\n"
+                    "⏸ NO SETUP\n"
+                    f"• reason = {reason}\n\n"
                     f"📊 DEBUG\n{debug_txt}"
                 )
             else:
-                await self.tg(app, f"⏸ SIGNAL BLOCKED\n• reason={reason}")
+                await self.tg(app, f"⏸ NO SETUP\n• reason = {reason}")
+            self._save_state()
             return
 
-        top = debug_rows[0]
         s1, s2 = self.supports_for_candidate(candidate)
         sq = self.support_quality_label(candidate, s1, s2)
+        quality = self.setup_quality(candidate, debug_rows)
+
+        if ALERT_STRONG_ONLY and quality != "FORTE":
+            self._save_state()
+            return
 
         self.push_signal_number(candidate)
-
-        self.log_signal(
-            extraction=e,
-            candidate=candidate,
-            support1=s1,
-            support2=s2,
-            decision="PLAY_CANDIDATE",
-            reason=reason,
-            state=top["state"],
-            pressure=top["pressure"],
-            gap=top["gap"],
-            life_bias=top["life_bias"],
-            structure_bias=top["structure_bias"],
-            support_quality=sq,
-        )
+        self.open_setup(e, candidate, s1, s2, reason, debug_rows)
 
         debug_txt = "\n".join(
             [
@@ -1105,22 +1327,28 @@ class SNIPER271HAnalyzer:
 
         await self.tg(
             app,
-            "🧭 PLAY CANDIDATE\n"
-            f"• candidate = {candidate}\n"
-            f"• support1 = {candidate}-{s1}\n"
-            + (f"• support2 = {candidate}-{s2}\n" if s2 is not None else "")
-            + f"• supports_quality = {sq}\n"
-            + f"• decision = ANALYZE_ONLY\n\n"
+            f"🧭 SETUP {quality}\n"
+            f"• setup_id = {self.setup_id}\n"
+            f"• candidate_cluster = {candidate}\n"
+            f"• support_axis_1 = {candidate}-{s1}\n"
+            + (f"• support_axis_2 = {candidate}-{s2}\n" if s2 is not None else "")
+            + f"• support_quality = {sq}\n"
+            + f"• horizon = {TRACK_HORIZON_COLPI} colpi\n\n"
             + f"🧩 SUPPORTS\n{self.support_quality_debug_text(candidate, s1, s2)}\n\n"
             + f"📊 DEBUG\n{debug_txt}"
         )
 
+        self._save_state()
+
+
 # ===================== LOOP ================================
 
-bot = SNIPER271HAnalyzer()
+bot = SignalAnalyzer()
 
 async def live():
     app = ApplicationBuilder().token(TOKEN).build()
+
+    bot._load_state()
 
     es = parse_site()
     for e, nums in es:
@@ -1128,7 +1356,8 @@ async def live():
         bot.max_e = max(bot.max_e, e)
 
     bot.profile = bot.analyze_cluster_profile()
-    await bot.tg(app, "🚀 SNIPER v27.1h ANALYZER AVVIATO")
+
+    await bot.tg(app, "🚀 SNIPER v28.0 ANALYZER AVVIATO")
     await bot.send_profile(app)
 
     while True:
