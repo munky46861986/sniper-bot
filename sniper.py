@@ -1,14 +1,15 @@
 # ============================================================
-# 🚀 SNIPER v28.1 — ANALYZER + PLAY ENGINE
-#
-# - parsing live
-# - cluster profile
-# - supporti REAL_ALIVE / FAKE_ALIVE / DEAD
-# - setup FORTE / MEDIO / DEBOLE
-# - tracking setup entro 3 colpi
-# - PLAY ENGINE live
+# 🚀 SNIPER v28.2 PRO
+# HYBRID ENGINE:
+# - cluster engine base v27.1h
+# - support quality REAL_ALIVE / FAKE_ALIVE / DEAD
+# - dedup robusto
+# - cooldown 5
+# - filtro duro 15
+# - setup analyzer
+# - play engine live
 # - hit ambata / hit ambo / stop
-# - log CSV completo
+# - stato persistente
 # ============================================================
 
 import asyncio
@@ -46,29 +47,36 @@ TARGET = [5, 10, 15, 50]
 
 LOOP_SEC = 60
 HISTORY_MAX = 160
+
 WARMUP_WINDOW = 60
 PROFILE_UPDATE_EVERY = 10
+
 TRACK_HORIZON_COLPI = 3
+PLAY_HORIZON_COLPI = 3
 
 LOG_DIR = "logs"
+SIGNAL_LOG_CSV = os.path.join(LOG_DIR, "sniper_signal_log.csv")
 SETUP_LOG_CSV = os.path.join(LOG_DIR, "sniper_setup_log.csv")
 FOLLOWUP_LOG_CSV = os.path.join(LOG_DIR, "sniper_followup_log.csv")
 PLAY_LOG_CSV = os.path.join(LOG_DIR, "sniper_play_log_live.csv")
-STATE_FILE = os.path.join(LOG_DIR, "sniper_analyzer_state.json")
+STATE_FILE = os.path.join(LOG_DIR, "sniper_v282_state.json")
 
 MAX_RECENT_DRAW_IDS = 50
 
-# alert policy
-ALERT_STRONG_ONLY = False
-SEND_PROFILE_UPDATES = True
+# ===================== POLICY ===============================
 
-# play engine
+SEND_PROFILE_UPDATES = True
 ENABLE_PLAYS = True
-PLAY_HORIZON_COLPI = 3
+
+# apertura play prudente
 PLAY_OPEN_ON_FORTE = True
 PLAY_OPEN_ON_MEDIO_REAL = True
+PLAY_OPEN_ON_MEDIO_FAKE = False
 
-# ===================== WEIGHTS ==============================
+# se True, non apre play se c'è già un play attivo
+ONE_PLAY_AT_A_TIME = True
+
+# ===================== BASE WEIGHTS =========================
 
 W_HEAT = 1.8
 W_LAG = 0.6
@@ -116,6 +124,8 @@ W_PENALTY_50_THIN = -0.8
 
 PAIR_WEIGHT = 0.4
 
+# ===================== FILTRI ===============================
+
 MIN_LIFE_BIAS_15 = 2.2
 MIN_LIFE_BIAS_50 = 3.0
 
@@ -123,19 +133,31 @@ ALIVE_HEAT_MIN = 2
 ALIVE_LAG_MAX = 6
 ALIVE_DOM_MIN = 1
 
+STRONG_ALIVE_HEAT = 3
+STRONG_ALIVE_LAG = 5
+
 ISOLATED_15_SCORE_PENALTY = 4.2
 STRUCTURAL_ONLY_15_PENALTY = 3.2
+REENTRY_15_AFTER_STOP_BLOCK = 2
 
 REAL_ALIVE_MIN_SCORE = 5.2
 FAKE_ALIVE_MIN_SCORE = 2.4
+
 REAL_HEAT_MIN = 2
 REAL_LAG_MAX = 6
 REAL_DOM_MIN = 1
+
 FAKE_SB_ADVANTAGE = 2.5
 DEAD_HEAT_MAX = 1
 DEAD_LAG_MIN = 8
 
+BLOCK_15_DEAD_SUPPORTS = True
+BLOCK_15_FAKE_LOW_PRESSURE = True
 MIN_PRESSURE_15_FAKE = 11.0
+
+# play-specific
+MIN_PLAY_SCORE_FORTE = 12.0
+MIN_PLAY_SCORE_MEDIO = 8.0
 
 # ============================================================
 
@@ -174,10 +196,11 @@ def draw_fingerprint(e: int, nums: list[int]) -> str:
 
 # ============================================================
 
-class SignalAnalyzer:
+class SNIPER282PRO:
     def __init__(self):
         self.max_e = 0
         self.last_draws = []
+
         self.profile = {}
         self.draws_since_profile_update = 0
         self.leader_presence_history = []
@@ -186,8 +209,13 @@ class SignalAnalyzer:
         self.recent_results = []
         self.last_signal_numbers = []
 
-        self.recent_draw_ids = []
+        self.recent_extraction_ids = []
         self.recent_fingerprints = []
+
+        self.last_stop_number = None
+        self.last_stop_count_same = 0
+        self.last_hit_number = None
+        self.last_hit_extraction = None
 
         self.setup_id = 0
         self.open_setups = []
@@ -203,16 +231,20 @@ class SignalAnalyzer:
     def _save_state(self):
         data = {
             "max_e": self.max_e,
+            "last_draws": self.last_draws[-HISTORY_MAX:],
             "draws_since_profile_update": self.draws_since_profile_update,
             "leader_presence_history": self.leader_presence_history[-6:],
             "leader_conversion_history": self.leader_conversion_history[-6:],
             "recent_results": self.recent_results[-8:],
             "last_signal_numbers": self.last_signal_numbers[-6:],
-            "recent_draw_ids": self.recent_draw_ids[-MAX_RECENT_DRAW_IDS:],
+            "recent_extraction_ids": self.recent_extraction_ids[-MAX_RECENT_DRAW_IDS:],
             "recent_fingerprints": self.recent_fingerprints[-MAX_RECENT_DRAW_IDS:],
+            "last_stop_number": self.last_stop_number,
+            "last_stop_count_same": self.last_stop_count_same,
+            "last_hit_number": self.last_hit_number,
+            "last_hit_extraction": self.last_hit_extraction,
             "setup_id": self.setup_id,
             "open_setups": self.open_setups,
-            "last_draws": self.last_draws[-HISTORY_MAX:],
             "play_id": self.play_id,
             "active_play": self.active_play,
         }
@@ -228,24 +260,37 @@ class SignalAnalyzer:
                 data = json.load(f)
 
             self.max_e = data.get("max_e", 0)
+            self.last_draws = data.get("last_draws", [])[-HISTORY_MAX:]
             self.draws_since_profile_update = data.get("draws_since_profile_update", 0)
             self.leader_presence_history = data.get("leader_presence_history", [])[-6:]
             self.leader_conversion_history = data.get("leader_conversion_history", [])[-6:]
             self.recent_results = data.get("recent_results", [])[-8:]
             self.last_signal_numbers = data.get("last_signal_numbers", [])[-6:]
-            self.recent_draw_ids = data.get("recent_draw_ids", [])[-MAX_RECENT_DRAW_IDS:]
+            self.recent_extraction_ids = data.get("recent_extraction_ids", [])[-MAX_RECENT_DRAW_IDS:]
             self.recent_fingerprints = data.get("recent_fingerprints", [])[-MAX_RECENT_DRAW_IDS:]
+            self.last_stop_number = data.get("last_stop_number", None)
+            self.last_stop_count_same = data.get("last_stop_count_same", 0)
+            self.last_hit_number = data.get("last_hit_number", None)
+            self.last_hit_extraction = data.get("last_hit_extraction", None)
             self.setup_id = data.get("setup_id", 0)
             self.open_setups = data.get("open_setups", [])
-            self.last_draws = data.get("last_draws", [])[-HISTORY_MAX:]
             self.play_id = data.get("play_id", 0)
             self.active_play = data.get("active_play", None)
         except Exception:
             pass
 
-    # ===================== DIAGNOSTICA =======================
+    # ===================== LOGS ==============================
 
     def _init_csv_logs(self):
+        if not os.path.exists(SIGNAL_LOG_CSV):
+            with open(SIGNAL_LOG_CSV, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow([
+                    "ts", "extraction", "candidate", "support1", "support2",
+                    "decision", "reason", "state", "pressure", "gap",
+                    "life_bias", "structure_bias", "support_quality"
+                ])
+
         if not os.path.exists(SETUP_LOG_CSV):
             with open(SETUP_LOG_CSV, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
@@ -287,30 +332,63 @@ class SignalAnalyzer:
     def _now_str(self):
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    def _current_metrics(self):
-        return {
-            "pressure": round(self.cluster_pressure(), 2),
-            "gap": self.cluster_gap(),
-            "state": self.profile.get("state", "n/a") if self.profile else "n/a",
-            "leader_presence": self.profile.get("leader_presence", "n/a") if self.profile else "n/a",
-            "leader_conversion": self.profile.get("leader_conversion", "n/a") if self.profile else "n/a",
-            "heat_5": self.heat(5),
-            "heat_10": self.heat(10),
-            "heat_15": self.heat(15),
-            "heat_50": self.heat(50),
-            "lag_5": self.lag(5),
-            "lag_10": self.lag(10),
-            "lag_15": self.lag(15),
-            "lag_50": self.lag(50),
-            "dom_5": self.dominance_count(5, 6),
-            "dom_10": self.dominance_count(10, 6),
-            "dom_15": self.dominance_count(15, 6),
-            "dom_50": self.dominance_count(50, 6),
-        }
+    def log_signal(self, extraction, candidate, support1, support2, decision, reason, state, pressure, gap, life_bias, structure_bias, support_quality):
+        with open(SIGNAL_LOG_CSV, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                self._now_str(),
+                extraction,
+                candidate,
+                support1,
+                support2,
+                decision,
+                reason,
+                state,
+                pressure,
+                gap,
+                round(life_bias, 2),
+                round(structure_bias, 2),
+                support_quality
+            ])
+
+    def log_setup(self, extraction_open, candidate, support1, support2, reason, rows):
+        self.setup_id += 1
+        m = self._current_metrics()
+        setup_quality = self.setup_quality(candidate, rows)
+        support_quality = self.support_quality_label(candidate, support1, support2)
+        top = rows[0]
+
+        with open(SETUP_LOG_CSV, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                self._now_str(), self.setup_id, extraction_open,
+                candidate, support1, support2,
+                setup_quality, support_quality,
+                m["state"], m["pressure"], m["gap"],
+                m["heat_5"], m["heat_10"], m["heat_15"], m["heat_50"],
+                m["lag_5"], m["lag_10"], m["lag_15"], m["lag_50"],
+                m["dom_5"], m["dom_10"], m["dom_15"], m["dom_50"],
+                m["leader_presence"], m["leader_conversion"],
+                top["life_bias"], top["structure_bias"],
+                reason
+            ])
+
+        self.open_setups.append({
+            "setup_id": self.setup_id,
+            "open_extraction": extraction_open,
+            "candidate": candidate,
+            "support1": support1,
+            "support2": support2,
+            "remaining": TRACK_HORIZON_COLPI,
+            "confirmed": False,
+            "setup_quality": setup_quality,
+        })
+
+        return self.setup_id, setup_quality, support_quality
 
     # ===================== TELEGRAM ==========================
 
-    async def tg(self, app, msg: str):
+    async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
         await asyncio.sleep(0.15)
 
@@ -332,25 +410,45 @@ class SignalAnalyzer:
             self.last_signal_numbers.pop(0)
 
     def remember_draw(self, e, nums):
-        self.recent_draw_ids.append(e)
-        self.recent_draw_ids = self.recent_draw_ids[-MAX_RECENT_DRAW_IDS:]
+        self.recent_extraction_ids.append(e)
+        self.recent_extraction_ids = self.recent_extraction_ids[-MAX_RECENT_DRAW_IDS:]
 
         fp = draw_fingerprint(e, nums)
         self.recent_fingerprints.append(fp)
         self.recent_fingerprints = self.recent_fingerprints[-MAX_RECENT_DRAW_IDS:]
 
     def is_duplicate_draw(self, e, nums):
-        if e in self.recent_draw_ids:
+        if e in self.recent_extraction_ids:
             return True
         fp = draw_fingerprint(e, nums)
         return fp in self.recent_fingerprints
 
     # ===================== FEATURES ==========================
 
+    def _current_metrics(self):
+        return {
+            "pressure": round(self.cluster_pressure(), 2),
+            "gap": self.cluster_gap(),
+            "state": self.profile.get("state", "n/a") if self.profile else "n/a",
+            "leader_presence": self.profile.get("leader_presence", "n/a") if self.profile else "n/a",
+            "leader_conversion": self.profile.get("leader_conversion", "n/a") if self.profile else "n/a",
+            "heat_5": self.heat(5),
+            "heat_10": self.heat(10),
+            "heat_15": self.heat(15),
+            "heat_50": self.heat(50),
+            "lag_5": self.lag(5),
+            "lag_10": self.lag(10),
+            "lag_15": self.lag(15),
+            "lag_50": self.lag(50),
+            "dom_5": self.dominance_count(5, 6),
+            "dom_10": self.dominance_count(10, 6),
+            "dom_15": self.dominance_count(15, 6),
+            "dom_50": self.dominance_count(50, 6),
+        }
+
     def heat(self, n, draws=None):
         if draws is None:
             draws = self.last_draws
-
         weights = [5, 4, 3, 2, 1]
         h = 0
         for i, w in enumerate(weights):
@@ -363,7 +461,6 @@ class SignalAnalyzer:
     def lag(self, n, draws=None):
         if draws is None:
             draws = self.last_draws
-
         lag = 0
         for d in reversed(draws[:-1]):
             lag += 1
@@ -374,7 +471,6 @@ class SignalAnalyzer:
     def cluster_gap(self, draws=None):
         if draws is None:
             draws = self.last_draws
-
         gap = 0
         for d in reversed(draws):
             if any(x in d for x in TARGET):
@@ -401,7 +497,6 @@ class SignalAnalyzer:
     def cluster_pressure(self, draws=None):
         if draws is None:
             draws = self.last_draws
-
         if not draws:
             return 0.0
 
@@ -417,7 +512,7 @@ class SignalAnalyzer:
     def overplay_penalty(self, n):
         pen = 0.0
 
-        if len(self.recent_results) >= 2 and self.recent_results[-2:] == ["FAIL", "FAIL"]:
+        if len(self.recent_results) >= 2 and self.recent_results[-2:] == ["STOP", "STOP"]:
             pen += abs(W_OVERPLAY)
 
         same_n = sum(1 for x in self.last_signal_numbers[-3:] if x == n)
@@ -431,10 +526,10 @@ class SignalAnalyzer:
 
         return -pen
 
-    def consecutive_fails(self):
+    def consecutive_stops(self):
         c = 0
         for r in reversed(self.recent_results):
-            if r == "FAIL":
+            if r == "STOP":
                 c += 1
             else:
                 break
@@ -649,50 +744,6 @@ class SignalAnalyzer:
 
         return bonus
 
-    # ===================== ROTATION ENGINE ===================
-
-    def core_rotation_bonus(self, n):
-        if not self.last_draws:
-            return 0.0
-
-        last_cluster = self.last_cluster_nums()
-        bonus = 0.0
-
-        if 5 in last_cluster and n == 15:
-            bonus += W_CORE_5_TO_15
-        if 15 in last_cluster and n == 5:
-            bonus += W_CORE_15_TO_5
-
-        if 15 in last_cluster and n == 50:
-            bonus += W_SIDE_15_TO_50
-        if 5 in last_cluster and n == 10:
-            bonus += W_SIDE_5_TO_10
-        if 10 in last_cluster and n == 15:
-            bonus += W_SIDE_10_TO_15
-
-        for a in last_cluster:
-            ts = self.transition_score(a, n)
-            if ts >= 7:
-                bonus += 1.5
-            elif ts >= 4:
-                bonus += 0.7
-
-        return bonus
-
-    def pair_bonus_for_candidate(self, n):
-        if not self.profile:
-            return 0.0
-
-        pair_sum = 0.0
-        for m in TARGET:
-            if m != n:
-                ps = self.pair_score(n, m)
-                if n == 15 or m == 15:
-                    ps *= 1.4
-                pair_sum += ps
-
-        return round(pair_sum * PAIR_WEIGHT / 10.0, 2)
-
     # ===================== SUPPORT QUALITY ===================
 
     def support_score(self, ambata, n):
@@ -800,7 +851,15 @@ class SignalAnalyzer:
         fake_count = sum(1 for x in labels if x == "FAKE_ALIVE")
 
         if ambata == 15:
-            if real_count >= 1:
+            real_strong = 0
+            for s in [s1, s2]:
+                if s is None:
+                    continue
+                d = self.support_state_details(ambata, s)
+                if d["label"] == "REAL_ALIVE" and d["life"] >= 4.0:
+                    real_strong += 1
+
+            if real_strong >= 1:
                 return "REAL_ALIVE"
             if fake_count >= 1:
                 return "FAKE_ALIVE"
@@ -824,21 +883,6 @@ class SignalAnalyzer:
                 f"heat={d['heat']} lag={d['lag']} dom={d['dom']}"
             )
         return "\n".join(parts) if parts else "no_supports"
-
-    def should_block_15_isolated(self):
-        h5 = self.heat(5)
-        h50 = self.heat(50)
-        l5 = self.lag(5)
-        l50 = self.lag(50)
-        d5 = self.dominance_count(5, 6)
-        d50 = self.dominance_count(50, 6)
-        p15_5 = self.pair_score(15, 5)
-        p15_50 = self.pair_score(15, 50)
-
-        alive_5 = (h5 >= 2 and l5 <= 6) or d5 >= 2 or (p15_5 >= 4 and h5 >= 1)
-        alive_50 = (h50 >= 2 and l50 <= 6) or d50 >= 2 or (p15_50 >= 4 and h50 >= 1)
-
-        return not (alive_5 or alive_50)
 
     # ===================== SUPPORTS ==========================
 
@@ -865,54 +909,73 @@ class SignalAnalyzer:
         pressure = self.cluster_pressure()
 
         if a == 15:
-            score_50 = self.support_alive_score(15, 50)
-            score_5 = self.support_alive_score(15, 5)
+            d50 = self.support_state_details(15, 50)
+            d5 = self.support_state_details(15, 5)
 
-            alive_50 = self.is_semi_alive(50)
-            alive_5 = self.is_semi_alive(5)
+            if d50["label"] == "DEAD" and d5["label"] == "DEAD":
+                return None, None
 
-            if pressure >= 16 and alive_50 and alive_5 and score_50 >= 4.0 and score_5 >= 4.0:
-                if score_50 >= score_5:
-                    return 50, 5
-                return 5, 50
+            if d50["label"] == "REAL_ALIVE" and d5["label"] == "REAL_ALIVE":
+                if d50["life"] >= d5["life"] + 1.0 or pressure >= 14:
+                    return 50, 5 if d5["life"] >= 4.0 else None
+                return 5, 50 if d50["life"] >= 4.0 and pressure >= 15 else None
 
-            if alive_50 and not alive_5:
+            if d50["label"] == "REAL_ALIVE" and d5["label"] != "REAL_ALIVE":
                 return 50, None
 
-            if alive_5 and not alive_50:
+            if d5["label"] == "REAL_ALIVE" and d50["label"] != "REAL_ALIVE":
                 return 5, None
 
-            if alive_50 and alive_5:
-                if score_50 >= score_5 + 1.0:
-                    return 50, 5 if pressure >= 14 and score_5 >= 4.0 else None
-                if score_5 >= score_50 + 1.0:
-                    return 5, 50 if pressure >= 14 and score_50 >= 4.0 else None
+            if d50["label"] == "FAKE_ALIVE" and pressure >= 13 and d50["struct"] >= 6.0:
+                return 50, None
 
-                if self.heat(50) > self.heat(5):
-                    return 50, 5 if pressure >= 15 else None
-                return 5, 50 if pressure >= 15 else None
+            if d5["label"] == "FAKE_ALIVE" and pressure >= 12 and d5["struct"] >= 5.0:
+                return 5, None
 
             return None, None
 
         if a == 50:
-            s15 = self.support_alive_score(50, 15)
-            s5 = self.support_alive_score(50, 5)
+            d15 = self.support_state_details(50, 15)
+            d5 = self.support_state_details(50, 5)
 
-            if s5 >= s15:
+            if d5["label"] == "REAL_ALIVE" and d5["life"] >= d15["life"] - 0.5:
                 s1 = 5
-                s2 = 15 if s15 >= 3.8 and pressure >= 11 else None
-            else:
+            elif d15["label"] == "REAL_ALIVE":
                 s1 = 15
-                s2 = 5 if s5 >= 3.8 and pressure >= 11 else None
+            else:
+                s1 = 5 if d5["score"] >= d15["score"] else 15
+
+            s2 = None
+            if s1 == 5 and d15["label"] == "REAL_ALIVE" and pressure >= 11:
+                s2 = 15
+            elif s1 == 15 and d5["label"] == "REAL_ALIVE" and pressure >= 11:
+                s2 = 5
+
             return s1, s2
 
         if a == 5:
-            s10 = self.support_alive_score(5, 10)
-            s15 = self.support_alive_score(5, 15)
-            s50 = self.support_alive_score(5, 50)
+            d10 = self.support_state_details(5, 10)
+            d15 = self.support_state_details(5, 15)
+            d50 = self.support_state_details(5, 50)
 
-            s1 = 10 if s10 >= s15 else 15
-            s2 = 50 if s50 >= 4.2 and pressure >= 11 else None
+            if d10["label"] == "REAL_ALIVE" and d10["life"] >= d15["life"] - 0.5:
+                s1 = 10
+            elif d15["label"] == "REAL_ALIVE":
+                s1 = 15
+            elif d10["label"] == "FAKE_ALIVE" and d15["label"] != "REAL_ALIVE":
+                s1 = 10
+            else:
+                s1 = 15 if d15["score"] >= d10["score"] else 10
+
+            s2 = None
+            if d50["label"] == "REAL_ALIVE" and pressure >= 11:
+                s2 = 50
+            elif d50["label"] == "FAKE_ALIVE" and d50["struct"] >= 5.5 and pressure >= 13:
+                s2 = 50
+
+            if s2 == s1:
+                s2 = None
+
             return s1, s2
 
         if a == 10:
@@ -920,23 +983,64 @@ class SignalAnalyzer:
 
         return None, None
 
-    # ===================== CANDIDATE SCORING ================
+    # ===================== SCORING ===========================
 
-    def setup_quality(self, candidate, rows):
+    def core_rotation_bonus(self, n):
+        if not self.last_draws:
+            return 0.0
+
+        last_cluster = self.last_cluster_nums()
+        bonus = 0.0
+
+        if 5 in last_cluster and n == 15:
+            bonus += W_CORE_5_TO_15
+        if 15 in last_cluster and n == 5:
+            bonus += W_CORE_15_TO_5
+
+        if 15 in last_cluster and n == 50:
+            bonus += W_SIDE_15_TO_50
+        if 5 in last_cluster and n == 10:
+            bonus += W_SIDE_5_TO_10
+        if 10 in last_cluster and n == 15:
+            bonus += W_SIDE_10_TO_15
+
+        for a in last_cluster:
+            ts = self.transition_score(a, n)
+            if ts >= 7:
+                bonus += 1.5
+            elif ts >= 4:
+                bonus += 0.7
+
+        return bonus
+
+    def pair_bonus_for_candidate(self, n):
+        if not self.profile:
+            return 0.0
+
+        pair_sum = 0.0
+        for m in TARGET:
+            if m != n:
+                ps = self.pair_score(n, m)
+                if n == 15 or m == 15:
+                    ps *= 1.4
+                pair_sum += ps
+
+        return round(pair_sum * PAIR_WEIGHT / 10.0, 2)
+
+    def candidate_block_reason(self, candidate, rows):
         top = rows[0]
         s1, s2 = self.supports_for_candidate(candidate)
         sq = self.support_quality_label(candidate, s1, s2)
 
-        if candidate == 15 and sq == "DEAD":
-            return "DEBOLE"
-        if candidate == 15 and sq == "FAKE_ALIVE" and top["pressure"] < MIN_PRESSURE_15_FAKE:
-            return "DEBOLE"
-
-        if top["score"] >= 12.0 and sq == "REAL_ALIVE":
-            return "FORTE"
-        if top["score"] >= 8.0 and sq in ("REAL_ALIVE", "FAKE_ALIVE"):
-            return "MEDIO"
-        return "DEBOLE"
+        if candidate == 15 and BLOCK_15_DEAD_SUPPORTS and sq == "DEAD":
+            return "15_DEAD_SUPPORTS"
+        if candidate == 15 and BLOCK_15_FAKE_LOW_PRESSURE and sq == "FAKE_ALIVE" and top["pressure"] < MIN_PRESSURE_15_FAKE:
+            return "15_FAKE_SUPPORTS"
+        if candidate == 15 and top["life_bias"] < MIN_LIFE_BIAS_15 and top["structure_bias"] > top["life_bias"]:
+            return "15_STRUCTURAL_ONLY"
+        if candidate == 50 and top["life_bias"] < MIN_LIFE_BIAS_50 and top["state"] != "RESTART":
+            return "50_WEAK_LIFE"
+        return None
 
     def choose_candidate_normal(self):
         gap = self.cluster_gap()
@@ -996,48 +1100,14 @@ class SignalAnalyzer:
 
             if n == 15:
                 score += 1.0
-
                 if any(x in self.last_cluster_nums() for x in [5, 10]):
                     score += 1.2
 
-                pair15_5 = self.pair_score(15, 5)
-                pair15_50 = self.pair_score(15, 50)
-
-                if pair15_5 >= 4 or pair15_50 >= 4:
-                    score += 1.0
-
-                alive_5 = self.is_semi_alive(5)
-                alive_50 = self.is_semi_alive(50)
-
-                if not alive_5 and not alive_50:
-                    score -= ISOLATED_15_SCORE_PENALTY
-
-                if self.should_block_15_isolated():
-                    score -= ISOLATED_15_SCORE_PENALTY
-
-                if h <= 1 and dom == 0 and rot >= 3.0 and reg >= 3.0:
-                    if not alive_5 and not alive_50:
-                        score -= STRUCTURAL_ONLY_15_PENALTY
-
-                s1_15, s2_15 = self.supports_for_candidate(15)
-                sq15 = self.support_quality_label(15, s1_15, s2_15)
-
-                if sq15 == "DEAD":
-                    score -= 6.0
-                elif sq15 == "FAKE_ALIVE":
-                    score -= 2.2
-                    if pressure < MIN_PRESSURE_15_FAKE:
-                        score -= 2.2
-                elif sq15 == "REAL_ALIVE":
-                    score += 0.8
-
             if n == 10:
                 score += W_PENALTY_10
-
                 ok_heat = h >= 5
                 ok_dom = dom >= 2
                 ok_rot = rot >= 1.5
-
                 if ok_heat and ok_dom and ok_rot:
                     score += 2.2
                 else:
@@ -1057,13 +1127,10 @@ class SignalAnalyzer:
 
                 if h >= 5 and l <= 4:
                     score += 1.4
-
                 if dom >= 2:
                     score += 0.7
-
                 if self.profile and self.profile.get("leader_conversion") == 50:
                     score += 0.8
-
                 if self.profile and self.profile.get("leader_presence") == 50:
                     score += 0.5
 
@@ -1072,23 +1139,15 @@ class SignalAnalyzer:
             structure_bias = round(rot + reg + pairb, 2)
             life_bias = round((h * W_HEAT) - (l * W_LAG) + (W_DOMINANCE if dom >= 3 else 0), 2)
 
-            if n == 15 and self.should_block_15_isolated():
-                score -= 2.8
-
-            if n == 15 and structure_bias > life_bias + 3.0 and life_bias < 3.2:
-                score -= 2.6
-
-            if self.consecutive_fails() >= 2:
-                if life_bias < 4.5:
-                    score -= 2.5
-                if n == 15 and structure_bias > life_bias:
-                    score -= 2.0
-
-            if n == 15 and life_bias < MIN_LIFE_BIAS_15 and structure_bias > 7.0:
-                score -= 2.2
-
-            if n == 50 and life_bias < MIN_LIFE_BIAS_50 and state != "RESTART":
-                score -= 1.8
+            # cooldown sul 5
+            if n == 5:
+                recent_same_5 = sum(1 for x in self.last_signal_numbers[-3:] if x == 5)
+                if recent_same_5 >= 2 and life_bias < 8.5:
+                    score -= 1.8
+                if self.last_stop_number == 5 and self.last_stop_count_same >= 1 and life_bias < 8.0:
+                    score -= 1.6
+                if self.last_hit_number == 5 and life_bias < 8.2:
+                    score -= 1.2
 
             rows.append({
                 "n": n,
@@ -1125,64 +1184,31 @@ class SignalAnalyzer:
         if rows[0]["gap"] == 1 and rows[0]["score"] < 6.3:
             return None, rows, "GAP1_WEAK"
 
-        if rows[0]["n"] == 15:
-            s1_15, s2_15 = self.supports_for_candidate(15)
-            sq15 = self.support_quality_label(15, s1_15, s2_15)
-
-            if sq15 == "DEAD":
-                return None, rows, "15_DEAD_SUPPORTS"
-
-            if sq15 == "FAKE_ALIVE" and rows[0]["pressure"] < MIN_PRESSURE_15_FAKE:
-                return None, rows, "15_FAKE_SUPPORTS"
-
-            if rows[0]["life_bias"] < MIN_LIFE_BIAS_15 and rows[0]["structure_bias"] > rows[0]["life_bias"]:
-                return None, rows, "15_STRUCTURAL_ONLY"
-
-        if rows[0]["n"] == 50 and rows[0]["life_bias"] < MIN_LIFE_BIAS_50 and rows[0]["state"] != "RESTART":
-            return None, rows, "50_WEAK_LIFE"
-
-        if rows[0]["n"] == 15 and self.should_block_15_isolated():
-            return None, rows, "15_ISOLATED"
-
-        if rows[0]["n"] == 15 and rows[0]["structure_bias"] > rows[0]["life_bias"] + 3.0 and rows[0]["life_bias"] < 3.2:
-            return None, rows, "15_FAKE_STRUCTURE"
+        block_reason = self.candidate_block_reason(rows[0]["n"], rows)
+        if block_reason:
+            return None, rows, block_reason
 
         return rows[0]["n"], rows, "OK"
 
-    # ===================== SETUP LOG =========================
+    # ===================== SETUP QUALITY =====================
 
-    def open_setup(self, extraction_open, candidate, support1, support2, reason, rows):
-        self.setup_id += 1
-        m = self._current_metrics()
-        setup_quality = self.setup_quality(candidate, rows)
-        support_quality = self.support_quality_label(candidate, support1, support2)
+    def setup_quality(self, candidate, rows):
         top = rows[0]
+        s1, s2 = self.supports_for_candidate(candidate)
+        sq = self.support_quality_label(candidate, s1, s2)
 
-        with open(SETUP_LOG_CSV, "a", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow([
-                self._now_str(), self.setup_id, extraction_open,
-                candidate, support1, support2,
-                setup_quality, support_quality,
-                m["state"], m["pressure"], m["gap"],
-                m["heat_5"], m["heat_10"], m["heat_15"], m["heat_50"],
-                m["lag_5"], m["lag_10"], m["lag_15"], m["lag_50"],
-                m["dom_5"], m["dom_10"], m["dom_15"], m["dom_50"],
-                m["leader_presence"], m["leader_conversion"],
-                top["life_bias"], top["structure_bias"],
-                reason
-            ])
+        if candidate == 15 and sq == "DEAD":
+            return "DEBOLE"
+        if candidate == 15 and sq == "FAKE_ALIVE" and top["pressure"] < MIN_PRESSURE_15_FAKE:
+            return "DEBOLE"
 
-        self.open_setups.append({
-            "setup_id": self.setup_id,
-            "open_extraction": extraction_open,
-            "candidate": candidate,
-            "support1": support1,
-            "support2": support2,
-            "remaining": TRACK_HORIZON_COLPI,
-            "confirmed": False,
-            "setup_quality": setup_quality,
-        })
+        if top["score"] >= MIN_PLAY_SCORE_FORTE and sq == "REAL_ALIVE":
+            return "FORTE"
+        if top["score"] >= MIN_PLAY_SCORE_MEDIO and sq in ("REAL_ALIVE", "FAKE_ALIVE"):
+            return "MEDIO"
+        return "DEBOLE"
+
+    # ===================== FOLLOWUP SETUPS ===================
 
     def follow_setup(self, eval_extraction, nums):
         if not self.open_setups:
@@ -1232,14 +1258,16 @@ class SignalAnalyzer:
         if not ENABLE_PLAYS:
             return False
 
+        if ONE_PLAY_AT_A_TIME and self.active_play is not None:
+            return False
+
         if setup_quality == "FORTE" and PLAY_OPEN_ON_FORTE:
             return True
 
-        if (
-            setup_quality == "MEDIO"
-            and PLAY_OPEN_ON_MEDIO_REAL
-            and support_quality == "REAL_ALIVE"
-        ):
+        if setup_quality == "MEDIO" and support_quality == "REAL_ALIVE" and PLAY_OPEN_ON_MEDIO_REAL:
+            return True
+
+        if setup_quality == "MEDIO" and support_quality == "FAKE_ALIVE" and PLAY_OPEN_ON_MEDIO_FAKE:
             return True
 
         return False
@@ -1259,6 +1287,33 @@ class SignalAnalyzer:
             "colpi_done": 0,
             "max_colpi": PLAY_HORIZON_COLPI,
         }
+
+    def log_play_shot(self, eval_extraction, colpo, hit_ambata, hit_ambo1, hit_ambo2):
+        if not self.active_play:
+            return
+
+        p = self.active_play
+
+        with open(PLAY_LOG_CSV, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                self._now_str(),
+                p["play_id"],
+                p["open_extraction"],
+                p["start_extraction"],
+                p["mode"],
+                p["candidate"],
+                p["support1"],
+                p["support2"],
+                p["setup_quality"],
+                p["support_quality"],
+                eval_extraction,
+                colpo,
+                int(hit_ambata),
+                int(hit_ambo1),
+                int(hit_ambo2),
+                "SHOT"
+            ])
 
     def close_play(self, result, eval_extraction=None, colpo=None, hit_ambata=0, hit_ambo1=0, hit_ambo2=0):
         if not self.active_play:
@@ -1287,34 +1342,23 @@ class SignalAnalyzer:
                 result
             ])
 
+        candidate = p["candidate"]
+
+        if result == "HIT":
+            self.last_hit_number = candidate
+            self.last_hit_extraction = eval_extraction
+            self.last_stop_number = None
+            self.last_stop_count_same = 0
+            self.push_result("HIT")
+        elif result == "STOP":
+            if self.last_stop_number == candidate:
+                self.last_stop_count_same += 1
+            else:
+                self.last_stop_number = candidate
+                self.last_stop_count_same = 1
+            self.push_result("STOP")
+
         self.active_play = None
-
-    def log_play_shot(self, eval_extraction, colpo, hit_ambata, hit_ambo1, hit_ambo2):
-        if not self.active_play:
-            return
-
-        p = self.active_play
-
-        with open(PLAY_LOG_CSV, "a", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow([
-                self._now_str(),
-                p["play_id"],
-                p["open_extraction"],
-                p["start_extraction"],
-                p["mode"],
-                p["candidate"],
-                p["support1"],
-                p["support2"],
-                p["setup_quality"],
-                p["support_quality"],
-                eval_extraction,
-                colpo,
-                int(hit_ambata),
-                int(hit_ambo1),
-                int(hit_ambo2),
-                "SHOT"
-            ])
 
     async def process_active_play(self, app, e, nums):
         if not self.active_play:
@@ -1351,7 +1395,7 @@ class SignalAnalyzer:
                 app,
                 "🔥 HIT AMBATA\n"
                 f"• play_id = {p['play_id']}\n"
-                f"• candidate_cluster = {candidate}\n"
+                f"• candidate = {candidate}\n"
                 f"• colpo = {colpo}"
             )
             self.close_play("HIT", e, colpo, hit_ambata, hit_ambo1, hit_ambo2)
@@ -1362,7 +1406,7 @@ class SignalAnalyzer:
                 app,
                 "🛑 STOP PLAY\n"
                 f"• play_id = {p['play_id']}\n"
-                f"• candidate_cluster = {candidate}\n"
+                f"• candidate = {candidate}\n"
                 f"• colpi = {colpo}"
             )
             self.close_play("STOP", e, colpo, hit_ambata, hit_ambo1, hit_ambo2)
@@ -1426,9 +1470,10 @@ class SignalAnalyzer:
             f"🎱 {', '.join(f'{x:02d}' for x in nums)}"
         )
 
-        # ---------------- PLAY ATTIVO ----------------
+        # play attivo
         await self.process_active_play(app, e, nums)
 
+        # followup setup
         completed = self.follow_setup(e, nums)
         for item in completed:
             if item["confirmed"]:
@@ -1437,7 +1482,7 @@ class SignalAnalyzer:
                     app,
                     "✅ SETUP CONFERMATO ENTRO 3 COLPI\n"
                     f"• setup_id = {item['setup_id']}\n"
-                    f"• candidate_cluster = {item['candidate']}\n"
+                    f"• candidate = {item['candidate']}\n"
                     f"• setup_quality = {item['setup_quality']}"
                 )
             else:
@@ -1446,7 +1491,7 @@ class SignalAnalyzer:
                     app,
                     "❌ SETUP NON CONFERMATO ENTRO 3 COLPI\n"
                     f"• setup_id = {item['setup_id']}\n"
-                    f"• candidate_cluster = {item['candidate']}\n"
+                    f"• candidate = {item['candidate']}\n"
                     f"• setup_quality = {item['setup_quality']}"
                 )
 
@@ -1469,25 +1514,38 @@ class SignalAnalyzer:
                 )
                 await self.tg(
                     app,
-                    "⏸ NO SETUP\n"
-                    f"• reason = {reason}\n\n"
+                    "⏸ SIGNAL BLOCKED\n"
+                    f"• reason={reason}\n\n"
                     f"📊 DEBUG\n{debug_txt}"
                 )
             else:
-                await self.tg(app, f"⏸ NO SETUP\n• reason = {reason}")
+                await self.tg(app, f"⏸ SIGNAL BLOCKED\n• reason={reason}")
             self._save_state()
             return
 
+        top = debug_rows[0]
         s1, s2 = self.supports_for_candidate(candidate)
         sq = self.support_quality_label(candidate, s1, s2)
         quality = self.setup_quality(candidate, debug_rows)
 
-        if ALERT_STRONG_ONLY and quality != "FORTE":
-            self._save_state()
-            return
-
         self.push_signal_number(candidate)
-        self.open_setup(e, candidate, s1, s2, reason, debug_rows)
+
+        self.log_signal(
+            extraction=e,
+            candidate=candidate,
+            support1=s1,
+            support2=s2,
+            decision="PLAY_CANDIDATE",
+            reason=reason,
+            state=top["state"],
+            pressure=top["pressure"],
+            gap=top["gap"],
+            life_bias=top["life_bias"],
+            structure_bias=top["structure_bias"],
+            support_quality=sq,
+        )
+
+        setup_id, _, _ = self.log_setup(e, candidate, s1, s2, reason, debug_rows)
 
         if self.should_open_play(candidate, quality, sq):
             self.open_play(e, candidate, s1, s2, quality, sq)
@@ -1513,13 +1571,14 @@ class SignalAnalyzer:
 
         await self.tg(
             app,
-            f"🧭 SETUP {quality}\n"
-            f"• setup_id = {self.setup_id}\n"
-            f"• candidate_cluster = {candidate}\n"
-            f"• support_axis_1 = {candidate}-{s1}\n"
-            + (f"• support_axis_2 = {candidate}-{s2}\n" if s2 is not None else "")
-            + f"• support_quality = {sq}\n"
-            + f"• horizon = {TRACK_HORIZON_COLPI} colpi"
+            "🧭 PLAY CANDIDATE\n"
+            f"• setup_id = {setup_id}\n"
+            f"• candidate = {candidate}\n"
+            f"• support1 = {candidate}-{s1}\n"
+            + (f"• support2 = {candidate}-{s2}\n" if s2 is not None else "")
+            + f"• supports_quality = {sq}\n"
+            + f"• setup_quality = {quality}\n"
+            + f"• decision = {'OPEN_PLAY' if (self.active_play and self.active_play['open_extraction'] == e) else 'ANALYZE_ONLY'}"
             + f"{play_txt}\n\n"
             + f"🧩 SUPPORTS\n{self.support_quality_debug_text(candidate, s1, s2)}\n\n"
             + f"📊 DEBUG\n{debug_txt}"
@@ -1530,21 +1589,26 @@ class SignalAnalyzer:
 
 # ===================== LOOP ================================
 
-bot = SignalAnalyzer()
+bot = SNIPER282PRO()
 
 async def live():
     app = ApplicationBuilder().token(TOKEN).build()
 
     bot._load_state()
 
-    es = parse_site()
-    for e, nums in es:
-        bot.update_history(nums)
-        bot.max_e = max(bot.max_e, e)
+    if not bot.last_draws:
+        es = parse_site()
+        for e, nums in es:
+            bot.update_history(nums)
+            bot.max_e = max(bot.max_e, e)
+    else:
+        es = parse_site()
+        for e, nums in es:
+            bot.max_e = max(bot.max_e, e)
 
     bot.profile = bot.analyze_cluster_profile()
 
-    await bot.tg(app, "🚀 SNIPER v28.1 ANALYZER + PLAY ENGINE AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v28.2 PRO AVVIATO")
     await bot.send_profile(app)
 
     while True:
