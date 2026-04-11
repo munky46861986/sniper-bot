@@ -1,11 +1,13 @@
 # ============================================================
-# 🚀 SNIPER v28.0 — LIVE SIGNAL ANALYZER LEGAL
-# Live analyzer su estrazioni 10eLotto 5 minuti
+# 🚀 SNIPER v28.1 — ANALYZER + PLAY ENGINE
+#
 # - parsing live
 # - cluster profile
 # - supporti REAL_ALIVE / FAKE_ALIVE / DEAD
 # - setup FORTE / MEDIO / DEBOLE
-# - tracking esito entro 3 colpi
+# - tracking setup entro 3 colpi
+# - PLAY ENGINE live
+# - hit ambata / hit ambo / stop
 # - log CSV completo
 # ============================================================
 
@@ -51,6 +53,7 @@ TRACK_HORIZON_COLPI = 3
 LOG_DIR = "logs"
 SETUP_LOG_CSV = os.path.join(LOG_DIR, "sniper_setup_log.csv")
 FOLLOWUP_LOG_CSV = os.path.join(LOG_DIR, "sniper_followup_log.csv")
+PLAY_LOG_CSV = os.path.join(LOG_DIR, "sniper_play_log_live.csv")
 STATE_FILE = os.path.join(LOG_DIR, "sniper_analyzer_state.json")
 
 MAX_RECENT_DRAW_IDS = 50
@@ -58,6 +61,12 @@ MAX_RECENT_DRAW_IDS = 50
 # alert policy
 ALERT_STRONG_ONLY = False
 SEND_PROFILE_UPDATES = True
+
+# play engine
+ENABLE_PLAYS = True
+PLAY_HORIZON_COLPI = 3
+PLAY_OPEN_ON_FORTE = True
+PLAY_OPEN_ON_MEDIO_REAL = True
 
 # ===================== WEIGHTS ==============================
 
@@ -183,6 +192,9 @@ class SignalAnalyzer:
         self.setup_id = 0
         self.open_setups = []
 
+        self.play_id = 0
+        self.active_play = None
+
         os.makedirs(LOG_DIR, exist_ok=True)
         self._init_csv_logs()
 
@@ -201,6 +213,8 @@ class SignalAnalyzer:
             "setup_id": self.setup_id,
             "open_setups": self.open_setups,
             "last_draws": self.last_draws[-HISTORY_MAX:],
+            "play_id": self.play_id,
+            "active_play": self.active_play,
         }
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -224,6 +238,8 @@ class SignalAnalyzer:
             self.setup_id = data.get("setup_id", 0)
             self.open_setups = data.get("open_setups", [])
             self.last_draws = data.get("last_draws", [])[-HISTORY_MAX:]
+            self.play_id = data.get("play_id", 0)
+            self.active_play = data.get("active_play", None)
         except Exception:
             pass
 
@@ -254,6 +270,18 @@ class SignalAnalyzer:
                     "candidate", "support1", "support2",
                     "candidate_seen", "support1_seen", "support2_seen",
                     "candidate_plus_s1", "candidate_plus_s2"
+                ])
+
+        if not os.path.exists(PLAY_LOG_CSV):
+            with open(PLAY_LOG_CSV, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow([
+                    "ts", "play_id", "open_extraction", "start_extraction", "mode",
+                    "candidate", "support1", "support2",
+                    "setup_quality", "support_quality",
+                    "eval_extraction", "colpo",
+                    "hit_ambata", "hit_ambo1", "hit_ambo2",
+                    "result"
                 ])
 
     def _now_str(self):
@@ -690,7 +718,6 @@ class SignalAnalyzer:
     def support_structure_bias(self, ambata, n):
         if n is None:
             return -999.0
-
         pair_component = self.pair_score(ambata, n)
         rot_component = self.transition_score(ambata, n) + self.transition_score(n, ambata)
         return round(pair_component * 0.9 + rot_component * 0.25, 2)
@@ -698,7 +725,6 @@ class SignalAnalyzer:
     def support_life_bias(self, n):
         if n is None:
             return -999.0
-
         h = self.heat(n)
         l = self.lag(n)
         d = self.dominance_count(n, 6)
@@ -1200,6 +1226,150 @@ class SignalAnalyzer:
         self.open_setups = [x for x in self.open_setups if x["remaining"] > 0]
         return completed
 
+    # ===================== PLAY ENGINE =======================
+
+    def should_open_play(self, candidate, setup_quality, support_quality):
+        if not ENABLE_PLAYS:
+            return False
+
+        if setup_quality == "FORTE" and PLAY_OPEN_ON_FORTE:
+            return True
+
+        if (
+            setup_quality == "MEDIO"
+            and PLAY_OPEN_ON_MEDIO_REAL
+            and support_quality == "REAL_ALIVE"
+        ):
+            return True
+
+        return False
+
+    def open_play(self, open_extraction, candidate, support1, support2, setup_quality, support_quality):
+        self.play_id += 1
+        self.active_play = {
+            "play_id": self.play_id,
+            "open_extraction": open_extraction,
+            "start_extraction": open_extraction + 1,
+            "mode": "LIVE_PLAY",
+            "candidate": candidate,
+            "support1": support1,
+            "support2": support2,
+            "setup_quality": setup_quality,
+            "support_quality": support_quality,
+            "colpi_done": 0,
+            "max_colpi": PLAY_HORIZON_COLPI,
+        }
+
+    def close_play(self, result, eval_extraction=None, colpo=None, hit_ambata=0, hit_ambo1=0, hit_ambo2=0):
+        if not self.active_play:
+            return
+
+        p = self.active_play
+
+        with open(PLAY_LOG_CSV, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                self._now_str(),
+                p["play_id"],
+                p["open_extraction"],
+                p["start_extraction"],
+                p["mode"],
+                p["candidate"],
+                p["support1"],
+                p["support2"],
+                p["setup_quality"],
+                p["support_quality"],
+                eval_extraction,
+                colpo,
+                int(hit_ambata),
+                int(hit_ambo1),
+                int(hit_ambo2),
+                result
+            ])
+
+        self.active_play = None
+
+    def log_play_shot(self, eval_extraction, colpo, hit_ambata, hit_ambo1, hit_ambo2):
+        if not self.active_play:
+            return
+
+        p = self.active_play
+
+        with open(PLAY_LOG_CSV, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                self._now_str(),
+                p["play_id"],
+                p["open_extraction"],
+                p["start_extraction"],
+                p["mode"],
+                p["candidate"],
+                p["support1"],
+                p["support2"],
+                p["setup_quality"],
+                p["support_quality"],
+                eval_extraction,
+                colpo,
+                int(hit_ambata),
+                int(hit_ambo1),
+                int(hit_ambo2),
+                "SHOT"
+            ])
+
+    async def process_active_play(self, app, e, nums):
+        if not self.active_play:
+            return False
+
+        p = self.active_play
+
+        if e < p["start_extraction"]:
+            return False
+
+        s = set(nums)
+
+        p["colpi_done"] += 1
+        colpo = p["colpi_done"]
+
+        candidate = p["candidate"]
+        s1 = p["support1"]
+        s2 = p["support2"]
+
+        hit_ambata = candidate in s
+        hit_ambo1 = hit_ambata and (s1 in s if s1 is not None else False)
+        hit_ambo2 = hit_ambata and (s2 in s if s2 is not None else False)
+
+        self.log_play_shot(e, colpo, hit_ambata, hit_ambo1, hit_ambo2)
+
+        if hit_ambo1:
+            await self.tg(app, f"💥 HIT AMBO {candidate}-{s1}")
+
+        if hit_ambo2:
+            await self.tg(app, f"💥 HIT AMBO {candidate}-{s2}")
+
+        if hit_ambata:
+            await self.tg(
+                app,
+                "🔥 HIT AMBATA\n"
+                f"• play_id = {p['play_id']}\n"
+                f"• candidate_cluster = {candidate}\n"
+                f"• colpo = {colpo}"
+            )
+            self.close_play("HIT", e, colpo, hit_ambata, hit_ambo1, hit_ambo2)
+            return True
+
+        if colpo >= p["max_colpi"]:
+            await self.tg(
+                app,
+                "🛑 STOP PLAY\n"
+                f"• play_id = {p['play_id']}\n"
+                f"• candidate_cluster = {candidate}\n"
+                f"• colpi = {colpo}"
+            )
+            self.close_play("STOP", e, colpo, hit_ambata, hit_ambo1, hit_ambo2)
+            return True
+
+        return False
+
     # ===================== PROFILE MESSAGES ==================
 
     async def send_profile(self, app, title="🧠 WARMUP ANALYSIS"):
@@ -1256,6 +1426,9 @@ class SignalAnalyzer:
             f"🎱 {', '.join(f'{x:02d}' for x in nums)}"
         )
 
+        # ---------------- PLAY ATTIVO ----------------
+        await self.process_active_play(app, e, nums)
+
         completed = self.follow_setup(e, nums)
         for item in completed:
             if item["confirmed"]:
@@ -1278,6 +1451,7 @@ class SignalAnalyzer:
                 )
 
         if len(self.last_draws) < 10:
+            self._save_state()
             return
 
         candidate, debug_rows, reason = self.choose_candidate_normal()
@@ -1315,6 +1489,9 @@ class SignalAnalyzer:
         self.push_signal_number(candidate)
         self.open_setup(e, candidate, s1, s2, reason, debug_rows)
 
+        if self.should_open_play(candidate, quality, sq):
+            self.open_play(e, candidate, s1, s2, quality, sq)
+
         debug_txt = "\n".join(
             [
                 f"{r['n']}: score={r['score']} heat={r['heat']} lag={r['lag']} dom={r['dom']} "
@@ -1325,6 +1502,15 @@ class SignalAnalyzer:
             ]
         )
 
+        play_txt = ""
+        if self.active_play and self.active_play["open_extraction"] == e:
+            play_txt = (
+                f"\n🎯 PLAY APERTO"
+                f"\n• play_id = {self.active_play['play_id']}"
+                f"\n• da estrazione {self.active_play['start_extraction']}"
+                f"\n• per {self.active_play['max_colpi']} colpi"
+            )
+
         await self.tg(
             app,
             f"🧭 SETUP {quality}\n"
@@ -1333,7 +1519,8 @@ class SignalAnalyzer:
             f"• support_axis_1 = {candidate}-{s1}\n"
             + (f"• support_axis_2 = {candidate}-{s2}\n" if s2 is not None else "")
             + f"• support_quality = {sq}\n"
-            + f"• horizon = {TRACK_HORIZON_COLPI} colpi\n\n"
+            + f"• horizon = {TRACK_HORIZON_COLPI} colpi"
+            + f"{play_txt}\n\n"
             + f"🧩 SUPPORTS\n{self.support_quality_debug_text(candidate, s1, s2)}\n\n"
             + f"📊 DEBUG\n{debug_txt}"
         )
@@ -1357,7 +1544,7 @@ async def live():
 
     bot.profile = bot.analyze_cluster_profile()
 
-    await bot.tg(app, "🚀 SNIPER v28.0 ANALYZER AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v28.1 ANALYZER + PLAY ENGINE AVVIATO")
     await bot.send_profile(app)
 
     while True:
