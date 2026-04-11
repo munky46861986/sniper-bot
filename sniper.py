@@ -1,15 +1,13 @@
 # ============================================================
-# 🚀 SNIPER v28.2 PRO
-# HYBRID ENGINE:
-# - cluster engine base v27.1h
-# - support quality REAL_ALIVE / FAKE_ALIVE / DEAD
-# - dedup robusto
-# - cooldown 5
-# - filtro duro 15
-# - setup analyzer
-# - play engine live
-# - hit ambata / hit ambo / stop
-# - stato persistente
+# 🚀 SNIPER v28.3 LITE — DIRECT PLAY ENGINE
+# semplice, fluido, una estrazione alla volta
+# NO SETUP
+# NO FOLLOWUP SETUP
+# SOLO:
+# - profile
+# - candidate
+# - play diretto
+# - hit / stop
 # ============================================================
 
 import asyncio
@@ -47,36 +45,18 @@ TARGET = [5, 10, 15, 50]
 
 LOOP_SEC = 60
 HISTORY_MAX = 160
-
 WARMUP_WINDOW = 60
 PROFILE_UPDATE_EVERY = 10
-
-TRACK_HORIZON_COLPI = 3
 PLAY_HORIZON_COLPI = 3
 
 LOG_DIR = "logs"
-SIGNAL_LOG_CSV = os.path.join(LOG_DIR, "sniper_signal_log.csv")
-SETUP_LOG_CSV = os.path.join(LOG_DIR, "sniper_setup_log.csv")
-FOLLOWUP_LOG_CSV = os.path.join(LOG_DIR, "sniper_followup_log.csv")
-PLAY_LOG_CSV = os.path.join(LOG_DIR, "sniper_play_log_live.csv")
-STATE_FILE = os.path.join(LOG_DIR, "sniper_v282_state.json")
+PLAY_LOG_CSV = os.path.join(LOG_DIR, "sniper_play_log_lite.csv")
+STATE_FILE = os.path.join(LOG_DIR, "sniper_v283_lite_state.json")
 
 MAX_RECENT_DRAW_IDS = 50
-
-# ===================== POLICY ===============================
-
 SEND_PROFILE_UPDATES = True
-ENABLE_PLAYS = True
 
-# apertura play prudente
-PLAY_OPEN_ON_FORTE = True
-PLAY_OPEN_ON_MEDIO_REAL = True
-PLAY_OPEN_ON_MEDIO_FAKE = False
-
-# se True, non apre play se c'è già un play attivo
-ONE_PLAY_AT_A_TIME = True
-
-# ===================== BASE WEIGHTS =========================
+# ===================== WEIGHTS ==============================
 
 W_HEAT = 1.8
 W_LAG = 0.6
@@ -124,21 +104,12 @@ W_PENALTY_50_THIN = -0.8
 
 PAIR_WEIGHT = 0.4
 
-# ===================== FILTRI ===============================
-
 MIN_LIFE_BIAS_15 = 2.2
 MIN_LIFE_BIAS_50 = 3.0
 
 ALIVE_HEAT_MIN = 2
 ALIVE_LAG_MAX = 6
 ALIVE_DOM_MIN = 1
-
-STRONG_ALIVE_HEAT = 3
-STRONG_ALIVE_LAG = 5
-
-ISOLATED_15_SCORE_PENALTY = 4.2
-STRUCTURAL_ONLY_15_PENALTY = 3.2
-REENTRY_15_AFTER_STOP_BLOCK = 2
 
 REAL_ALIVE_MIN_SCORE = 5.2
 FAKE_ALIVE_MIN_SCORE = 2.4
@@ -151,13 +122,7 @@ FAKE_SB_ADVANTAGE = 2.5
 DEAD_HEAT_MAX = 1
 DEAD_LAG_MIN = 8
 
-BLOCK_15_DEAD_SUPPORTS = True
-BLOCK_15_FAKE_LOW_PRESSURE = True
 MIN_PRESSURE_15_FAKE = 11.0
-
-# play-specific
-MIN_PLAY_SCORE_FORTE = 12.0
-MIN_PLAY_SCORE_MEDIO = 8.0
 
 # ============================================================
 
@@ -188,15 +153,13 @@ def parse_site():
 
     return sorted(out.items())
 
-
 def draw_fingerprint(e: int, nums: list[int]) -> str:
     raw = f"{e}-{'-'.join(map(str, nums))}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
-
 # ============================================================
 
-class SNIPER282PRO:
+class SNIPER283LITE:
     def __init__(self):
         self.max_e = 0
         self.last_draws = []
@@ -217,16 +180,13 @@ class SNIPER282PRO:
         self.last_hit_number = None
         self.last_hit_extraction = None
 
-        self.setup_id = 0
-        self.open_setups = []
-
         self.play_id = 0
         self.active_play = None
 
         os.makedirs(LOG_DIR, exist_ok=True)
         self._init_csv_logs()
 
-    # ===================== FILE STATE =======================
+    # ===================== STATE ============================
 
     def _save_state(self):
         data = {
@@ -243,8 +203,6 @@ class SNIPER282PRO:
             "last_stop_count_same": self.last_stop_count_same,
             "last_hit_number": self.last_hit_number,
             "last_hit_extraction": self.last_hit_extraction,
-            "setup_id": self.setup_id,
-            "open_setups": self.open_setups,
             "play_id": self.play_id,
             "active_play": self.active_play,
         }
@@ -272,58 +230,22 @@ class SNIPER282PRO:
             self.last_stop_count_same = data.get("last_stop_count_same", 0)
             self.last_hit_number = data.get("last_hit_number", None)
             self.last_hit_extraction = data.get("last_hit_extraction", None)
-            self.setup_id = data.get("setup_id", 0)
-            self.open_setups = data.get("open_setups", [])
             self.play_id = data.get("play_id", 0)
             self.active_play = data.get("active_play", None)
         except Exception:
             pass
 
-    # ===================== LOGS ==============================
+    # ===================== LOGS =============================
 
     def _init_csv_logs(self):
-        if not os.path.exists(SIGNAL_LOG_CSV):
-            with open(SIGNAL_LOG_CSV, "w", newline="", encoding="utf-8") as f:
-                w = csv.writer(f)
-                w.writerow([
-                    "ts", "extraction", "candidate", "support1", "support2",
-                    "decision", "reason", "state", "pressure", "gap",
-                    "life_bias", "structure_bias", "support_quality"
-                ])
-
-        if not os.path.exists(SETUP_LOG_CSV):
-            with open(SETUP_LOG_CSV, "w", newline="", encoding="utf-8") as f:
-                w = csv.writer(f)
-                w.writerow([
-                    "ts", "setup_id", "open_extraction",
-                    "candidate", "support1", "support2",
-                    "setup_quality", "support_quality",
-                    "state", "pressure", "gap",
-                    "heat_5", "heat_10", "heat_15", "heat_50",
-                    "lag_5", "lag_10", "lag_15", "lag_50",
-                    "dom_5", "dom_10", "dom_15", "dom_50",
-                    "leader_presence", "leader_conversion",
-                    "life_bias", "structure_bias",
-                    "reason"
-                ])
-
-        if not os.path.exists(FOLLOWUP_LOG_CSV):
-            with open(FOLLOWUP_LOG_CSV, "w", newline="", encoding="utf-8") as f:
-                w = csv.writer(f)
-                w.writerow([
-                    "ts", "setup_id", "eval_extraction", "colpo",
-                    "candidate", "support1", "support2",
-                    "candidate_seen", "support1_seen", "support2_seen",
-                    "candidate_plus_s1", "candidate_plus_s2"
-                ])
-
         if not os.path.exists(PLAY_LOG_CSV):
             with open(PLAY_LOG_CSV, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 w.writerow([
-                    "ts", "play_id", "open_extraction", "start_extraction", "mode",
+                    "ts", "play_id", "open_extraction", "start_extraction",
                     "candidate", "support1", "support2",
-                    "setup_quality", "support_quality",
+                    "support_quality", "state", "pressure", "gap",
+                    "life_bias", "structure_bias",
                     "eval_extraction", "colpo",
                     "hit_ambata", "hit_ambo1", "hit_ambo2",
                     "result"
@@ -332,67 +254,13 @@ class SNIPER282PRO:
     def _now_str(self):
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    def log_signal(self, extraction, candidate, support1, support2, decision, reason, state, pressure, gap, life_bias, structure_bias, support_quality):
-        with open(SIGNAL_LOG_CSV, "a", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow([
-                self._now_str(),
-                extraction,
-                candidate,
-                support1,
-                support2,
-                decision,
-                reason,
-                state,
-                pressure,
-                gap,
-                round(life_bias, 2),
-                round(structure_bias, 2),
-                support_quality
-            ])
-
-    def log_setup(self, extraction_open, candidate, support1, support2, reason, rows):
-        self.setup_id += 1
-        m = self._current_metrics()
-        setup_quality = self.setup_quality(candidate, rows)
-        support_quality = self.support_quality_label(candidate, support1, support2)
-        top = rows[0]
-
-        with open(SETUP_LOG_CSV, "a", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow([
-                self._now_str(), self.setup_id, extraction_open,
-                candidate, support1, support2,
-                setup_quality, support_quality,
-                m["state"], m["pressure"], m["gap"],
-                m["heat_5"], m["heat_10"], m["heat_15"], m["heat_50"],
-                m["lag_5"], m["lag_10"], m["lag_15"], m["lag_50"],
-                m["dom_5"], m["dom_10"], m["dom_15"], m["dom_50"],
-                m["leader_presence"], m["leader_conversion"],
-                top["life_bias"], top["structure_bias"],
-                reason
-            ])
-
-        self.open_setups.append({
-            "setup_id": self.setup_id,
-            "open_extraction": extraction_open,
-            "candidate": candidate,
-            "support1": support1,
-            "support2": support2,
-            "remaining": TRACK_HORIZON_COLPI,
-            "confirmed": False,
-            "setup_quality": setup_quality,
-        })
-
-        return self.setup_id, setup_quality, support_quality
-
-    # ===================== TELEGRAM ==========================
+    # ===================== TELEGRAM =========================
 
     async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
         await asyncio.sleep(0.15)
 
-    # ===================== HISTORY ===========================
+    # ===================== HISTORY ==========================
 
     def update_history(self, nums):
         self.last_draws.append(nums)
@@ -423,28 +291,7 @@ class SNIPER282PRO:
         fp = draw_fingerprint(e, nums)
         return fp in self.recent_fingerprints
 
-    # ===================== FEATURES ==========================
-
-    def _current_metrics(self):
-        return {
-            "pressure": round(self.cluster_pressure(), 2),
-            "gap": self.cluster_gap(),
-            "state": self.profile.get("state", "n/a") if self.profile else "n/a",
-            "leader_presence": self.profile.get("leader_presence", "n/a") if self.profile else "n/a",
-            "leader_conversion": self.profile.get("leader_conversion", "n/a") if self.profile else "n/a",
-            "heat_5": self.heat(5),
-            "heat_10": self.heat(10),
-            "heat_15": self.heat(15),
-            "heat_50": self.heat(50),
-            "lag_5": self.lag(5),
-            "lag_10": self.lag(10),
-            "lag_15": self.lag(15),
-            "lag_50": self.lag(50),
-            "dom_5": self.dominance_count(5, 6),
-            "dom_10": self.dominance_count(10, 6),
-            "dom_15": self.dominance_count(15, 6),
-            "dom_50": self.dominance_count(50, 6),
-        }
+    # ===================== FEATURES =========================
 
     def heat(self, n, draws=None):
         if draws is None:
@@ -526,28 +373,7 @@ class SNIPER282PRO:
 
         return -pen
 
-    def consecutive_stops(self):
-        c = 0
-        for r in reversed(self.recent_results):
-            if r == "STOP":
-                c += 1
-            else:
-                break
-        return c
-
-    def is_alive(self, n):
-        h = self.heat(n)
-        l = self.lag(n)
-        d = self.dominance_count(n, 6)
-        return h >= ALIVE_HEAT_MIN and l <= ALIVE_LAG_MAX and d >= ALIVE_DOM_MIN
-
-    def is_semi_alive(self, n):
-        h = self.heat(n)
-        l = self.lag(n)
-        d = self.dominance_count(n, 6)
-        return (h >= ALIVE_HEAT_MIN and l <= ALIVE_LAG_MAX) or d >= 2
-
-    # ===================== PROFILE ENGINE ====================
+    # ===================== PROFILE ENGINE ===================
 
     def pair_score_raw(self, pair_counts, a, b):
         key = tuple(sorted((a, b)))
@@ -744,7 +570,7 @@ class SNIPER282PRO:
 
         return bonus
 
-    # ===================== SUPPORT QUALITY ===================
+    # ===================== SUPPORT QUALITY ==================
 
     def support_score(self, ambata, n):
         if n is None:
@@ -878,32 +704,12 @@ class SNIPER282PRO:
                 continue
             d = self.support_state_details(ambata, s)
             parts.append(
-                f"{s}: {d['label']} "
-                f"score={d['score']} life={d['life']} struct={d['struct']} "
+                f"{s}: {d['label']} score={d['score']} life={d['life']} struct={d['struct']} "
                 f"heat={d['heat']} lag={d['lag']} dom={d['dom']}"
             )
         return "\n".join(parts) if parts else "no_supports"
 
-    # ===================== SUPPORTS ==========================
-
-    def support_alive_score(self, ambata, n):
-        if n is None:
-            return -999.0
-
-        h = self.heat(n)
-        l = self.lag(n)
-        d = self.dominance_count(n, 6)
-        ps = self.pair_score(ambata, n)
-        ts = self.transition_score(ambata, n) + self.transition_score(n, ambata)
-
-        score = 0.0
-        score += h * 1.5
-        score -= l * 0.45
-        score += d * 1.1
-        score += ps * 0.6
-        score += ts * 0.18
-
-        return round(score, 2)
+    # ===================== SUPPORTS =========================
 
     def supports_for_candidate(self, a):
         pressure = self.cluster_pressure()
@@ -983,7 +789,7 @@ class SNIPER282PRO:
 
         return None, None
 
-    # ===================== SCORING ===========================
+    # ===================== SCORING ==========================
 
     def core_rotation_bonus(self, n):
         if not self.last_draws:
@@ -1032,9 +838,9 @@ class SNIPER282PRO:
         s1, s2 = self.supports_for_candidate(candidate)
         sq = self.support_quality_label(candidate, s1, s2)
 
-        if candidate == 15 and BLOCK_15_DEAD_SUPPORTS and sq == "DEAD":
+        if candidate == 15 and sq == "DEAD":
             return "15_DEAD_SUPPORTS"
-        if candidate == 15 and BLOCK_15_FAKE_LOW_PRESSURE and sq == "FAKE_ALIVE" and top["pressure"] < MIN_PRESSURE_15_FAKE:
+        if candidate == 15 and sq == "FAKE_ALIVE" and top["pressure"] < MIN_PRESSURE_15_FAKE:
             return "15_FAKE_SUPPORTS"
         if candidate == 15 and top["life_bias"] < MIN_LIFE_BIAS_15 and top["structure_bias"] > top["life_bias"]:
             return "15_STRUCTURAL_ONLY"
@@ -1139,7 +945,6 @@ class SNIPER282PRO:
             structure_bias = round(rot + reg + pairb, 2)
             life_bias = round((h * W_HEAT) - (l * W_LAG) + (W_DOMINANCE if dom >= 3 else 0), 2)
 
-            # cooldown sul 5
             if n == 5:
                 recent_same_5 = sum(1 for x in self.last_signal_numbers[-3:] if x == 5)
                 if recent_same_5 >= 2 and life_bias < 8.5:
@@ -1190,110 +995,34 @@ class SNIPER282PRO:
 
         return rows[0]["n"], rows, "OK"
 
-    # ===================== SETUP QUALITY =====================
+    # ===================== PLAY ENGINE ======================
 
-    def setup_quality(self, candidate, rows):
-        top = rows[0]
-        s1, s2 = self.supports_for_candidate(candidate)
-        sq = self.support_quality_label(candidate, s1, s2)
-
-        if candidate == 15 and sq == "DEAD":
-            return "DEBOLE"
-        if candidate == 15 and sq == "FAKE_ALIVE" and top["pressure"] < MIN_PRESSURE_15_FAKE:
-            return "DEBOLE"
-
-        if top["score"] >= MIN_PLAY_SCORE_FORTE and sq == "REAL_ALIVE":
-            return "FORTE"
-        if top["score"] >= MIN_PLAY_SCORE_MEDIO and sq in ("REAL_ALIVE", "FAKE_ALIVE"):
-            return "MEDIO"
-        return "DEBOLE"
-
-    # ===================== FOLLOWUP SETUPS ===================
-
-    def follow_setup(self, eval_extraction, nums):
-        if not self.open_setups:
-            return []
-
-        s = set(nums)
-        completed = []
-
-        for item in self.open_setups:
-            c = item["candidate"]
-            s1 = item["support1"]
-            s2 = item["support2"]
-
-            candidate_seen = c in s
-            s1_seen = s1 in s if s1 is not None else False
-            s2_seen = s2 in s if s2 is not None else False
-
-            with open(FOLLOWUP_LOG_CSV, "a", newline="", encoding="utf-8") as f:
-                w = csv.writer(f)
-                w.writerow([
-                    self._now_str(),
-                    item["setup_id"],
-                    eval_extraction,
-                    TRACK_HORIZON_COLPI - item["remaining"] + 1,
-                    c, s1, s2,
-                    int(candidate_seen),
-                    int(s1_seen),
-                    int(s2_seen),
-                    int(candidate_seen and s1_seen),
-                    int(candidate_seen and s2_seen),
-                ])
-
-            if candidate_seen:
-                item["confirmed"] = True
-
-            item["remaining"] -= 1
-
-            if item["remaining"] <= 0:
-                completed.append(item)
-
-        self.open_setups = [x for x in self.open_setups if x["remaining"] > 0]
-        return completed
-
-    # ===================== PLAY ENGINE =======================
-
-    def should_open_play(self, candidate, setup_quality, support_quality):
-        if not ENABLE_PLAYS:
-            return False
-
-        if ONE_PLAY_AT_A_TIME and self.active_play is not None:
-            return False
-
-        if setup_quality == "FORTE" and PLAY_OPEN_ON_FORTE:
-            return True
-
-        if setup_quality == "MEDIO" and support_quality == "REAL_ALIVE" and PLAY_OPEN_ON_MEDIO_REAL:
-            return True
-
-        if setup_quality == "MEDIO" and support_quality == "FAKE_ALIVE" and PLAY_OPEN_ON_MEDIO_FAKE:
-            return True
-
-        return False
-
-    def open_play(self, open_extraction, candidate, support1, support2, setup_quality, support_quality):
+    def open_play(self, open_extraction, candidate, support1, support2, top_row):
         self.play_id += 1
+        sq = self.support_quality_label(candidate, support1, support2)
+
         self.active_play = {
             "play_id": self.play_id,
             "open_extraction": open_extraction,
             "start_extraction": open_extraction + 1,
-            "mode": "LIVE_PLAY",
             "candidate": candidate,
             "support1": support1,
             "support2": support2,
-            "setup_quality": setup_quality,
-            "support_quality": support_quality,
+            "support_quality": sq,
+            "state": top_row["state"],
+            "pressure": top_row["pressure"],
+            "gap": top_row["gap"],
+            "life_bias": top_row["life_bias"],
+            "structure_bias": top_row["structure_bias"],
             "colpi_done": 0,
             "max_colpi": PLAY_HORIZON_COLPI,
         }
 
-    def log_play_shot(self, eval_extraction, colpo, hit_ambata, hit_ambo1, hit_ambo2):
+    def _write_play_log(self, result, eval_extraction=None, colpo=None, hit_ambata=0, hit_ambo1=0, hit_ambo2=0):
         if not self.active_play:
             return
 
         p = self.active_play
-
         with open(PLAY_LOG_CSV, "a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow([
@@ -1301,39 +1030,15 @@ class SNIPER282PRO:
                 p["play_id"],
                 p["open_extraction"],
                 p["start_extraction"],
-                p["mode"],
                 p["candidate"],
                 p["support1"],
                 p["support2"],
-                p["setup_quality"],
                 p["support_quality"],
-                eval_extraction,
-                colpo,
-                int(hit_ambata),
-                int(hit_ambo1),
-                int(hit_ambo2),
-                "SHOT"
-            ])
-
-    def close_play(self, result, eval_extraction=None, colpo=None, hit_ambata=0, hit_ambo1=0, hit_ambo2=0):
-        if not self.active_play:
-            return
-
-        p = self.active_play
-
-        with open(PLAY_LOG_CSV, "a", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow([
-                self._now_str(),
-                p["play_id"],
-                p["open_extraction"],
-                p["start_extraction"],
-                p["mode"],
-                p["candidate"],
-                p["support1"],
-                p["support2"],
-                p["setup_quality"],
-                p["support_quality"],
+                p["state"],
+                p["pressure"],
+                p["gap"],
+                p["life_bias"],
+                p["structure_bias"],
                 eval_extraction,
                 colpo,
                 int(hit_ambata),
@@ -1342,35 +1047,15 @@ class SNIPER282PRO:
                 result
             ])
 
-        candidate = p["candidate"]
-
-        if result == "HIT":
-            self.last_hit_number = candidate
-            self.last_hit_extraction = eval_extraction
-            self.last_stop_number = None
-            self.last_stop_count_same = 0
-            self.push_result("HIT")
-        elif result == "STOP":
-            if self.last_stop_number == candidate:
-                self.last_stop_count_same += 1
-            else:
-                self.last_stop_number = candidate
-                self.last_stop_count_same = 1
-            self.push_result("STOP")
-
-        self.active_play = None
-
     async def process_active_play(self, app, e, nums):
         if not self.active_play:
-            return False
+            return
 
         p = self.active_play
-
         if e < p["start_extraction"]:
-            return False
+            return
 
         s = set(nums)
-
         p["colpi_done"] += 1
         colpo = p["colpi_done"]
 
@@ -1382,7 +1067,7 @@ class SNIPER282PRO:
         hit_ambo1 = hit_ambata and (s1 in s if s1 is not None else False)
         hit_ambo2 = hit_ambata and (s2 in s if s2 is not None else False)
 
-        self.log_play_shot(e, colpo, hit_ambata, hit_ambo1, hit_ambo2)
+        self._write_play_log("SHOT", e, colpo, hit_ambata, hit_ambo1, hit_ambo2)
 
         if hit_ambo1:
             await self.tg(app, f"💥 HIT AMBO {candidate}-{s1}")
@@ -1398,8 +1083,15 @@ class SNIPER282PRO:
                 f"• candidate = {candidate}\n"
                 f"• colpo = {colpo}"
             )
-            self.close_play("HIT", e, colpo, hit_ambata, hit_ambo1, hit_ambo2)
-            return True
+
+            self._write_play_log("HIT", e, colpo, hit_ambata, hit_ambo1, hit_ambo2)
+            self.last_hit_number = candidate
+            self.last_hit_extraction = e
+            self.last_stop_number = None
+            self.last_stop_count_same = 0
+            self.push_result("HIT")
+            self.active_play = None
+            return
 
         if colpo >= p["max_colpi"]:
             await self.tg(
@@ -1409,12 +1101,18 @@ class SNIPER282PRO:
                 f"• candidate = {candidate}\n"
                 f"• colpi = {colpo}"
             )
-            self.close_play("STOP", e, colpo, hit_ambata, hit_ambo1, hit_ambo2)
-            return True
 
-        return False
+            self._write_play_log("STOP", e, colpo, hit_ambata, hit_ambo1, hit_ambo2)
+            if self.last_stop_number == candidate:
+                self.last_stop_count_same += 1
+            else:
+                self.last_stop_number = candidate
+                self.last_stop_count_same = 1
 
-    # ===================== PROFILE MESSAGES ==================
+            self.push_result("STOP")
+            self.active_play = None
+
+    # ===================== PROFILE MESSAGE ==================
 
     async def send_profile(self, app, title="🧠 WARMUP ANALYSIS"):
         if not self.profile:
@@ -1448,7 +1146,7 @@ class SNIPER282PRO:
             f"💥 TOP PAIRS\n{pair_txt}"
         )
 
-    # ===================== MAIN ==============================
+    # ===================== MAIN =============================
 
     async def on_new(self, app, e, nums):
         if self.is_duplicate_draw(e, nums):
@@ -1470,30 +1168,13 @@ class SNIPER282PRO:
             f"🎱 {', '.join(f'{x:02d}' for x in nums)}"
         )
 
-        # play attivo
+        # prima chiude o aggiorna eventuale play attivo
         await self.process_active_play(app, e, nums)
 
-        # followup setup
-        completed = self.follow_setup(e, nums)
-        for item in completed:
-            if item["confirmed"]:
-                self.push_result("CONFIRMED")
-                await self.tg(
-                    app,
-                    "✅ SETUP CONFERMATO ENTRO 3 COLPI\n"
-                    f"• setup_id = {item['setup_id']}\n"
-                    f"• candidate = {item['candidate']}\n"
-                    f"• setup_quality = {item['setup_quality']}"
-                )
-            else:
-                self.push_result("FAIL")
-                await self.tg(
-                    app,
-                    "❌ SETUP NON CONFERMATO ENTRO 3 COLPI\n"
-                    f"• setup_id = {item['setup_id']}\n"
-                    f"• candidate = {item['candidate']}\n"
-                    f"• setup_quality = {item['setup_quality']}"
-                )
+        # se c'è ancora un play attivo, non apre altro
+        if self.active_play is not None:
+            self._save_state()
+            return
 
         if len(self.last_draws) < 10:
             self._save_state()
@@ -1514,41 +1195,22 @@ class SNIPER282PRO:
                 )
                 await self.tg(
                     app,
-                    "⏸ SIGNAL BLOCKED\n"
+                    "⏸ NO PLAY\n"
                     f"• reason={reason}\n\n"
                     f"📊 DEBUG\n{debug_txt}"
                 )
             else:
-                await self.tg(app, f"⏸ SIGNAL BLOCKED\n• reason={reason}")
+                await self.tg(app, f"⏸ NO PLAY\n• reason={reason}")
+
             self._save_state()
             return
 
         top = debug_rows[0]
         s1, s2 = self.supports_for_candidate(candidate)
         sq = self.support_quality_label(candidate, s1, s2)
-        quality = self.setup_quality(candidate, debug_rows)
 
         self.push_signal_number(candidate)
-
-        self.log_signal(
-            extraction=e,
-            candidate=candidate,
-            support1=s1,
-            support2=s2,
-            decision="PLAY_CANDIDATE",
-            reason=reason,
-            state=top["state"],
-            pressure=top["pressure"],
-            gap=top["gap"],
-            life_bias=top["life_bias"],
-            structure_bias=top["structure_bias"],
-            support_quality=sq,
-        )
-
-        setup_id, _, _ = self.log_setup(e, candidate, s1, s2, reason, debug_rows)
-
-        if self.should_open_play(candidate, quality, sq):
-            self.open_play(e, candidate, s1, s2, quality, sq)
+        self.open_play(e, candidate, s1, s2, top)
 
         debug_txt = "\n".join(
             [
@@ -1560,26 +1222,14 @@ class SNIPER282PRO:
             ]
         )
 
-        play_txt = ""
-        if self.active_play and self.active_play["open_extraction"] == e:
-            play_txt = (
-                f"\n🎯 PLAY APERTO"
-                f"\n• play_id = {self.active_play['play_id']}"
-                f"\n• da estrazione {self.active_play['start_extraction']}"
-                f"\n• per {self.active_play['max_colpi']} colpi"
-            )
-
         await self.tg(
             app,
-            "🧭 PLAY CANDIDATE\n"
-            f"• setup_id = {setup_id}\n"
+            "🎯 PLAY\n"
             f"• candidate = {candidate}\n"
             f"• support1 = {candidate}-{s1}\n"
             + (f"• support2 = {candidate}-{s2}\n" if s2 is not None else "")
             + f"• supports_quality = {sq}\n"
-            + f"• setup_quality = {quality}\n"
-            + f"• decision = {'OPEN_PLAY' if (self.active_play and self.active_play['open_extraction'] == e) else 'ANALYZE_ONLY'}"
-            + f"{play_txt}\n\n"
+            + f"• da estrazione {self.active_play['start_extraction']} per {self.active_play['max_colpi']} colpi\n\n"
             + f"🧩 SUPPORTS\n{self.support_quality_debug_text(candidate, s1, s2)}\n\n"
             + f"📊 DEBUG\n{debug_txt}"
         )
@@ -1589,7 +1239,7 @@ class SNIPER282PRO:
 
 # ===================== LOOP ================================
 
-bot = SNIPER282PRO()
+bot = SNIPER283LITE()
 
 async def live():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -1608,7 +1258,7 @@ async def live():
 
     bot.profile = bot.analyze_cluster_profile()
 
-    await bot.tg(app, "🚀 SNIPER v28.2 PRO AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v28.3 LITE AVVIATO")
     await bot.send_profile(app)
 
     while True:
