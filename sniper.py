@@ -1,13 +1,9 @@
 # ============================================================
-# 🚀 SNIPER v28.3 LITE — DIRECT PLAY ENGINE
-# semplice, fluido, una estrazione alla volta
-# NO SETUP
-# NO FOLLOWUP SETUP
-# SOLO:
-# - profile
-# - candidate
-# - play diretto
-# - hit / stop
+# 🚀 SNIPER v28.4 PRO + AI FILTER
+# - direct play engine
+# - no setup
+# - focus ambo 15-50 / 15-5
+# - AI FILTER su ultimi draw
 # ============================================================
 
 import asyncio
@@ -50,8 +46,8 @@ PROFILE_UPDATE_EVERY = 10
 PLAY_HORIZON_COLPI = 3
 
 LOG_DIR = "logs"
-PLAY_LOG_CSV = os.path.join(LOG_DIR, "sniper_play_log_lite.csv")
-STATE_FILE = os.path.join(LOG_DIR, "sniper_v283_lite_state.json")
+PLAY_LOG_CSV = os.path.join(LOG_DIR, "sniper_play_log_v284.csv")
+STATE_FILE = os.path.join(LOG_DIR, "sniper_v284_state.json")
 
 MAX_RECENT_DRAW_IDS = 50
 SEND_PROFILE_UPDATES = True
@@ -68,10 +64,6 @@ W_GAP_RESTART = 3.0
 
 W_PENALTY_10 = -3.0
 W_OVERPLAY = -2.0
-
-MIN_SCORE_NORMAL = 5.8
-MIN_DIFF_SCORE = 1.5
-LOW_PRESSURE_BLOCK = 4.0
 
 W_CORE_5_TO_15 = 2.6
 W_CORE_15_TO_5 = 1.9
@@ -96,20 +88,13 @@ W_STATE_THIN_50 = 0.5
 W_STATE_RESTART_50 = 2.8
 W_STATE_RESTART_15 = 1.2
 
-W_BONUS_5_LIVE = 1.1
-W_BONUS_15_CONVERT = 1.5
-
-W_PENALTY_50_ACTIVE = -2.2
-W_PENALTY_50_THIN = -0.8
-
 PAIR_WEIGHT = 0.4
 
-MIN_LIFE_BIAS_15 = 2.2
-MIN_LIFE_BIAS_50 = 3.0
+# ===================== FILTERS ==============================
 
-ALIVE_HEAT_MIN = 2
-ALIVE_LAG_MAX = 6
-ALIVE_DOM_MIN = 1
+MIN_LIFE_BIAS_15 = 3.5
+MIN_PRESSURE_AMBO = 9.0
+MIN_AI_SCORE = 5.5
 
 REAL_ALIVE_MIN_SCORE = 5.2
 FAKE_ALIVE_MIN_SCORE = 2.4
@@ -122,7 +107,8 @@ FAKE_SB_ADVANTAGE = 2.5
 DEAD_HEAT_MAX = 1
 DEAD_LAG_MIN = 8
 
-MIN_PRESSURE_15_FAKE = 11.0
+# cooldown
+FIVE_COOLDOWN_LIFE_CAP = 8.2
 
 # ============================================================
 
@@ -159,7 +145,7 @@ def draw_fingerprint(e: int, nums: list[int]) -> str:
 
 # ============================================================
 
-class SNIPER283LITE:
+class SNIPER284PRO:
     def __init__(self):
         self.max_e = 0
         self.last_draws = []
@@ -245,7 +231,7 @@ class SNIPER283LITE:
                     "ts", "play_id", "open_extraction", "start_extraction",
                     "candidate", "support1", "support2",
                     "support_quality", "state", "pressure", "gap",
-                    "life_bias", "structure_bias",
+                    "ai_score", "life_bias_15",
                     "eval_extraction", "colpo",
                     "hit_ambata", "hit_ambo1", "hit_ambo2",
                     "result"
@@ -286,10 +272,12 @@ class SNIPER283LITE:
         self.recent_fingerprints = self.recent_fingerprints[-MAX_RECENT_DRAW_IDS:]
 
     def is_duplicate_draw(self, e, nums):
+        fp = draw_fingerprint(e, nums)
         if e in self.recent_extraction_ids:
             return True
-        fp = draw_fingerprint(e, nums)
-        return fp in self.recent_fingerprints
+        if fp in self.recent_fingerprints:
+            return True
+        return False
 
     # ===================== FEATURES =========================
 
@@ -355,6 +343,12 @@ class SNIPER283LITE:
             c = self.cluster_count_in_draw(draws[-(i + 1)])
             score += c * w
         return score
+
+    def life_bias_number(self, n):
+        h = self.heat(n)
+        l = self.lag(n)
+        d = self.dominance_count(n, 6)
+        return round((h * W_HEAT) - (l * W_LAG) + (W_DOMINANCE if d >= 3 else 0), 2)
 
     def overplay_penalty(self, n):
         pen = 0.0
@@ -499,77 +493,6 @@ class SNIPER283LITE:
         key = tuple(sorted((a, b)))
         return self.profile["pair_counts"].get(key, 0)
 
-    def regime_bonus(self, n):
-        if not self.profile:
-            return 0.0
-
-        lp = self.profile["leader_presence"]
-        sp = self.profile["second_presence"]
-        wp = self.profile["weak_presence"]
-
-        lc = self.profile["leader_conversion"]
-        sc = self.profile["second_conversion"]
-        wc = self.profile["weak_conversion"]
-
-        state = self.profile["state"]
-        conversion_persistence = self.profile.get("conversion_persistence", 1)
-
-        bonus = 0.0
-
-        if n == lp:
-            bonus += W_PRESENCE_LEADER
-        elif n == sp:
-            bonus += W_PRESENCE_SECOND
-        if n == wp:
-            bonus += W_PRESENCE_WEAK
-
-        conv_leader_bonus = W_CONVERSION_LEADER
-        conv_second_bonus = W_CONVERSION_SECOND
-        conv_weak_bonus = W_CONVERSION_WEAK
-
-        if lc == 10:
-            conv_leader_bonus = 1.4
-            conv_second_bonus = 1.2
-
-        if n == lc:
-            bonus += conv_leader_bonus
-        elif n == sc:
-            bonus += conv_second_bonus
-
-        if n == wc:
-            bonus += conv_weak_bonus
-
-        if conversion_persistence >= 3 and n == lc:
-            bonus += W_PERSISTENCE
-
-        if state == "DENSE":
-            if n == 15:
-                bonus += W_STATE_DENSE_15
-            if n == 5:
-                bonus += W_STATE_DENSE_5
-            if n == 50:
-                bonus -= 1.0
-
-        elif state == "FLOW":
-            if n == 15:
-                bonus += W_STATE_FLOW_15
-            if n == 5:
-                bonus += W_STATE_FLOW_5
-
-        elif state == "THIN":
-            if n == 50:
-                bonus += W_STATE_THIN_50
-            if n == 10:
-                bonus -= 0.8
-
-        elif state == "RESTART":
-            if n == 50:
-                bonus += W_STATE_RESTART_50
-            if n == 15:
-                bonus += W_STATE_RESTART_15
-
-        return bonus
-
     # ===================== SUPPORT QUALITY ==================
 
     def support_score(self, ambata, n):
@@ -709,298 +632,173 @@ class SNIPER283LITE:
             )
         return "\n".join(parts) if parts else "no_supports"
 
-    # ===================== SUPPORTS =========================
+    # ===================== SUPPORT CHOICE ===================
 
-    def supports_for_candidate(self, a):
+    def supports_for_15(self):
         pressure = self.cluster_pressure()
+        d50 = self.support_state_details(15, 50)
+        d5 = self.support_state_details(15, 5)
 
-        if a == 15:
-            d50 = self.support_state_details(15, 50)
-            d5 = self.support_state_details(15, 5)
-
-            if d50["label"] == "DEAD" and d5["label"] == "DEAD":
-                return None, None
-
-            if d50["label"] == "REAL_ALIVE" and d5["label"] == "REAL_ALIVE":
-                if d50["life"] >= d5["life"] + 1.0 or pressure >= 14:
-                    return 50, 5 if d5["life"] >= 4.0 else None
-                return 5, 50 if d50["life"] >= 4.0 and pressure >= 15 else None
-
-            if d50["label"] == "REAL_ALIVE" and d5["label"] != "REAL_ALIVE":
-                return 50, None
-
-            if d5["label"] == "REAL_ALIVE" and d50["label"] != "REAL_ALIVE":
-                return 5, None
-
-            if d50["label"] == "FAKE_ALIVE" and pressure >= 13 and d50["struct"] >= 6.0:
-                return 50, None
-
-            if d5["label"] == "FAKE_ALIVE" and pressure >= 12 and d5["struct"] >= 5.0:
-                return 5, None
-
+        if d50["label"] == "DEAD" and d5["label"] == "DEAD":
             return None, None
 
-        if a == 50:
-            d15 = self.support_state_details(50, 15)
-            d5 = self.support_state_details(50, 5)
+        if d50["label"] == "REAL_ALIVE" and d5["label"] == "REAL_ALIVE":
+            if d50["life"] >= d5["life"] + 1.0 or pressure >= 14:
+                return 50, 5 if d5["life"] >= 4.0 else None
+            return 5, 50 if d50["life"] >= 4.0 and pressure >= 15 else None
 
-            if d5["label"] == "REAL_ALIVE" and d5["life"] >= d15["life"] - 0.5:
-                s1 = 5
-            elif d15["label"] == "REAL_ALIVE":
-                s1 = 15
-            else:
-                s1 = 5 if d5["score"] >= d15["score"] else 15
+        if d50["label"] == "REAL_ALIVE":
+            return 50, None
 
-            s2 = None
-            if s1 == 5 and d15["label"] == "REAL_ALIVE" and pressure >= 11:
-                s2 = 15
-            elif s1 == 15 and d5["label"] == "REAL_ALIVE" and pressure >= 11:
-                s2 = 5
+        if d5["label"] == "REAL_ALIVE":
+            return 5, None
 
-            return s1, s2
+        if d50["label"] == "FAKE_ALIVE" and pressure >= 13 and d50["struct"] >= 6.0:
+            return 50, None
 
-        if a == 5:
-            d10 = self.support_state_details(5, 10)
-            d15 = self.support_state_details(5, 15)
-            d50 = self.support_state_details(5, 50)
-
-            if d10["label"] == "REAL_ALIVE" and d10["life"] >= d15["life"] - 0.5:
-                s1 = 10
-            elif d15["label"] == "REAL_ALIVE":
-                s1 = 15
-            elif d10["label"] == "FAKE_ALIVE" and d15["label"] != "REAL_ALIVE":
-                s1 = 10
-            else:
-                s1 = 15 if d15["score"] >= d10["score"] else 10
-
-            s2 = None
-            if d50["label"] == "REAL_ALIVE" and pressure >= 11:
-                s2 = 50
-            elif d50["label"] == "FAKE_ALIVE" and d50["struct"] >= 5.5 and pressure >= 13:
-                s2 = 50
-
-            if s2 == s1:
-                s2 = None
-
-            return s1, s2
-
-        if a == 10:
-            return 15, None
+        if d5["label"] == "FAKE_ALIVE" and pressure >= 12 and d5["struct"] >= 5.0:
+            return 5, None
 
         return None, None
 
-    # ===================== SCORING ==========================
+    # ===================== AI FILTER ========================
 
-    def core_rotation_bonus(self, n):
-        if not self.last_draws:
-            return 0.0
+    def ai_filter_score(self, support):
+        score = 0.0
+        state = self.profile.get("state", "FLOW") if self.profile else "FLOW"
+        pressure = self.cluster_pressure()
 
-        last_cluster = self.last_cluster_nums()
-        bonus = 0.0
+        life15 = self.life_bias_number(15)
+        life_support = self.support_life_bias(support)
+        support_details = self.support_state_details(15, support)
 
-        if 5 in last_cluster and n == 15:
-            bonus += W_CORE_5_TO_15
-        if 15 in last_cluster and n == 5:
-            bonus += W_CORE_15_TO_5
+        # stato cluster
+        if state == "FLOW":
+            score += 2.0
+        elif state == "DENSE":
+            score += 1.6
+        elif state == "RESTART":
+            score -= 1.5
+        else:
+            score -= 2.0
 
-        if 15 in last_cluster and n == 50:
-            bonus += W_SIDE_15_TO_50
-        if 5 in last_cluster and n == 10:
-            bonus += W_SIDE_5_TO_10
-        if 10 in last_cluster and n == 15:
-            bonus += W_SIDE_10_TO_15
+        # pressione
+        if pressure >= 14:
+            score += 2.2
+        elif pressure >= 11:
+            score += 1.5
+        elif pressure >= 9:
+            score += 0.8
+        else:
+            score -= 2.0
 
-        for a in last_cluster:
-            ts = self.transition_score(a, n)
-            if ts >= 7:
-                bonus += 1.5
-            elif ts >= 4:
-                bonus += 0.7
+        # vita 15
+        if life15 >= 8:
+            score += 2.0
+        elif life15 >= 5:
+            score += 1.2
+        elif life15 >= 3.5:
+            score += 0.5
+        else:
+            score -= 2.5
 
-        return bonus
+        # supporto scelto
+        if support_details["label"] == "REAL_ALIVE":
+            score += 2.0
+        elif support_details["label"] == "FAKE_ALIVE":
+            score -= 1.5
+        else:
+            score -= 3.0
 
-    def pair_bonus_for_candidate(self, n):
-        if not self.profile:
-            return 0.0
+        if life_support >= 8:
+            score += 1.8
+        elif life_support >= 5:
+            score += 1.0
+        elif life_support >= 3:
+            score += 0.3
+        else:
+            score -= 1.2
 
-        pair_sum = 0.0
-        for m in TARGET:
-            if m != n:
-                ps = self.pair_score(n, m)
-                if n == 15 or m == 15:
-                    ps *= 1.4
-                pair_sum += ps
+        # ultimi 3 draw: presenza cluster coerente
+        recent = self.last_draws[-3:]
+        recent_counts = [self.cluster_count_in_draw(d) for d in recent] if recent else [0]
+        avg_recent = sum(recent_counts) / max(1, len(recent_counts))
 
-        return round(pair_sum * PAIR_WEIGHT / 10.0, 2)
+        if avg_recent >= 1.3:
+            score += 1.2
+        elif avg_recent < 0.7:
+            score -= 1.0
 
-    def candidate_block_reason(self, candidate, rows):
-        top = rows[0]
-        s1, s2 = self.supports_for_candidate(candidate)
-        sq = self.support_quality_label(candidate, s1, s2)
+        # rotazione specifica verso il supporto
+        rot15s = self.transition_score(15, support) + self.transition_score(support, 15)
+        if rot15s >= 10:
+            score += 1.4
+        elif rot15s >= 6:
+            score += 0.8
+        elif rot15s <= 2:
+            score -= 0.8
 
-        if candidate == 15 and sq == "DEAD":
-            return "15_DEAD_SUPPORTS"
-        if candidate == 15 and sq == "FAKE_ALIVE" and top["pressure"] < MIN_PRESSURE_15_FAKE:
-            return "15_FAKE_SUPPORTS"
-        if candidate == 15 and top["life_bias"] < MIN_LIFE_BIAS_15 and top["structure_bias"] > top["life_bias"]:
-            return "15_STRUCTURAL_ONLY"
-        if candidate == 50 and top["life_bias"] < MIN_LIFE_BIAS_50 and top["state"] != "RESTART":
-            return "50_WEAK_LIFE"
-        return None
+        # pair
+        pair = self.pair_score(15, support)
+        if pair >= 5:
+            score += 1.2
+        elif pair >= 3:
+            score += 0.6
 
-    def choose_candidate_normal(self):
-        gap = self.cluster_gap()
+        # cooldown sul 5
+        if support == 5:
+            if self.last_hit_number == 5 and life_support < FIVE_COOLDOWN_LIFE_CAP:
+                score -= 1.0
+            if self.last_stop_number == 5 and self.last_stop_count_same >= 1:
+                score -= 1.3
+
+        # bonus 50 quando urla vita reale
+        if support == 50 and life_support >= 7.0:
+            score += 1.0
+
+        return round(score, 2)
+
+    def choose_ambo_mode(self):
         pressure = self.cluster_pressure()
         state = self.profile.get("state", "FLOW") if self.profile else "FLOW"
 
-        if gap == 2:
-            return None, [], "GAP_2_BLOCK"
+        h15 = self.heat(15)
+        l15 = self.lag(15)
+        d15 = self.dominance_count(15, 6)
+        life15 = self.life_bias_number(15)
 
-        if pressure < LOW_PRESSURE_BLOCK and state != "RESTART":
-            return None, [], "LOW_PRESSURE"
+        if life15 < MIN_LIFE_BIAS_15 or h15 < 2 or l15 > 6:
+            return None, None, None, "15_NOT_ALIVE"
 
-        rows = []
+        if pressure < MIN_PRESSURE_AMBO:
+            return None, None, None, "LOW_PRESSURE"
 
-        for n in TARGET:
-            h = self.heat(n)
-            l = self.lag(n)
-            dom = self.dominance_count(n, 6)
-            rot = self.core_rotation_bonus(n)
-            over = self.overplay_penalty(n)
-            reg = self.regime_bonus(n)
-            pairb = self.pair_bonus_for_candidate(n)
+        if state not in ["FLOW", "DENSE"]:
+            return None, None, None, "BAD_STATE"
 
-            if l <= 1:
-                continue
+        s1, s2 = self.supports_for_15()
+        if s1 is None:
+            return None, None, None, "NO_REAL_SUPPORT"
 
-            score = (h * W_HEAT) - (l * W_LAG)
+        sq = self.support_quality_label(15, s1, s2)
 
-            if gap <= 1:
-                score += W_GAP_ACTIVE
-            elif gap in (3, 4):
-                score += W_GAP_RISK
-            elif gap >= 6:
-                score += W_GAP_RESTART
+        if sq == "DEAD":
+            return None, None, None, "DEAD_SUPPORTS"
 
-            if dom >= 3:
-                score += W_DOMINANCE
+        if sq == "FAKE_ALIVE" and pressure < MIN_PRESSURE_15_FAKE:
+            return None, None, None, "FAKE_LOW_PRESSURE"
 
-            if pressure >= 10:
-                if n == 15:
-                    score += 1.8 + W_BONUS_15_CONVERT
-                elif n == 5:
-                    score += 1.0
-                elif n == 10:
-                    score += 0.7
-            elif pressure >= 6:
-                if n == 15:
-                    score += 1.0 + W_BONUS_15_CONVERT * 0.6
-                elif n == 5:
-                    score += 0.7
+        ai_score = self.ai_filter_score(s1)
+        if ai_score < MIN_AI_SCORE:
+            return None, None, None, "AI_FILTER_BLOCK"
 
-            if n == 5 and gap <= 1 and dom >= 2:
-                score += W_BONUS_5_LIVE
-
-            if n == 15 and any(x in self.last_cluster_nums() for x in [5, 10]):
-                score += W_BONUS_15_CONVERT
-
-            if n == 15:
-                score += 1.0
-                if any(x in self.last_cluster_nums() for x in [5, 10]):
-                    score += 1.2
-
-            if n == 10:
-                score += W_PENALTY_10
-                ok_heat = h >= 5
-                ok_dom = dom >= 2
-                ok_rot = rot >= 1.5
-                if ok_heat and ok_dom and ok_rot:
-                    score += 2.2
-                else:
-                    score -= 1.8
-
-            if n == 50:
-                if gap <= 1:
-                    score += W_PENALTY_50_ACTIVE
-                elif state == "RESTART":
-                    score += 2.6
-                elif gap >= 3:
-                    score += 0.8
-                elif state == "THIN":
-                    score += W_PENALTY_50_THIN
-                else:
-                    score -= 0.8
-
-                if h >= 5 and l <= 4:
-                    score += 1.4
-                if dom >= 2:
-                    score += 0.7
-                if self.profile and self.profile.get("leader_conversion") == 50:
-                    score += 0.8
-                if self.profile and self.profile.get("leader_presence") == 50:
-                    score += 0.5
-
-            score += rot + reg + pairb + over
-
-            structure_bias = round(rot + reg + pairb, 2)
-            life_bias = round((h * W_HEAT) - (l * W_LAG) + (W_DOMINANCE if dom >= 3 else 0), 2)
-
-            if n == 5:
-                recent_same_5 = sum(1 for x in self.last_signal_numbers[-3:] if x == 5)
-                if recent_same_5 >= 2 and life_bias < 8.5:
-                    score -= 1.8
-                if self.last_stop_number == 5 and self.last_stop_count_same >= 1 and life_bias < 8.0:
-                    score -= 1.6
-                if self.last_hit_number == 5 and life_bias < 8.2:
-                    score -= 1.2
-
-            rows.append({
-                "n": n,
-                "score": round(score, 2),
-                "heat": h,
-                "lag": l,
-                "dom": dom,
-                "gap": gap,
-                "pressure": round(pressure, 2),
-                "rot": round(rot, 2),
-                "reg": round(reg, 2),
-                "pair": round(pairb, 2),
-                "over": round(over, 2),
-                "state": state,
-                "structure_bias": structure_bias,
-                "life_bias": life_bias,
-            })
-
-        rows = sorted(rows, key=lambda x: x["score"], reverse=True)
-
-        if not rows:
-            return None, rows, "NO_ROWS"
-
-        if rows[0]["score"] < MIN_SCORE_NORMAL:
-            return None, rows, "LOW_SCORE"
-
-        if len(rows) >= 2:
-            diff_needed = MIN_DIFF_SCORE
-            if rows[0]["n"] == 10:
-                diff_needed = 2.2
-            if (rows[0]["score"] - rows[1]["score"]) < diff_needed:
-                return None, rows, "LOW_DIFF"
-
-        if rows[0]["gap"] == 1 and rows[0]["score"] < 6.3:
-            return None, rows, "GAP1_WEAK"
-
-        block_reason = self.candidate_block_reason(rows[0]["n"], rows)
-        if block_reason:
-            return None, rows, block_reason
-
-        return rows[0]["n"], rows, "OK"
+        return 15, s1, s2, "OK"
 
     # ===================== PLAY ENGINE ======================
 
-    def open_play(self, open_extraction, candidate, support1, support2, top_row):
-        self.play_id += 1
+    def open_play(self, open_extraction, candidate, support1, support2, ai_score):
         sq = self.support_quality_label(candidate, support1, support2)
-
+        self.play_id += 1
         self.active_play = {
             "play_id": self.play_id,
             "open_extraction": open_extraction,
@@ -1009,11 +807,11 @@ class SNIPER283LITE:
             "support1": support1,
             "support2": support2,
             "support_quality": sq,
-            "state": top_row["state"],
-            "pressure": top_row["pressure"],
-            "gap": top_row["gap"],
-            "life_bias": top_row["life_bias"],
-            "structure_bias": top_row["structure_bias"],
+            "state": self.profile.get("state", "n/a") if self.profile else "n/a",
+            "pressure": round(self.cluster_pressure(), 2),
+            "gap": self.cluster_gap(),
+            "ai_score": ai_score,
+            "life_bias_15": self.life_bias_number(15),
             "colpi_done": 0,
             "max_colpi": PLAY_HORIZON_COLPI,
         }
@@ -1037,8 +835,8 @@ class SNIPER283LITE:
                 p["state"],
                 p["pressure"],
                 p["gap"],
-                p["life_bias"],
-                p["structure_bias"],
+                p["ai_score"],
+                p["life_bias_15"],
                 eval_extraction,
                 colpo,
                 int(hit_ambata),
@@ -1080,7 +878,7 @@ class SNIPER283LITE:
                 app,
                 "🔥 HIT AMBATA\n"
                 f"• play_id = {p['play_id']}\n"
-                f"• candidate = {candidate}\n"
+                f"• ambata = {candidate}\n"
                 f"• colpo = {colpo}"
             )
 
@@ -1098,7 +896,7 @@ class SNIPER283LITE:
                 app,
                 "🛑 STOP PLAY\n"
                 f"• play_id = {p['play_id']}\n"
-                f"• candidate = {candidate}\n"
+                f"• ambata = {candidate}\n"
                 f"• colpi = {colpo}"
             )
 
@@ -1112,7 +910,7 @@ class SNIPER283LITE:
             self.push_result("STOP")
             self.active_play = None
 
-    # ===================== PROFILE MESSAGE ==================
+    # ===================== PROFILE MSG ======================
 
     async def send_profile(self, app, title="🧠 WARMUP ANALYSIS"):
         if not self.profile:
@@ -1168,10 +966,9 @@ class SNIPER283LITE:
             f"🎱 {', '.join(f'{x:02d}' for x in nums)}"
         )
 
-        # prima chiude o aggiorna eventuale play attivo
+        # prima gestisce eventuale play aperto
         await self.process_active_play(app, e, nums)
 
-        # se c'è ancora un play attivo, non apre altro
         if self.active_play is not None:
             self._save_state()
             return
@@ -1180,58 +977,40 @@ class SNIPER283LITE:
             self._save_state()
             return
 
-        candidate, debug_rows, reason = self.choose_candidate_normal()
+        candidate, s1, s2, reason = self.choose_ambo_mode()
 
         if candidate is None:
-            if debug_rows:
-                debug_txt = "\n".join(
-                    [
-                        f"{r['n']}: score={r['score']} heat={r['heat']} lag={r['lag']} dom={r['dom']} "
-                        f"gap={r['gap']} pressure={r['pressure']} rot={r['rot']} reg={r['reg']} "
-                        f"pair={r['pair']} over={r['over']} state={r['state']} "
-                        f"sb={r['structure_bias']} lb={r['life_bias']}"
-                        for r in debug_rows
-                    ]
-                )
-                await self.tg(
-                    app,
-                    "⏸ NO PLAY\n"
-                    f"• reason={reason}\n\n"
-                    f"📊 DEBUG\n{debug_txt}"
-                )
-            else:
-                await self.tg(app, f"⏸ NO PLAY\n• reason={reason}")
+            state = self.profile.get("state", "n/a") if self.profile else "n/a"
+            pressure = round(self.cluster_pressure(), 2)
+            life15 = self.life_bias_number(15)
 
+            await self.tg(
+                app,
+                "⏸ NO PLAY AMBO\n"
+                f"• reason = {reason}\n"
+                f"• state = {state}\n"
+                f"• pressure = {pressure}\n"
+                f"• life15 = {life15}"
+            )
             self._save_state()
             return
 
-        top = debug_rows[0]
-        s1, s2 = self.supports_for_candidate(candidate)
+        ai_score = self.ai_filter_score(s1)
         sq = self.support_quality_label(candidate, s1, s2)
 
         self.push_signal_number(candidate)
-        self.open_play(e, candidate, s1, s2, top)
-
-        debug_txt = "\n".join(
-            [
-                f"{r['n']}: score={r['score']} heat={r['heat']} lag={r['lag']} dom={r['dom']} "
-                f"gap={r['gap']} pressure={r['pressure']} rot={r['rot']} reg={r['reg']} "
-                f"pair={r['pair']} over={r['over']} state={r['state']} "
-                f"sb={r['structure_bias']} lb={r['life_bias']}"
-                for r in debug_rows
-            ]
-        )
+        self.open_play(e, candidate, s1, s2, ai_score)
 
         await self.tg(
             app,
-            "🎯 PLAY\n"
-            f"• candidate = {candidate}\n"
-            f"• support1 = {candidate}-{s1}\n"
-            + (f"• support2 = {candidate}-{s2}\n" if s2 is not None else "")
-            + f"• supports_quality = {sq}\n"
+            "💣 PLAY AMBO MODE\n"
+            f"• ambata = {candidate}\n"
+            f"• ambo1 = {candidate}-{s1}\n"
+            + (f"• ambo2 = {candidate}-{s2}\n" if s2 is not None else "")
+            + f"• support_quality = {sq}\n"
+            + f"• ai_score = {ai_score}\n"
             + f"• da estrazione {self.active_play['start_extraction']} per {self.active_play['max_colpi']} colpi\n\n"
-            + f"🧩 SUPPORTS\n{self.support_quality_debug_text(candidate, s1, s2)}\n\n"
-            + f"📊 DEBUG\n{debug_txt}"
+            + f"🧩 SUPPORTS\n{self.support_quality_debug_text(candidate, s1, s2)}"
         )
 
         self._save_state()
@@ -1239,7 +1018,7 @@ class SNIPER283LITE:
 
 # ===================== LOOP ================================
 
-bot = SNIPER283LITE()
+bot = SNIPER284PRO()
 
 async def live():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -1258,7 +1037,7 @@ async def live():
 
     bot.profile = bot.analyze_cluster_profile()
 
-    await bot.tg(app, "🚀 SNIPER v28.3 LITE AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v28.4 PRO + AI FILTER AVVIATO")
     await bot.send_profile(app)
 
     while True:
