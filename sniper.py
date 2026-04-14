@@ -1,6 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v28.6 CORE — TRACKING FIX
-# semplice + stabile + HIT/STOP corretti
+# 🚀 SNIPER v28.7 CORE — CLEAN PARSER + TRACKING
 # ============================================================
 
 import asyncio
@@ -29,32 +28,54 @@ LOOP_SEC = 60
 HISTORY_MAX = 160
 MAX_COLPI = 3
 
-# ===================== PARSER ===============================
+# ===================== PARSER FIX ===========================
 
 def parse_site():
     r = requests.get(URL, headers=HEADERS, timeout=15)
     r.raise_for_status()
 
     text = BeautifulSoup(r.text, "html.parser").get_text("\n", strip=True)
-
-    pattern = re.compile(
-        r"Estrazione\s+.*?ore\s+\d{1,2}:\d{2}\s+n\.\s*(\d+)\s*"
-        r"(.*?)"
-        r"EXTRA E NUMERI ORO",
-        re.IGNORECASE | re.DOTALL
-    )
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
 
     out = {}
+    i = 0
 
-    for m in pattern.finditer(text):
+    while i < len(lines):
+        line = lines[i]
+
+        m = re.search(r"Estrazione\s+.*?\bn\.\s*(\d+)", line, re.IGNORECASE)
+        if not m:
+            i += 1
+            continue
+
         e = int(m.group(1))
-        block = m.group(2)
+        nums = []
+        i += 1
 
-        nums_raw = re.findall(r"\b\d{1,2}\b", block)
-        nums = [int(x) for x in nums_raw if 1 <= int(x) <= 90]
+        while i < len(lines):
+            row = lines[i]
+
+            if re.search(r"Estrazione\s+.*?\bn\.\s*\d+", row, re.IGNORECASE):
+                break
+            if "EXTRA" in row.upper():
+                break
+
+            # SOLO numeri puri
+            if re.fullmatch(r"\d{1,2}", row):
+                n = int(row)
+                if 1 <= n <= 90:
+                    nums.append(n)
+
+            i += 1
 
         if len(nums) >= 20:
-            out[e] = nums[:20]
+            clean = nums[:20]
+
+            # filtro anti-sporco
+            if len(set(clean)) == 20:
+                out[e] = clean
+
+        continue
 
     return sorted(out.items())
 
@@ -74,16 +95,15 @@ class SNIPER:
         self.last_fp = None
         self.day = day_key()
 
-        # TRACKING PLAY
+        # TRACK PLAY
         self.active = None
         self.colpi = 0
 
     async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
 
-    def reset_day_if_needed(self):
+    def reset_day(self):
         if day_key() != self.day:
-            print("RESET GIORNO")
             self.day = day_key()
             self.max_e = 0
             self.last_fp = None
@@ -137,12 +157,17 @@ class SNIPER:
 
     async def on_new(self, app, e, nums):
 
-        self.reset_day_if_needed()
+        self.reset_day()
 
         fp = fingerprint(e, nums)
         if fp == self.last_fp:
             return
         self.last_fp = fp
+
+        # sicurezza parser
+        if len(set(nums)) != 20:
+            await self.tg(app, f"⚠️ PARSER SCARTA {e}")
+            return
 
         self.last_draws.append(nums)
         if len(self.last_draws) > HISTORY_MAX:
@@ -154,7 +179,7 @@ class SNIPER:
 
         # ===================== PLAY ATTIVO =====================
 
-        if self.active is not None:
+        if self.active:
 
             self.colpi += 1
 
@@ -178,7 +203,7 @@ class SNIPER:
                 self.colpi = 0
                 return
 
-            return  # NON apre nuovo play
+            return
 
         # ===================== NUOVO PLAY =====================
 
@@ -216,11 +241,17 @@ async def live():
 
     bot.max_e = es[-2][0] if len(es) >= 2 else 0
 
-    await bot.tg(app, "🚀 SNIPER v28.6 CORE AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v28.7 CORE AVVIATO")
 
     while True:
         try:
             es = parse_site()
+
+            if not es:
+                await bot.tg(app, "⚠️ parser vuoto loop")
+                await asyncio.sleep(LOOP_SEC)
+                continue
+
             for e, nums in es:
                 if e <= bot.max_e:
                     continue
