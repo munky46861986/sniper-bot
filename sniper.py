@@ -1,23 +1,18 @@
 # ============================================================
-# 🚀 SNIPER v28.4 PRO + AI FILTER FIXED (DAY SAFE)
+# 🚀 SNIPER v28.4 PRO FINAL (NO FREEZE)
 # ============================================================
 
 import asyncio
 import requests
 import re
-import csv
 import os
-import json
 import hashlib
 from datetime import datetime
-from collections import defaultdict
 from bs4 import BeautifulSoup
 from telegram.ext import ApplicationBuilder
 import nest_asyncio
 
 nest_asyncio.apply()
-
-# ===================== CONFIG ===============================
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
@@ -25,21 +20,9 @@ CHAT_ID = int(os.getenv("CHAT_ID"))
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-TARGET = [5, 10, 15, 50]
+TARGET = [5,10,15,50]
 
 LOOP_SEC = 60
-HISTORY_MAX = 160
-
-LOG_DIR = "logs"
-STATE_FILE = os.path.join(LOG_DIR, "state.json")
-
-# ===================== UTILS ===============================
-
-def today_key():
-    return datetime.now().strftime("%Y-%m-%d")
-
-def fingerprint(e, nums):
-    return hashlib.md5(f"{e}-{nums}".encode()).hexdigest()
 
 # ===================== PARSER ===============================
 
@@ -69,61 +52,20 @@ def parse_site():
 
     return sorted(out.items())
 
-# ============================================================
+# ===================== BOT ===============================
 
 class SNIPER:
 
     def __init__(self):
-        self.max_e = 0
         self.last_draws = []
-
-        self.day = today_key()
-
-        self.recent_fp = []
-        self.last_processed_e = None
-
+        self.max_e = 0
         self.cooldown = 0
-
-        os.makedirs(LOG_DIR, exist_ok=True)
-        self.load()
-
-    # ===================== STATE ============================
-
-    def load(self):
-        if not os.path.exists(STATE_FILE):
-            return
-
-        try:
-            data = json.load(open(STATE_FILE))
-
-            # RESET AUTOMATICO SE CAMBIA GIORNO
-            if data.get("day") != today_key():
-                print("🔄 NUOVO GIORNO → RESET")
-                return
-
-            self.max_e = data.get("max_e", 0)
-            self.last_draws = data.get("last_draws", [])[-HISTORY_MAX:]
-            self.recent_fp = data.get("recent_fp", [])
-            self.cooldown = data.get("cooldown", 0)
-
-        except:
-            pass
-
-    def save(self):
-        json.dump({
-            "day": today_key(),
-            "max_e": self.max_e,
-            "last_draws": self.last_draws[-HISTORY_MAX:],
-            "recent_fp": self.recent_fp[-50:],
-            "cooldown": self.cooldown
-        }, open(STATE_FILE, "w"))
-
-    # ===================== TELEGRAM =========================
+        self.last_fp = None
 
     async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
 
-    # ===================== FEATURES =========================
+    # ===================== FEATURES ==========================
 
     def heat(self, n):
         weights = [5,4,3,2,1]
@@ -144,8 +86,8 @@ class SNIPER:
         return lag
 
     def pressure(self):
-        score = 0
         weights = [5,4,3,2,1]
+        score = 0
         for i,w in enumerate(weights):
             if i >= len(self.last_draws):
                 break
@@ -153,7 +95,7 @@ class SNIPER:
             score += c*w
         return score
 
-    # ===================== LOGIC ============================
+    # ===================== LOGIC =============================
 
     def choose(self):
         p = self.pressure()
@@ -176,23 +118,19 @@ class SNIPER:
         else:
             return (15,5), "15-5"
 
-    # ===================== MAIN =============================
+    # ===================== MAIN ==============================
 
     async def on_new(self, app, e, nums):
 
-        fp = fingerprint(e, nums)
+        fp = hashlib.md5(f"{e}-{nums}".encode()).hexdigest()
 
-        if fp in self.recent_fp:
+        if fp == self.last_fp:
             return
 
-        if self.last_processed_e == e:
-            return
-
-        self.last_processed_e = e
-        self.recent_fp.append(fp)
+        self.last_fp = fp
 
         self.last_draws.append(nums)
-        if len(self.last_draws) > HISTORY_MAX:
+        if len(self.last_draws) > 160:
             self.last_draws.pop(0)
 
         await self.tg(app, f"📌 Estrazione {e}")
@@ -209,10 +147,7 @@ class SNIPER:
 
         a,b = play
 
-        await self.tg(app,
-            f"🎯 PLAY\n"
-            f"{a}-{b}"
-        )
+        await self.tg(app, f"🎯 PLAY {a}-{b}")
 
         self.cooldown = 1
 
@@ -225,15 +160,21 @@ async def live():
 
     es = parse_site()
 
-    for e, nums in es:
+    # warmup SENZA bloccare l'ultima
+    for e, nums in es[:-1]:
         bot.last_draws.append(nums)
-        bot.max_e = max(bot.max_e, e)
 
-    await bot.tg(app, "🚀 BOT AVVIATO")
+    # IMPORTANTISSIMO
+    bot.max_e = es[-2][0] if len(es) >= 2 else 0
+
+    await bot.tg(app, "🚀 BOT AVVIATO (NO FREEZE)")
 
     while True:
         try:
             es = parse_site()
+
+            if es:
+                print("Ultima:", es[-1][0], "| max_e:", bot.max_e)
 
             for e, nums in es:
                 if e <= bot.max_e:
@@ -245,7 +186,6 @@ async def live():
         except Exception as ex:
             await bot.tg(app, f"⚠️ {ex}")
 
-        bot.save()
         await asyncio.sleep(LOOP_SEC)
 
 asyncio.run(live())
