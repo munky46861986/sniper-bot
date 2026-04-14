@@ -1,6 +1,6 @@
 # ============================================================
-# 🚀 SNIPER v28.5 PRO — STABLE PATCH
-# BASE = tuo codice funzionante + FIX REALI
+# 🚀 SNIPER v28.5 PRO — FINAL STABLE
+# BASE = v28.4 tua + FIX REALI (NO FREEZE / NO PARSER BUG)
 # ============================================================
 
 import asyncio
@@ -31,11 +31,9 @@ HISTORY_MAX = 160
 
 STATE_FILE = "state.json"
 
-# ===================== FIX ===============================
-
 MIN_PRESSURE_15_FAKE = 11.0
 
-# ===================== PARSER (TUO) =========================
+# ===================== PARSER (TUO STABILE) =================
 
 def parse_site():
     r = requests.get(URL, headers=HEADERS, timeout=15)
@@ -67,6 +65,9 @@ def parse_site():
 def fingerprint(e, nums):
     return hashlib.md5(f"{e}-{nums}".encode()).hexdigest()
 
+def day_key():
+    return datetime.now().strftime("%Y-%m-%d")
+
 # ============================================================
 
 class SNIPER:
@@ -77,10 +78,7 @@ class SNIPER:
         self.last_fp = None
 
         self.cooldown = 0
-
-        self.active = None
-
-        self.day = datetime.now().day
+        self.day = day_key()
 
     # ===================== TELEGRAM ==========================
 
@@ -89,13 +87,13 @@ class SNIPER:
 
     # ===================== RESET GIORNO ======================
 
-    def check_new_day(self):
-        today = datetime.now().day
+    def reset_day_if_needed(self):
+        today = day_key()
         if today != self.day:
+            print("RESET GIORNO")
             self.day = today
             self.max_e = 0
             self.last_fp = None
-            print("RESET GIORNO")
 
     # ===================== FEATURES ==========================
 
@@ -133,9 +131,7 @@ class SNIPER:
         s50 = self.heat(50) - self.lag(50)*0.5
         s5 = self.heat(5) - self.lag(5)*0.5
 
-        if s50 > s5:
-            return 50
-        return 5
+        return 50 if s50 > s5 else 5
 
     # ===================== AI FILTER =========================
 
@@ -171,7 +167,6 @@ class SNIPER:
     # ===================== LOGICA ============================
 
     def choose(self):
-
         p = self.pressure()
         h = self.heat(15)
         l = self.lag(15)
@@ -197,10 +192,9 @@ class SNIPER:
 
     async def on_new(self, app, e, nums):
 
-        self.check_new_day()
+        self.reset_day_if_needed()
 
         fp = fingerprint(e, nums)
-
         if fp == self.last_fp:
             return
 
@@ -243,9 +237,11 @@ async def live():
         await bot.tg(app, "⚠️ parser vuoto")
         return
 
-    for e, nums in es:
+    # warmup senza bloccare ultima
+    for e, nums in es[:-1]:
         bot.last_draws.append(nums)
-        bot.max_e = max(bot.max_e, e)
+
+    bot.max_e = es[-2][0] if len(es) >= 2 else 0
 
     await bot.tg(app, "🚀 SNIPER v28.5 PRO AVVIATO")
 
