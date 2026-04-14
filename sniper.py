@@ -1,13 +1,11 @@
 # ============================================================
-# 🚀 SNIPER v28.5 PRO — FINAL STABLE
-# BASE = v28.4 tua + FIX REALI (NO FREEZE / NO PARSER BUG)
+# 🚀 SNIPER v28.5 PRO — FINAL STABLE (TEXT PARSER FIXED)
 # ============================================================
 
 import asyncio
 import requests
 import re
 import os
-import json
 import hashlib
 from datetime import datetime
 from bs4 import BeautifulSoup
@@ -24,38 +22,38 @@ CHAT_ID = int(os.getenv("CHAT_ID"))
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-TARGET = [5,10,15,50]
+TARGET = [5, 10, 15, 50]
 
 LOOP_SEC = 60
 HISTORY_MAX = 160
 
-STATE_FILE = "state.json"
-
-MIN_PRESSURE_15_FAKE = 11.0
-
-# ===================== PARSER (TUO STABILE) =================
+# ===================== PARSER ===============================
 
 def parse_site():
     r = requests.get(URL, headers=HEADERS, timeout=15)
     r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
+
+    text = BeautifulSoup(r.text, "html.parser").get_text("\n", strip=True)
+
+    # blocchi reali del sito:
+    # Estrazione Martedi, 14 Aprile 2026, ore 13:10 n. 158
+    # ... 20 numeri ...
+    # EXTRA E NUMERI ORO
+    pattern = re.compile(
+        r"Estrazione\s+.*?ore\s+\d{1,2}:\d{2}\s+n\.\s*(\d+)\s*"
+        r"(.*?)"
+        r"EXTRA E NUMERI ORO",
+        re.IGNORECASE | re.DOTALL
+    )
 
     out = {}
 
-    for t in soup.find_all("table"):
-        m = re.search(r"[Nn]\.?\s*(\d+)", t.get_text(" ", strip=True))
-        if not m:
-            continue
-
+    for m in pattern.finditer(text):
         e = int(m.group(1))
-        nums = []
+        block = m.group(2)
 
-        for td in t.find_all("td"):
-            v = td.get_text(strip=True)
-            if v.isdigit():
-                n = int(v)
-                if 1 <= n <= 90:
-                    nums.append(n)
+        nums_raw = re.findall(r"\b\d{1,2}\b", block)
+        nums = [int(x) for x in nums_raw if 1 <= int(x) <= 90]
 
         if len(nums) >= 20:
             out[e] = nums[:20]
@@ -71,12 +69,10 @@ def day_key():
 # ============================================================
 
 class SNIPER:
-
     def __init__(self):
         self.max_e = 0
         self.last_draws = []
         self.last_fp = None
-
         self.cooldown = 0
         self.day = day_key()
 
@@ -98,12 +94,12 @@ class SNIPER:
     # ===================== FEATURES ==========================
 
     def heat(self, n):
-        weights = [5,4,3,2,1]
+        weights = [5, 4, 3, 2, 1]
         h = 0
-        for i,w in enumerate(weights):
+        for i, w in enumerate(weights):
             if i >= len(self.last_draws):
                 break
-            if n in self.last_draws[-(i+1)]:
+            if n in self.last_draws[-(i + 1)]:
                 h += w
         return h
 
@@ -116,46 +112,45 @@ class SNIPER:
         return lag
 
     def pressure(self):
-        weights = [5,4,3,2,1]
+        weights = [5, 4, 3, 2, 1]
         score = 0
-        for i,w in enumerate(weights):
+        for i, w in enumerate(weights):
             if i >= len(self.last_draws):
                 break
-            c = len([x for x in self.last_draws[-(i+1)] if x in TARGET])
-            score += c*w
+            c = len([x for x in self.last_draws[-(i + 1)] if x in TARGET])
+            score += c * w
         return score
 
     # ===================== SUPPORT ===========================
 
     def choose_support(self):
-        s50 = self.heat(50) - self.lag(50)*0.5
-        s5 = self.heat(5) - self.lag(5)*0.5
-
+        s50 = self.heat(50) - self.lag(50) * 0.5
+        s5 = self.heat(5) - self.lag(5) * 0.5
         return 50 if s50 > s5 else 5
 
     # ===================== AI FILTER =========================
 
     def ai_filter(self, support):
         p = self.pressure()
-        life15 = self.heat(15)*1.8 - self.lag(15)*0.6
+        life15 = self.heat(15) * 1.8 - self.lag(15) * 0.6
 
-        score = 0
+        score = 0.0
 
         if p >= 14:
-            score += 2
+            score += 2.0
         elif p >= 10:
-            score += 1
+            score += 1.0
         else:
-            score -= 2
+            score -= 2.0
 
         if life15 >= 8:
-            score += 2
+            score += 2.0
         elif life15 >= 5:
-            score += 1
+            score += 1.0
         else:
-            score -= 2
+            score -= 2.0
 
-        life_s = self.heat(support) - self.lag(support)*0.5
+        life_s = self.heat(support) - self.lag(support) * 0.5
 
         if life_s >= 5:
             score += 1.5
@@ -171,7 +166,7 @@ class SNIPER:
         h = self.heat(15)
         l = self.lag(15)
 
-        life15 = h*1.8 - l*0.6
+        life15 = h * 1.8 - l * 0.6
 
         if life15 < 3:
             return None, "15 morto"
@@ -180,7 +175,6 @@ class SNIPER:
             return None, "pressione bassa"
 
         support = self.choose_support()
-
         ai = self.ai_filter(support)
 
         if ai < 1:
@@ -191,7 +185,6 @@ class SNIPER:
     # ===================== MAIN ==============================
 
     async def on_new(self, app, e, nums):
-
         self.reset_day_if_needed()
 
         fp = fingerprint(e, nums)
@@ -204,7 +197,7 @@ class SNIPER:
         if len(self.last_draws) > HISTORY_MAX:
             self.last_draws.pop(0)
 
-        await self.tg(app, f"📌 Estrazione {e}")
+        await self.tg(app, f"📌 Estrazione {e}\n🎱 {', '.join(f'{x:02d}' for x in nums)}")
 
         if self.cooldown > 0:
             self.cooldown -= 1
@@ -216,10 +209,8 @@ class SNIPER:
             await self.tg(app, f"⏸ {reason}")
             return
 
-        a,b = play
-
+        a, b = play
         await self.tg(app, f"🎯 PLAY {a}-{b}")
-
         self.cooldown = 1
 
 # ===================== LOOP ================================
@@ -231,13 +222,17 @@ async def live():
 
     es = parse_site()
 
-    print("DEBUG estrazioni:", len(es))
+    print("DEBUG estrazioni lette:", len(es))
+    if es:
+        print("DEBUG prima:", es[0][0], "ultima:", es[-1][0])
+    else:
+        print("DEBUG parser vuoto")
 
     if not es:
         await bot.tg(app, "⚠️ parser vuoto")
         return
 
-    # warmup senza bloccare ultima
+    # warmup senza bloccare l'ultima
     for e, nums in es[:-1]:
         bot.last_draws.append(nums)
 
@@ -248,6 +243,12 @@ async def live():
     while True:
         try:
             es = parse_site()
+
+            print("DEBUG estrazioni lette:", len(es))
+            if es:
+                print("DEBUG prima:", es[0][0], "ultima:", es[-1][0], "| max_e:", bot.max_e)
+            else:
+                print("DEBUG parser vuoto nel loop")
 
             for e, nums in es:
                 if e <= bot.max_e:
