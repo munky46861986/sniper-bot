@@ -1,17 +1,22 @@
 # ============================================================
-# 🚀 SNIPER v28.5 CORE STABLE (PARSER FIXED)
+# 🚀 SNIPER v28.5 PRO — STABLE PATCH
+# BASE = tuo codice funzionante + FIX REALI
 # ============================================================
 
 import asyncio
 import requests
 import re
 import os
+import json
 import hashlib
+from datetime import datetime
 from bs4 import BeautifulSoup
 from telegram.ext import ApplicationBuilder
 import nest_asyncio
 
 nest_asyncio.apply()
+
+# ===================== CONFIG ===============================
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
@@ -20,46 +25,77 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 TARGET = [5,10,15,50]
-LOOP_SEC = 60
 
-# ===================== PARSER FIX ===========================
+LOOP_SEC = 60
+HISTORY_MAX = 160
+
+STATE_FILE = "state.json"
+
+# ===================== FIX ===============================
+
+MIN_PRESSURE_15_FAKE = 11.0
+
+# ===================== PARSER (TUO) =========================
 
 def parse_site():
     r = requests.get(URL, headers=HEADERS, timeout=15)
     r.raise_for_status()
-
-    text = BeautifulSoup(r.text, "html.parser").get_text("\n", strip=True)
-
-    pattern = re.compile(
-        r"Estrazione\s*n\.(\d+)\s*ore\s*\d{1,2}\.\d{2}.*?\n"
-        r"((?:\d{1,2}\s+){20,30})",
-        re.IGNORECASE | re.DOTALL
-    )
+    soup = BeautifulSoup(r.text, "html.parser")
 
     out = {}
 
-    for m in pattern.finditer(text):
+    for t in soup.find_all("table"):
+        m = re.search(r"[Nn]\.?\s*(\d+)", t.get_text(" ", strip=True))
+        if not m:
+            continue
+
         e = int(m.group(1))
-        nums_raw = re.findall(r"\b\d{1,2}\b", m.group(2))
-        nums = [int(x) for x in nums_raw if 1 <= int(x) <= 90]
+        nums = []
+
+        for td in t.find_all("td"):
+            v = td.get_text(strip=True)
+            if v.isdigit():
+                n = int(v)
+                if 1 <= n <= 90:
+                    nums.append(n)
 
         if len(nums) >= 20:
             out[e] = nums[:20]
 
     return sorted(out.items())
 
-# ===================== BOT ===============================
+def fingerprint(e, nums):
+    return hashlib.md5(f"{e}-{nums}".encode()).hexdigest()
+
+# ============================================================
 
 class SNIPER:
 
     def __init__(self):
-        self.last_draws = []
         self.max_e = 0
-        self.cooldown = 0
+        self.last_draws = []
         self.last_fp = None
+
+        self.cooldown = 0
+
+        self.active = None
+
+        self.day = datetime.now().day
+
+    # ===================== TELEGRAM ==========================
 
     async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
+
+    # ===================== RESET GIORNO ======================
+
+    def check_new_day(self):
+        today = datetime.now().day
+        if today != self.day:
+            self.day = today
+            self.max_e = 0
+            self.last_fp = None
+            print("RESET GIORNO")
 
     # ===================== FEATURES ==========================
 
@@ -91,9 +127,51 @@ class SNIPER:
             score += c*w
         return score
 
-    # ===================== LOGIC =============================
+    # ===================== SUPPORT ===========================
+
+    def choose_support(self):
+        s50 = self.heat(50) - self.lag(50)*0.5
+        s5 = self.heat(5) - self.lag(5)*0.5
+
+        if s50 > s5:
+            return 50
+        return 5
+
+    # ===================== AI FILTER =========================
+
+    def ai_filter(self, support):
+        p = self.pressure()
+        life15 = self.heat(15)*1.8 - self.lag(15)*0.6
+
+        score = 0
+
+        if p >= 14:
+            score += 2
+        elif p >= 10:
+            score += 1
+        else:
+            score -= 2
+
+        if life15 >= 8:
+            score += 2
+        elif life15 >= 5:
+            score += 1
+        else:
+            score -= 2
+
+        life_s = self.heat(support) - self.lag(support)*0.5
+
+        if life_s >= 5:
+            score += 1.5
+        elif life_s < 2:
+            score -= 1.5
+
+        return score
+
+    # ===================== LOGICA ============================
 
     def choose(self):
+
         p = self.pressure()
         h = self.heat(15)
         l = self.lag(15)
@@ -106,19 +184,22 @@ class SNIPER:
         if p < 9:
             return None, "pressione bassa"
 
-        s50 = self.heat(50) - self.lag(50)*0.5
-        s5 = self.heat(5) - self.lag(5)*0.5
+        support = self.choose_support()
 
-        if s50 > s5:
-            return (15,50), "15-50"
-        else:
-            return (15,5), "15-5"
+        ai = self.ai_filter(support)
+
+        if ai < 1:
+            return None, "AI blocca"
+
+        return (15, support), "OK"
 
     # ===================== MAIN ==============================
 
     async def on_new(self, app, e, nums):
 
-        fp = hashlib.md5(f"{e}-{nums}".encode()).hexdigest()
+        self.check_new_day()
+
+        fp = fingerprint(e, nums)
 
         if fp == self.last_fp:
             return
@@ -126,7 +207,7 @@ class SNIPER:
         self.last_fp = fp
 
         self.last_draws.append(nums)
-        if len(self.last_draws) > 160:
+        if len(self.last_draws) > HISTORY_MAX:
             self.last_draws.pop(0)
 
         await self.tg(app, f"📌 Estrazione {e}")
@@ -156,30 +237,21 @@ async def live():
 
     es = parse_site()
 
-    print("DEBUG: estrazioni lette:", len(es))
+    print("DEBUG estrazioni:", len(es))
 
     if not es:
-        await bot.tg(app, "⚠️ ERRORE PARSER: nessuna estrazione trovata")
+        await bot.tg(app, "⚠️ parser vuoto")
         return
 
-    print("DEBUG: prima:", es[0][0], "ultima:", es[-1][0])
-
-    # warmup senza bloccare ultima
-    for e, nums in es[:-1]:
+    for e, nums in es:
         bot.last_draws.append(nums)
+        bot.max_e = max(bot.max_e, e)
 
-    bot.max_e = es[-2][0] if len(es) >= 2 else 0
-
-    await bot.tg(app, "🚀 BOT AVVIATO (FIX PARSER)")
+    await bot.tg(app, "🚀 SNIPER v28.5 PRO AVVIATO")
 
     while True:
         try:
             es = parse_site()
-
-            print("DEBUG LOOP: lette", len(es))
-
-            if es:
-                print("ultima:", es[-1][0], "| max_e:", bot.max_e)
 
             for e, nums in es:
                 if e <= bot.max_e:
