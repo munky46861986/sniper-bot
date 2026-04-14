@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v28.4 PRO FINAL (NO FREEZE)
+# 🚀 SNIPER v28.5 CORE STABLE (PARSER FIXED)
 # ============================================================
 
 import asyncio
@@ -7,7 +7,6 @@ import requests
 import re
 import os
 import hashlib
-from datetime import datetime
 from bs4 import BeautifulSoup
 from telegram.ext import ApplicationBuilder
 import nest_asyncio
@@ -21,31 +20,28 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 TARGET = [5,10,15,50]
-
 LOOP_SEC = 60
 
-# ===================== PARSER ===============================
+# ===================== PARSER FIX ===========================
 
 def parse_site():
     r = requests.get(URL, headers=HEADERS, timeout=15)
-    soup = BeautifulSoup(r.text, "html.parser")
+    r.raise_for_status()
+
+    text = BeautifulSoup(r.text, "html.parser").get_text("\n", strip=True)
+
+    pattern = re.compile(
+        r"Estrazione\s*n\.(\d+)\s*ore\s*\d{1,2}\.\d{2}.*?\n"
+        r"((?:\d{1,2}\s+){20,30})",
+        re.IGNORECASE | re.DOTALL
+    )
 
     out = {}
 
-    for t in soup.find_all("table"):
-        m = re.search(r"[Nn]\.?\s*(\d+)", t.get_text(" ", strip=True))
-        if not m:
-            continue
-
+    for m in pattern.finditer(text):
         e = int(m.group(1))
-        nums = []
-
-        for td in t.find_all("td"):
-            v = td.get_text(strip=True)
-            if v.isdigit():
-                n = int(v)
-                if 1 <= n <= 90:
-                    nums.append(n)
+        nums_raw = re.findall(r"\b\d{1,2}\b", m.group(2))
+        nums = [int(x) for x in nums_raw if 1 <= int(x) <= 90]
 
         if len(nums) >= 20:
             out[e] = nums[:20]
@@ -160,21 +156,30 @@ async def live():
 
     es = parse_site()
 
-    # warmup SENZA bloccare l'ultima
+    print("DEBUG: estrazioni lette:", len(es))
+
+    if not es:
+        await bot.tg(app, "⚠️ ERRORE PARSER: nessuna estrazione trovata")
+        return
+
+    print("DEBUG: prima:", es[0][0], "ultima:", es[-1][0])
+
+    # warmup senza bloccare ultima
     for e, nums in es[:-1]:
         bot.last_draws.append(nums)
 
-    # IMPORTANTISSIMO
     bot.max_e = es[-2][0] if len(es) >= 2 else 0
 
-    await bot.tg(app, "🚀 BOT AVVIATO (NO FREEZE)")
+    await bot.tg(app, "🚀 BOT AVVIATO (FIX PARSER)")
 
     while True:
         try:
             es = parse_site()
 
+            print("DEBUG LOOP: lette", len(es))
+
             if es:
-                print("Ultima:", es[-1][0], "| max_e:", bot.max_e)
+                print("ultima:", es[-1][0], "| max_e:", bot.max_e)
 
             for e, nums in es:
                 if e <= bot.max_e:
