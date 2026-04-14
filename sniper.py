@@ -1,9 +1,12 @@
 # ============================================================
-# 🚀 SNIPER v28.4 PRO + AI FILTER
+# 🚀 SNIPER v28.4 PRO + AI FILTER FIXED
 # - direct play engine
 # - no setup
 # - focus ambo 15-50 / 15-5
 # - AI FILTER su ultimi draw
+# - dedup hard
+# - cooldown post-hit
+# - THIN smart pass
 # ============================================================
 
 import asyncio
@@ -46,8 +49,8 @@ PROFILE_UPDATE_EVERY = 10
 PLAY_HORIZON_COLPI = 3
 
 LOG_DIR = "logs"
-PLAY_LOG_CSV = os.path.join(LOG_DIR, "sniper_play_log_v284.csv")
-STATE_FILE = os.path.join(LOG_DIR, "sniper_v284_state.json")
+PLAY_LOG_CSV = os.path.join(LOG_DIR, "sniper_play_log_v284_fixed.csv")
+STATE_FILE = os.path.join(LOG_DIR, "sniper_v284_fixed_state.json")
 
 MAX_RECENT_DRAW_IDS = 50
 SEND_PROFILE_UPDATES = True
@@ -94,7 +97,8 @@ PAIR_WEIGHT = 0.4
 
 MIN_LIFE_BIAS_15 = 3.5
 MIN_PRESSURE_AMBO = 9.0
-MIN_AI_SCORE = 5.5
+MIN_AI_SCORE = 6.2
+MIN_PRESSURE_15_FAKE = 11.0
 
 REAL_ALIVE_MIN_SCORE = 5.2
 FAKE_ALIVE_MIN_SCORE = 2.4
@@ -107,7 +111,6 @@ FAKE_SB_ADVANTAGE = 2.5
 DEAD_HEAT_MAX = 1
 DEAD_LAG_MIN = 8
 
-# cooldown
 FIVE_COOLDOWN_LIFE_CAP = 8.2
 
 # ============================================================
@@ -139,13 +142,15 @@ def parse_site():
 
     return sorted(out.items())
 
+
 def draw_fingerprint(e: int, nums: list[int]) -> str:
     raw = f"{e}-{'-'.join(map(str, nums))}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
+
 # ============================================================
 
-class SNIPER284PRO:
+class SNIPER284PROFIXED:
     def __init__(self):
         self.max_e = 0
         self.last_draws = []
@@ -169,6 +174,9 @@ class SNIPER284PRO:
         self.play_id = 0
         self.active_play = None
 
+        self.cooldown_after_hit = 0
+        self.last_processed_e = None
+
         os.makedirs(LOG_DIR, exist_ok=True)
         self._init_csv_logs()
 
@@ -191,6 +199,8 @@ class SNIPER284PRO:
             "last_hit_extraction": self.last_hit_extraction,
             "play_id": self.play_id,
             "active_play": self.active_play,
+            "cooldown_after_hit": self.cooldown_after_hit,
+            "last_processed_e": self.last_processed_e,
         }
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -218,6 +228,8 @@ class SNIPER284PRO:
             self.last_hit_extraction = data.get("last_hit_extraction", None)
             self.play_id = data.get("play_id", 0)
             self.active_play = data.get("active_play", None)
+            self.cooldown_after_hit = data.get("cooldown_after_hit", 0)
+            self.last_processed_e = data.get("last_processed_e", None)
         except Exception:
             pass
 
@@ -273,10 +285,13 @@ class SNIPER284PRO:
 
     def is_duplicate_draw(self, e, nums):
         fp = draw_fingerprint(e, nums)
+
         if e in self.recent_extraction_ids:
             return True
+
         if fp in self.recent_fingerprints:
             return True
+
         return False
 
     # ===================== FEATURES =========================
@@ -672,17 +687,17 @@ class SNIPER284PRO:
         life_support = self.support_life_bias(support)
         support_details = self.support_state_details(15, support)
 
-        # stato cluster
         if state == "FLOW":
             score += 2.0
         elif state == "DENSE":
             score += 1.6
         elif state == "RESTART":
             score -= 1.5
+        elif state == "THIN":
+            score -= 0.8
         else:
             score -= 2.0
 
-        # pressione
         if pressure >= 14:
             score += 2.2
         elif pressure >= 11:
@@ -692,7 +707,6 @@ class SNIPER284PRO:
         else:
             score -= 2.0
 
-        # vita 15
         if life15 >= 8:
             score += 2.0
         elif life15 >= 5:
@@ -702,7 +716,6 @@ class SNIPER284PRO:
         else:
             score -= 2.5
 
-        # supporto scelto
         if support_details["label"] == "REAL_ALIVE":
             score += 2.0
         elif support_details["label"] == "FAKE_ALIVE":
@@ -719,7 +732,6 @@ class SNIPER284PRO:
         else:
             score -= 1.2
 
-        # ultimi 3 draw: presenza cluster coerente
         recent = self.last_draws[-3:]
         recent_counts = [self.cluster_count_in_draw(d) for d in recent] if recent else [0]
         avg_recent = sum(recent_counts) / max(1, len(recent_counts))
@@ -729,7 +741,6 @@ class SNIPER284PRO:
         elif avg_recent < 0.7:
             score -= 1.0
 
-        # rotazione specifica verso il supporto
         rot15s = self.transition_score(15, support) + self.transition_score(support, 15)
         if rot15s >= 10:
             score += 1.4
@@ -738,21 +749,18 @@ class SNIPER284PRO:
         elif rot15s <= 2:
             score -= 0.8
 
-        # pair
         pair = self.pair_score(15, support)
         if pair >= 5:
             score += 1.2
         elif pair >= 3:
             score += 0.6
 
-        # cooldown sul 5
         if support == 5:
             if self.last_hit_number == 5 and life_support < FIVE_COOLDOWN_LIFE_CAP:
                 score -= 1.0
             if self.last_stop_number == 5 and self.last_stop_count_same >= 1:
                 score -= 1.3
 
-        # bonus 50 quando urla vita reale
         if support == 50 and life_support >= 7.0:
             score += 1.0
 
@@ -764,35 +772,39 @@ class SNIPER284PRO:
 
         h15 = self.heat(15)
         l15 = self.lag(15)
-        d15 = self.dominance_count(15, 6)
         life15 = self.life_bias_number(15)
 
         if life15 < MIN_LIFE_BIAS_15 or h15 < 2 or l15 > 6:
-            return None, None, None, "15_NOT_ALIVE"
+            return None, None, None, None, "15_NOT_ALIVE"
 
         if pressure < MIN_PRESSURE_AMBO:
-            return None, None, None, "LOW_PRESSURE"
+            return None, None, None, None, "LOW_PRESSURE"
 
+        # THIN smart pass
         if state not in ["FLOW", "DENSE"]:
-            return None, None, None, "BAD_STATE"
+            if state == "THIN":
+                if not (life15 >= 12 and pressure >= 16):
+                    return None, None, None, None, "BAD_STATE"
+            else:
+                return None, None, None, None, "BAD_STATE"
 
         s1, s2 = self.supports_for_15()
         if s1 is None:
-            return None, None, None, "NO_REAL_SUPPORT"
+            return None, None, None, None, "NO_REAL_SUPPORT"
 
         sq = self.support_quality_label(15, s1, s2)
 
         if sq == "DEAD":
-            return None, None, None, "DEAD_SUPPORTS"
+            return None, None, None, None, "DEAD_SUPPORTS"
 
         if sq == "FAKE_ALIVE" and pressure < MIN_PRESSURE_15_FAKE:
-            return None, None, None, "FAKE_LOW_PRESSURE"
+            return None, None, None, None, "FAKE_LOW_PRESSURE"
 
         ai_score = self.ai_filter_score(s1)
         if ai_score < MIN_AI_SCORE:
-            return None, None, None, "AI_FILTER_BLOCK"
+            return None, None, None, None, "AI_FILTER_BLOCK"
 
-        return 15, s1, s2, "OK"
+        return 15, s1, s2, ai_score, "OK"
 
     # ===================== PLAY ENGINE ======================
 
@@ -887,6 +899,7 @@ class SNIPER284PRO:
             self.last_hit_extraction = e
             self.last_stop_number = None
             self.last_stop_count_same = 0
+            self.cooldown_after_hit = 1
             self.push_result("HIT")
             self.active_play = None
             return
@@ -950,6 +963,11 @@ class SNIPER284PRO:
         if self.is_duplicate_draw(e, nums):
             return
 
+        if self.last_processed_e == e:
+            return
+
+        self.last_processed_e = e
+
         self.remember_draw(e, nums)
         self.update_history(nums)
         self.draws_since_profile_update += 1
@@ -966,10 +984,19 @@ class SNIPER284PRO:
             f"🎱 {', '.join(f'{x:02d}' for x in nums)}"
         )
 
-        # prima gestisce eventuale play aperto
         await self.process_active_play(app, e, nums)
 
         if self.active_play is not None:
+            self._save_state()
+            return
+
+        if self.cooldown_after_hit > 0:
+            self.cooldown_after_hit -= 1
+            await self.tg(
+                app,
+                "🧊 COOLDOWN POST-HIT\n"
+                f"• skip estrazione {e}"
+            )
             self._save_state()
             return
 
@@ -977,7 +1004,7 @@ class SNIPER284PRO:
             self._save_state()
             return
 
-        candidate, s1, s2, reason = self.choose_ambo_mode()
+        candidate, s1, s2, ai_score, reason = self.choose_ambo_mode()
 
         if candidate is None:
             state = self.profile.get("state", "n/a") if self.profile else "n/a"
@@ -995,7 +1022,13 @@ class SNIPER284PRO:
             self._save_state()
             return
 
-        ai_score = self.ai_filter_score(s1)
+        # evita re-entry identico troppo debole
+        if self.last_signal_numbers and self.last_signal_numbers[-1] == 15:
+            if self.life_bias_number(15) < 6:
+                await self.tg(app, "⏸ SKIP RE-ENTRY 15 (debole post-play)")
+                self._save_state()
+                return
+
         sq = self.support_quality_label(candidate, s1, s2)
 
         self.push_signal_number(candidate)
@@ -1018,7 +1051,7 @@ class SNIPER284PRO:
 
 # ===================== LOOP ================================
 
-bot = SNIPER284PRO()
+bot = SNIPER284PROFIXED()
 
 async def live():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -1037,7 +1070,7 @@ async def live():
 
     bot.profile = bot.analyze_cluster_profile()
 
-    await bot.tg(app, "🚀 SNIPER v28.4 PRO + AI FILTER AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v28.4 PRO + AI FILTER FIXED AVVIATO")
     await bot.send_profile(app)
 
     while True:
