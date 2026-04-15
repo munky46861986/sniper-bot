@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v28.7 CORE — CLEAN PARSER + TRACKING
+# 🚀 SNIPER v28.8 CORE — ANTI REENTRY + AMBO BOOST
 # ============================================================
 
 import asyncio
@@ -14,8 +14,6 @@ import nest_asyncio
 
 nest_asyncio.apply()
 
-# ===================== CONFIG ===============================
-
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
 
@@ -28,7 +26,7 @@ LOOP_SEC = 60
 HISTORY_MAX = 160
 MAX_COLPI = 3
 
-# ===================== PARSER FIX ===========================
+# ===================== PARSER ===============================
 
 def parse_site():
     r = requests.get(URL, headers=HEADERS, timeout=15)
@@ -60,7 +58,6 @@ def parse_site():
             if "EXTRA" in row.upper():
                 break
 
-            # SOLO numeri puri
             if re.fullmatch(r"\d{1,2}", row):
                 n = int(row)
                 if 1 <= n <= 90:
@@ -70,8 +67,6 @@ def parse_site():
 
         if len(nums) >= 20:
             clean = nums[:20]
-
-            # filtro anti-sporco
             if len(set(clean)) == 20:
                 out[e] = clean
 
@@ -95,9 +90,12 @@ class SNIPER:
         self.last_fp = None
         self.day = day_key()
 
-        # TRACK PLAY
         self.active = None
         self.colpi = 0
+
+        # ANTI RE-ENTRY
+        self.cooldown = 0
+        self.last_play = None
 
     async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
@@ -108,6 +106,7 @@ class SNIPER:
             self.max_e = 0
             self.last_fp = None
             self.active = None
+            self.cooldown = 0
 
     # ===================== FEATURES ==========================
 
@@ -133,14 +132,18 @@ class SNIPER:
             score += c*w
         return score
 
+    def life(self, n):
+        return self.heat(n)*1.8 - self.lag(n)*0.6
+
     # ===================== LOGICA ============================
 
     def choose(self):
-        p = self.pressure()
-        h = self.heat(15)
-        l = self.lag(15)
 
-        life15 = h*1.8 - l*0.6
+        if self.cooldown > 0:
+            return None
+
+        p = self.pressure()
+        life15 = self.life(15)
 
         if life15 < 3:
             return None
@@ -148,10 +151,18 @@ class SNIPER:
         if p < 9:
             return None
 
-        s50 = self.heat(50) - self.lag(50)*0.5
-        s5 = self.heat(5) - self.lag(5)*0.5
+        life50 = self.life(50)
+        life5 = self.life(5)
 
-        return (15, 50 if s50 > s5 else 5)
+        # BOOST AMBO 50
+        if life50 >= life5 + 1.2:
+            return (15, 50)
+
+        # fallback 5 solo se forte
+        if life5 >= 4:
+            return (15, 5)
+
+        return None
 
     # ===================== MAIN ==============================
 
@@ -164,9 +175,7 @@ class SNIPER:
             return
         self.last_fp = fp
 
-        # sicurezza parser
         if len(set(nums)) != 20:
-            await self.tg(app, f"⚠️ PARSER SCARTA {e}")
             return
 
         self.last_draws.append(nums)
@@ -182,7 +191,6 @@ class SNIPER:
         if self.active:
 
             self.colpi += 1
-
             A, S = self.active
 
             hitA = A in s
@@ -195,14 +203,28 @@ class SNIPER:
                 await self.tg(app, f"🔥 HIT AMBATA {A} (colpo {self.colpi})")
                 self.active = None
                 self.colpi = 0
+
+                # attiva cooldown
+                self.cooldown = 1
+                self.last_play = (A, S)
                 return
 
             if self.colpi >= MAX_COLPI:
                 await self.tg(app, f"🛑 STOP {A}")
                 self.active = None
                 self.colpi = 0
+
+                # piccolo cooldown dopo stop
+                self.cooldown = 1
                 return
 
+            return
+
+        # ===================== COOLDOWN =======================
+
+        if self.cooldown > 0:
+            self.cooldown -= 1
+            await self.tg(app, "⏸ cooldown")
             return
 
         # ===================== NUOVO PLAY =====================
@@ -216,8 +238,14 @@ class SNIPER:
             await self.tg(app, "⏸ NO PLAY")
             return
 
+        # evita stesso play consecutivo
+        if self.last_play == play:
+            await self.tg(app, "⏸ skip same play")
+            return
+
         self.active = play
         self.colpi = 0
+        self.last_play = play
 
         A, S = play
 
@@ -241,16 +269,11 @@ async def live():
 
     bot.max_e = es[-2][0] if len(es) >= 2 else 0
 
-    await bot.tg(app, "🚀 SNIPER v28.7 CORE AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v28.8 CORE AVVIATO")
 
     while True:
         try:
             es = parse_site()
-
-            if not es:
-                await bot.tg(app, "⚠️ parser vuoto loop")
-                await asyncio.sleep(LOOP_SEC)
-                continue
 
             for e, nums in es:
                 if e <= bot.max_e:
