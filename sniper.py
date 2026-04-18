@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v28.8 CORE — ANTI REENTRY + AMBO BOOST
+# 🚀 SNIPER v28.9 CORE — SMART REENTRY
 # ============================================================
 
 import asyncio
@@ -93,9 +93,12 @@ class SNIPER:
         self.active = None
         self.colpi = 0
 
-        # ANTI RE-ENTRY
         self.cooldown = 0
+
+        # SMART REENTRY MEMORY
         self.last_play = None
+        self.last_life15 = 0
+        self.last_support_life = 0
 
     async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
@@ -154,15 +157,29 @@ class SNIPER:
         life50 = self.life(50)
         life5 = self.life(5)
 
-        # BOOST AMBO 50
-        if life50 >= life5 + 1.2:
-            return (15, 50)
+        # priorità 50
+        support = 50 if life50 >= life5 else 5
+        support_life = max(life50, life5)
 
-        # fallback 5 solo se forte
-        if life5 >= 4:
-            return (15, 5)
+        new_play = (15, support)
 
-        return None
+        # ===================== SMART REENTRY =====================
+
+        if self.last_play == new_play:
+
+            improved_15 = life15 > self.last_life15 + 0.8
+            improved_support = support_life > self.last_support_life + 0.8
+            support_seen = support in self.last_draws[-1]
+
+            if not (improved_15 or improved_support or support_seen):
+                return None
+
+        # salva stato
+        self.last_play = new_play
+        self.last_life15 = life15
+        self.last_support_life = support_life
+
+        return new_play
 
     # ===================== MAIN ==============================
 
@@ -203,18 +220,13 @@ class SNIPER:
                 await self.tg(app, f"🔥 HIT AMBATA {A} (colpo {self.colpi})")
                 self.active = None
                 self.colpi = 0
-
-                # attiva cooldown
                 self.cooldown = 1
-                self.last_play = (A, S)
                 return
 
             if self.colpi >= MAX_COLPI:
                 await self.tg(app, f"🛑 STOP {A}")
                 self.active = None
                 self.colpi = 0
-
-                # piccolo cooldown dopo stop
                 self.cooldown = 1
                 return
 
@@ -238,14 +250,8 @@ class SNIPER:
             await self.tg(app, "⏸ NO PLAY")
             return
 
-        # evita stesso play consecutivo
-        if self.last_play == play:
-            await self.tg(app, "⏸ skip same play")
-            return
-
         self.active = play
         self.colpi = 0
-        self.last_play = play
 
         A, S = play
 
@@ -269,7 +275,7 @@ async def live():
 
     bot.max_e = es[-2][0] if len(es) >= 2 else 0
 
-    await bot.tg(app, "🚀 SNIPER v28.8 CORE AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v28.9 CORE AVVIATO")
 
     while True:
         try:
