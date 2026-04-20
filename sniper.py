@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v28.9 CORE — SMART REENTRY
+# 🚀 SNIPER v29 CORE — AMBO FOCUS
 # ============================================================
 
 import asyncio
@@ -92,13 +92,7 @@ class SNIPER:
 
         self.active = None
         self.colpi = 0
-
         self.cooldown = 0
-
-        # SMART REENTRY MEMORY
-        self.last_play = None
-        self.last_life15 = 0
-        self.last_support_life = 0
 
     async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
@@ -125,6 +119,9 @@ class SNIPER:
                 return lag
         return lag
 
+    def life(self, n):
+        return self.heat(n)*1.8 - self.lag(n)*0.6
+
     def pressure(self):
         weights = [5,4,3,2,1]
         score = 0
@@ -135,8 +132,8 @@ class SNIPER:
             score += c*w
         return score
 
-    def life(self, n):
-        return self.heat(n)*1.8 - self.lag(n)*0.6
+    def seen_recent(self, n, k=2):
+        return any(n in d for d in self.last_draws[-k:])
 
     # ===================== LOGICA ============================
 
@@ -145,41 +142,27 @@ class SNIPER:
         if self.cooldown > 0:
             return None
 
-        p = self.pressure()
         life15 = self.life(15)
-
         if life15 < 3:
             return None
 
-        if p < 9:
+        if self.pressure() < 9:
             return None
 
         life50 = self.life(50)
         life5 = self.life(5)
 
-        # priorità 50
-        support = 50 if life50 >= life5 else 5
-        support_life = max(life50, life5)
+        # ===================== 15-50 STRONG =====================
 
-        new_play = (15, support)
+        if life50 >= 5 and life50 >= life5 + 1:
+            return (15, 50)
 
-        # ===================== SMART REENTRY =====================
+        # ===================== 15-5 EXPLOSIVE ==================
 
-        if self.last_play == new_play:
+        if life5 >= 4 or self.seen_recent(5,2):
+            return (15, 5)
 
-            improved_15 = life15 > self.last_life15 + 0.8
-            improved_support = support_life > self.last_support_life + 0.8
-            support_seen = support in self.last_draws[-1]
-
-            if not (improved_15 or improved_support or support_seen):
-                return None
-
-        # salva stato
-        self.last_play = new_play
-        self.last_life15 = life15
-        self.last_support_life = support_life
-
-        return new_play
+        return None
 
     # ===================== MAIN ==============================
 
@@ -210,13 +193,10 @@ class SNIPER:
             self.colpi += 1
             A, S = self.active
 
-            hitA = A in s
-            hitS = S in s
-
-            if hitA and hitS:
+            if A in s and S in s:
                 await self.tg(app, f"💥 HIT AMBO {A}-{S}")
 
-            if hitA:
+            if A in s:
                 await self.tg(app, f"🔥 HIT AMBATA {A} (colpo {self.colpi})")
                 self.active = None
                 self.colpi = 0
@@ -275,7 +255,7 @@ async def live():
 
     bot.max_e = es[-2][0] if len(es) >= 2 else 0
 
-    await bot.tg(app, "🚀 SNIPER v28.9 CORE AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v29 CORE AVVIATO")
 
     while True:
         try:
