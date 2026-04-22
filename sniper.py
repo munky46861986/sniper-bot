@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v29.1 CORE — HARD DEDUP + STRICT LOGIC
+# 🚀 SNIPER v29.5 PURE 15 + LEARNING PARTNERS
 # ============================================================
 
 import asyncio
@@ -8,6 +8,7 @@ import re
 import os
 import hashlib
 from datetime import datetime
+from collections import defaultdict
 from bs4 import BeautifulSoup
 from telegram.ext import ApplicationBuilder
 import nest_asyncio
@@ -75,9 +76,6 @@ def parse_site():
 def fingerprint(e, nums):
     return hashlib.md5(f"{e}-{nums}".encode()).hexdigest()
 
-def day_key():
-    return datetime.now().strftime("%Y-%m-%d")
-
 # ============================================================
 
 class SNIPER:
@@ -86,24 +84,17 @@ class SNIPER:
         self.max_e = 0
         self.last_draws = []
         self.last_fp = None
-        self.day = day_key()
 
-        self.active = None
+        self.active = False
         self.colpi = 0
         self.cooldown = 0
 
-        self.last_play_extraction = None  # 🔥 anti doppio play
+        # 🔥 LEARNING PARTNERS
+        self.partner_total = defaultdict(int)
+        self.partner_recent = []
 
     async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
-
-    def reset_day(self):
-        if day_key() != self.day:
-            self.day = day_key()
-            self.max_e = 0
-            self.last_fp = None
-            self.active = None
-            self.cooldown = 0
 
     # ===================== FEATURES ==========================
 
@@ -119,8 +110,8 @@ class SNIPER:
                 return lag
         return lag
 
-    def life(self, n):
-        return self.heat(n)*1.8 - self.lag(n)*0.6
+    def life15(self):
+        return self.heat(15)*1.8 - self.lag(15)*0.6
 
     def pressure(self):
         weights = [5,4,3,2,1]
@@ -132,48 +123,56 @@ class SNIPER:
             score += c*w
         return score
 
-    def seen_recent(self, n, k=2):
-        return any(n in d for d in self.last_draws[-k:])
+    # ===================== LEARNING ==========================
+
+    def update_partners(self, nums):
+
+        partners = [x for x in nums if x != 15]
+
+        for n in partners:
+            self.partner_total[n] += 1
+
+        self.partner_recent.append(partners)
+        if len(self.partner_recent) > 20:
+            self.partner_recent.pop(0)
+
+    def top_partners(self):
+
+        # globali
+        global_top = sorted(self.partner_total.items(), key=lambda x: x[1], reverse=True)[:5]
+
+        # recenti
+        recent_count = defaultdict(int)
+        for block in self.partner_recent:
+            for n in block:
+                recent_count[n] += 1
+
+        recent_top = sorted(recent_count.items(), key=lambda x: x[1], reverse=True)[:5]
+
+        return global_top, recent_top
 
     # ===================== LOGICA ============================
 
-    def choose(self):
+    def should_play(self):
 
         if self.cooldown > 0:
-            return None
+            return False
 
-        life15 = self.life(15)
-        if life15 < 3:
-            return None
+        if self.life15() < 3:
+            return False
 
         if self.pressure() < 9:
-            return None
+            return False
 
-        life50 = self.life(50)
-        life5 = self.life(5)
-
-        # 🔴 15-50 SOLO SE FORTE DAVVERO
-        if life50 >= 6 and life50 >= life5 + 2:
-            return (15, 50)
-
-        # 🟢 15-5 PRIORITARIO
-        if life5 >= 4 or self.seen_recent(5,2):
-            return (15, 5)
-
-        return None
+        return True
 
     # ===================== MAIN ==============================
 
     async def on_new(self, app, e, nums):
 
-        self.reset_day()
-
         fp = fingerprint(e, nums)
-
-        # 🔥 HARD DEDUP
         if fp == self.last_fp:
             return
-
         self.last_fp = fp
 
         if len(set(nums)) != 20:
@@ -192,21 +191,31 @@ class SNIPER:
         if self.active:
 
             self.colpi += 1
-            A, S = self.active
 
-            if A in s and S in s:
-                await self.tg(app, f"💥 HIT AMBO {A}-{S}")
+            if 15 in s:
 
-            if A in s:
-                await self.tg(app, f"🔥 HIT AMBATA {A} (colpo {self.colpi})")
-                self.active = None
+                await self.tg(app, f"🔥 HIT AMBATA 15 (colpo {self.colpi})")
+
+                # 🔥 LEARNING PARTNERS
+                self.update_partners(nums)
+                global_top, recent_top = self.top_partners()
+
+                await self.tg(
+                    app,
+                    "📎 PARTNER HIT15\n"
+                    f"• estrazione = {', '.join(map(str, [x for x in nums if x != 15][:6]))}\n"
+                    f"• top globale = {global_top}\n"
+                    f"• top recente = {recent_top}"
+                )
+
+                self.active = False
                 self.colpi = 0
                 self.cooldown = 1
                 return
 
             if self.colpi >= MAX_COLPI:
-                await self.tg(app, f"🛑 STOP {A}")
-                self.active = None
+                await self.tg(app, "🛑 STOP 15")
+                self.active = False
                 self.colpi = 0
                 self.cooldown = 1
                 return
@@ -225,23 +234,14 @@ class SNIPER:
         if len(self.last_draws) < 10:
             return
 
-        # 🔥 blocco doppio play stessa estrazione
-        if self.last_play_extraction == e:
-            return
-
-        play = self.choose()
-
-        if not play:
+        if not self.should_play():
             await self.tg(app, "⏸ NO PLAY")
             return
 
-        self.active = play
+        self.active = True
         self.colpi = 0
-        self.last_play_extraction = e
 
-        A, S = play
-
-        await self.tg(app, f"🎯 PLAY {A}-{S} (3 colpi)")
+        await self.tg(app, "🎯 PLAY 15 (3 colpi)")
 
 # ===================== LOOP ================================
 
@@ -261,7 +261,7 @@ async def live():
 
     bot.max_e = es[-2][0] if len(es) >= 2 else 0
 
-    await bot.tg(app, "🚀 SNIPER v29.1 CORE AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v29.5 PURE 15 AVVIATO")
 
     while True:
         try:
