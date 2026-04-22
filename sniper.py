@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v29 CORE — AMBO FOCUS
+# 🚀 SNIPER v29.1 CORE — HARD DEDUP + STRICT LOGIC
 # ============================================================
 
 import asyncio
@@ -55,8 +55,6 @@ def parse_site():
 
             if re.search(r"Estrazione\s+.*?\bn\.\s*\d+", row, re.IGNORECASE):
                 break
-            if "EXTRA" in row.upper():
-                break
 
             if re.fullmatch(r"\d{1,2}", row):
                 n = int(row)
@@ -93,6 +91,8 @@ class SNIPER:
         self.active = None
         self.colpi = 0
         self.cooldown = 0
+
+        self.last_play_extraction = None  # 🔥 anti doppio play
 
     async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
@@ -152,13 +152,11 @@ class SNIPER:
         life50 = self.life(50)
         life5 = self.life(5)
 
-        # ===================== 15-50 STRONG =====================
-
-        if life50 >= 5 and life50 >= life5 + 1:
+        # 🔴 15-50 SOLO SE FORTE DAVVERO
+        if life50 >= 6 and life50 >= life5 + 2:
             return (15, 50)
 
-        # ===================== 15-5 EXPLOSIVE ==================
-
+        # 🟢 15-5 PRIORITARIO
         if life5 >= 4 or self.seen_recent(5,2):
             return (15, 5)
 
@@ -171,8 +169,11 @@ class SNIPER:
         self.reset_day()
 
         fp = fingerprint(e, nums)
+
+        # 🔥 HARD DEDUP
         if fp == self.last_fp:
             return
+
         self.last_fp = fp
 
         if len(set(nums)) != 20:
@@ -224,6 +225,10 @@ class SNIPER:
         if len(self.last_draws) < 10:
             return
 
+        # 🔥 blocco doppio play stessa estrazione
+        if self.last_play_extraction == e:
+            return
+
         play = self.choose()
 
         if not play:
@@ -232,6 +237,7 @@ class SNIPER:
 
         self.active = play
         self.colpi = 0
+        self.last_play_extraction = e
 
         A, S = play
 
@@ -255,7 +261,7 @@ async def live():
 
     bot.max_e = es[-2][0] if len(es) >= 2 else 0
 
-    await bot.tg(app, "🚀 SNIPER v29 CORE AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v29.1 CORE AVVIATO")
 
     while True:
         try:
