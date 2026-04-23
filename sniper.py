@@ -1,13 +1,13 @@
 # ============================================================
-# 🚀 SNIPER v29.5 PURE 15 + LEARNING PARTNERS
+# 🚀 SNIPER v29.6 — PURE 15 + LEARNING + PERSISTENZA
 # ============================================================
 
 import asyncio
 import requests
 import re
 import os
+import json
 import hashlib
-from datetime import datetime
 from collections import defaultdict
 from bs4 import BeautifulSoup
 from telegram.ext import ApplicationBuilder
@@ -15,17 +15,21 @@ import nest_asyncio
 
 nest_asyncio.apply()
 
+# ===================== CONFIG ===============================
+
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
 
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-TARGET = [5,10,15,50]
+TARGET = [5, 10, 15, 50]
 
 LOOP_SEC = 60
 HISTORY_MAX = 160
 MAX_COLPI = 3
+
+STATE_FILE = "partner_state.json"
 
 # ===================== PARSER ===============================
 
@@ -89,18 +93,54 @@ class SNIPER:
         self.colpi = 0
         self.cooldown = 0
 
-        # 🔥 LEARNING PARTNERS
+        # learning partners
         self.partner_total = defaultdict(int)
         self.partner_recent = []
+
+        self.load_state()
+
+    # ===================== TELEGRAM ==========================
 
     async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
 
+    # ===================== STATE =============================
+
+    def save_state(self):
+        data = {
+            "partner_total": dict(self.partner_total),
+            "partner_recent": self.partner_recent
+        }
+
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def load_state(self):
+        if not os.path.exists(STATE_FILE):
+            self.partner_total = defaultdict(int)
+            self.partner_recent = []
+            return
+
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            self.partner_total = defaultdict(int, data.get("partner_total", {}))
+            self.partner_recent = data.get("partner_recent", [])
+
+        except Exception:
+            self.partner_total = defaultdict(int)
+            self.partner_recent = []
+
     # ===================== FEATURES ==========================
 
     def heat(self, n):
-        weights = [5,4,3,2,1]
-        return sum(w for i,w in enumerate(weights) if i < len(self.last_draws) and n in self.last_draws[-(i+1)])
+        weights = [5, 4, 3, 2, 1]
+        return sum(
+            w
+            for i, w in enumerate(weights)
+            if i < len(self.last_draws) and n in self.last_draws[-(i + 1)]
+        )
 
     def lag(self, n):
         lag = 0
@@ -111,22 +151,21 @@ class SNIPER:
         return lag
 
     def life15(self):
-        return self.heat(15)*1.8 - self.lag(15)*0.6
+        return self.heat(15) * 1.8 - self.lag(15) * 0.6
 
     def pressure(self):
-        weights = [5,4,3,2,1]
+        weights = [5, 4, 3, 2, 1]
         score = 0
-        for i,w in enumerate(weights):
+        for i, w in enumerate(weights):
             if i >= len(self.last_draws):
                 break
-            c = len([x for x in self.last_draws[-(i+1)] if x in TARGET])
-            score += c*w
+            c = len([x for x in self.last_draws[-(i + 1)] if x in TARGET])
+            score += c * w
         return score
 
     # ===================== LEARNING ==========================
 
     def update_partners(self, nums):
-
         partners = [x for x in nums if x != 15]
 
         for n in partners:
@@ -137,24 +176,28 @@ class SNIPER:
             self.partner_recent.pop(0)
 
     def top_partners(self):
+        global_top = sorted(
+            self.partner_total.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:5]
 
-        # globali
-        global_top = sorted(self.partner_total.items(), key=lambda x: x[1], reverse=True)[:5]
-
-        # recenti
         recent_count = defaultdict(int)
         for block in self.partner_recent:
             for n in block:
                 recent_count[n] += 1
 
-        recent_top = sorted(recent_count.items(), key=lambda x: x[1], reverse=True)[:5]
+        recent_top = sorted(
+            recent_count.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:5]
 
         return global_top, recent_top
 
     # ===================== LOGICA ============================
 
     def should_play(self):
-
         if self.cooldown > 0:
             return False
 
@@ -169,7 +212,6 @@ class SNIPER:
     # ===================== MAIN ==============================
 
     async def on_new(self, app, e, nums):
-
         fp = fingerprint(e, nums)
         if fp == self.last_fp:
             return
@@ -189,21 +231,22 @@ class SNIPER:
         # ===================== PLAY ATTIVO =====================
 
         if self.active:
-
             self.colpi += 1
 
             if 15 in s:
-
                 await self.tg(app, f"🔥 HIT AMBATA 15 (colpo {self.colpi})")
 
-                # 🔥 LEARNING PARTNERS
                 self.update_partners(nums)
+                self.save_state()
+
                 global_top, recent_top = self.top_partners()
+
+                partners_now = [x for x in nums if x != 15][:6]
 
                 await self.tg(
                     app,
                     "📎 PARTNER HIT15\n"
-                    f"• estrazione = {', '.join(map(str, [x for x in nums if x != 15][:6]))}\n"
+                    f"• estrazione = {', '.join(map(str, partners_now))}\n"
                     f"• top globale = {global_top}\n"
                     f"• top recente = {recent_top}"
                 )
@@ -261,7 +304,7 @@ async def live():
 
     bot.max_e = es[-2][0] if len(es) >= 2 else 0
 
-    await bot.tg(app, "🚀 SNIPER v29.5 PURE 15 AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v29.6 PURE 15 AVVIATO")
 
     while True:
         try:
