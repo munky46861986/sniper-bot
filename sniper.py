@@ -1,5 +1,6 @@
 # ============================================================
-# 🚀 SNIPER v29.6 — PURE 15 + LEARNING + PERSISTENZA
+# 🚀 SNIPER v29.7 PURE 15 PRO
+# Ambata 15 + Learning Partner + Telegram Report
 # ============================================================
 
 import asyncio
@@ -15,8 +16,6 @@ import nest_asyncio
 
 nest_asyncio.apply()
 
-# ===================== CONFIG ===============================
-
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
 
@@ -27,9 +26,16 @@ TARGET = [5, 10, 15, 50]
 
 LOOP_SEC = 60
 HISTORY_MAX = 160
-MAX_COLPI = 3
 
 STATE_FILE = "partner_state.json"
+
+BASE_MAX_COLPI = 3
+WEAK_MAX_COLPI = 2
+
+LIFE15_MIN = 4.0
+PRESSURE_MIN = 9
+STRONG_LIFE15 = 7.0
+STRONG_PRESSURE = 14
 
 # ===================== PARSER ===============================
 
@@ -45,8 +51,8 @@ def parse_site():
 
     while i < len(lines):
         line = lines[i]
-
         m = re.search(r"Estrazione\s+.*?\bn\.\s*(\d+)", line, re.IGNORECASE)
+
         if not m:
             i += 1
             continue
@@ -73,12 +79,12 @@ def parse_site():
             if len(set(clean)) == 20:
                 out[e] = clean
 
-        continue
-
     return sorted(out.items())
+
 
 def fingerprint(e, nums):
     return hashlib.md5(f"{e}-{nums}".encode()).hexdigest()
+
 
 # ============================================================
 
@@ -91,11 +97,14 @@ class SNIPER:
 
         self.active = False
         self.colpi = 0
+        self.max_colpi_active = BASE_MAX_COLPI
         self.cooldown = 0
 
-        # learning partners
+        self.recent_results = []
+
         self.partner_total = defaultdict(int)
         self.partner_recent = []
+        self.hit15_count = 0
 
         self.load_state()
 
@@ -109,7 +118,8 @@ class SNIPER:
     def save_state(self):
         data = {
             "partner_total": dict(self.partner_total),
-            "partner_recent": self.partner_recent
+            "partner_recent": self.partner_recent,
+            "hit15_count": self.hit15_count
         }
 
         with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -117,8 +127,6 @@ class SNIPER:
 
     def load_state(self):
         if not os.path.exists(STATE_FILE):
-            self.partner_total = defaultdict(int)
-            self.partner_recent = []
             return
 
         try:
@@ -127,18 +135,19 @@ class SNIPER:
 
             self.partner_total = defaultdict(int, data.get("partner_total", {}))
             self.partner_recent = data.get("partner_recent", [])
+            self.hit15_count = data.get("hit15_count", 0)
 
         except Exception:
             self.partner_total = defaultdict(int)
             self.partner_recent = []
+            self.hit15_count = 0
 
     # ===================== FEATURES ==========================
 
     def heat(self, n):
         weights = [5, 4, 3, 2, 1]
         return sum(
-            w
-            for i, w in enumerate(weights)
+            w for i, w in enumerate(weights)
             if i < len(self.last_draws) and n in self.last_draws[-(i + 1)]
         )
 
@@ -150,20 +159,52 @@ class SNIPER:
                 return lag
         return lag
 
-    def life15(self):
-        return self.heat(15) * 1.8 - self.lag(15) * 0.6
+    def dominance(self, n, window=6):
+        recent = self.last_draws[-window:]
+        return sum(1 for d in recent if n in d)
 
     def pressure(self):
         weights = [5, 4, 3, 2, 1]
         score = 0
+
         for i, w in enumerate(weights):
             if i >= len(self.last_draws):
                 break
+
             c = len([x for x in self.last_draws[-(i + 1)] if x in TARGET])
             score += c * w
+
         return score
 
-    # ===================== LEARNING ==========================
+    def life15(self):
+        h = self.heat(15)
+        l = self.lag(15)
+        d = self.dominance(15, 6)
+
+        score = h * 1.8 - l * 0.6
+
+        if d >= 2:
+            score += 1.2
+        if d >= 3:
+            score += 1.6
+
+        return round(score, 2)
+
+    def consecutive_stops(self):
+        c = 0
+        for r in reversed(self.recent_results):
+            if r == "STOP":
+                c += 1
+            else:
+                break
+        return c
+
+    def push_result(self, result):
+        self.recent_results.append(result)
+        if len(self.recent_results) > 8:
+            self.recent_results.pop(0)
+
+    # ===================== PARTNER LEARNING ==================
 
     def update_partners(self, nums):
         partners = [x for x in nums if x != 15]
@@ -172,6 +213,7 @@ class SNIPER:
             self.partner_total[n] += 1
 
         self.partner_recent.append(partners)
+
         if len(self.partner_recent) > 20:
             self.partner_recent.pop(0)
 
@@ -180,9 +222,10 @@ class SNIPER:
             self.partner_total.items(),
             key=lambda x: x[1],
             reverse=True
-        )[:5]
+        )[:10]
 
         recent_count = defaultdict(int)
+
         for block in self.partner_recent:
             for n in block:
                 recent_count[n] += 1
@@ -191,36 +234,63 @@ class SNIPER:
             recent_count.items(),
             key=lambda x: x[1],
             reverse=True
-        )[:5]
+        )[:10]
 
         return global_top, recent_top
 
-    # ===================== LOGICA ============================
+    # ===================== PLAY FILTER =======================
 
     def should_play(self):
-        if self.cooldown > 0:
-            return False
+        life = self.life15()
+        pressure = self.pressure()
+        h15 = self.heat(15)
+        l15 = self.lag(15)
+        d15 = self.dominance(15, 6)
 
-        if self.life15() < 3:
-            return False
+        # anti-stop: dopo 2 stop serve segnale più forte
+        if self.consecutive_stops() >= 2:
+            if life < 7.0 or pressure < 13:
+                return False, "ANTI_STOP_FILTER"
 
-        if self.pressure() < 9:
-            return False
+        if life < LIFE15_MIN:
+            return False, "15_WEAK_LIFE"
 
-        return True
+        if pressure < PRESSURE_MIN:
+            return False, "LOW_PRESSURE"
+
+        if h15 < 2 and d15 == 0:
+            return False, "15_NOT_PRESENT_ENOUGH"
+
+        if l15 > 8 and pressure < 14:
+            return False, "15_TOO_DELAYED_WEAK_CONTEXT"
+
+        return True, "OK"
+
+    def choose_max_colpi(self):
+        life = self.life15()
+        pressure = self.pressure()
+
+        if life >= STRONG_LIFE15 or pressure >= STRONG_PRESSURE:
+            return BASE_MAX_COLPI
+
+        return WEAK_MAX_COLPI
 
     # ===================== MAIN ==============================
 
     async def on_new(self, app, e, nums):
         fp = fingerprint(e, nums)
+
         if fp == self.last_fp:
             return
+
         self.last_fp = fp
 
         if len(set(nums)) != 20:
+            await self.tg(app, f"⚠️ Parser scarta estrazione {e}")
             return
 
         self.last_draws.append(nums)
+
         if len(self.last_draws) > HISTORY_MAX:
             self.last_draws.pop(0)
 
@@ -237,30 +307,42 @@ class SNIPER:
                 await self.tg(app, f"🔥 HIT AMBATA 15 (colpo {self.colpi})")
 
                 self.update_partners(nums)
+                self.hit15_count += 1
                 self.save_state()
 
                 global_top, recent_top = self.top_partners()
-
-                partners_now = [x for x in nums if x != 15][:6]
+                partners_now = [x for x in nums if x != 15]
 
                 await self.tg(
                     app,
                     "📎 PARTNER HIT15\n"
-                    f"• estrazione = {', '.join(map(str, partners_now))}\n"
-                    f"• top globale = {global_top}\n"
-                    f"• top recente = {recent_top}"
+                    f"• hit15 salvati = {self.hit15_count}\n"
+                    f"• partner estrazione = {', '.join(map(str, partners_now))}\n"
+                    f"• top globale = {global_top[:5]}\n"
+                    f"• top recente = {recent_top[:5]}"
                 )
 
+                if self.hit15_count % 5 == 0:
+                    await self.tg(
+                        app,
+                        "📊 REPORT PARTNER 15\n"
+                        f"• hit15 salvati = {self.hit15_count}\n"
+                        f"• TOP GLOBALE = {global_top}\n"
+                        f"• TOP RECENTE = {recent_top}"
+                    )
+
                 self.active = False
                 self.colpi = 0
                 self.cooldown = 1
+                self.push_result("HIT")
                 return
 
-            if self.colpi >= MAX_COLPI:
-                await self.tg(app, "🛑 STOP 15")
+            if self.colpi >= self.max_colpi_active:
+                await self.tg(app, f"🛑 STOP 15 ({self.max_colpi_active} colpi)")
                 self.active = False
                 self.colpi = 0
                 self.cooldown = 1
+                self.push_result("STOP")
                 return
 
             return
@@ -277,14 +359,34 @@ class SNIPER:
         if len(self.last_draws) < 10:
             return
 
-        if not self.should_play():
-            await self.tg(app, "⏸ NO PLAY")
+        ok, reason = self.should_play()
+
+        if not ok:
+            await self.tg(
+                app,
+                "⏸ NO PLAY\n"
+                f"• reason = {reason}\n"
+                f"• life15 = {self.life15()}\n"
+                f"• pressure = {self.pressure()}\n"
+                f"• heat15 = {self.heat(15)}\n"
+                f"• lag15 = {self.lag(15)}"
+            )
             return
 
         self.active = True
         self.colpi = 0
+        self.max_colpi_active = self.choose_max_colpi()
 
-        await self.tg(app, "🎯 PLAY 15 (3 colpi)")
+        await self.tg(
+            app,
+            "🎯 PLAY 15\n"
+            f"• max_colpi = {self.max_colpi_active}\n"
+            f"• life15 = {self.life15()}\n"
+            f"• pressure = {self.pressure()}\n"
+            f"• heat15 = {self.heat(15)}\n"
+            f"• lag15 = {self.lag(15)}"
+        )
+
 
 # ===================== LOOP ================================
 
@@ -304,7 +406,7 @@ async def live():
 
     bot.max_e = es[-2][0] if len(es) >= 2 else 0
 
-    await bot.tg(app, "🚀 SNIPER v29.6 PURE 15 AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v29.7 PURE 15 PRO AVVIATO")
 
     while True:
         try:
@@ -318,7 +420,7 @@ async def live():
                 await bot.on_new(app, e, nums)
 
         except Exception as ex:
-            await bot.tg(app, f"⚠️ {ex}")
+            await bot.tg(app, f"⚠️ Errore loop: {ex}")
 
         await asyncio.sleep(LOOP_SEC)
 
