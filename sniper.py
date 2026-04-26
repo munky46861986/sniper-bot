@@ -1,6 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v29.7 PURE 15 PRO
-# Ambata 15 + Learning Partner + Telegram Report
+# 🚀 SNIPER v29.8 PURE 15 PRO — FULL PERSISTENCE
 # ============================================================
 
 import asyncio
@@ -9,6 +8,8 @@ import re
 import os
 import json
 import hashlib
+import subprocess
+from datetime import datetime
 from collections import defaultdict
 from bs4 import BeautifulSoup
 from telegram.ext import ApplicationBuilder
@@ -27,7 +28,7 @@ TARGET = [5, 10, 15, 50]
 LOOP_SEC = 60
 HISTORY_MAX = 160
 
-STATE_FILE = "partner_state.json"
+STATE_FILE = "sniper_state.json"
 
 BASE_MAX_COLPI = 3
 WEAK_MAX_COLPI = 2
@@ -37,7 +38,6 @@ PRESSURE_MIN = 9
 STRONG_LIFE15 = 7.0
 STRONG_PRESSURE = 14
 
-# ===================== PARSER ===============================
 
 def parse_site():
     r = requests.get(URL, headers=HEADERS, timeout=15)
@@ -50,9 +50,7 @@ def parse_site():
     i = 0
 
     while i < len(lines):
-        line = lines[i]
-        m = re.search(r"Estrazione\s+.*?\bn\.\s*(\d+)", line, re.IGNORECASE)
-
+        m = re.search(r"Estrazione\s+.*?\bn\.\s*(\d+)", lines[i], re.IGNORECASE)
         if not m:
             i += 1
             continue
@@ -86,7 +84,9 @@ def fingerprint(e, nums):
     return hashlib.md5(f"{e}-{nums}".encode()).hexdigest()
 
 
-# ============================================================
+def day_key():
+    return datetime.now().strftime("%Y-%m-%d")
+
 
 class SNIPER:
 
@@ -94,6 +94,7 @@ class SNIPER:
         self.max_e = 0
         self.last_draws = []
         self.last_fp = None
+        self.day = day_key()
 
         self.active = False
         self.colpi = 0
@@ -108,8 +109,6 @@ class SNIPER:
 
         self.load_state()
 
-    # ===================== TELEGRAM ==========================
-
     async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
 
@@ -117,13 +116,24 @@ class SNIPER:
 
     def save_state(self):
         data = {
+            "day": self.day,
+            "max_e": self.max_e,
+            "last_fp": self.last_fp,
+            "last_draws": self.last_draws[-HISTORY_MAX:],
+            "active": self.active,
+            "colpi": self.colpi,
+            "max_colpi_active": self.max_colpi_active,
+            "cooldown": self.cooldown,
+            "recent_results": self.recent_results[-8:],
             "partner_total": dict(self.partner_total),
-            "partner_recent": self.partner_recent,
+            "partner_recent": self.partner_recent[-20:],
             "hit15_count": self.hit15_count
         }
 
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+
+        self.git_commit_state()
 
     def load_state(self):
         if not os.path.exists(STATE_FILE):
@@ -133,14 +143,64 @@ class SNIPER:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            self.partner_total = defaultdict(int, data.get("partner_total", {}))
-            self.partner_recent = data.get("partner_recent", [])
+            saved_day = data.get("day", day_key())
+
+            self.partner_total = defaultdict(
+                int,
+                {int(k): v for k, v in data.get("partner_total", {}).items()}
+            )
+            self.partner_recent = data.get("partner_recent", [])[-20:]
             self.hit15_count = data.get("hit15_count", 0)
 
+            if saved_day != day_key():
+                self.day = day_key()
+                self.max_e = 0
+                self.last_fp = None
+                self.last_draws = []
+                self.active = False
+                self.colpi = 0
+                self.cooldown = 0
+                self.recent_results = []
+                return
+
+            self.day = saved_day
+            self.max_e = data.get("max_e", 0)
+            self.last_fp = data.get("last_fp", None)
+            self.last_draws = data.get("last_draws", [])[-HISTORY_MAX:]
+            self.active = data.get("active", False)
+            self.colpi = data.get("colpi", 0)
+            self.max_colpi_active = data.get("max_colpi_active", BASE_MAX_COLPI)
+            self.cooldown = data.get("cooldown", 0)
+            self.recent_results = data.get("recent_results", [])[-8:]
+
         except Exception:
-            self.partner_total = defaultdict(int)
-            self.partner_recent = []
-            self.hit15_count = 0
+            pass
+
+    def git_commit_state(self):
+        if os.getenv("GITHUB_ACTIONS") != "true":
+            return
+
+        try:
+            subprocess.run(["git", "config", "user.name", "github-actions"], check=False)
+            subprocess.run(["git", "config", "user.email", "github-actions@github.com"], check=False)
+            subprocess.run(["git", "add", STATE_FILE], check=False)
+
+            diff = subprocess.run(
+                ["git", "diff", "--cached", "--quiet"],
+                check=False
+            )
+
+            if diff.returncode == 0:
+                return
+
+            subprocess.run(
+                ["git", "commit", "-m", "update sniper state"],
+                check=False
+            )
+            subprocess.run(["git", "push"], check=False)
+
+        except Exception:
+            pass
 
     # ===================== FEATURES ==========================
 
@@ -160,8 +220,7 @@ class SNIPER:
         return lag
 
     def dominance(self, n, window=6):
-        recent = self.last_draws[-window:]
-        return sum(1 for d in recent if n in d)
+        return sum(1 for d in self.last_draws[-window:] if n in d)
 
     def pressure(self):
         weights = [5, 4, 3, 2, 1]
@@ -171,8 +230,7 @@ class SNIPER:
             if i >= len(self.last_draws):
                 break
 
-            c = len([x for x in self.last_draws[-(i + 1)] if x in TARGET])
-            score += c * w
+            score += len([x for x in self.last_draws[-(i + 1)] if x in TARGET]) * w
 
         return score
 
@@ -190,6 +248,11 @@ class SNIPER:
 
         return round(score, 2)
 
+    def push_result(self, result):
+        self.recent_results.append(result)
+        if len(self.recent_results) > 8:
+            self.recent_results.pop(0)
+
     def consecutive_stops(self):
         c = 0
         for r in reversed(self.recent_results):
@@ -199,12 +262,7 @@ class SNIPER:
                 break
         return c
 
-    def push_result(self, result):
-        self.recent_results.append(result)
-        if len(self.recent_results) > 8:
-            self.recent_results.pop(0)
-
-    # ===================== PARTNER LEARNING ==================
+    # ===================== PARTNER ===========================
 
     def update_partners(self, nums):
         partners = [x for x in nums if x != 15]
@@ -238,7 +296,7 @@ class SNIPER:
 
         return global_top, recent_top
 
-    # ===================== PLAY FILTER =======================
+    # ===================== FILTER ============================
 
     def should_play(self):
         life = self.life15()
@@ -247,7 +305,6 @@ class SNIPER:
         l15 = self.lag(15)
         d15 = self.dominance(15, 6)
 
-        # anti-stop: dopo 2 stop serve segnale più forte
         if self.consecutive_stops() >= 2:
             if life < 7.0 or pressure < 13:
                 return False, "ANTI_STOP_FILTER"
@@ -267,10 +324,7 @@ class SNIPER:
         return True, "OK"
 
     def choose_max_colpi(self):
-        life = self.life15()
-        pressure = self.pressure()
-
-        if life >= STRONG_LIFE15 or pressure >= STRONG_PRESSURE:
+        if self.life15() >= STRONG_LIFE15 or self.pressure() >= STRONG_PRESSURE:
             return BASE_MAX_COLPI
 
         return WEAK_MAX_COLPI
@@ -289,6 +343,7 @@ class SNIPER:
             await self.tg(app, f"⚠️ Parser scarta estrazione {e}")
             return
 
+        self.max_e = max(self.max_e, e)
         self.last_draws.append(nums)
 
         if len(self.last_draws) > HISTORY_MAX:
@@ -308,7 +363,7 @@ class SNIPER:
 
                 self.update_partners(nums)
                 self.hit15_count += 1
-                self.save_state()
+                self.push_result("HIT")
 
                 global_top, recent_top = self.top_partners()
                 partners_now = [x for x in nums if x != 15]
@@ -334,17 +389,20 @@ class SNIPER:
                 self.active = False
                 self.colpi = 0
                 self.cooldown = 1
-                self.push_result("HIT")
+                self.save_state()
                 return
 
             if self.colpi >= self.max_colpi_active:
                 await self.tg(app, f"🛑 STOP 15 ({self.max_colpi_active} colpi)")
+
                 self.active = False
                 self.colpi = 0
                 self.cooldown = 1
                 self.push_result("STOP")
+                self.save_state()
                 return
 
+            self.save_state()
             return
 
         # ===================== COOLDOWN =======================
@@ -352,11 +410,13 @@ class SNIPER:
         if self.cooldown > 0:
             self.cooldown -= 1
             await self.tg(app, "⏸ cooldown")
+            self.save_state()
             return
 
         # ===================== NUOVO PLAY =====================
 
         if len(self.last_draws) < 10:
+            self.save_state()
             return
 
         ok, reason = self.should_play()
@@ -371,6 +431,7 @@ class SNIPER:
                 f"• heat15 = {self.heat(15)}\n"
                 f"• lag15 = {self.lag(15)}"
             )
+            self.save_state()
             return
 
         self.active = True
@@ -387,6 +448,8 @@ class SNIPER:
             f"• lag15 = {self.lag(15)}"
         )
 
+        self.save_state()
+
 
 # ===================== LOOP ================================
 
@@ -401,12 +464,14 @@ async def live():
         await bot.tg(app, "⚠️ parser vuoto")
         return
 
-    for e, nums in es[:-1]:
-        bot.last_draws.append(nums)
+    if not bot.last_draws:
+        for e, nums in es[:-1]:
+            bot.last_draws.append(nums)
 
-    bot.max_e = es[-2][0] if len(es) >= 2 else 0
+        bot.max_e = es[-2][0] if len(es) >= 2 else 0
+        bot.save_state()
 
-    await bot.tg(app, "🚀 SNIPER v29.7 PURE 15 PRO AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v29.8 PURE 15 PRO FULL PERSISTENCE AVVIATO")
 
     while True:
         try:
@@ -416,12 +481,12 @@ async def live():
                 if e <= bot.max_e:
                     continue
 
-                bot.max_e = e
                 await bot.on_new(app, e, nums)
 
         except Exception as ex:
             await bot.tg(app, f"⚠️ Errore loop: {ex}")
 
         await asyncio.sleep(LOOP_SEC)
+
 
 asyncio.run(live())
