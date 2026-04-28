@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v29.8 PURE 15 PRO — FULL PERSISTENCE
+# 🚀 SNIPER v30 — AMBO INTELLIGENTE + FULL STATE JSON
 # ============================================================
 
 import asyncio
@@ -10,7 +10,7 @@ import json
 import hashlib
 import subprocess
 from datetime import datetime
-from collections import defaultdict
+from collections import defaultdict, Counter
 from bs4 import BeautifulSoup
 from telegram.ext import ApplicationBuilder
 import nest_asyncio
@@ -24,27 +24,29 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 TARGET = [5, 10, 15, 50]
+HISTORIC_PARTNERS = [5, 50, 40, 55, 10, 20]
+LIVE_POOL = [28, 83, 19, 16, 30, 41, 36, 90, 34, 67]
 
 LOOP_SEC = 60
 HISTORY_MAX = 160
-
 STATE_FILE = "sniper_state.json"
 
-BASE_MAX_COLPI = 3
-WEAK_MAX_COLPI = 2
+BASE_MAX_COLPI = 2
+STRONG_MAX_COLPI = 3
 
 LIFE15_MIN = 4.0
 PRESSURE_MIN = 9
 STRONG_LIFE15 = 7.0
 STRONG_PRESSURE = 14
 
+# ===================== PARSER ===============================
 
 def parse_site():
     r = requests.get(URL, headers=HEADERS, timeout=15)
     r.raise_for_status()
 
     text = BeautifulSoup(r.text, "html.parser").get_text("\n", strip=True)
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
 
     out = {}
     i = 0
@@ -88,19 +90,24 @@ def day_key():
     return datetime.now().strftime("%Y-%m-%d")
 
 
+# ============================================================
+
 class SNIPER:
 
     def __init__(self):
-        self.max_e = 0
-        self.last_draws = []
-        self.last_fp = None
         self.day = day_key()
+        self.max_e = 0
+        self.last_fp = None
+        self.last_draws = []
 
         self.active = False
         self.colpi = 0
         self.max_colpi_active = BASE_MAX_COLPI
-        self.cooldown = 0
+        self.active_ambata = 15
+        self.active_s1 = None
+        self.active_s2 = None
 
+        self.cooldown = 0
         self.recent_results = []
 
         self.partner_total = defaultdict(int)
@@ -109,6 +116,8 @@ class SNIPER:
 
         self.load_state()
 
+    # ===================== TELEGRAM ==========================
+
     async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
 
@@ -116,15 +125,22 @@ class SNIPER:
 
     def save_state(self):
         data = {
+            "version": "v30_AMBO_INTELLIGENTE",
             "day": self.day,
             "max_e": self.max_e,
             "last_fp": self.last_fp,
             "last_draws": self.last_draws[-HISTORY_MAX:],
+
             "active": self.active,
             "colpi": self.colpi,
             "max_colpi_active": self.max_colpi_active,
+            "active_ambata": self.active_ambata,
+            "active_s1": self.active_s1,
+            "active_s2": self.active_s2,
+
             "cooldown": self.cooldown,
-            "recent_results": self.recent_results[-8:],
+            "recent_results": self.recent_results[-10:],
+
             "partner_total": dict(self.partner_total),
             "partner_recent": self.partner_recent[-20:],
             "hit15_count": self.hit15_count
@@ -143,14 +159,14 @@ class SNIPER:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            saved_day = data.get("day", day_key())
-
             self.partner_total = defaultdict(
                 int,
-                {int(k): v for k, v in data.get("partner_total", {}).items()}
+                {int(k): int(v) for k, v in data.get("partner_total", {}).items()}
             )
             self.partner_recent = data.get("partner_recent", [])[-20:]
-            self.hit15_count = data.get("hit15_count", 0)
+            self.hit15_count = int(data.get("hit15_count", 0))
+
+            saved_day = data.get("day", day_key())
 
             if saved_day != day_key():
                 self.day = day_key()
@@ -164,14 +180,24 @@ class SNIPER:
                 return
 
             self.day = saved_day
-            self.max_e = data.get("max_e", 0)
+            self.max_e = int(data.get("max_e", 0))
             self.last_fp = data.get("last_fp", None)
             self.last_draws = data.get("last_draws", [])[-HISTORY_MAX:]
-            self.active = data.get("active", False)
-            self.colpi = data.get("colpi", 0)
-            self.max_colpi_active = data.get("max_colpi_active", BASE_MAX_COLPI)
-            self.cooldown = data.get("cooldown", 0)
-            self.recent_results = data.get("recent_results", [])[-8:]
+
+            self.active = bool(data.get("active", False))
+            self.colpi = int(data.get("colpi", 0))
+            self.max_colpi_active = int(data.get("max_colpi_active", BASE_MAX_COLPI))
+            self.active_ambata = int(data.get("active_ambata", 15))
+            self.active_s1 = data.get("active_s1", None)
+            self.active_s2 = data.get("active_s2", None)
+
+            if self.active_s1 is not None:
+                self.active_s1 = int(self.active_s1)
+            if self.active_s2 is not None:
+                self.active_s2 = int(self.active_s2)
+
+            self.cooldown = int(data.get("cooldown", 0))
+            self.recent_results = data.get("recent_results", [])[-10:]
 
         except Exception:
             pass
@@ -185,18 +211,11 @@ class SNIPER:
             subprocess.run(["git", "config", "user.email", "github-actions@github.com"], check=False)
             subprocess.run(["git", "add", STATE_FILE], check=False)
 
-            diff = subprocess.run(
-                ["git", "diff", "--cached", "--quiet"],
-                check=False
-            )
-
+            diff = subprocess.run(["git", "diff", "--cached", "--quiet"], check=False)
             if diff.returncode == 0:
                 return
 
-            subprocess.run(
-                ["git", "commit", "-m", "update sniper state"],
-                check=False
-            )
+            subprocess.run(["git", "commit", "-m", "update sniper state"], check=False)
             subprocess.run(["git", "push"], check=False)
 
         except Exception:
@@ -222,22 +241,10 @@ class SNIPER:
     def dominance(self, n, window=6):
         return sum(1 for d in self.last_draws[-window:] if n in d)
 
-    def pressure(self):
-        weights = [5, 4, 3, 2, 1]
-        score = 0
-
-        for i, w in enumerate(weights):
-            if i >= len(self.last_draws):
-                break
-
-            score += len([x for x in self.last_draws[-(i + 1)] if x in TARGET]) * w
-
-        return score
-
-    def life15(self):
-        h = self.heat(15)
-        l = self.lag(15)
-        d = self.dominance(15, 6)
+    def life(self, n):
+        h = self.heat(n)
+        l = self.lag(n)
+        d = self.dominance(n, 6)
 
         score = h * 1.8 - l * 0.6
 
@@ -248,9 +255,22 @@ class SNIPER:
 
         return round(score, 2)
 
+    def pressure(self):
+        weights = [5, 4, 3, 2, 1]
+        score = 0
+
+        for i, w in enumerate(weights):
+            if i >= len(self.last_draws):
+                break
+
+            c = len([x for x in self.last_draws[-(i + 1)] if x in TARGET])
+            score += c * w
+
+        return score
+
     def push_result(self, result):
         self.recent_results.append(result)
-        if len(self.recent_results) > 8:
+        if len(self.recent_results) > 10:
             self.recent_results.pop(0)
 
     def consecutive_stops(self):
@@ -262,7 +282,7 @@ class SNIPER:
                 break
         return c
 
-    # ===================== PARTNER ===========================
+    # ===================== PARTNER LEARNING ==================
 
     def update_partners(self, nums):
         partners = [x for x in nums if x != 15]
@@ -271,45 +291,75 @@ class SNIPER:
             self.partner_total[n] += 1
 
         self.partner_recent.append(partners)
-
         if len(self.partner_recent) > 20:
             self.partner_recent.pop(0)
 
     def top_partners(self):
-        global_top = sorted(
-            self.partner_total.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )[:10]
+        global_top = sorted(self.partner_total.items(), key=lambda x: x[1], reverse=True)[:10]
 
         recent_count = defaultdict(int)
-
         for block in self.partner_recent:
             for n in block:
                 recent_count[n] += 1
 
-        recent_top = sorted(
-            recent_count.items(),
+        recent_top = sorted(recent_count.items(), key=lambda x: x[1], reverse=True)[:10]
+        return global_top, recent_top
+
+    def recent_partner_count(self):
+        c = Counter()
+        for block in self.partner_recent:
+            for n in block:
+                c[n] += 1
+        return c
+
+    def partner_score(self, n):
+        total = self.partner_total.get(n, 0)
+        recent = self.recent_partner_count().get(n, 0)
+        life = self.life(n)
+        h = self.heat(n)
+        d = self.dominance(n, 6)
+
+        score = 0.0
+        score += total * 0.45
+        score += recent * 1.15
+        score += life * 0.75
+        score += h * 0.6
+        score += d * 0.9
+
+        if n in HISTORIC_PARTNERS:
+            score += 2.0
+
+        if n in LIVE_POOL:
+            score += 1.3
+
+        return round(score, 2)
+
+    def choose_dynamic_partner(self):
+        candidates = list(dict.fromkeys(HISTORIC_PARTNERS + LIVE_POOL))
+        candidates = [x for x in candidates if x != 5 and x != 15]
+
+        ranked = sorted(
+            [(n, self.partner_score(n)) for n in candidates],
             key=lambda x: x[1],
             reverse=True
-        )[:10]
+        )
 
-        return global_top, recent_top
+        return ranked[0][0], ranked[:8]
 
     # ===================== FILTER ============================
 
     def should_play(self):
-        life = self.life15()
+        life15 = self.life(15)
         pressure = self.pressure()
         h15 = self.heat(15)
         l15 = self.lag(15)
         d15 = self.dominance(15, 6)
 
         if self.consecutive_stops() >= 2:
-            if life < 7.0 or pressure < 13:
+            if life15 < 7.0 or pressure < 13:
                 return False, "ANTI_STOP_FILTER"
 
-        if life < LIFE15_MIN:
+        if life15 < LIFE15_MIN:
             return False, "15_WEAK_LIFE"
 
         if pressure < PRESSURE_MIN:
@@ -324,10 +374,9 @@ class SNIPER:
         return True, "OK"
 
     def choose_max_colpi(self):
-        if self.life15() >= STRONG_LIFE15 or self.pressure() >= STRONG_PRESSURE:
-            return BASE_MAX_COLPI
-
-        return WEAK_MAX_COLPI
+        if self.life(15) >= STRONG_LIFE15 or self.pressure() >= STRONG_PRESSURE:
+            return STRONG_MAX_COLPI
+        return BASE_MAX_COLPI
 
     # ===================== MAIN ==============================
 
@@ -358,8 +407,22 @@ class SNIPER:
         if self.active:
             self.colpi += 1
 
-            if 15 in s:
-                await self.tg(app, f"🔥 HIT AMBATA 15 (colpo {self.colpi})")
+            A = self.active_ambata
+            S1 = self.active_s1
+            S2 = self.active_s2
+
+            hitA = A in s
+            hit1 = hitA and S1 in s if S1 is not None else False
+            hit2 = hitA and S2 in s if S2 is not None else False
+
+            if hit1:
+                await self.tg(app, f"💥 HIT AMBO {A}-{S1}")
+
+            if hit2:
+                await self.tg(app, f"💥 HIT AMBO {A}-{S2}")
+
+            if hitA:
+                await self.tg(app, f"🔥 HIT AMBATA {A} (colpo {self.colpi})")
 
                 self.update_partners(nums)
                 self.hit15_count += 1
@@ -393,7 +456,12 @@ class SNIPER:
                 return
 
             if self.colpi >= self.max_colpi_active:
-                await self.tg(app, f"🛑 STOP 15 ({self.max_colpi_active} colpi)")
+                await self.tg(
+                    app,
+                    f"🛑 STOP 15 ({self.max_colpi_active} colpi)\n"
+                    f"• ambo1 = 15-{S1}\n"
+                    f"• ambo2 = 15-{S2}"
+                )
 
                 self.active = False
                 self.colpi = 0
@@ -426,7 +494,7 @@ class SNIPER:
                 app,
                 "⏸ NO PLAY\n"
                 f"• reason = {reason}\n"
-                f"• life15 = {self.life15()}\n"
+                f"• life15 = {self.life(15)}\n"
                 f"• pressure = {self.pressure()}\n"
                 f"• heat15 = {self.heat(15)}\n"
                 f"• lag15 = {self.lag(15)}"
@@ -434,18 +502,30 @@ class SNIPER:
             self.save_state()
             return
 
+        dyn, dyn_rank = self.choose_dynamic_partner()
+
         self.active = True
         self.colpi = 0
         self.max_colpi_active = self.choose_max_colpi()
+        self.active_ambata = 15
+        self.active_s1 = 5
+        self.active_s2 = dyn
+
+        if self.active_s2 == self.active_s1:
+            self.active_s2 = 50
 
         await self.tg(
             app,
-            "🎯 PLAY 15\n"
+            "🎯 PLAY AMBO INTELLIGENTE v30\n"
+            f"• AMBATA = 15\n"
+            f"• AMBO1 storico = 15-{self.active_s1}\n"
+            f"• AMBO2 dinamico = 15-{self.active_s2}\n"
             f"• max_colpi = {self.max_colpi_active}\n"
-            f"• life15 = {self.life15()}\n"
+            f"• life15 = {self.life(15)}\n"
             f"• pressure = {self.pressure()}\n"
             f"• heat15 = {self.heat(15)}\n"
-            f"• lag15 = {self.lag(15)}"
+            f"• lag15 = {self.lag(15)}\n"
+            f"• ranking dinamico = {dyn_rank[:5]}"
         )
 
         self.save_state()
@@ -471,7 +551,7 @@ async def live():
         bot.max_e = es[-2][0] if len(es) >= 2 else 0
         bot.save_state()
 
-    await bot.tg(app, "🚀 SNIPER v29.8 PURE 15 PRO FULL PERSISTENCE AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v30 AMBO INTELLIGENTE AVVIATO")
 
     while True:
         try:
