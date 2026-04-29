@@ -1,6 +1,7 @@
 # ============================================================
-# 🚀 SNIPER v30.1 — AMBO INTELLIGENTE FAMILY ENGINE
+# 🚀 SNIPER v30.2 — AMBO INTELLIGENTE + AMBATA 15 PREMIUM
 # 15-5 fisso + partner dinamico famiglie + HARD DEDUP
+# Patch: filtro ambata 15 più selettivo
 # ============================================================
 
 import asyncio
@@ -27,7 +28,6 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 TARGET = [5, 10, 15, 50]
-
 STATE_FILE = "sniper_state.json"
 
 LOOP_SEC = 60
@@ -37,15 +37,16 @@ PROCESSED_MAX = 500
 BASE_MAX_COLPI = 2
 STRONG_MAX_COLPI = 3
 
-LIFE15_MIN = 4.0
-PRESSURE_MIN = 9
-STRONG_LIFE15 = 7.0
-STRONG_PRESSURE = 14
+# patch v30.2 ambata 15
+LIFE15_MIN = 4.5
+PRESSURE_MIN = 10
+STRONG_LIFE15 = 8.0
+STRONG_PRESSURE = 16
 
-# famiglie partner
-LIVE_TOP = [70, 83, 28, 30, 41, 36, 88]
+LIVE_TOP = [70, 83, 28, 30, 41, 36, 88, 25, 78, 89]
 DECADE_10_19 = [16, 19, 12, 17, 14, 10, 11, 13, 18]
 HISTORIC = [50, 40, 55, 10, 20, 5]
+
 
 # ===================== PARSER ===============================
 
@@ -104,18 +105,16 @@ def day_key():
 class SNIPER:
 
     def __init__(self):
-        self.version = "v30.1_family_engine"
+        self.version = "v30.2_ambata15_premium"
 
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
         self.last_draws = []
 
-        # dedup persistente
         self.processed_ids = []
         self.processed_fps = []
 
-        # play attivo
         self.active = False
         self.colpi = 0
         self.max_colpi_active = BASE_MAX_COLPI
@@ -126,14 +125,11 @@ class SNIPER:
         self.cooldown = 0
         self.recent_results = []
 
-        # partner learning
         self.partner_total = defaultdict(int)
         self.partner_recent = []
         self.hit15_count = 0
 
         self.load_state()
-
-    # ===================== TELEGRAM ==========================
 
     async def tg(self, app, msg):
         await app.bot.send_message(chat_id=CHAT_ID, text=msg)
@@ -147,20 +143,16 @@ class SNIPER:
             "max_e": self.max_e,
             "last_fp": self.last_fp,
             "last_draws": self.last_draws[-HISTORY_MAX:],
-
             "processed_ids": self.processed_ids[-PROCESSED_MAX:],
             "processed_fps": self.processed_fps[-PROCESSED_MAX:],
-
             "active": self.active,
             "colpi": self.colpi,
             "max_colpi_active": self.max_colpi_active,
             "active_ambata": self.active_ambata,
             "active_s1": self.active_s1,
             "active_s2": self.active_s2,
-
             "cooldown": self.cooldown,
             "recent_results": self.recent_results[-10:],
-
             "partner_total": dict(self.partner_total),
             "partner_recent": self.partner_recent[-20:],
             "hit15_count": self.hit15_count
@@ -188,7 +180,6 @@ class SNIPER:
 
             saved_day = data.get("day", day_key())
 
-            # nuovo giorno: reset operativo, ma NON reset partner
             if saved_day != day_key():
                 self.day = day_key()
                 self.max_e = 0
@@ -206,15 +197,14 @@ class SNIPER:
             self.max_e = int(data.get("max_e", 0))
             self.last_fp = data.get("last_fp", None)
             self.last_draws = data.get("last_draws", [])[-HISTORY_MAX:]
-
             self.processed_ids = data.get("processed_ids", [])[-PROCESSED_MAX:]
             self.processed_fps = data.get("processed_fps", [])[-PROCESSED_MAX:]
 
             self.active = bool(data.get("active", False))
             self.colpi = int(data.get("colpi", 0))
             self.max_colpi_active = int(data.get("max_colpi_active", BASE_MAX_COLPI))
-
             self.active_ambata = int(data.get("active_ambata", 15))
+
             self.active_s1 = data.get("active_s1", None)
             self.active_s2 = data.get("active_s2", None)
 
@@ -236,9 +226,12 @@ class SNIPER:
         try:
             subprocess.run(["git", "config", "user.name", "github-actions"], check=False)
             subprocess.run(["git", "config", "user.email", "github-actions@github.com"], check=False)
-            subprocess.run(["git", "add", STATE_FILE], check=False)
 
+            subprocess.run(["git", "pull", "--rebase"], check=False)
+
+            subprocess.run(["git", "add", STATE_FILE], check=False)
             diff = subprocess.run(["git", "diff", "--cached", "--quiet"], check=False)
+
             if diff.returncode == 0:
                 return
 
@@ -399,7 +392,6 @@ class SNIPER:
         if n in HISTORIC:
             score += 1.7
 
-        # 50 override solo se vivo davvero
         if n == 50:
             if self.heat(50) >= 4 or self.life(50) >= 6 or recent >= 5:
                 score += 3.5
@@ -410,14 +402,8 @@ class SNIPER:
 
     def choose_dynamic_partner(self):
         candidates = []
-
-        # corsia preferenziale decina
         candidates += DECADE_10_19
-
-        # live top
         candidates += LIVE_TOP
-
-        # storici
         candidates += HISTORIC
 
         candidates = list(dict.fromkeys([x for x in candidates if x not in (5, 15)]))
@@ -431,7 +417,7 @@ class SNIPER:
         best = ranked[0][0] if ranked else 50
         return best, ranked[:10]
 
-    # ===================== FILTER ============================
+    # ===================== AMBATA 15 PREMIUM FILTER ===========
 
     def should_play(self):
         life15 = self.life(15)
@@ -440,9 +426,10 @@ class SNIPER:
         l15 = self.lag(15)
         d15 = self.dominance(15, 6)
 
+        # dopo 2 stop serve setup davvero forte
         if self.consecutive_stops() >= 2:
-            if life15 < 7.0 or pressure < 13:
-                return False, "ANTI_STOP_FILTER"
+            if not (life15 >= 8.0 and pressure >= 14):
+                return False, "ANTI_STOP_STRONG_ONLY"
 
         if life15 < LIFE15_MIN:
             return False, "15_WEAK_LIFE"
@@ -450,17 +437,40 @@ class SNIPER:
         if pressure < PRESSURE_MIN:
             return False, "LOW_PRESSURE"
 
+        # evita 15 appena uscito se non c'è spinta enorme
+        if l15 <= 1 and pressure < 16 and life15 < 9.0:
+            return False, "15_TOO_FRESH"
+
+        # evita rincorsa sul ritardo
+        if l15 > 8 and pressure < 15:
+            return False, "15_TOO_DELAYED"
+
         if h15 < 2 and d15 == 0:
-            return False, "15_NOT_PRESENT_ENOUGH"
+            return False, "15_NOT_ALIVE"
 
-        if l15 > 8 and pressure < 14:
-            return False, "15_TOO_DELAYED_WEAK_CONTEXT"
+        # setup premium ideale: lag medio
+        if 2 <= l15 <= 6 and h15 >= 2 and pressure >= 10:
+            return True, "OK_PREMIUM_15"
 
-        return True, "OK"
+        # setup forte alternativo
+        if life15 >= 8.0 and pressure >= 14:
+            return True, "OK_STRONG_15"
+
+        return False, "15_NOT_PREMIUM"
 
     def choose_max_colpi(self):
-        if self.life(15) >= STRONG_LIFE15 or self.pressure() >= STRONG_PRESSURE:
+        life15 = self.life(15)
+        pressure = self.pressure()
+        d15 = self.dominance(15, 6)
+        l15 = self.lag(15)
+
+        # colpo 3 solo se molto forte
+        if life15 >= 8.0 or pressure >= 16 or d15 >= 3:
             return STRONG_MAX_COLPI
+
+        if 2 <= l15 <= 6 and pressure >= 12:
+            return BASE_MAX_COLPI
+
         return BASE_MAX_COLPI
 
     # ===================== MAIN ==============================
@@ -596,7 +606,7 @@ class SNIPER:
 
         await self.tg(
             app,
-            "🎯 PLAY AMBO INTELLIGENTE v30.1\n"
+            "🎯 PLAY AMBO INTELLIGENTE v30.2\n"
             f"• AMBATA = 15\n"
             f"• AMBO1 fisso = 15-{self.active_s1}\n"
             f"• AMBO2 dinamico = 15-{self.active_s2}\n"
@@ -624,7 +634,6 @@ async def live():
         await bot.tg(app, "⚠️ parser vuoto")
         return
 
-    # warmup solo se non esiste storico
     if not bot.last_draws:
         for e, nums in es[:-1]:
             bot.last_draws.append(nums)
@@ -633,7 +642,7 @@ async def live():
         bot.max_e = es[-2][0] if len(es) >= 2 else 0
         bot.save_state()
 
-    await bot.tg(app, "🚀 SNIPER v30.1 FAMILY ENGINE AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v30.2 AMBATA 15 PREMIUM AVVIATO")
 
     while True:
         try:
