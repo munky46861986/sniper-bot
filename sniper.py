@@ -1,5 +1,6 @@
 # ============================================================
-# 🚀 SNIPER v30 — AMBO INTELLIGENTE + FULL STATE JSON
+# 🚀 SNIPER v30.1 — AMBO INTELLIGENTE FAMILY ENGINE
+# 15-5 fisso + partner dinamico famiglie + HARD DEDUP
 # ============================================================
 
 import asyncio
@@ -17,6 +18,8 @@ import nest_asyncio
 
 nest_asyncio.apply()
 
+# ===================== CONFIG ===============================
+
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
 
@@ -24,12 +27,12 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 TARGET = [5, 10, 15, 50]
-HISTORIC_PARTNERS = [5, 50, 40, 55, 10, 20]
-LIVE_POOL = [28, 83, 19, 16, 30, 41, 36, 90, 34, 67]
+
+STATE_FILE = "sniper_state.json"
 
 LOOP_SEC = 60
 HISTORY_MAX = 160
-STATE_FILE = "sniper_state.json"
+PROCESSED_MAX = 500
 
 BASE_MAX_COLPI = 2
 STRONG_MAX_COLPI = 3
@@ -38,6 +41,11 @@ LIFE15_MIN = 4.0
 PRESSURE_MIN = 9
 STRONG_LIFE15 = 7.0
 STRONG_PRESSURE = 14
+
+# famiglie partner
+LIVE_TOP = [70, 83, 28, 30, 41, 36, 88]
+DECADE_10_19 = [16, 19, 12, 17, 14, 10, 11, 13, 18]
+HISTORIC = [50, 40, 55, 10, 20, 5]
 
 # ===================== PARSER ===============================
 
@@ -53,6 +61,7 @@ def parse_site():
 
     while i < len(lines):
         m = re.search(r"Estrazione\s+.*?\bn\.\s*(\d+)", lines[i], re.IGNORECASE)
+
         if not m:
             i += 1
             continue
@@ -83,7 +92,7 @@ def parse_site():
 
 
 def fingerprint(e, nums):
-    return hashlib.md5(f"{e}-{nums}".encode()).hexdigest()
+    return hashlib.md5(f"{e}-{'-'.join(map(str, nums))}".encode()).hexdigest()
 
 
 def day_key():
@@ -95,11 +104,18 @@ def day_key():
 class SNIPER:
 
     def __init__(self):
+        self.version = "v30.1_family_engine"
+
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
         self.last_draws = []
 
+        # dedup persistente
+        self.processed_ids = []
+        self.processed_fps = []
+
+        # play attivo
         self.active = False
         self.colpi = 0
         self.max_colpi_active = BASE_MAX_COLPI
@@ -110,6 +126,7 @@ class SNIPER:
         self.cooldown = 0
         self.recent_results = []
 
+        # partner learning
         self.partner_total = defaultdict(int)
         self.partner_recent = []
         self.hit15_count = 0
@@ -125,11 +142,14 @@ class SNIPER:
 
     def save_state(self):
         data = {
-            "version": "v30_AMBO_INTELLIGENTE",
+            "version": self.version,
             "day": self.day,
             "max_e": self.max_e,
             "last_fp": self.last_fp,
             "last_draws": self.last_draws[-HISTORY_MAX:],
+
+            "processed_ids": self.processed_ids[-PROCESSED_MAX:],
+            "processed_fps": self.processed_fps[-PROCESSED_MAX:],
 
             "active": self.active,
             "colpi": self.colpi,
@@ -168,11 +188,14 @@ class SNIPER:
 
             saved_day = data.get("day", day_key())
 
+            # nuovo giorno: reset operativo, ma NON reset partner
             if saved_day != day_key():
                 self.day = day_key()
                 self.max_e = 0
                 self.last_fp = None
                 self.last_draws = []
+                self.processed_ids = []
+                self.processed_fps = []
                 self.active = False
                 self.colpi = 0
                 self.cooldown = 0
@@ -184,9 +207,13 @@ class SNIPER:
             self.last_fp = data.get("last_fp", None)
             self.last_draws = data.get("last_draws", [])[-HISTORY_MAX:]
 
+            self.processed_ids = data.get("processed_ids", [])[-PROCESSED_MAX:]
+            self.processed_fps = data.get("processed_fps", [])[-PROCESSED_MAX:]
+
             self.active = bool(data.get("active", False))
             self.colpi = int(data.get("colpi", 0))
             self.max_colpi_active = int(data.get("max_colpi_active", BASE_MAX_COLPI))
+
             self.active_ambata = int(data.get("active_ambata", 15))
             self.active_s1 = data.get("active_s1", None)
             self.active_s2 = data.get("active_s2", None)
@@ -220,6 +247,34 @@ class SNIPER:
 
         except Exception:
             pass
+
+    # ===================== DEDUP =============================
+
+    def already_processed(self, e, nums):
+        fp = fingerprint(e, nums)
+
+        if e <= self.max_e and e in self.processed_ids:
+            return True
+
+        if fp == self.last_fp:
+            return True
+
+        if fp in self.processed_fps:
+            return True
+
+        return False
+
+    def remember_processed(self, e, nums):
+        fp = fingerprint(e, nums)
+
+        self.max_e = max(self.max_e, e)
+        self.last_fp = fp
+
+        self.processed_ids.append(e)
+        self.processed_fps.append(fp)
+
+        self.processed_ids = self.processed_ids[-PROCESSED_MAX:]
+        self.processed_fps = self.processed_fps[-PROCESSED_MAX:]
 
     # ===================== FEATURES ==========================
 
@@ -270,8 +325,7 @@ class SNIPER:
 
     def push_result(self, result):
         self.recent_results.append(result)
-        if len(self.recent_results) > 10:
-            self.recent_results.pop(0)
+        self.recent_results = self.recent_results[-10:]
 
     def consecutive_stops(self):
         c = 0
@@ -291,18 +345,26 @@ class SNIPER:
             self.partner_total[n] += 1
 
         self.partner_recent.append(partners)
-        if len(self.partner_recent) > 20:
-            self.partner_recent.pop(0)
+        self.partner_recent = self.partner_recent[-20:]
 
     def top_partners(self):
-        global_top = sorted(self.partner_total.items(), key=lambda x: x[1], reverse=True)[:10]
+        global_top = sorted(
+            self.partner_total.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:10]
 
         recent_count = defaultdict(int)
         for block in self.partner_recent:
             for n in block:
                 recent_count[n] += 1
 
-        recent_top = sorted(recent_count.items(), key=lambda x: x[1], reverse=True)[:10]
+        recent_top = sorted(
+            recent_count.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:10]
+
         return global_top, recent_top
 
     def recent_partner_count(self):
@@ -312,6 +374,8 @@ class SNIPER:
                 c[n] += 1
         return c
 
+    # ===================== PARTNER ENGINE ====================
+
     def partner_score(self, n):
         total = self.partner_total.get(n, 0)
         recent = self.recent_partner_count().get(n, 0)
@@ -320,23 +384,43 @@ class SNIPER:
         d = self.dominance(n, 6)
 
         score = 0.0
-        score += total * 0.45
-        score += recent * 1.15
-        score += life * 0.75
-        score += h * 0.6
-        score += d * 0.9
+        score += total * 0.35
+        score += recent * 1.25
+        score += life * 0.8
+        score += h * 0.5
+        score += d * 0.8
 
-        if n in HISTORIC_PARTNERS:
+        if n in DECADE_10_19:
+            score += 3.0
+
+        if n in LIVE_TOP:
             score += 2.0
 
-        if n in LIVE_POOL:
-            score += 1.3
+        if n in HISTORIC:
+            score += 1.7
+
+        # 50 override solo se vivo davvero
+        if n == 50:
+            if self.heat(50) >= 4 or self.life(50) >= 6 or recent >= 5:
+                score += 3.5
+            else:
+                score -= 1.5
 
         return round(score, 2)
 
     def choose_dynamic_partner(self):
-        candidates = list(dict.fromkeys(HISTORIC_PARTNERS + LIVE_POOL))
-        candidates = [x for x in candidates if x != 5 and x != 15]
+        candidates = []
+
+        # corsia preferenziale decina
+        candidates += DECADE_10_19
+
+        # live top
+        candidates += LIVE_TOP
+
+        # storici
+        candidates += HISTORIC
+
+        candidates = list(dict.fromkeys([x for x in candidates if x not in (5, 15)]))
 
         ranked = sorted(
             [(n, self.partner_score(n)) for n in candidates],
@@ -344,7 +428,8 @@ class SNIPER:
             reverse=True
         )
 
-        return ranked[0][0], ranked[:8]
+        best = ranked[0][0] if ranked else 50
+        return best, ranked[:10]
 
     # ===================== FILTER ============================
 
@@ -381,22 +466,17 @@ class SNIPER:
     # ===================== MAIN ==============================
 
     async def on_new(self, app, e, nums):
-        fp = fingerprint(e, nums)
-
-        if fp == self.last_fp:
-            return
-
-        self.last_fp = fp
-
         if len(set(nums)) != 20:
             await self.tg(app, f"⚠️ Parser scarta estrazione {e}")
             return
 
-        self.max_e = max(self.max_e, e)
-        self.last_draws.append(nums)
+        if self.already_processed(e, nums):
+            return
 
-        if len(self.last_draws) > HISTORY_MAX:
-            self.last_draws.pop(0)
+        self.remember_processed(e, nums)
+
+        self.last_draws.append(nums)
+        self.last_draws = self.last_draws[-HISTORY_MAX:]
 
         s = set(nums)
 
@@ -412,8 +492,8 @@ class SNIPER:
             S2 = self.active_s2
 
             hitA = A in s
-            hit1 = hitA and S1 in s if S1 is not None else False
-            hit2 = hitA and S2 in s if S2 is not None else False
+            hit1 = hitA and (S1 in s if S1 is not None else False)
+            hit2 = hitA and (S2 in s if S2 is not None else False)
 
             if hit1:
                 await self.tg(app, f"💥 HIT AMBO {A}-{S1}")
@@ -502,7 +582,7 @@ class SNIPER:
             self.save_state()
             return
 
-        dyn, dyn_rank = self.choose_dynamic_partner()
+        dyn, ranking = self.choose_dynamic_partner()
 
         self.active = True
         self.colpi = 0
@@ -516,16 +596,16 @@ class SNIPER:
 
         await self.tg(
             app,
-            "🎯 PLAY AMBO INTELLIGENTE v30\n"
+            "🎯 PLAY AMBO INTELLIGENTE v30.1\n"
             f"• AMBATA = 15\n"
-            f"• AMBO1 storico = 15-{self.active_s1}\n"
+            f"• AMBO1 fisso = 15-{self.active_s1}\n"
             f"• AMBO2 dinamico = 15-{self.active_s2}\n"
             f"• max_colpi = {self.max_colpi_active}\n"
             f"• life15 = {self.life(15)}\n"
             f"• pressure = {self.pressure()}\n"
             f"• heat15 = {self.heat(15)}\n"
             f"• lag15 = {self.lag(15)}\n"
-            f"• ranking dinamico = {dyn_rank[:5]}"
+            f"• ranking = {ranking[:6]}"
         )
 
         self.save_state()
@@ -544,21 +624,23 @@ async def live():
         await bot.tg(app, "⚠️ parser vuoto")
         return
 
+    # warmup solo se non esiste storico
     if not bot.last_draws:
         for e, nums in es[:-1]:
             bot.last_draws.append(nums)
 
+        bot.last_draws = bot.last_draws[-HISTORY_MAX:]
         bot.max_e = es[-2][0] if len(es) >= 2 else 0
         bot.save_state()
 
-    await bot.tg(app, "🚀 SNIPER v30 AMBO INTELLIGENTE AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v30.1 FAMILY ENGINE AVVIATO")
 
     while True:
         try:
             es = parse_site()
 
             for e, nums in es:
-                if e <= bot.max_e:
+                if e <= bot.max_e and e in bot.processed_ids:
                     continue
 
                 await bot.on_new(app, e, nums)
