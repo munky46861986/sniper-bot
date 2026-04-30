@@ -1,7 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v30.2 — AMBO INTELLIGENTE + AMBATA 15 PREMIUM
-# 15-5 fisso + partner dinamico famiglie + HARD DEDUP
-# Patch: filtro ambata 15 più selettivo
+# 🚀 SNIPER v30.3 — AMBO INTELLIGENTE + AMBATA 15 TUNED
 # ============================================================
 
 import asyncio
@@ -19,8 +17,6 @@ import nest_asyncio
 
 nest_asyncio.apply()
 
-# ===================== CONFIG ===============================
-
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
 
@@ -37,18 +33,12 @@ PROCESSED_MAX = 500
 BASE_MAX_COLPI = 2
 STRONG_MAX_COLPI = 3
 
-# patch v30.2 ambata 15
 LIFE15_MIN = 4.5
 PRESSURE_MIN = 10
-STRONG_LIFE15 = 8.0
-STRONG_PRESSURE = 16
 
-LIVE_TOP = [70, 83, 28, 30, 41, 36, 88, 25, 78, 89]
-DECADE_10_19 = [16, 19, 12, 17, 14, 10, 11, 13, 18]
-HISTORIC = [50, 40, 55, 10, 20, 5]
-
-
-# ===================== PARSER ===============================
+LIVE_TOP = [25, 70, 36, 30, 19, 89, 41, 48, 28, 88, 38, 31]
+DECADE_10_19 = [19, 16, 10, 12, 14, 17, 18, 11, 13]
+HISTORIC = [50, 40, 55, 20, 5]
 
 def parse_site():
     r = requests.get(URL, headers=HEADERS, timeout=15)
@@ -100,12 +90,10 @@ def day_key():
     return datetime.now().strftime("%Y-%m-%d")
 
 
-# ============================================================
-
 class SNIPER:
 
     def __init__(self):
-        self.version = "v30.2_ambata15_premium"
+        self.version = "v30.3_ambata15_tuned"
 
         self.day = day_key()
         self.max_e = 0
@@ -226,10 +214,9 @@ class SNIPER:
         try:
             subprocess.run(["git", "config", "user.name", "github-actions"], check=False)
             subprocess.run(["git", "config", "user.email", "github-actions@github.com"], check=False)
-
             subprocess.run(["git", "pull", "--rebase"], check=False)
-
             subprocess.run(["git", "add", STATE_FILE], check=False)
+
             diff = subprocess.run(["git", "diff", "--cached", "--quiet"], check=False)
 
             if diff.returncode == 0:
@@ -329,7 +316,7 @@ class SNIPER:
                 break
         return c
 
-    # ===================== PARTNER LEARNING ==================
+    # ===================== PARTNER ===========================
 
     def update_partners(self, nums):
         partners = [x for x in nums if x != 15]
@@ -348,6 +335,7 @@ class SNIPER:
         )[:10]
 
         recent_count = defaultdict(int)
+
         for block in self.partner_recent:
             for n in block:
                 recent_count[n] += 1
@@ -362,9 +350,11 @@ class SNIPER:
 
     def recent_partner_count(self):
         c = Counter()
+
         for block in self.partner_recent:
             for n in block:
                 c[n] += 1
+
         return c
 
     # ===================== PARTNER ENGINE ====================
@@ -378,32 +368,32 @@ class SNIPER:
 
         score = 0.0
         score += total * 0.35
-        score += recent * 1.25
-        score += life * 0.8
-        score += h * 0.5
-        score += d * 0.8
-
-        if n in DECADE_10_19:
-            score += 3.0
+        score += recent * 1.30
+        score += life * 0.80
+        score += h * 0.50
+        score += d * 0.80
 
         if n in LIVE_TOP:
-            score += 2.0
+            score += 2.7
+
+        if n in DECADE_10_19:
+            score += 2.6
 
         if n in HISTORIC:
-            score += 1.7
+            score += 1.5
 
         if n == 50:
             if self.heat(50) >= 4 or self.life(50) >= 6 or recent >= 5:
-                score += 3.5
+                score += 4.0
             else:
-                score -= 1.5
+                score -= 2.0
 
         return round(score, 2)
 
     def choose_dynamic_partner(self):
         candidates = []
-        candidates += DECADE_10_19
         candidates += LIVE_TOP
+        candidates += DECADE_10_19
         candidates += HISTORIC
 
         candidates = list(dict.fromkeys([x for x in candidates if x not in (5, 15)]))
@@ -417,7 +407,7 @@ class SNIPER:
         best = ranked[0][0] if ranked else 50
         return best, ranked[:10]
 
-    # ===================== AMBATA 15 PREMIUM FILTER ===========
+    # ===================== AMBATA 15 FILTER ==================
 
     def should_play(self):
         life15 = self.life(15)
@@ -426,10 +416,14 @@ class SNIPER:
         l15 = self.lag(15)
         d15 = self.dominance(15, 6)
 
-        # dopo 2 stop serve setup davvero forte
+        # anti-stop meno rigido rispetto a v30.2
         if self.consecutive_stops() >= 2:
-            if not (life15 >= 8.0 and pressure >= 14):
-                return False, "ANTI_STOP_STRONG_ONLY"
+            ok_reentry = (
+                (life15 >= 6.5 and pressure >= 16) or
+                (life15 >= 8.0 and pressure >= 14)
+            )
+            if not ok_reentry:
+                return False, "ANTI_STOP_REENTRY_BLOCK"
 
         if life15 < LIFE15_MIN:
             return False, "15_WEAK_LIFE"
@@ -437,22 +431,19 @@ class SNIPER:
         if pressure < PRESSURE_MIN:
             return False, "LOW_PRESSURE"
 
-        # evita 15 appena uscito se non c'è spinta enorme
-        if l15 <= 1 and pressure < 16 and life15 < 9.0:
-            return False, "15_TOO_FRESH"
+        # 15 troppo fresco: ora entra solo con pressure davvero alta
+        if l15 <= 1 and pressure < 18:
+            return False, "15_TOO_FRESH_HARD"
 
-        # evita rincorsa sul ritardo
         if l15 > 8 and pressure < 15:
             return False, "15_TOO_DELAYED"
 
         if h15 < 2 and d15 == 0:
             return False, "15_NOT_ALIVE"
 
-        # setup premium ideale: lag medio
         if 2 <= l15 <= 6 and h15 >= 2 and pressure >= 10:
             return True, "OK_PREMIUM_15"
 
-        # setup forte alternativo
         if life15 >= 8.0 and pressure >= 14:
             return True, "OK_STRONG_15"
 
@@ -462,14 +453,9 @@ class SNIPER:
         life15 = self.life(15)
         pressure = self.pressure()
         d15 = self.dominance(15, 6)
-        l15 = self.lag(15)
 
-        # colpo 3 solo se molto forte
         if life15 >= 8.0 or pressure >= 16 or d15 >= 3:
             return STRONG_MAX_COLPI
-
-        if 2 <= l15 <= 6 and pressure >= 12:
-            return BASE_MAX_COLPI
 
         return BASE_MAX_COLPI
 
@@ -606,7 +592,7 @@ class SNIPER:
 
         await self.tg(
             app,
-            "🎯 PLAY AMBO INTELLIGENTE v30.2\n"
+            "🎯 PLAY AMBO INTELLIGENTE v30.3\n"
             f"• AMBATA = 15\n"
             f"• AMBO1 fisso = 15-{self.active_s1}\n"
             f"• AMBO2 dinamico = 15-{self.active_s2}\n"
@@ -642,7 +628,7 @@ async def live():
         bot.max_e = es[-2][0] if len(es) >= 2 else 0
         bot.save_state()
 
-    await bot.tg(app, "🚀 SNIPER v30.2 AMBATA 15 PREMIUM AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v30.3 AMBATA 15 TUNED AVVIATO")
 
     while True:
         try:
