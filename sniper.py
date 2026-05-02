@@ -1,5 +1,6 @@
 # ============================================================
-# 🚀 SNIPER v30.3 — AMBO INTELLIGENTE + AMBATA 15 TUNED
+# 🚀 SNIPER v30.4 — AMBO INTELLIGENTE SNIPER
+# 15-5 fisso + partner dinamico ristretto + max 3 colpi selettivo
 # ============================================================
 
 import asyncio
@@ -36,9 +37,9 @@ STRONG_MAX_COLPI = 3
 LIFE15_MIN = 4.5
 PRESSURE_MIN = 10
 
-LIVE_TOP = [25, 70, 36, 30, 19, 89, 41, 48, 28, 88, 38, 31]
-DECADE_10_19 = [19, 16, 10, 12, 14, 17, 18, 11, 13]
+LIVE_TOP = [25, 70, 36, 30, 41, 38, 88]
 HISTORIC = [50, 40, 55, 20, 5]
+EXTRA_POOL = [28, 19, 16, 18, 14, 10]
 
 def parse_site():
     r = requests.get(URL, headers=HEADERS, timeout=15)
@@ -52,7 +53,6 @@ def parse_site():
 
     while i < len(lines):
         m = re.search(r"Estrazione\s+.*?\bn\.\s*(\d+)", lines[i], re.IGNORECASE)
-
         if not m:
             i += 1
             continue
@@ -93,7 +93,7 @@ def day_key():
 class SNIPER:
 
     def __init__(self):
-        self.version = "v30.3_ambata15_tuned"
+        self.version = "v30.4_sniper"
 
         self.day = day_key()
         self.max_e = 0
@@ -367,24 +367,25 @@ class SNIPER:
         d = self.dominance(n, 6)
 
         score = 0.0
-        score += total * 0.35
-        score += recent * 1.30
-        score += life * 0.80
+        score += total * 0.40
+        score += recent * 1.40
+        score += life * 0.90
         score += h * 0.50
         score += d * 0.80
 
         if n in LIVE_TOP:
-            score += 2.7
-
-        if n in DECADE_10_19:
-            score += 2.6
+            score += 3.5
 
         if n in HISTORIC:
-            score += 1.5
+            score += 1.2
 
+        if n in EXTRA_POOL:
+            score += 0.8
+
+        # 50 solo se vivo davvero
         if n == 50:
             if self.heat(50) >= 4 or self.life(50) >= 6 or recent >= 5:
-                score += 4.0
+                score += 3.0
             else:
                 score -= 2.0
 
@@ -393,8 +394,8 @@ class SNIPER:
     def choose_dynamic_partner(self):
         candidates = []
         candidates += LIVE_TOP
-        candidates += DECADE_10_19
         candidates += HISTORIC
+        candidates += EXTRA_POOL
 
         candidates = list(dict.fromkeys([x for x in candidates if x not in (5, 15)]))
 
@@ -404,7 +405,7 @@ class SNIPER:
             reverse=True
         )
 
-        best = ranked[0][0] if ranked else 50
+        best = ranked[0][0] if ranked else 25
         return best, ranked[:10]
 
     # ===================== AMBATA 15 FILTER ==================
@@ -416,11 +417,12 @@ class SNIPER:
         l15 = self.lag(15)
         d15 = self.dominance(15, 6)
 
-        # anti-stop meno rigido rispetto a v30.2
+        # anti-stop intelligente
         if self.consecutive_stops() >= 2:
             ok_reentry = (
                 (life15 >= 6.5 and pressure >= 16) or
-                (life15 >= 8.0 and pressure >= 14)
+                (life15 >= 8.0 and pressure >= 14) or
+                pressure >= 18
             )
             if not ok_reentry:
                 return False, "ANTI_STOP_REENTRY_BLOCK"
@@ -431,7 +433,7 @@ class SNIPER:
         if pressure < PRESSURE_MIN:
             return False, "LOW_PRESSURE"
 
-        # 15 troppo fresco: ora entra solo con pressure davvero alta
+        # blocca il 15 appena uscito se non c'è pressione enorme
         if l15 <= 1 and pressure < 18:
             return False, "15_TOO_FRESH_HARD"
 
@@ -452,9 +454,9 @@ class SNIPER:
     def choose_max_colpi(self):
         life15 = self.life(15)
         pressure = self.pressure()
-        d15 = self.dominance(15, 6)
 
-        if life15 >= 8.0 or pressure >= 16 or d15 >= 3:
+        # v30.4: 3 colpi solo setup fortissimi
+        if (life15 >= 10 and pressure >= 18) or pressure >= 20:
             return STRONG_MAX_COLPI
 
         return BASE_MAX_COLPI
@@ -588,11 +590,11 @@ class SNIPER:
         self.active_s2 = dyn
 
         if self.active_s2 == self.active_s1:
-            self.active_s2 = 50
+            self.active_s2 = 25
 
         await self.tg(
             app,
-            "🎯 PLAY AMBO INTELLIGENTE v30.3\n"
+            "🎯 PLAY AMBO INTELLIGENTE v30.4\n"
             f"• AMBATA = 15\n"
             f"• AMBO1 fisso = 15-{self.active_s1}\n"
             f"• AMBO2 dinamico = 15-{self.active_s2}\n"
@@ -628,7 +630,7 @@ async def live():
         bot.max_e = es[-2][0] if len(es) >= 2 else 0
         bot.save_state()
 
-    await bot.tg(app, "🚀 SNIPER v30.3 AMBATA 15 TUNED AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v30.4 AMBO INTELLIGENTE AVVIATO")
 
     while True:
         try:
