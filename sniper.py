@@ -1,6 +1,6 @@
 # ============================================================
-# 🚀 SNIPER v30.5 — ADAPTIVE PARTNER READINESS
-# 15-5 fisso + partner dinamico scelto per "prontezza reale"
+# 🚀 SNIPER v30.6 — AMBATA 15 CORE
+# timing 15 più preciso + partner semplice + 2 colpi + 3° solo condizionale
 # ============================================================
 
 import asyncio
@@ -11,7 +11,7 @@ import json
 import hashlib
 import subprocess
 from datetime import datetime
-from collections import defaultdict, Counter
+from collections import defaultdict
 from bs4 import BeautifulSoup
 from telegram.ext import ApplicationBuilder
 import nest_asyncio
@@ -34,14 +34,7 @@ PROCESSED_MAX = 500
 BASE_MAX_COLPI = 2
 STRONG_MAX_COLPI = 3
 
-LIFE15_MIN = 4.5
-PRESSURE_MIN = 10
-
-# storico minimo sempre considerato
-HISTORIC = [5, 50, 40, 55, 20, 10]
-
-# backup se lo state è scarico
-DEFAULT_DYNAMIC_POOL = [25, 41, 20, 30, 88, 70, 62, 54, 12, 28, 36, 38, 78]
+BEST_PARTNERS = [5, 25, 41, 20, 30, 68, 88, 54, 37, 70, 50]
 
 
 def parse_site():
@@ -96,7 +89,7 @@ def day_key():
 class SNIPER:
 
     def __init__(self):
-        self.version = "v30.5_adaptive_partner_readiness"
+        self.version = "v30.6_ambata15_core"
 
         self.day = day_key()
         self.max_e = 0
@@ -318,7 +311,7 @@ class SNIPER:
                 break
         return c
 
-    # ===================== PARTNER LEARNING ==================
+    # ===================== PARTNER ===========================
 
     def update_partners(self, nums):
         partners = [x for x in nums if x != 15]
@@ -337,6 +330,7 @@ class SNIPER:
         )[:10]
 
         recent_count = defaultdict(int)
+
         for block in self.partner_recent:
             for n in block:
                 recent_count[n] += 1
@@ -349,169 +343,71 @@ class SNIPER:
 
         return global_top, recent_top
 
-    def recent_partner_count(self):
-        c = Counter()
-
-        for block in self.partner_recent:
-            for n in block:
-                c[n] += 1
-
-        return c
-
-    # ===================== ADAPTIVE PARTNER ENGINE ============
-
-    def adaptive_partner_pool(self):
-        global_top, recent_top = self.top_partners()
-
-        pool = []
-
-        # top dallo state globale
-        pool += [n for n, _ in global_top[:12]]
-
-        # top recente
-        pool += [n for n, _ in recent_top[:12]]
-
-        # storici obbligatori
-        pool += HISTORIC
-
-        # backup
-        pool += DEFAULT_DYNAMIC_POOL
-
-        # pulizia
-        pool = [int(x) for x in pool if int(x) not in (5, 15)]
-        pool = list(dict.fromkeys(pool))
-
-        return pool[:25]
-
-    def partner_base_score(self, n):
-        total = self.partner_total.get(n, 0)
-        recent = self.recent_partner_count().get(n, 0)
-
-        score = 0.0
-        score += total * 0.40
-        score += recent * 1.40
-
-        if n in HISTORIC:
-            score += 1.5
-
-        return score
-
-    def readiness_score(self, n):
-        life = self.life(n)
-        h = self.heat(n)
-        l = self.lag(n)
-        d = self.dominance(n, 6)
-        pressure = self.pressure()
-
-        score = 0.0
-        score += self.partner_base_score(n) * 0.45
-        score += life * 1.20
-        score += h * 0.70
-        score += d * 1.00
-        score -= l * 0.35
-
-        # blocca partner morti
-        if life < 2.5 and h < 2 and d == 0:
-            score -= 8.0
-
-        # partner troppo fresco
-        if l <= 1 and pressure < 18:
-            score -= 4.0
-
-        # 50 solo se vivo davvero
-        if n == 50:
-            recent = self.recent_partner_count().get(50, 0)
-            if self.heat(50) >= 4 or self.life(50) >= 6 or recent >= 5:
-                score += 3.0
-            else:
-                score -= 3.0
-
-        return round(score, 2)
+    # ===================== PARTNER ENGINE SEMPLICE ===========
 
     def choose_dynamic_partner(self):
-        pool = self.adaptive_partner_pool()
+        ranked = []
 
-        ranked = sorted(
-            [(n, self.readiness_score(n)) for n in pool],
-            key=lambda x: x[1],
-            reverse=True
-        )
+        for n in BEST_PARTNERS:
+            if n in (5, 15):
+                continue
+
+            score = 0.0
+            score += self.life(n) * 1.2
+            score += self.heat(n) * 0.7
+            score += self.dominance(n, 6) * 1.0
+            score -= self.lag(n) * 0.25
+            score += self.partner_total.get(n, 0) * 0.25
+
+            ranked.append((n, round(score, 2)))
+
+        ranked = sorted(ranked, key=lambda x: x[1], reverse=True)
 
         if not ranked:
             return 25, []
 
-        best = ranked[0][0]
+        return ranked[0][0], ranked[:6]
 
-        # se il migliore è troppo debole, fallback a 25 o 50 vivo
-        if ranked[0][1] < 4.0:
-            if self.heat(50) >= 4 or self.life(50) >= 6:
-                best = 50
-            else:
-                best = 25
-
-        return best, ranked[:10]
-
-    # ===================== AMBATA 15 FILTER ==================
+    # ===================== AMBATA 15 CORE FILTER ==============
 
     def should_play(self):
         life15 = self.life(15)
         pressure = self.pressure()
         h15 = self.heat(15)
         l15 = self.lag(15)
-        d15 = self.dominance(15, 6)
 
-        if self.consecutive_stops() >= 2:
-            ok_reentry = (
-                (life15 >= 6.5 and pressure >= 16) or
-                (life15 >= 8.0 and pressure >= 14) or
-                pressure >= 18
-            )
-            if not ok_reentry:
-                return False, "ANTI_STOP_REENTRY_BLOCK"
+        # blocchi duri
+        if l15 == 1 and pressure < 24:
+            return False, "BLOCK_LAG1"
 
-        if life15 < LIFE15_MIN:
-            return False, "15_WEAK_LIFE"
+        if l15 >= 7:
+            return False, "BLOCK_HIGH_LAG"
 
-        if pressure < PRESSURE_MIN:
-            return False, "LOW_PRESSURE"
+        if life15 > 22 and l15 <= 2:
+            return False, "OVERHEATED_15"
 
-        # lag 1 solo con pressione altissima
-        if l15 <= 1 and pressure < 22:
-            return False, "15_TOO_FRESH_ULTRA"
+        if h15 < 3:
+            return False, "LOW_HEAT"
 
-        if l15 > 8 and pressure < 15:
-            return False, "15_TOO_DELAYED"
+        # zona sniper principale
+        if 2 <= l15 <= 5 and pressure >= 12 and life15 >= 6:
+            return True, "SNIPER_ZONE"
 
-        if h15 < 2 and d15 == 0:
-            return False, "15_NOT_ALIVE"
+        # setup forte alternativo
+        if l15 == 6 and pressure >= 18 and h15 >= 5:
+            return True, "STRONG_DELAY"
 
-        if 2 <= l15 <= 6 and h15 >= 2 and pressure >= 10:
-            return True, "OK_PREMIUM_15"
-
-        if life15 >= 8.0 and pressure >= 14:
-            return True, "OK_STRONG_15"
-
-        return False, "15_NOT_PREMIUM"
+        return False, "NO_SETUP"
 
     def choose_max_colpi(self):
-        life15 = self.life(15)
-        pressure = self.pressure()
-
-        if (life15 >= 10 and pressure >= 18) or pressure >= 20:
-            return STRONG_MAX_COLPI
-
         return BASE_MAX_COLPI
 
     def should_extend_third_colpo(self):
         life15 = self.life(15)
         pressure = self.pressure()
         l15 = self.lag(15)
-        h15 = self.heat(15)
 
-        if life15 >= 6.5 and pressure >= 14 and l15 <= 7:
-            return True
-
-        if pressure >= 18 and h15 >= 2:
+        if life15 >= 7 and pressure >= 15 and l15 <= 6:
             return True
 
         return False
@@ -588,11 +484,10 @@ class SNIPER:
                 self.save_state()
                 return
 
-            # 2+1 condizionale:
-            # se era previsto 2 colpi, può estendere al terzo solo se ancora vivo
+            # 2+1 condizionale
             if self.colpi >= BASE_MAX_COLPI and self.max_colpi_active == BASE_MAX_COLPI:
                 if self.should_extend_third_colpo():
-                    self.max_colpi_active = 3
+                    self.max_colpi_active = STRONG_MAX_COLPI
                     await self.tg(
                         app,
                         "➕ ESTENDO AL 3° COLPO\n"
@@ -664,16 +559,16 @@ class SNIPER:
 
         await self.tg(
             app,
-            "🎯 PLAY AMBO INTELLIGENTE v30.5\n"
+            "🎯 PLAY AMBO INTELLIGENTE v30.6\n"
             f"• AMBATA = 15\n"
             f"• AMBO1 fisso = 15-{self.active_s1}\n"
-            f"• AMBO2 ready = 15-{self.active_s2}\n"
+            f"• AMBO2 dinamico = 15-{self.active_s2}\n"
             f"• max_colpi = {self.max_colpi_active}\n"
             f"• life15 = {self.life(15)}\n"
             f"• pressure = {self.pressure()}\n"
             f"• heat15 = {self.heat(15)}\n"
             f"• lag15 = {self.lag(15)}\n"
-            f"• readiness ranking = {ranking[:6]}"
+            f"• partner ranking = {ranking}"
         )
 
         self.save_state()
@@ -700,7 +595,7 @@ async def live():
         bot.max_e = es[-2][0] if len(es) >= 2 else 0
         bot.save_state()
 
-    await bot.tg(app, "🚀 SNIPER v30.5 ADAPTIVE PARTNER READINESS AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v30.6 AMBATA 15 CORE AVVIATO")
 
     while True:
         try:
