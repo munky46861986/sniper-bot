@@ -1,6 +1,6 @@
 # ============================================================
-# 🚀 SNIPER v30.6 — AMBATA 15 CORE
-# timing 15 più preciso + partner semplice + 2 colpi + 3° solo condizionale
+# 🚀 SNIPER v30.7 — MULTI AMBATA CORE
+# stessa condizione play ambata 15 applicata a tutti i numeri 1-90
 # ============================================================
 
 import asyncio
@@ -89,7 +89,7 @@ def day_key():
 class SNIPER:
 
     def __init__(self):
-        self.version = "v30.6_ambata15_core"
+        self.version = "v30.7_multi_ambata_core"
 
         self.day = day_key()
         self.max_e = 0
@@ -102,7 +102,7 @@ class SNIPER:
         self.active = False
         self.colpi = 0
         self.max_colpi_active = BASE_MAX_COLPI
-        self.active_ambata = 15
+        self.active_ambata = None
         self.active_s1 = None
         self.active_s2 = None
 
@@ -111,7 +111,7 @@ class SNIPER:
 
         self.partner_total = defaultdict(int)
         self.partner_recent = []
-        self.hit15_count = 0
+        self.hit_count = 0
 
         self.load_state()
 
@@ -139,7 +139,7 @@ class SNIPER:
             "recent_results": self.recent_results[-10:],
             "partner_total": dict(self.partner_total),
             "partner_recent": self.partner_recent[-20:],
-            "hit15_count": self.hit15_count
+            "hit_count": self.hit_count
         }
 
         with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -159,8 +159,9 @@ class SNIPER:
                 int,
                 {int(k): int(v) for k, v in data.get("partner_total", {}).items()}
             )
+
             self.partner_recent = data.get("partner_recent", [])[-20:]
-            self.hit15_count = int(data.get("hit15_count", 0))
+            self.hit_count = int(data.get("hit_count", data.get("hit15_count", 0)))
 
             saved_day = data.get("day", day_key())
 
@@ -187,7 +188,9 @@ class SNIPER:
             self.active = bool(data.get("active", False))
             self.colpi = int(data.get("colpi", 0))
             self.max_colpi_active = int(data.get("max_colpi_active", BASE_MAX_COLPI))
-            self.active_ambata = int(data.get("active_ambata", 15))
+
+            ambata_saved = data.get("active_ambata", None)
+            self.active_ambata = int(ambata_saved) if ambata_saved is not None else None
 
             self.active_s1 = data.get("active_s1", None)
             self.active_s2 = data.get("active_s2", None)
@@ -302,19 +305,10 @@ class SNIPER:
         self.recent_results.append(result)
         self.recent_results = self.recent_results[-10:]
 
-    def consecutive_stops(self):
-        c = 0
-        for r in reversed(self.recent_results):
-            if r == "STOP":
-                c += 1
-            else:
-                break
-        return c
-
     # ===================== PARTNER ===========================
 
-    def update_partners(self, nums):
-        partners = [x for x in nums if x != 15]
+    def update_partners(self, nums, ambata):
+        partners = [x for x in nums if x != ambata]
 
         for n in partners:
             self.partner_total[n] += 1
@@ -343,13 +337,11 @@ class SNIPER:
 
         return global_top, recent_top
 
-    # ===================== PARTNER ENGINE SEMPLICE ===========
-
-    def choose_dynamic_partner(self):
+    def choose_dynamic_partner(self, ambata):
         ranked = []
 
         for n in BEST_PARTNERS:
-            if n in (5, 15):
+            if n in (ambata, 5):
                 continue
 
             score = 0.0
@@ -368,46 +360,67 @@ class SNIPER:
 
         return ranked[0][0], ranked[:6]
 
-    # ===================== AMBATA 15 CORE FILTER ==============
+    # ===================== MULTI AMBATA CORE =================
 
-    def should_play(self):
-        life15 = self.life(15)
+    def should_play_number(self, n):
+        lifen = self.life(n)
         pressure = self.pressure()
-        h15 = self.heat(15)
-        l15 = self.lag(15)
+        hn = self.heat(n)
+        ln = self.lag(n)
 
-        # blocchi duri
-        if l15 == 1 and pressure < 24:
+        if ln == 1 and pressure < 24:
             return False, "BLOCK_LAG1"
 
-        if l15 >= 7:
+        if ln >= 7:
             return False, "BLOCK_HIGH_LAG"
 
-        if life15 > 22 and l15 <= 2:
-            return False, "OVERHEATED_15"
+        if lifen > 22 and ln <= 2:
+            return False, "OVERHEATED"
 
-        if h15 < 3:
+        if hn < 3:
             return False, "LOW_HEAT"
 
-        # zona sniper principale
-        if 2 <= l15 <= 5 and pressure >= 12 and life15 >= 6:
+        if 2 <= ln <= 5 and pressure >= 12 and lifen >= 6:
             return True, "SNIPER_ZONE"
 
-        # setup forte alternativo
-        if l15 == 6 and pressure >= 18 and h15 >= 5:
+        if ln == 6 and pressure >= 18 and hn >= 5:
             return True, "STRONG_DELAY"
 
         return False, "NO_SETUP"
 
+    def find_sniper_numbers(self):
+        candidates = []
+
+        for n in range(1, 91):
+            ok, reason = self.should_play_number(n)
+
+            if ok:
+                candidates.append({
+                    "n": n,
+                    "reason": reason,
+                    "life": self.life(n),
+                    "heat": self.heat(n),
+                    "lag": self.lag(n),
+                    "dominance": self.dominance(n, 6)
+                })
+
+        candidates = sorted(
+            candidates,
+            key=lambda x: (x["life"], x["heat"], -x["lag"], x["dominance"]),
+            reverse=True
+        )
+
+        return candidates
+
     def choose_max_colpi(self):
         return BASE_MAX_COLPI
 
-    def should_extend_third_colpo(self):
-        life15 = self.life(15)
+    def should_extend_third_colpo(self, ambata):
+        lifen = self.life(ambata)
         pressure = self.pressure()
-        l15 = self.lag(15)
+        ln = self.lag(ambata)
 
-        if life15 >= 7 and pressure >= 15 and l15 <= 6:
+        if lifen >= 7 and pressure >= 15 and ln <= 6:
             return True
 
         return False
@@ -453,27 +466,27 @@ class SNIPER:
             if hitA:
                 await self.tg(app, f"🔥 HIT AMBATA {A} (colpo {self.colpi})")
 
-                self.update_partners(nums)
-                self.hit15_count += 1
+                self.update_partners(nums, A)
+                self.hit_count += 1
                 self.push_result("HIT")
 
                 global_top, recent_top = self.top_partners()
-                partners_now = [x for x in nums if x != 15]
+                partners_now = [x for x in nums if x != A]
 
                 await self.tg(
                     app,
-                    "📎 PARTNER HIT15\n"
-                    f"• hit15 salvati = {self.hit15_count}\n"
+                    f"📎 PARTNER HIT AMBATA {A}\n"
+                    f"• hit salvati = {self.hit_count}\n"
                     f"• partner estrazione = {', '.join(map(str, partners_now))}\n"
                     f"• top globale = {global_top[:5]}\n"
                     f"• top recente = {recent_top[:5]}"
                 )
 
-                if self.hit15_count % 5 == 0:
+                if self.hit_count % 5 == 0:
                     await self.tg(
                         app,
-                        "📊 REPORT PARTNER 15\n"
-                        f"• hit15 salvati = {self.hit15_count}\n"
+                        "📊 REPORT PARTNER\n"
+                        f"• hit salvati = {self.hit_count}\n"
                         f"• TOP GLOBALE = {global_top}\n"
                         f"• TOP RECENTE = {recent_top}"
                     )
@@ -486,14 +499,15 @@ class SNIPER:
 
             # 2+1 condizionale
             if self.colpi >= BASE_MAX_COLPI and self.max_colpi_active == BASE_MAX_COLPI:
-                if self.should_extend_third_colpo():
+                if self.should_extend_third_colpo(A):
                     self.max_colpi_active = STRONG_MAX_COLPI
                     await self.tg(
                         app,
                         "➕ ESTENDO AL 3° COLPO\n"
-                        f"• life15 = {self.life(15)}\n"
+                        f"• ambata = {A}\n"
+                        f"• life = {self.life(A)}\n"
                         f"• pressure = {self.pressure()}\n"
-                        f"• lag15 = {self.lag(15)}"
+                        f"• lag = {self.lag(A)}"
                     )
                     self.save_state()
                     return
@@ -501,9 +515,9 @@ class SNIPER:
             if self.colpi >= self.max_colpi_active:
                 await self.tg(
                     app,
-                    f"🛑 STOP 15 ({self.max_colpi_active} colpi)\n"
-                    f"• ambo1 = 15-{S1}\n"
-                    f"• ambo2 = 15-{S2}"
+                    f"🛑 STOP {A} ({self.max_colpi_active} colpi)\n"
+                    f"• ambo1 = {A}-{S1}\n"
+                    f"• ambo2 = {A}-{S2}"
                 )
 
                 self.active = False
@@ -530,27 +544,27 @@ class SNIPER:
             self.save_state()
             return
 
-        ok, reason = self.should_play()
+        candidates = self.find_sniper_numbers()
 
-        if not ok:
+        if not candidates:
             await self.tg(
                 app,
                 "⏸ NO PLAY\n"
-                f"• reason = {reason}\n"
-                f"• life15 = {self.life(15)}\n"
-                f"• pressure = {self.pressure()}\n"
-                f"• heat15 = {self.heat(15)}\n"
-                f"• lag15 = {self.lag(15)}"
+                "• nessun numero rispetta la stessa condizione della play ambata 15\n"
+                f"• pressure = {self.pressure()}"
             )
             self.save_state()
             return
 
-        dyn, ranking = self.choose_dynamic_partner()
+        best = candidates[0]
+        ambata = best["n"]
+
+        dyn, ranking = self.choose_dynamic_partner(ambata)
 
         self.active = True
         self.colpi = 0
         self.max_colpi_active = self.choose_max_colpi()
-        self.active_ambata = 15
+        self.active_ambata = ambata
         self.active_s1 = 5
         self.active_s2 = dyn
 
@@ -559,15 +573,18 @@ class SNIPER:
 
         await self.tg(
             app,
-            "🎯 PLAY AMBO INTELLIGENTE v30.6\n"
-            f"• AMBATA = 15\n"
-            f"• AMBO1 fisso = 15-{self.active_s1}\n"
-            f"• AMBO2 dinamico = 15-{self.active_s2}\n"
+            "🎯 PLAY AMBO INTELLIGENTE v30.7\n"
+            f"• AMBATA = {ambata}\n"
+            f"• AMBO1 fisso = {ambata}-{self.active_s1}\n"
+            f"• AMBO2 dinamico = {ambata}-{self.active_s2}\n"
             f"• max_colpi = {self.max_colpi_active}\n"
-            f"• life15 = {self.life(15)}\n"
+            f"• motivo = {best['reason']}\n"
+            f"• life = {self.life(ambata)}\n"
             f"• pressure = {self.pressure()}\n"
-            f"• heat15 = {self.heat(15)}\n"
-            f"• lag15 = {self.lag(15)}\n"
+            f"• heat = {self.heat(ambata)}\n"
+            f"• lag = {self.lag(ambata)}\n"
+            f"• dominance = {self.dominance(ambata, 6)}\n"
+            f"• candidati top = {candidates[:10]}\n"
             f"• partner ranking = {ranking}"
         )
 
@@ -577,6 +594,7 @@ class SNIPER:
 # ===================== LOOP ================================
 
 bot = SNIPER()
+
 
 async def live():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -595,7 +613,7 @@ async def live():
         bot.max_e = es[-2][0] if len(es) >= 2 else 0
         bot.save_state()
 
-    await bot.tg(app, "🚀 SNIPER v30.6 AMBATA 15 CORE AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v30.7 MULTI AMBATA CORE AVVIATO")
 
     while True:
         try:
