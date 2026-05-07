@@ -1,6 +1,6 @@
 # ============================================================
-# 🚀 SNIPER v31.0 — AMBATA LAB CORE
-# solo ambata + 2 colpi + log pulito + stats reali
+# 🚀 SNIPER v31.1 — AMBATA LAB STRICT
+# meno play + filtro forte + solo ambata + 2 colpi
 # ============================================================
 
 import asyncio
@@ -24,7 +24,7 @@ CHAT_ID = int(os.getenv("CHAT_ID"))
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-STATE_FILE = "sniper_ambata_lab_state.json"
+STATE_FILE = "sniper_ambata_lab_strict_state.json"
 
 LOOP_SEC = 60
 HISTORY_MAX = 180
@@ -33,17 +33,19 @@ PROCESSED_MAX = 700
 MAX_COLPI = 2
 COOLDOWN_AFTER_PLAY = 1
 
-# filtro principale
 MIN_HISTORY = 12
-MIN_HEAT = 7
-MIN_LIFE = 12
-MIN_DOMINANCE = 2
-MAX_DOMINANCE = 4
-MIN_LAG = 2
-MAX_LAG = 5
 
-# anti-rincorsa
-RECENT_HIT_BLOCK = 3
+# ===================== FILTRO STRICT ========================
+
+MIN_HEAT = 10
+MIN_LIFE = 17
+MIN_LAG = 2
+MAX_LAG = 3
+MIN_DOMINANCE = 3
+MAX_DOMINANCE = 4
+MIN_PRESSURE = 9
+
+RECENT_HIT_BLOCK = 4
 
 
 def parse_site():
@@ -95,10 +97,10 @@ def day_key():
     return datetime.now().strftime("%Y-%m-%d")
 
 
-class SNIPER_AMBATA_LAB:
+class SNIPER_AMBATA_STRICT:
 
     def __init__(self):
-        self.version = "v31.0_ambata_lab_core"
+        self.version = "v31.1_ambata_lab_strict"
 
         self.day = day_key()
         self.max_e = 0
@@ -110,6 +112,7 @@ class SNIPER_AMBATA_LAB:
 
         self.active = False
         self.active_n = None
+        self.active_snapshot = None
         self.colpi = 0
         self.cooldown = 0
 
@@ -147,18 +150,24 @@ class SNIPER_AMBATA_LAB:
             "last_draws": self.last_draws[-HISTORY_MAX:],
             "processed_ids": self.processed_ids[-PROCESSED_MAX:],
             "processed_fps": self.processed_fps[-PROCESSED_MAX:],
+
             "active": self.active,
             "active_n": self.active_n,
+            "active_snapshot": self.active_snapshot,
             "colpi": self.colpi,
             "cooldown": self.cooldown,
-            "recent_results": self.recent_results[-30:],
-            "recent_hit_numbers": self.recent_hit_numbers[-30:],
-            "play_log": self.play_log[-500:],
+
+            "recent_results": self.recent_results[-50:],
+            "recent_hit_numbers": self.recent_hit_numbers[-50:],
+
+            "play_log": self.play_log[-800:],
+
             "total_play": self.total_play,
             "total_hit": self.total_hit,
             "total_stop": self.total_stop,
             "hit_colpo_1": self.hit_colpo_1,
             "hit_colpo_2": self.hit_colpo_2,
+
             "number_stats": dict(self.number_stats)
         }
 
@@ -185,6 +194,7 @@ class SNIPER_AMBATA_LAB:
             self.max_e = int(data.get("max_e", 0))
             self.last_fp = data.get("last_fp")
             self.last_draws = data.get("last_draws", [])[-HISTORY_MAX:]
+
             self.processed_ids = data.get("processed_ids", [])[-PROCESSED_MAX:]
             self.processed_fps = data.get("processed_fps", [])[-PROCESSED_MAX:]
 
@@ -193,12 +203,14 @@ class SNIPER_AMBATA_LAB:
             if self.active_n is not None:
                 self.active_n = int(self.active_n)
 
+            self.active_snapshot = data.get("active_snapshot")
             self.colpi = int(data.get("colpi", 0))
             self.cooldown = int(data.get("cooldown", 0))
 
-            self.recent_results = data.get("recent_results", [])[-30:]
-            self.recent_hit_numbers = data.get("recent_hit_numbers", [])[-30:]
-            self.play_log = data.get("play_log", [])[-500:]
+            self.recent_results = data.get("recent_results", [])[-50:]
+            self.recent_hit_numbers = data.get("recent_hit_numbers", [])[-50:]
+
+            self.play_log = data.get("play_log", [])[-800:]
 
             self.total_play = int(data.get("total_play", 0))
             self.total_hit = int(data.get("total_hit", 0))
@@ -233,7 +245,7 @@ class SNIPER_AMBATA_LAB:
             if diff.returncode == 0:
                 return
 
-            subprocess.run(["git", "commit", "-m", "update ambata lab state"], check=False)
+            subprocess.run(["git", "commit", "-m", "update ambata strict state"], check=False)
             subprocess.run(["git", "push"], check=False)
 
         except Exception:
@@ -314,7 +326,7 @@ class SNIPER_AMBATA_LAB:
 
         return score
 
-    # ===================== AMBATA ENGINE ======================
+    # ===================== AMBATA STRICT ======================
 
     def should_play_ambata(self, n):
         life = self.life(n)
@@ -330,10 +342,13 @@ class SNIPER_AMBATA_LAB:
             return False, "TOO_RECENT"
 
         if lag > MAX_LAG:
-            return False, "TOO_LATE"
+            return False, "LAG_TOO_LATE"
 
         if heat < MIN_HEAT:
             return False, "LOW_HEAT"
+
+        if heat == 9:
+            return False, "HEAT9_TRAP"
 
         if dom < MIN_DOMINANCE:
             return False, "LOW_DOMINANCE"
@@ -344,7 +359,10 @@ class SNIPER_AMBATA_LAB:
         if life < MIN_LIFE:
             return False, "LOW_LIFE"
 
-        return True, "AMBATA_ZONE"
+        if pressure < MIN_PRESSURE:
+            return False, "LOW_PRESSURE"
+
+        return True, "AMBATA_STRICT_ZONE"
 
     def choose_ambata_candidate(self):
         ranked = []
@@ -361,12 +379,22 @@ class SNIPER_AMBATA_LAB:
             pressure = self.number_pressure(n)
 
             score = (
-                life * 1.00
-                + heat * 0.80
-                + dom * 1.40
-                + pressure * 0.50
-                - lag * 0.70
+                life * 1.15
+                + heat * 0.90
+                + dom * 2.00
+                + pressure * 0.60
+                - lag * 0.90
             )
+
+            # bonus zona migliore vista dai log
+            if lag == 3:
+                score += 1.8
+
+            if dom == 4:
+                score += 2.2
+
+            if heat >= 10:
+                score += 1.5
 
             ranked.append({
                 "n": n,
@@ -428,7 +456,7 @@ class SNIPER_AMBATA_LAB:
             **candidate
         })
 
-        self.play_log = self.play_log[-500:]
+        self.play_log = self.play_log[-800:]
 
     def register_hit(self, n, colpo, nums):
         self.total_hit += 1
@@ -437,41 +465,44 @@ class SNIPER_AMBATA_LAB:
         if colpo == 1:
             self.hit_colpo_1 += 1
             self.number_stats[n]["hit1"] += 1
-        elif colpo == 2:
+
+        if colpo == 2:
             self.hit_colpo_2 += 1
             self.number_stats[n]["hit2"] += 1
 
         self.recent_results.append("HIT")
-        self.recent_results = self.recent_results[-30:]
+        self.recent_results = self.recent_results[-50:]
 
         self.recent_hit_numbers.append(n)
-        self.recent_hit_numbers = self.recent_hit_numbers[-30:]
+        self.recent_hit_numbers = self.recent_hit_numbers[-50:]
 
         self.play_log.append({
             "event": "HIT",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "n": n,
             "colpo": colpo,
-            "draw": nums
+            "draw": nums,
+            "snapshot": self.active_snapshot
         })
 
-        self.play_log = self.play_log[-500:]
+        self.play_log = self.play_log[-800:]
 
     def register_stop(self, n):
         self.total_stop += 1
         self.number_stats[n]["stop"] += 1
 
         self.recent_results.append("STOP")
-        self.recent_results = self.recent_results[-30:]
+        self.recent_results = self.recent_results[-50:]
 
         self.play_log.append({
             "event": "STOP",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "n": n,
-            "colpi": MAX_COLPI
+            "colpi": MAX_COLPI,
+            "snapshot": self.active_snapshot
         })
 
-        self.play_log = self.play_log[-500:]
+        self.play_log = self.play_log[-800:]
 
     # ===================== MAIN ==============================
 
@@ -506,7 +537,7 @@ class SNIPER_AMBATA_LAB:
                 await self.tg(
                     app,
                     f"🔥 HIT AMBATA {n} | colpo {self.colpi}\n"
-                    f"📊 STATS\n"
+                    f"📊 STATS STRICT\n"
                     f"• play totali = {self.total_play}\n"
                     f"• hit = {self.total_hit}\n"
                     f"• stop = {self.total_stop}\n"
@@ -517,6 +548,7 @@ class SNIPER_AMBATA_LAB:
 
                 self.active = False
                 self.active_n = None
+                self.active_snapshot = None
                 self.colpi = 0
                 self.cooldown = COOLDOWN_AFTER_PLAY
                 self.save_state()
@@ -528,7 +560,7 @@ class SNIPER_AMBATA_LAB:
                 await self.tg(
                     app,
                     f"🛑 STOP AMBATA {n} | {MAX_COLPI} colpi\n"
-                    f"📊 STATS\n"
+                    f"📊 STATS STRICT\n"
                     f"• play totali = {self.total_play}\n"
                     f"• hit = {self.total_hit}\n"
                     f"• stop = {self.total_stop}\n"
@@ -537,6 +569,7 @@ class SNIPER_AMBATA_LAB:
 
                 self.active = False
                 self.active_n = None
+                self.active_snapshot = None
                 self.colpi = 0
                 self.cooldown = COOLDOWN_AFTER_PLAY
                 self.save_state()
@@ -564,8 +597,8 @@ class SNIPER_AMBATA_LAB:
         if not candidate:
             await self.tg(
                 app,
-                "⏸ NO PLAY AMBATA\n"
-                "• nessun numero in AMBATA_ZONE"
+                "⏸ NO PLAY STRICT\n"
+                "• nessun numero in AMBATA_STRICT_ZONE"
             )
             self.save_state()
             return
@@ -574,13 +607,14 @@ class SNIPER_AMBATA_LAB:
 
         self.active = True
         self.active_n = n
+        self.active_snapshot = candidate
         self.colpi = 0
 
         self.register_play(candidate)
 
         await self.tg(
             app,
-            "🎯 PLAY AMBATA LAB v31.0\n"
+            "🎯 PLAY AMBATA STRICT v31.1\n"
             f"• AMBATA = {n}\n"
             f"• max_colpi = {MAX_COLPI}\n"
             f"• motivo = {candidate['reason']}\n"
@@ -591,7 +625,7 @@ class SNIPER_AMBATA_LAB:
             f"• dominance = {candidate['dominance']}\n"
             f"• pressure = {candidate['pressure']}\n"
             f"• candidati top = {ranking}\n"
-            f"\n📊 STATS ATTUALI\n"
+            f"\n📊 STATS STRICT\n"
             f"• play totali = {self.total_play}\n"
             f"• hit = {self.total_hit}\n"
             f"• stop = {self.total_stop}\n"
@@ -605,7 +639,7 @@ class SNIPER_AMBATA_LAB:
 
         await self.tg(
             app,
-            "📊 REPORT AMBATA LAB\n"
+            "📊 REPORT AMBATA STRICT v31.1\n"
             f"• play totali = {self.total_play}\n"
             f"• hit = {self.total_hit}\n"
             f"• stop = {self.total_stop}\n"
@@ -618,7 +652,7 @@ class SNIPER_AMBATA_LAB:
 
 # ===================== LOOP ================================
 
-bot = SNIPER_AMBATA_LAB()
+bot = SNIPER_AMBATA_STRICT()
 
 
 async def live():
@@ -641,7 +675,7 @@ async def live():
 
         bot.save_state()
 
-    await bot.tg(app, "🚀 SNIPER v31.0 AMBATA LAB CORE AVVIATO")
+    await bot.tg(app, "🚀 SNIPER v31.1 AMBATA LAB STRICT AVVIATO")
 
     while True:
         try:
