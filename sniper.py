@@ -1,6 +1,6 @@
 # ============================================================
-# 🚀 SNIPER v31.1 — AMBATA LAB STRICT
-# meno play + filtro forte + solo ambata + 2 colpi
+# 🚀 SNIPER v31.3 — AMBATA ANTI-STOP HEAT11
+# solo ambata + 2 colpi + LIVE_ONLY + pausa dopo 2 stop
 # ============================================================
 
 import asyncio
@@ -24,28 +24,31 @@ CHAT_ID = int(os.getenv("CHAT_ID"))
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-STATE_FILE = "sniper_ambata_lab_strict_state.json"
+STATE_FILE = "sniper_v31_3_antistop_heat11_state.json"
 
 LOOP_SEC = 60
 HISTORY_MAX = 180
-PROCESSED_MAX = 700
+PROCESSED_MAX = 800
 
 MAX_COLPI = 2
 COOLDOWN_AFTER_PLAY = 1
 
 MIN_HISTORY = 12
 
-# ===================== FILTRO STRICT ========================
+# ===================== FILTRO v31.3 ==========================
 
-MIN_HEAT = 10
-MIN_LIFE = 17
+MIN_HEAT = 11
+MIN_LIFE = 21
 MIN_LAG = 2
 MAX_LAG = 2
 MIN_DOMINANCE = 4
 MAX_DOMINANCE = 4
-MIN_PRESSURE = 9
+MIN_PRESSURE = 11
 
 RECENT_HIT_BLOCK = 4
+
+MAX_CONSECUTIVE_STOPS = 2
+ANTI_STOP_COOLDOWN = 34
 
 
 def parse_site():
@@ -97,10 +100,10 @@ def day_key():
     return datetime.now().strftime("%Y-%m-%d")
 
 
-class SNIPER_AMBATA_STRICT:
+class SNIPER_V31_3:
 
     def __init__(self):
-        self.version = "v31.1_ambata_lab_strict"
+        self.version = "v31.3_antistop_heat11"
 
         self.day = day_key()
         self.max_e = 0
@@ -157,10 +160,10 @@ class SNIPER_AMBATA_STRICT:
             "colpi": self.colpi,
             "cooldown": self.cooldown,
 
-            "recent_results": self.recent_results[-50:],
-            "recent_hit_numbers": self.recent_hit_numbers[-50:],
+            "recent_results": self.recent_results[-80:],
+            "recent_hit_numbers": self.recent_hit_numbers[-80:],
 
-            "play_log": self.play_log[-800:],
+            "play_log": self.play_log[-1000:],
 
             "total_play": self.total_play,
             "total_hit": self.total_hit,
@@ -199,6 +202,7 @@ class SNIPER_AMBATA_STRICT:
             self.processed_fps = data.get("processed_fps", [])[-PROCESSED_MAX:]
 
             self.active = bool(data.get("active", False))
+
             self.active_n = data.get("active_n")
             if self.active_n is not None:
                 self.active_n = int(self.active_n)
@@ -207,10 +211,9 @@ class SNIPER_AMBATA_STRICT:
             self.colpi = int(data.get("colpi", 0))
             self.cooldown = int(data.get("cooldown", 0))
 
-            self.recent_results = data.get("recent_results", [])[-50:]
-            self.recent_hit_numbers = data.get("recent_hit_numbers", [])[-50:]
-
-            self.play_log = data.get("play_log", [])[-800:]
+            self.recent_results = data.get("recent_results", [])[-80:]
+            self.recent_hit_numbers = data.get("recent_hit_numbers", [])[-80:]
+            self.play_log = data.get("play_log", [])[-1000:]
 
             self.total_play = int(data.get("total_play", 0))
             self.total_hit = int(data.get("total_hit", 0))
@@ -245,7 +248,7 @@ class SNIPER_AMBATA_STRICT:
             if diff.returncode == 0:
                 return
 
-            subprocess.run(["git", "commit", "-m", "update ambata strict state"], check=False)
+            subprocess.run(["git", "commit", "-m", "update sniper v31.3 state"], check=False)
             subprocess.run(["git", "push"], check=False)
 
         except Exception:
@@ -326,7 +329,23 @@ class SNIPER_AMBATA_STRICT:
 
         return score
 
-    # ===================== AMBATA STRICT ======================
+    # ===================== ANTI STOP ==========================
+
+    def consecutive_stops(self):
+        c = 0
+        for r in reversed(self.recent_results):
+            if r == "STOP":
+                c += 1
+            else:
+                break
+        return c
+
+    def next_cooldown_after_stop(self):
+        if self.consecutive_stops() >= MAX_CONSECUTIVE_STOPS:
+            return ANTI_STOP_COOLDOWN
+        return COOLDOWN_AFTER_PLAY
+
+    # ===================== ENGINE ============================
 
     def should_play_ambata(self, n):
         life = self.life(n)
@@ -334,6 +353,9 @@ class SNIPER_AMBATA_STRICT:
         lag = self.lag(n)
         dom = self.dominance(n, 6)
         pressure = self.number_pressure(n)
+
+        if self.consecutive_stops() >= MAX_CONSECUTIVE_STOPS:
+            return False, "ANTI_STOP_BLOCK"
 
         if n in self.recent_hit_numbers[-RECENT_HIT_BLOCK:]:
             return False, "RECENT_HIT_BLOCK"
@@ -347,8 +369,8 @@ class SNIPER_AMBATA_STRICT:
         if heat < MIN_HEAT:
             return False, "LOW_HEAT"
 
-        if heat == 9:
-            return False, "HEAT9_TRAP"
+        if life < MIN_LIFE:
+            return False, "LOW_LIFE"
 
         if dom < MIN_DOMINANCE:
             return False, "LOW_DOMINANCE"
@@ -356,13 +378,10 @@ class SNIPER_AMBATA_STRICT:
         if dom > MAX_DOMINANCE:
             return False, "OVER_DOMINANT"
 
-        if life < MIN_LIFE:
-            return False, "LOW_LIFE"
-
         if pressure < MIN_PRESSURE:
             return False, "LOW_PRESSURE"
 
-        return True, "AMBATA_STRICT_ZONE"
+        return True, "HEAT11_DOM4_ZONE"
 
     def choose_ambata_candidate(self):
         ranked = []
@@ -379,22 +398,18 @@ class SNIPER_AMBATA_STRICT:
             pressure = self.number_pressure(n)
 
             score = (
-                life * 1.15
-                + heat * 0.90
-                + dom * 2.00
-                + pressure * 0.60
-                - lag * 0.90
+                life * 1.20
+                + heat * 1.00
+                + dom * 2.20
+                + pressure * 0.70
+                - lag * 1.00
             )
 
-            # bonus zona migliore vista dai log
-            if lag == 3:
-                score += 1.8
+            if heat >= 11:
+                score += 2.0
 
             if dom == 4:
-                score += 2.2
-
-            if heat >= 10:
-                score += 1.5
+                score += 2.5
 
             ranked.append({
                 "n": n,
@@ -404,7 +419,8 @@ class SNIPER_AMBATA_STRICT:
                 "heat": heat,
                 "lag": lag,
                 "dominance": dom,
-                "pressure": pressure
+                "pressure": pressure,
+                "stop_streak": self.consecutive_stops()
             })
 
         ranked.sort(key=lambda x: x["score"], reverse=True)
@@ -412,7 +428,7 @@ class SNIPER_AMBATA_STRICT:
         if not ranked:
             return None, []
 
-        return ranked[0], ranked[:10]
+        return ranked[0], ranked[:8]
 
     # ===================== STATS ==============================
 
@@ -456,7 +472,7 @@ class SNIPER_AMBATA_STRICT:
             **candidate
         })
 
-        self.play_log = self.play_log[-800:]
+        self.play_log = self.play_log[-1000:]
 
     def register_hit(self, n, colpo, nums):
         self.total_hit += 1
@@ -471,10 +487,10 @@ class SNIPER_AMBATA_STRICT:
             self.number_stats[n]["hit2"] += 1
 
         self.recent_results.append("HIT")
-        self.recent_results = self.recent_results[-50:]
+        self.recent_results = self.recent_results[-80:]
 
         self.recent_hit_numbers.append(n)
-        self.recent_hit_numbers = self.recent_hit_numbers[-50:]
+        self.recent_hit_numbers = self.recent_hit_numbers[-80:]
 
         self.play_log.append({
             "event": "HIT",
@@ -485,14 +501,14 @@ class SNIPER_AMBATA_STRICT:
             "snapshot": self.active_snapshot
         })
 
-        self.play_log = self.play_log[-800:]
+        self.play_log = self.play_log[-1000:]
 
     def register_stop(self, n):
         self.total_stop += 1
         self.number_stats[n]["stop"] += 1
 
         self.recent_results.append("STOP")
-        self.recent_results = self.recent_results[-50:]
+        self.recent_results = self.recent_results[-80:]
 
         self.play_log.append({
             "event": "STOP",
@@ -502,7 +518,7 @@ class SNIPER_AMBATA_STRICT:
             "snapshot": self.active_snapshot
         })
 
-        self.play_log = self.play_log[-800:]
+        self.play_log = self.play_log[-1000:]
 
     # ===================== MAIN ==============================
 
@@ -537,13 +553,14 @@ class SNIPER_AMBATA_STRICT:
                 await self.tg(
                     app,
                     f"🔥 HIT AMBATA {n} | colpo {self.colpi}\n"
-                    f"📊 STATS STRICT\n"
+                    f"📊 STATS v31.3\n"
                     f"• play totali = {self.total_play}\n"
                     f"• hit = {self.total_hit}\n"
                     f"• stop = {self.total_stop}\n"
                     f"• hitrate = {self.hitrate()}%\n"
                     f"• hit colpo 1 = {self.hit_colpo_1}\n"
-                    f"• hit colpo 2 = {self.hit_colpo_2}"
+                    f"• hit colpo 2 = {self.hit_colpo_2}\n"
+                    f"• stop streak = {self.consecutive_stops()}"
                 )
 
                 self.active = False
@@ -557,21 +574,25 @@ class SNIPER_AMBATA_STRICT:
             if self.colpi >= MAX_COLPI:
                 self.register_stop(n)
 
+                cd = self.next_cooldown_after_stop()
+
                 await self.tg(
                     app,
                     f"🛑 STOP AMBATA {n} | {MAX_COLPI} colpi\n"
-                    f"📊 STATS STRICT\n"
+                    f"📊 STATS v31.3\n"
                     f"• play totali = {self.total_play}\n"
                     f"• hit = {self.total_hit}\n"
                     f"• stop = {self.total_stop}\n"
-                    f"• hitrate = {self.hitrate()}%"
+                    f"• hitrate = {self.hitrate()}%\n"
+                    f"• stop streak = {self.consecutive_stops()}\n"
+                    f"• prossimo cooldown = {cd}"
                 )
 
                 self.active = False
                 self.active_n = None
                 self.active_snapshot = None
                 self.colpi = 0
-                self.cooldown = COOLDOWN_AFTER_PLAY
+                self.cooldown = cd
                 self.save_state()
                 return
 
@@ -582,7 +603,12 @@ class SNIPER_AMBATA_STRICT:
 
         if self.cooldown > 0:
             self.cooldown -= 1
-            await self.tg(app, "⏸ cooldown")
+            await self.tg(
+                app,
+                f"⏸ cooldown v31.3\n"
+                f"• restano = {self.cooldown}\n"
+                f"• stop streak = {self.consecutive_stops()}"
+            )
             self.save_state()
             return
 
@@ -595,11 +621,7 @@ class SNIPER_AMBATA_STRICT:
         candidate, ranking = self.choose_ambata_candidate()
 
         if not candidate:
-            await self.tg(
-                app,
-                "⏸ NO PLAY STRICT\n"
-                "• nessun numero in AMBATA_STRICT_ZONE"
-            )
+            # Messaggio più leggero: non manda sempre tutti i dettagli
             self.save_state()
             return
 
@@ -614,7 +636,7 @@ class SNIPER_AMBATA_STRICT:
 
         await self.tg(
             app,
-            "🎯 PLAY AMBATA STRICT v31.1\n"
+            "🎯 PLAY AMBATA v31.3 ANTI-STOP HEAT11\n"
             f"• AMBATA = {n}\n"
             f"• max_colpi = {MAX_COLPI}\n"
             f"• motivo = {candidate['reason']}\n"
@@ -624,8 +646,9 @@ class SNIPER_AMBATA_STRICT:
             f"• lag = {candidate['lag']}\n"
             f"• dominance = {candidate['dominance']}\n"
             f"• pressure = {candidate['pressure']}\n"
+            f"• stop streak = {candidate['stop_streak']}\n"
             f"• candidati top = {ranking}\n"
-            f"\n📊 STATS STRICT\n"
+            f"\n📊 STATS v31.3\n"
             f"• play totali = {self.total_play}\n"
             f"• hit = {self.total_hit}\n"
             f"• stop = {self.total_stop}\n"
@@ -639,20 +662,21 @@ class SNIPER_AMBATA_STRICT:
 
         await self.tg(
             app,
-            "📊 REPORT AMBATA STRICT v31.1\n"
+            "📊 REPORT AMBATA v31.3\n"
             f"• play totali = {self.total_play}\n"
             f"• hit = {self.total_hit}\n"
             f"• stop = {self.total_stop}\n"
             f"• hitrate = {self.hitrate()}%\n"
             f"• hit colpo 1 = {self.hit_colpo_1}\n"
             f"• hit colpo 2 = {self.hit_colpo_2}\n"
+            f"• stop streak = {self.consecutive_stops()}\n"
             f"• top numeri = {top}"
         )
 
 
 # ===================== LOOP ================================
 
-bot = SNIPER_AMBATA_STRICT()
+bot = SNIPER_V31_3()
 
 
 async def live():
@@ -664,18 +688,36 @@ async def live():
         await bot.tg(app, "⚠️ parser vuoto")
         return
 
+    # ===================== LIVE ONLY STARTUP ==================
+    # Se non c'è storico nello state, carica tutto lo storico già uscito oggi
+    # ma NON gioca il passato. Parte solo dalla prossima estrazione nuova.
     if not bot.last_draws:
-        for e, nums in es[:-1]:
+        for e, nums in es:
             bot.last_draws.append(nums)
 
         bot.last_draws = bot.last_draws[-HISTORY_MAX:]
+        bot.max_e = es[-1][0]
+        bot.last_fp = fingerprint(es[-1][0], es[-1][1])
 
-        if len(es) >= 2:
-            bot.max_e = es[-2][0]
+        bot.processed_ids.append(es[-1][0])
+        bot.processed_fps.append(bot.last_fp)
 
         bot.save_state()
 
-    await bot.tg(app, "🚀 SNIPER v31.1 AMBATA LAB STRICT AVVIATO")
+        await bot.tg(
+            app,
+            "🚀 SNIPER v31.3 ANTI-STOP HEAT11 AVVIATO | LIVE_ONLY\n"
+            f"• storico caricato fino estrazione {bot.max_e}\n"
+            f"• attendo prossima estrazione reale"
+        )
+    else:
+        await bot.tg(
+            app,
+            "🚀 SNIPER v31.3 ANTI-STOP HEAT11 RIAVVIATO\n"
+            f"• max_e state = {bot.max_e}\n"
+            f"• active = {bot.active}\n"
+            f"• cooldown = {bot.cooldown}"
+        )
 
     while True:
         try:
@@ -688,7 +730,7 @@ async def live():
                 await bot.on_new(app, e, nums)
 
         except Exception as ex:
-            await bot.tg(app, f"⚠️ Errore loop: {ex}")
+            await bot.tg(app, f"⚠️ Errore loop v31.3: {ex}")
 
         await asyncio.sleep(LOOP_SEC)
 
