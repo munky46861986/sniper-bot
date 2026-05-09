@@ -1,6 +1,11 @@
 # ============================================================
-# 🚀 SNIPER v32 — SOLO 15 HOT-LAG1
-# ambata fissa 15 + lag 1 + heat alto + dominance forte
+# 🚀 SNIPER v33 — 15 HOT-LAG + AMBI 14/5/20
+# Strategia:
+# - segnale sul numero 15
+# - heat >= 12
+# - lag 1-2
+# - dominance 4-6
+# - gioca ambi: 15-14, 15-5, 15-20
 # ============================================================
 
 import asyncio
@@ -23,23 +28,24 @@ CHAT_ID = int(os.getenv("CHAT_ID"))
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-STATE_FILE = "sniper_v32_solo15_state.json"
+STATE_FILE = "sniper_v33_15_ambi_state.json"
 
 LOOP_SEC = 60
 HISTORY_MAX = 180
 PROCESSED_MAX = 800
 
 TARGET_AMBATA = 15
+ABBINAMENTI = [14, 5, 20]
 
-MAX_COLPI = 6
+MAX_COLPI = 5
 COOLDOWN_AFTER_PLAY = 1
 MIN_HISTORY = 12
 
-MIN_HEAT = 9
+MIN_HEAT = 12
 MIN_LAG = 1
 MAX_LAG = 2
-MIN_DOMINANCE = 3
-MAX_DOMINANCE = 5
+MIN_DOMINANCE = 4
+MAX_DOMINANCE = 6
 
 
 def parse_site():
@@ -91,10 +97,10 @@ def day_key():
     return datetime.now().strftime("%Y-%m-%d")
 
 
-class SNIPER_SOLO15:
+class SNIPER_15_AMBI:
 
     def __init__(self):
-        self.version = "v32_solo15_hot_lag1"
+        self.version = "v33_15_hot_lag_ambi_14_5_20"
 
         self.day = day_key()
         self.max_e = 0
@@ -112,8 +118,12 @@ class SNIPER_SOLO15:
         self.total_play = 0
         self.total_hit = 0
         self.total_stop = 0
+
         self.hit_colpo_1 = 0
         self.hit_colpo_2 = 0
+        self.hit_colpo_3 = 0
+        self.hit_colpo_4 = 0
+        self.hit_colpo_5 = 0
 
         self.recent_results = []
         self.play_log = []
@@ -143,6 +153,9 @@ class SNIPER_SOLO15:
             "total_stop": self.total_stop,
             "hit_colpo_1": self.hit_colpo_1,
             "hit_colpo_2": self.hit_colpo_2,
+            "hit_colpo_3": self.hit_colpo_3,
+            "hit_colpo_4": self.hit_colpo_4,
+            "hit_colpo_5": self.hit_colpo_5,
             "recent_results": self.recent_results[-50:],
             "play_log": self.play_log[-800:]
         }
@@ -181,8 +194,12 @@ class SNIPER_SOLO15:
             self.total_play = int(data.get("total_play", 0))
             self.total_hit = int(data.get("total_hit", 0))
             self.total_stop = int(data.get("total_stop", 0))
+
             self.hit_colpo_1 = int(data.get("hit_colpo_1", 0))
             self.hit_colpo_2 = int(data.get("hit_colpo_2", 0))
+            self.hit_colpo_3 = int(data.get("hit_colpo_3", 0))
+            self.hit_colpo_4 = int(data.get("hit_colpo_4", 0))
+            self.hit_colpo_5 = int(data.get("hit_colpo_5", 0))
 
             self.recent_results = data.get("recent_results", [])[-50:]
             self.play_log = data.get("play_log", [])[-800:]
@@ -204,7 +221,7 @@ class SNIPER_SOLO15:
             if diff.returncode == 0:
                 return
 
-            subprocess.run(["git", "commit", "-m", "update sniper v32 solo15 state"], check=False)
+            subprocess.run(["git", "commit", "-m", "update sniper v33 15 ambi state"], check=False)
             subprocess.run(["git", "push"], check=False)
 
         except Exception:
@@ -284,9 +301,9 @@ class SNIPER_SOLO15:
 
         return score
 
-    # ===================== SOLO 15 ENGINE =====================
+    # ===================== NEW ENGINE =========================
 
-    def should_play_15(self):
+    def should_play_15_ambi(self):
         n = TARGET_AMBATA
 
         heat = self.heat(n)
@@ -310,15 +327,32 @@ class SNIPER_SOLO15:
         if dom > MAX_DOMINANCE:
             return False, "OVER_DOMINANCE"
 
+        ambi = [(TARGET_AMBATA, x) for x in ABBINAMENTI]
+
         return True, {
-            "reason": "SOLO15_HOT_LAG1",
+            "reason": "15_HOT_LAG_1_2_AMBI_14_5_20",
             "n": n,
+            "ambi": ambi,
             "heat": heat,
             "lag": lag,
             "dominance": dom,
             "life": life,
             "pressure": pressure
         }
+
+    def check_ambo_hit(self, nums):
+        s = set(nums)
+
+        if TARGET_AMBATA not in s:
+            return []
+
+        hits = []
+
+        for x in ABBINAMENTI:
+            if x in s:
+                hits.append((TARGET_AMBATA, x))
+
+        return hits
 
     # ===================== STATS ==============================
 
@@ -347,22 +381,27 @@ class SNIPER_SOLO15:
 
         self.play_log = self.play_log[-800:]
 
-    def register_hit(self, colpo, nums):
+    def register_hit(self, colpo, nums, ambi_hit):
         self.total_hit += 1
 
         if colpo == 1:
             self.hit_colpo_1 += 1
-
-        if colpo == 2:
+        elif colpo == 2:
             self.hit_colpo_2 += 1
+        elif colpo == 3:
+            self.hit_colpo_3 += 1
+        elif colpo == 4:
+            self.hit_colpo_4 += 1
+        elif colpo == 5:
+            self.hit_colpo_5 += 1
 
         self.recent_results.append("HIT")
         self.recent_results = self.recent_results[-50:]
 
         self.play_log.append({
-            "event": "HIT",
+            "event": "HIT_AMBO",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "n": TARGET_AMBATA,
+            "ambi_hit": ambi_hit,
             "colpo": colpo,
             "draw": nums,
             "snapshot": self.active_snapshot
@@ -380,6 +419,7 @@ class SNIPER_SOLO15:
             "event": "STOP",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "n": TARGET_AMBATA,
+            "ambi": [(TARGET_AMBATA, x) for x in ABBINAMENTI],
             "colpi": MAX_COLPI,
             "snapshot": self.active_snapshot
         })
@@ -401,8 +441,6 @@ class SNIPER_SOLO15:
         self.last_draws.append(nums)
         self.last_draws = self.last_draws[-HISTORY_MAX:]
 
-        s = set(nums)
-
         await self.tg(app, f"📌 Estrazione {e}\n🎱 {', '.join(map(str, nums))}")
 
         # ===================== PLAY ATTIVO =====================
@@ -410,19 +448,27 @@ class SNIPER_SOLO15:
         if self.active:
             self.colpi += 1
 
-            if TARGET_AMBATA in s:
-                self.register_hit(self.colpi, nums)
+            ambi_hit = self.check_ambo_hit(nums)
+
+            if ambi_hit:
+                self.register_hit(self.colpi, nums, ambi_hit)
+
+                ambi_txt = ", ".join(f"{a}-{b}" for a, b in ambi_hit)
 
                 await self.tg(
                     app,
-                    f"🔥 HIT AMBATA 15 | colpo {self.colpi}\n"
-                    f"📊 STATS v32\n"
+                    f"🔥 HIT AMBO 15 | colpo {self.colpi}\n"
+                    f"🎯 Ambi usciti = {ambi_txt}\n"
+                    f"📊 STATS v33\n"
                     f"• play totali = {self.total_play}\n"
                     f"• hit = {self.total_hit}\n"
                     f"• stop = {self.total_stop}\n"
                     f"• hitrate = {self.hitrate()}%\n"
                     f"• hit colpo 1 = {self.hit_colpo_1}\n"
                     f"• hit colpo 2 = {self.hit_colpo_2}\n"
+                    f"• hit colpo 3 = {self.hit_colpo_3}\n"
+                    f"• hit colpo 4 = {self.hit_colpo_4}\n"
+                    f"• hit colpo 5 = {self.hit_colpo_5}\n"
                     f"• stop streak = {self.consecutive_stops()}"
                 )
 
@@ -438,8 +484,9 @@ class SNIPER_SOLO15:
 
                 await self.tg(
                     app,
-                    f"🛑 STOP AMBATA 15 | {MAX_COLPI} colpi\n"
-                    f"📊 STATS v32\n"
+                    f"🛑 STOP AMBI 15 | {MAX_COLPI} colpi\n"
+                    f"🎯 Ambi giocati = 15-14, 15-5, 15-20\n"
+                    f"📊 STATS v33\n"
                     f"• play totali = {self.total_play}\n"
                     f"• hit = {self.total_hit}\n"
                     f"• stop = {self.total_stop}\n"
@@ -461,7 +508,7 @@ class SNIPER_SOLO15:
 
         if self.cooldown > 0:
             self.cooldown -= 1
-            await self.tg(app, f"⏸ cooldown v32 | restano = {self.cooldown}")
+            await self.tg(app, f"⏸ cooldown v33 | restano = {self.cooldown}")
             self.save_state()
             return
 
@@ -471,7 +518,7 @@ class SNIPER_SOLO15:
             self.save_state()
             return
 
-        ok, data = self.should_play_15()
+        ok, data = self.should_play_15_ambi()
 
         if not ok:
             self.save_state()
@@ -485,8 +532,8 @@ class SNIPER_SOLO15:
 
         await self.tg(
             app,
-            "🎯 PLAY AMBATA 15 v32 HOT-LAG1\n"
-            f"• AMBATA = 15\n"
+            "🎯 PLAY AMBI 15 v33 HOT-LAG\n"
+            f"• ambi = 15-14, 15-5, 15-20\n"
             f"• max_colpi = {MAX_COLPI}\n"
             f"• motivo = {data['reason']}\n"
             f"• heat15 = {data['heat']}\n"
@@ -494,7 +541,7 @@ class SNIPER_SOLO15:
             f"• dominance15 = {data['dominance']}\n"
             f"• life15 = {data['life']}\n"
             f"• pressure15 = {data['pressure']}\n"
-            f"\n📊 STATS v32\n"
+            f"\n📊 STATS v33\n"
             f"• play totali = {self.total_play}\n"
             f"• hit = {self.total_hit}\n"
             f"• stop = {self.total_stop}\n"
@@ -506,20 +553,24 @@ class SNIPER_SOLO15:
     async def send_report(self, app):
         await self.tg(
             app,
-            "📊 REPORT v32 SOLO 15\n"
+            "📊 REPORT v33 AMBI 15\n"
+            f"• ambi = 15-14, 15-5, 15-20\n"
             f"• play totali = {self.total_play}\n"
             f"• hit = {self.total_hit}\n"
             f"• stop = {self.total_stop}\n"
             f"• hitrate = {self.hitrate()}%\n"
             f"• hit colpo 1 = {self.hit_colpo_1}\n"
             f"• hit colpo 2 = {self.hit_colpo_2}\n"
+            f"• hit colpo 3 = {self.hit_colpo_3}\n"
+            f"• hit colpo 4 = {self.hit_colpo_4}\n"
+            f"• hit colpo 5 = {self.hit_colpo_5}\n"
             f"• stop streak = {self.consecutive_stops()}"
         )
 
 
 # ===================== LOOP ================================
 
-bot = SNIPER_SOLO15()
+bot = SNIPER_15_AMBI()
 
 
 async def live():
@@ -547,14 +598,14 @@ async def live():
 
         await bot.tg(
             app,
-            "🚀 SNIPER v32 SOLO 15 AVVIATO | LIVE_ONLY\n"
+            "🚀 SNIPER v33 AMBI 15 AVVIATO | LIVE_ONLY\n"
             f"• storico caricato fino estrazione {bot.max_e}\n"
             "• attendo prossima estrazione reale"
         )
     else:
         await bot.tg(
             app,
-            "🚀 SNIPER v32 SOLO 15 RIAVVIATO\n"
+            "🚀 SNIPER v33 AMBI 15 RIAVVIATO\n"
             f"• max_e state = {bot.max_e}\n"
             f"• active = {bot.active}\n"
             f"• cooldown = {bot.cooldown}"
@@ -571,7 +622,7 @@ async def live():
                 await bot.on_new(app, e, nums)
 
         except Exception as ex:
-            await bot.tg(app, f"⚠️ Errore loop v32: {ex}")
+            await bot.tg(app, f"⚠️ Errore loop v33: {ex}")
 
         await asyncio.sleep(LOOP_SEC)
 
