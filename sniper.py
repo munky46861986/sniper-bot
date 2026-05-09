@@ -33,19 +33,27 @@ MAX_COLPI = 3
 COOLDOWN_AFTER_PLAY = 1
 MIN_HISTORY = 12
 
-MIN_HEAT = 12
+
+
+MIN_HEAT = 10
 MIN_LAG = 1
-MAX_LAG = 2
-MIN_DOMINANCE = 4
+MAX_LAG = 3
+MIN_DOMINANCE = 3
 MAX_DOMINANCE = 6
 
-# basi + migliori abbinamenti testati
 STRATEGIE = {
     6: [5, 10, 30],
     11: [10, 5, 25],
-    16: [15],
-    21: [20],
-    18: [5],
+    16: [15, 20, 5],
+    21: [20, 15, 25],
+    18: [5, 15, 20],
+    15: [14, 5, 20],
+    20: [21, 15, 10],
+    10: [11, 5, 6],
+    5: [6, 10, 15],
+    19: [20, 15, 18],
+    23: [20, 25, 21],
+    4: [5, 6, 10],
 }
 
 
