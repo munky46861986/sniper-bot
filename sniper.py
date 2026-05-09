@@ -1,11 +1,6 @@
 # ============================================================
-# 🚀 SNIPER v33 — 15 HOT-LAG + AMBI 14/5/20
-# Strategia:
-# - segnale sul numero 15
-# - heat >= 12
-# - lag 1-2
-# - dominance 4-6
-# - gioca ambi: 15-14, 15-5, 15-20
+# 🚀 SNIPER v34 — MULTI HOT-LAG AMBI
+# Motore multi-numero con abbinamenti migliori testati
 # ============================================================
 
 import asyncio
@@ -28,16 +23,13 @@ CHAT_ID = int(os.getenv("CHAT_ID"))
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-STATE_FILE = "sniper_v33_15_ambi_state.json"
+STATE_FILE = "sniper_v34_multi_hotlag_ambi_state.json"
 
 LOOP_SEC = 60
 HISTORY_MAX = 180
 PROCESSED_MAX = 800
 
-TARGET_AMBATA = 15
-ABBINAMENTI = [14, 5, 20]
-
-MAX_COLPI = 5
+MAX_COLPI = 3
 COOLDOWN_AFTER_PLAY = 1
 MIN_HISTORY = 12
 
@@ -46,6 +38,15 @@ MIN_LAG = 1
 MAX_LAG = 2
 MIN_DOMINANCE = 4
 MAX_DOMINANCE = 6
+
+# basi + migliori abbinamenti testati
+STRATEGIE = {
+    6: [5, 10, 30],
+    11: [10, 5, 25],
+    16: [15],
+    21: [20],
+    18: [5],
+}
 
 
 def parse_site():
@@ -97,10 +98,10 @@ def day_key():
     return datetime.now().strftime("%Y-%m-%d")
 
 
-class SNIPER_15_AMBI:
+class SNIPER_MULTI_HOTLAG_AMBI:
 
     def __init__(self):
-        self.version = "v33_15_hot_lag_ambi_14_5_20"
+        self.version = "v34_multi_hotlag_ambi"
 
         self.day = day_key()
         self.max_e = 0
@@ -122,8 +123,6 @@ class SNIPER_15_AMBI:
         self.hit_colpo_1 = 0
         self.hit_colpo_2 = 0
         self.hit_colpo_3 = 0
-        self.hit_colpo_4 = 0
-        self.hit_colpo_5 = 0
 
         self.recent_results = []
         self.play_log = []
@@ -154,8 +153,6 @@ class SNIPER_15_AMBI:
             "hit_colpo_1": self.hit_colpo_1,
             "hit_colpo_2": self.hit_colpo_2,
             "hit_colpo_3": self.hit_colpo_3,
-            "hit_colpo_4": self.hit_colpo_4,
-            "hit_colpo_5": self.hit_colpo_5,
             "recent_results": self.recent_results[-50:],
             "play_log": self.play_log[-800:]
         }
@@ -198,8 +195,6 @@ class SNIPER_15_AMBI:
             self.hit_colpo_1 = int(data.get("hit_colpo_1", 0))
             self.hit_colpo_2 = int(data.get("hit_colpo_2", 0))
             self.hit_colpo_3 = int(data.get("hit_colpo_3", 0))
-            self.hit_colpo_4 = int(data.get("hit_colpo_4", 0))
-            self.hit_colpo_5 = int(data.get("hit_colpo_5", 0))
 
             self.recent_results = data.get("recent_results", [])[-50:]
             self.play_log = data.get("play_log", [])[-800:]
@@ -221,7 +216,7 @@ class SNIPER_15_AMBI:
             if diff.returncode == 0:
                 return
 
-            subprocess.run(["git", "commit", "-m", "update sniper v33 15 ambi state"], check=False)
+            subprocess.run(["git", "commit", "-m", "update sniper v34 multi hotlag ambi state"], check=False)
             subprocess.run(["git", "push"], check=False)
 
         except Exception:
@@ -301,56 +296,72 @@ class SNIPER_15_AMBI:
 
         return score
 
-    # ===================== NEW ENGINE =========================
+    # ===================== ENGINE =============================
 
-    def should_play_15_ambi(self):
-        n = TARGET_AMBATA
+    def should_play(self):
+        candidates = []
 
-        heat = self.heat(n)
-        lag = self.lag(n)
-        dom = self.dominance(n, 6)
-        life = self.life(n)
-        pressure = self.pressure(n)
+        for base, partners in STRATEGIE.items():
+            h = self.heat(base)
+            l = self.lag(base)
+            d = self.dominance(base, 6)
+            life = self.life(base)
+            pressure = self.pressure(base)
 
-        if lag < MIN_LAG:
-            return False, "TOO_RECENT"
+            if l < MIN_LAG:
+                continue
 
-        if lag > MAX_LAG:
-            return False, "WRONG_LAG"
+            if l > MAX_LAG:
+                continue
 
-        if heat < MIN_HEAT:
-            return False, "LOW_HEAT"
+            if h < MIN_HEAT:
+                continue
 
-        if dom < MIN_DOMINANCE:
-            return False, "LOW_DOMINANCE"
+            if d < MIN_DOMINANCE:
+                continue
 
-        if dom > MAX_DOMINANCE:
-            return False, "OVER_DOMINANCE"
+            if d > MAX_DOMINANCE:
+                continue
 
-        ambi = [(TARGET_AMBATA, x) for x in ABBINAMENTI]
+            score = (h * 2) + (d * 3) + pressure - l
 
-        return True, {
-            "reason": "15_HOT_LAG_1_2_AMBI_14_5_20",
-            "n": n,
-            "ambi": ambi,
-            "heat": heat,
-            "lag": lag,
-            "dominance": dom,
-            "life": life,
-            "pressure": pressure
-        }
+            ambi = [(base, x) for x in partners]
+
+            candidates.append({
+                "reason": "MULTI_HOT_LAG_AMBI",
+                "base": base,
+                "partners": partners,
+                "ambi": ambi,
+                "heat": h,
+                "lag": l,
+                "dominance": d,
+                "life": life,
+                "pressure": pressure,
+                "score": score
+            })
+
+        if not candidates:
+            return False, None
+
+        candidates.sort(key=lambda x: x["score"], reverse=True)
+        return True, candidates[0]
 
     def check_ambo_hit(self, nums):
-        s = set(nums)
+        if not self.active_snapshot:
+            return []
 
-        if TARGET_AMBATA not in s:
+        s = set(nums)
+        base = self.active_snapshot["base"]
+        partners = self.active_snapshot["partners"]
+
+        if base not in s:
             return []
 
         hits = []
 
-        for x in ABBINAMENTI:
-            if x in s:
-                hits.append((TARGET_AMBATA, x))
+        for p in partners:
+            if p in s:
+                hits.append((base, p))
 
         return hits
 
@@ -390,10 +401,6 @@ class SNIPER_15_AMBI:
             self.hit_colpo_2 += 1
         elif colpo == 3:
             self.hit_colpo_3 += 1
-        elif colpo == 4:
-            self.hit_colpo_4 += 1
-        elif colpo == 5:
-            self.hit_colpo_5 += 1
 
         self.recent_results.append("HIT")
         self.recent_results = self.recent_results[-50:]
@@ -418,15 +425,13 @@ class SNIPER_15_AMBI:
         self.play_log.append({
             "event": "STOP",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "n": TARGET_AMBATA,
-            "ambi": [(TARGET_AMBATA, x) for x in ABBINAMENTI],
             "colpi": MAX_COLPI,
             "snapshot": self.active_snapshot
         })
 
         self.play_log = self.play_log[-800:]
 
-    # ===================== MAIN ==============================
+    # ===================== MAIN ===============================
 
     async def on_new(self, app, e, nums):
         if len(set(nums)) != 20:
@@ -457,9 +462,9 @@ class SNIPER_15_AMBI:
 
                 await self.tg(
                     app,
-                    f"🔥 HIT AMBO 15 | colpo {self.colpi}\n"
+                    f"🔥 HIT AMBO v34 | colpo {self.colpi}\n"
                     f"🎯 Ambi usciti = {ambi_txt}\n"
-                    f"📊 STATS v33\n"
+                    f"📊 STATS v34\n"
                     f"• play totali = {self.total_play}\n"
                     f"• hit = {self.total_hit}\n"
                     f"• stop = {self.total_stop}\n"
@@ -467,8 +472,6 @@ class SNIPER_15_AMBI:
                     f"• hit colpo 1 = {self.hit_colpo_1}\n"
                     f"• hit colpo 2 = {self.hit_colpo_2}\n"
                     f"• hit colpo 3 = {self.hit_colpo_3}\n"
-                    f"• hit colpo 4 = {self.hit_colpo_4}\n"
-                    f"• hit colpo 5 = {self.hit_colpo_5}\n"
                     f"• stop streak = {self.consecutive_stops()}"
                 )
 
@@ -484,9 +487,8 @@ class SNIPER_15_AMBI:
 
                 await self.tg(
                     app,
-                    f"🛑 STOP AMBI 15 | {MAX_COLPI} colpi\n"
-                    f"🎯 Ambi giocati = 15-14, 15-5, 15-20\n"
-                    f"📊 STATS v33\n"
+                    f"🛑 STOP AMBO v34 | {MAX_COLPI} colpi\n"
+                    f"📊 STATS v34\n"
                     f"• play totali = {self.total_play}\n"
                     f"• hit = {self.total_hit}\n"
                     f"• stop = {self.total_stop}\n"
@@ -504,21 +506,21 @@ class SNIPER_15_AMBI:
             self.save_state()
             return
 
-        # ===================== COOLDOWN =======================
+        # ===================== COOLDOWN ========================
 
         if self.cooldown > 0:
             self.cooldown -= 1
-            await self.tg(app, f"⏸ cooldown v33 | restano = {self.cooldown}")
+            await self.tg(app, f"⏸ cooldown v34 | restano = {self.cooldown}")
             self.save_state()
             return
 
-        # ===================== NUOVO PLAY =====================
+        # ===================== NUOVO PLAY ======================
 
         if len(self.last_draws) < MIN_HISTORY:
             self.save_state()
             return
 
-        ok, data = self.should_play_15_ambi()
+        ok, data = self.should_play()
 
         if not ok:
             self.save_state()
@@ -530,18 +532,22 @@ class SNIPER_15_AMBI:
 
         self.register_play(data)
 
+        ambi_txt = ", ".join(f"{a}-{b}" for a, b in data["ambi"])
+
         await self.tg(
             app,
-            "🎯 PLAY AMBI 15 v33 HOT-LAG\n"
-            f"• ambi = 15-14, 15-5, 15-20\n"
+            "🎯 PLAY AMBI v34 MULTI HOT-LAG\n"
+            f"• base = {data['base']}\n"
+            f"• ambi = {ambi_txt}\n"
             f"• max_colpi = {MAX_COLPI}\n"
             f"• motivo = {data['reason']}\n"
-            f"• heat15 = {data['heat']}\n"
-            f"• lag15 = {data['lag']}\n"
-            f"• dominance15 = {data['dominance']}\n"
-            f"• life15 = {data['life']}\n"
-            f"• pressure15 = {data['pressure']}\n"
-            f"\n📊 STATS v33\n"
+            f"• heat = {data['heat']}\n"
+            f"• lag = {data['lag']}\n"
+            f"• dominance = {data['dominance']}\n"
+            f"• life = {data['life']}\n"
+            f"• pressure = {data['pressure']}\n"
+            f"• score = {data['score']}\n"
+            f"\n📊 STATS v34\n"
             f"• play totali = {self.total_play}\n"
             f"• hit = {self.total_hit}\n"
             f"• stop = {self.total_stop}\n"
@@ -553,8 +559,8 @@ class SNIPER_15_AMBI:
     async def send_report(self, app):
         await self.tg(
             app,
-            "📊 REPORT v33 AMBI 15\n"
-            f"• ambi = 15-14, 15-5, 15-20\n"
+            "📊 REPORT v34 MULTI HOT-LAG AMBI\n"
+            f"• strategie = {STRATEGIE}\n"
             f"• play totali = {self.total_play}\n"
             f"• hit = {self.total_hit}\n"
             f"• stop = {self.total_stop}\n"
@@ -562,15 +568,13 @@ class SNIPER_15_AMBI:
             f"• hit colpo 1 = {self.hit_colpo_1}\n"
             f"• hit colpo 2 = {self.hit_colpo_2}\n"
             f"• hit colpo 3 = {self.hit_colpo_3}\n"
-            f"• hit colpo 4 = {self.hit_colpo_4}\n"
-            f"• hit colpo 5 = {self.hit_colpo_5}\n"
             f"• stop streak = {self.consecutive_stops()}"
         )
 
 
 # ===================== LOOP ================================
 
-bot = SNIPER_15_AMBI()
+bot = SNIPER_MULTI_HOTLAG_AMBI()
 
 
 async def live():
@@ -598,14 +602,14 @@ async def live():
 
         await bot.tg(
             app,
-            "🚀 SNIPER v33 AMBI 15 AVVIATO | LIVE_ONLY\n"
+            "🚀 SNIPER v34 MULTI HOT-LAG AMBI AVVIATO | LIVE_ONLY\n"
             f"• storico caricato fino estrazione {bot.max_e}\n"
             "• attendo prossima estrazione reale"
         )
     else:
         await bot.tg(
             app,
-            "🚀 SNIPER v33 AMBI 15 RIAVVIATO\n"
+            "🚀 SNIPER v34 MULTI HOT-LAG AMBI RIAVVIATO\n"
             f"• max_e state = {bot.max_e}\n"
             f"• active = {bot.active}\n"
             f"• cooldown = {bot.cooldown}"
@@ -622,7 +626,7 @@ async def live():
                 await bot.on_new(app, e, nums)
 
         except Exception as ex:
-            await bot.tg(app, f"⚠️ Errore loop v33: {ex}")
+            await bot.tg(app, f"⚠️ Errore loop v34: {ex}")
 
         await asyncio.sleep(LOOP_SEC)
 
