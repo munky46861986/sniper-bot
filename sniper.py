@@ -1,10 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v38 — CINQUINA 5 TOP FREQUENTI + HOT-LAG
-# Ogni 12 estrazioni:
-# - calcola top 10 frequenti dell'ora appena chiusa
-# - ordina con score HOT-LAG
-# - manda la CINQUINA migliore da giocare
-# - mostra anche la riga 10 come osservazione
+# 🚀 SNIPER v39 — CINQUINA + AMBI/TERNI CORE + HIT TRACKING
 # ============================================================
 
 import asyncio
@@ -16,6 +11,7 @@ import hashlib
 import subprocess
 from datetime import datetime
 from collections import Counter
+from itertools import combinations
 from bs4 import BeautifulSoup
 from telegram.ext import ApplicationBuilder
 import nest_asyncio
@@ -28,7 +24,7 @@ CHAT_ID = int(os.getenv("CHAT_ID"))
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-STATE_FILE = "sniper_v38_cinquina5_top_hotlag_state.json"
+STATE_FILE = "sniper_v39_combo_top_hotlag_state.json"
 
 LOOP_SEC = 60
 HISTORY_MAX = 240
@@ -38,6 +34,7 @@ BLOCK_SIZE = 12
 TOP_N = 10
 PLAY_SIZE = 5
 CORE_SIZE = 4
+MAX_COLPI = 6
 
 
 def parse_site():
@@ -89,10 +86,10 @@ def day_key():
     return datetime.now().strftime("%Y-%m-%d")
 
 
-class SNIPER_CINQUINA5_TOP_HOTLAG:
+class SNIPER_V39:
 
     def __init__(self):
-        self.version = "v38_cinquina5_top_hotlag"
+        self.version = "v39_combo_top_hotlag"
 
         self.day = day_key()
         self.max_e = 0
@@ -102,8 +99,24 @@ class SNIPER_CINQUINA5_TOP_HOTLAG:
         self.processed_ids = []
         self.processed_fps = []
 
+        self.active = False
+        self.colpi = 0
+        self.active_snapshot = None
         self.last_signal_block = None
+
+        self.total_play = 0
+        self.total_hit = 0
+        self.total_stop = 0
+
+        self.hit_2su5 = 0
+        self.hit_3su5 = 0
+        self.hit_4su5 = 0
+        self.hit_5su5 = 0
+        self.hit_ambo_core = 0
+        self.hit_terno_core = 0
+
         self.play_log = []
+        self.recent_results = []
 
         self.load_state()
 
@@ -121,8 +134,21 @@ class SNIPER_CINQUINA5_TOP_HOTLAG:
             "last_draws": self.last_draws[-HISTORY_MAX:],
             "processed_ids": self.processed_ids[-PROCESSED_MAX:],
             "processed_fps": self.processed_fps[-PROCESSED_MAX:],
+            "active": self.active,
+            "colpi": self.colpi,
+            "active_snapshot": self.active_snapshot,
             "last_signal_block": self.last_signal_block,
-            "play_log": self.play_log[-800:]
+            "total_play": self.total_play,
+            "total_hit": self.total_hit,
+            "total_stop": self.total_stop,
+            "hit_2su5": self.hit_2su5,
+            "hit_3su5": self.hit_3su5,
+            "hit_4su5": self.hit_4su5,
+            "hit_5su5": self.hit_5su5,
+            "hit_ambo_core": self.hit_ambo_core,
+            "hit_terno_core": self.hit_terno_core,
+            "play_log": self.play_log[-800:],
+            "recent_results": self.recent_results[-50:]
         }
 
         with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -138,20 +164,35 @@ class SNIPER_CINQUINA5_TOP_HOTLAG:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            saved_day = data.get("day", day_key())
-
-            if saved_day != day_key():
+            if data.get("day", day_key()) != day_key():
                 self.day = day_key()
                 return
 
-            self.day = saved_day
+            self.day = data.get("day", day_key())
             self.max_e = int(data.get("max_e", 0))
             self.last_fp = data.get("last_fp")
             self.last_draws = data.get("last_draws", [])[-HISTORY_MAX:]
             self.processed_ids = data.get("processed_ids", [])[-PROCESSED_MAX:]
             self.processed_fps = data.get("processed_fps", [])[-PROCESSED_MAX:]
+
+            self.active = bool(data.get("active", False))
+            self.colpi = int(data.get("colpi", 0))
+            self.active_snapshot = data.get("active_snapshot")
             self.last_signal_block = data.get("last_signal_block")
+
+            self.total_play = int(data.get("total_play", 0))
+            self.total_hit = int(data.get("total_hit", 0))
+            self.total_stop = int(data.get("total_stop", 0))
+
+            self.hit_2su5 = int(data.get("hit_2su5", 0))
+            self.hit_3su5 = int(data.get("hit_3su5", 0))
+            self.hit_4su5 = int(data.get("hit_4su5", 0))
+            self.hit_5su5 = int(data.get("hit_5su5", 0))
+            self.hit_ambo_core = int(data.get("hit_ambo_core", 0))
+            self.hit_terno_core = int(data.get("hit_terno_core", 0))
+
             self.play_log = data.get("play_log", [])[-800:]
+            self.recent_results = data.get("recent_results", [])[-50:]
 
         except Exception:
             pass
@@ -170,7 +211,7 @@ class SNIPER_CINQUINA5_TOP_HOTLAG:
             if diff.returncode == 0:
                 return
 
-            subprocess.run(["git", "commit", "-m", "update sniper v38 cinquina state"], check=False)
+            subprocess.run(["git", "commit", "-m", "update sniper v39 combo state"], check=False)
             subprocess.run(["git", "push"], check=False)
 
         except Exception:
@@ -183,10 +224,8 @@ class SNIPER_CINQUINA5_TOP_HOTLAG:
 
         if fp == self.last_fp:
             return True
-
         if fp in self.processed_fps:
             return True
-
         if e <= self.max_e and e in self.processed_ids:
             return True
 
@@ -280,27 +319,132 @@ class SNIPER_CINQUINA5_TOP_HOTLAG:
         riga10 = [x["number"] for x in scored]
         cinquina = riga10[:PLAY_SIZE]
         core4 = riga10[:CORE_SIZE]
-        support5 = cinquina[CORE_SIZE:]
+
+        ambi_core = list(combinations(core4, 2))
+        terni_core = list(combinations(core4, 3))
 
         return {
-            "reason": "CINQUINA5_TOP_FREQUENTI_PLUS_HOTLAG",
+            "reason": "CINQUINA5_PLUS_AMBI_TERNI_CORE",
             "block_end": e,
             "valid_from": e + 1,
-            "valid_to": e + BLOCK_SIZE,
+            "valid_to": e + MAX_COLPI,
             "top10_raw": [
-                {
-                    "position": i + 1,
-                    "number": n,
-                    "freq": freq
-                }
+                {"position": i + 1, "number": n, "freq": freq}
                 for i, (n, freq) in enumerate(top10_raw)
             ],
             "scored": scored,
-            "core4": core4,
-            "support5": support5,
+            "riga10": riga10,
             "cinquina": cinquina,
-            "riga10": riga10
+            "core4": core4,
+            "ambi_core": ambi_core,
+            "terni_core": terni_core
         }
+
+    def check_hits(self, nums):
+        s = set(nums)
+        snap = self.active_snapshot
+
+        cinquina = snap["cinquina"]
+        core4 = snap["core4"]
+        ambi_core = snap["ambi_core"]
+        terni_core = snap["terni_core"]
+
+        usciti_cinquina = [n for n in cinquina if n in s]
+        usciti_core = [n for n in core4 if n in s]
+
+        ambi_hit = [a for a in ambi_core if a[0] in s and a[1] in s]
+        terni_hit = [t for t in terni_core if all(n in s for n in t)]
+
+        return {
+            "usciti_cinquina": usciti_cinquina,
+            "count_cinquina": len(usciti_cinquina),
+            "usciti_core": usciti_core,
+            "count_core": len(usciti_core),
+            "ambi_hit": ambi_hit,
+            "terni_hit": terni_hit
+        }
+
+    # ===================== STATS ==============================
+
+    def hitrate(self):
+        if self.total_play == 0:
+            return 0.0
+        return round((self.total_hit / self.total_play) * 100, 2)
+
+    def consecutive_stops(self):
+        c = 0
+        for r in reversed(self.recent_results):
+            if r == "STOP":
+                c += 1
+            else:
+                break
+        return c
+
+    def register_play(self, snapshot):
+        self.total_play += 1
+        self.play_log.append({
+            "event": "PLAY",
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            **snapshot
+        })
+        self.play_log = self.play_log[-800:]
+
+    def register_hit_result(self, colpo, nums, hit_data):
+        has_real_hit = (
+            hit_data["count_cinquina"] >= 2 or
+            len(hit_data["ambi_hit"]) > 0 or
+            len(hit_data["terni_hit"]) > 0
+        )
+
+        if not has_real_hit:
+            return False
+
+        self.total_hit += 1
+
+        c = hit_data["count_cinquina"]
+
+        if c == 2:
+            self.hit_2su5 += 1
+        elif c == 3:
+            self.hit_3su5 += 1
+        elif c == 4:
+            self.hit_4su5 += 1
+        elif c >= 5:
+            self.hit_5su5 += 1
+
+        if hit_data["ambi_hit"]:
+            self.hit_ambo_core += 1
+
+        if hit_data["terni_hit"]:
+            self.hit_terno_core += 1
+
+        self.recent_results.append("HIT")
+        self.recent_results = self.recent_results[-50:]
+
+        self.play_log.append({
+            "event": "HIT",
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "colpo": colpo,
+            "draw": nums,
+            "hit_data": hit_data,
+            "snapshot": self.active_snapshot
+        })
+        self.play_log = self.play_log[-800:]
+
+        return True
+
+    def register_stop(self):
+        self.total_stop += 1
+        self.recent_results.append("STOP")
+        self.recent_results = self.recent_results[-50:]
+
+        self.play_log.append({
+            "event": "STOP",
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "colpi": MAX_COLPI,
+            "snapshot": self.active_snapshot
+        })
+        self.play_log = self.play_log[-800:]
 
     # ===================== MAIN ===============================
 
@@ -319,6 +463,88 @@ class SNIPER_CINQUINA5_TOP_HOTLAG:
 
         await self.tg(app, f"📌 Estrazione {e}\n🎱 {', '.join(map(str, nums))}")
 
+        # ===================== CONTROLLO PLAY ATTIVO ===========
+
+        if self.active:
+            self.colpi += 1
+
+            hit_data = self.check_hits(nums)
+
+            cinquina_txt = ", ".join(map(str, hit_data["usciti_cinquina"])) or "nessuno"
+            core_txt = ", ".join(map(str, hit_data["usciti_core"])) or "nessuno"
+            ambi_txt = ", ".join(f"{a}-{b}" for a, b in hit_data["ambi_hit"]) or "nessuno"
+            terni_txt = ", ".join("-".join(map(str, t)) for t in hit_data["terni_hit"]) or "nessuno"
+
+            # manda sempre aggiornamento colpo
+            await self.tg(
+                app,
+                f"🔎 CHECK v39 | colpo {self.colpi}/{MAX_COLPI}\n"
+                f"• cinquina usciti = {hit_data['count_cinquina']}/5 → {cinquina_txt}\n"
+                f"• core usciti = {hit_data['count_core']}/4 → {core_txt}\n"
+                f"• ambi core = {ambi_txt}\n"
+                f"• terni core = {terni_txt}"
+            )
+
+            # chiude il play solo se fa almeno 3/5 o terno core
+            close_hit = (
+                hit_data["count_cinquina"] >= 3 or
+                len(hit_data["terni_hit"]) > 0
+            )
+
+            if close_hit:
+                self.register_hit_result(self.colpi, nums, hit_data)
+
+                await self.tg(
+                    app,
+                    f"🔥 HIT v39 | colpo {self.colpi}\n"
+                    f"🎯 Cinquina: {hit_data['count_cinquina']}/5 → {cinquina_txt}\n"
+                    f"💎 Core: {hit_data['count_core']}/4 → {core_txt}\n"
+                    f"✅ Ambi core: {ambi_txt}\n"
+                    f"✅ Terni core: {terni_txt}\n\n"
+                    f"📊 STATS v39\n"
+                    f"• play totali = {self.total_play}\n"
+                    f"• hit chiusi = {self.total_hit}\n"
+                    f"• stop = {self.total_stop}\n"
+                    f"• hitrate = {self.hitrate()}%\n"
+                    f"• 2/5 = {self.hit_2su5}\n"
+                    f"• 3/5 = {self.hit_3su5}\n"
+                    f"• 4/5 = {self.hit_4su5}\n"
+                    f"• 5/5 = {self.hit_5su5}\n"
+                    f"• ambi core = {self.hit_ambo_core}\n"
+                    f"• terni core = {self.hit_terno_core}"
+                )
+
+                self.active = False
+                self.colpi = 0
+                self.active_snapshot = None
+                self.save_state()
+                return
+
+            if self.colpi >= MAX_COLPI:
+                self.register_stop()
+
+                await self.tg(
+                    app,
+                    f"🛑 STOP v39 | {MAX_COLPI} colpi\n"
+                    f"📊 STATS v39\n"
+                    f"• play totali = {self.total_play}\n"
+                    f"• hit chiusi = {self.total_hit}\n"
+                    f"• stop = {self.total_stop}\n"
+                    f"• hitrate = {self.hitrate()}%\n"
+                    f"• stop streak = {self.consecutive_stops()}"
+                )
+
+                self.active = False
+                self.colpi = 0
+                self.active_snapshot = None
+                self.save_state()
+                return
+
+            self.save_state()
+            return
+
+        # ===================== NUOVO PLAY ======================
+
         if len(self.last_draws) < BLOCK_SIZE:
             self.save_state()
             return
@@ -333,19 +559,18 @@ class SNIPER_CINQUINA5_TOP_HOTLAG:
             self.save_state()
             return
 
+        self.active = True
+        self.colpi = 0
+        self.active_snapshot = data
         self.last_signal_block = e
 
-        self.play_log.append({
-            "event": "CINQUINA5",
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            **data
-        })
-        self.play_log = self.play_log[-800:]
+        self.register_play(data)
 
         cinquina_txt = ", ".join(map(str, data["cinquina"]))
         core_txt = ", ".join(map(str, data["core4"]))
-        support_txt = ", ".join(map(str, data["support5"]))
         riga_txt = ", ".join(map(str, data["riga10"]))
+        ambi_txt = ", ".join(f"{a}-{b}" for a, b in data["ambi_core"])
+        terni_txt = ", ".join("-".join(map(str, t)) for t in data["terni_core"])
 
         scored_txt = "\n".join(
             f"{i+1}) {x['number']} | score={x['score']} | "
@@ -354,23 +579,18 @@ class SNIPER_CINQUINA5_TOP_HOTLAG:
             for i, x in enumerate(data["scored"])
         )
 
-        top10_txt = ", ".join(
-            f"{x['position']}:{x['number']}({x['freq']})"
-            for x in data["top10_raw"]
-        )
-
         await self.tg(
             app,
-            "🎯 PLAY CINQUINA v38 TOP+HOTLAG\n"
+            "🎯 PLAY v39 CINQUINA + CORE\n"
             f"• blocco analizzato = fino estrazione {data['block_end']}\n"
-            f"• valida da estrazione = {data['valid_from']}\n"
-            f"• valida fino circa = {data['valid_to']}\n\n"
-            f"🔥 GIOCA 5 NUMERI:\n{cinquina_txt}\n\n"
+            f"• valido da = {data['valid_from']}\n"
+            f"• max_colpi = {MAX_COLPI}\n\n"
+            f"🔥 CINQUINA 5:\n{cinquina_txt}\n\n"
             f"💎 CORE 4:\n{core_txt}\n\n"
-            f"➕ SUPPORT scelto:\n{support_txt}\n\n"
-            f"👀 RIGA 10 osservazione:\n{riga_txt}\n\n"
-            f"📌 Top10 frequenti grezzi:\n{top10_txt}\n\n"
-            f"📊 Ranking score:\n{scored_txt}"
+            f"✅ AMBI CORE:\n{ambi_txt}\n\n"
+            f"🎲 TERNI CORE:\n{terni_txt}\n\n"
+            f"👀 RIGA 10:\n{riga_txt}\n\n"
+            f"📊 Ranking:\n{scored_txt}"
         )
 
         self.save_state()
@@ -378,18 +598,23 @@ class SNIPER_CINQUINA5_TOP_HOTLAG:
     async def send_report(self, app):
         await self.tg(
             app,
-            "📊 REPORT v38 CINQUINA TOP+HOTLAG\n"
-            f"• blocco = {BLOCK_SIZE} estrazioni\n"
-            f"• top osservati = {TOP_N}\n"
-            f"• numeri giocati = {PLAY_SIZE}\n"
-            f"• core = {CORE_SIZE}\n"
-            f"• ultimo blocco segnalato = {self.last_signal_block}"
+            "📊 REPORT v39\n"
+            f"• play totali = {self.total_play}\n"
+            f"• hit chiusi = {self.total_hit}\n"
+            f"• stop = {self.total_stop}\n"
+            f"• hitrate = {self.hitrate()}%\n"
+            f"• 2/5 = {self.hit_2su5}\n"
+            f"• 3/5 = {self.hit_3su5}\n"
+            f"• 4/5 = {self.hit_4su5}\n"
+            f"• 5/5 = {self.hit_5su5}\n"
+            f"• ambi core = {self.hit_ambo_core}\n"
+            f"• terni core = {self.hit_terno_core}"
         )
 
 
 # ===================== LOOP ================================
 
-bot = SNIPER_CINQUINA5_TOP_HOTLAG()
+bot = SNIPER_V39()
 
 
 async def live():
@@ -416,16 +641,17 @@ async def live():
 
         await bot.tg(
             app,
-            "🚀 SNIPER v38 CINQUINA TOP+HOTLAG AVVIATO | LIVE_ONLY\n"
+            "🚀 SNIPER v39 AVVIATO | LIVE_ONLY\n"
             f"• storico caricato fino estrazione {bot.max_e}\n"
             "• attendo prossima estrazione reale"
         )
     else:
         await bot.tg(
             app,
-            "🚀 SNIPER v38 CINQUINA TOP+HOTLAG RIAVVIATO\n"
+            "🚀 SNIPER v39 RIAVVIATO\n"
             f"• max_e state = {bot.max_e}\n"
-            f"• ultimo blocco segnalato = {bot.last_signal_block}"
+            f"• active = {bot.active}\n"
+            f"• ultimo blocco = {bot.last_signal_block}"
         )
 
     while True:
@@ -439,7 +665,7 @@ async def live():
                 await bot.on_new(app, e, nums)
 
         except Exception as ex:
-            await bot.tg(app, f"⚠️ Errore loop v38: {ex}")
+            await bot.tg(app, f"⚠️ Errore loop v39: {ex}")
 
         await asyncio.sleep(LOOP_SEC)
 
