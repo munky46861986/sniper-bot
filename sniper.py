@@ -1,11 +1,11 @@
 # ============================================================
-# 🚀 SNIPER v40 — CORE4 TOP FREQUENTI + HOT-LAG
-# Ogni 12 estrazioni:
-# - calcola top 10 frequenti
-# - ordina con score HOT-LAG
-# - prende SOLO i migliori 4 numeri
-# - controlla 2/4, 3/4, 4/4
-# - chiude HIT quando prende almeno 3/4
+# 🚀 SNIPER v41 — RITARDATARI → RIENTRO → FREQUENTE
+# Logica:
+# 1) calcola top 10 ritardatari
+# 2) osserva posizioni 6-7-8-9-10
+# 3) se un numero rientra = WATCH
+# 4) se rientra ancora entro 10 colpi = diventa FREQUENTE
+# 5) manda PLAY CORE ritardatari-frequenti
 # ============================================================
 
 import asyncio
@@ -16,7 +16,6 @@ import json
 import hashlib
 import subprocess
 from datetime import datetime
-from collections import Counter
 from bs4 import BeautifulSoup
 from telegram.ext import ApplicationBuilder
 import nest_asyncio
@@ -29,18 +28,20 @@ CHAT_ID = int(os.getenv("CHAT_ID"))
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-STATE_FILE = "sniper_v40_core4_top_hotlag_state.json"
+STATE_FILE = "sniper_v41_ritardatari_frequenti_state.json"
 
 LOOP_SEC = 60
 HISTORY_MAX = 240
 PROCESSED_MAX = 1000
 
-BLOCK_SIZE = 12
-TOP_N = 10
-CORE_SIZE = 4
-MAX_COLPI = 6
+TOP_RITARDATARI = 10
+PLAY_POSITIONS = [6, 7, 8, 9, 10]
 
-MIN_CLOSE_HIT = 3
+WATCH_WINDOW = 10
+MAX_COLPI = 10
+
+MIN_PLAY_NUMBERS = 3
+MAX_PLAY_NUMBERS = 5
 
 
 def parse_site():
@@ -92,10 +93,10 @@ def day_key():
     return datetime.now().strftime("%Y-%m-%d")
 
 
-class SNIPER_V40_CORE4:
+class SNIPER_V41_RITARDATARI:
 
     def __init__(self):
-        self.version = "v40_core4_top_hotlag"
+        self.version = "v41_ritardatari_rientro_frequente"
 
         self.day = day_key()
         self.max_e = 0
@@ -105,18 +106,21 @@ class SNIPER_V40_CORE4:
         self.processed_ids = []
         self.processed_fps = []
 
+        self.watch = {}
+        self.frequenti = {}
+
         self.active = False
         self.colpi = 0
         self.active_snapshot = None
-        self.last_signal_block = None
 
         self.total_play = 0
         self.total_hit = 0
         self.total_stop = 0
 
-        self.hit_2su4 = 0
-        self.hit_3su4 = 0
-        self.hit_4su4 = 0
+        self.hit_2 = 0
+        self.hit_3 = 0
+        self.hit_4 = 0
+        self.hit_5 = 0
 
         self.play_log = []
         self.recent_results = []
@@ -137,16 +141,18 @@ class SNIPER_V40_CORE4:
             "last_draws": self.last_draws[-HISTORY_MAX:],
             "processed_ids": self.processed_ids[-PROCESSED_MAX:],
             "processed_fps": self.processed_fps[-PROCESSED_MAX:],
+            "watch": self.watch,
+            "frequenti": self.frequenti,
             "active": self.active,
             "colpi": self.colpi,
             "active_snapshot": self.active_snapshot,
-            "last_signal_block": self.last_signal_block,
             "total_play": self.total_play,
             "total_hit": self.total_hit,
             "total_stop": self.total_stop,
-            "hit_2su4": self.hit_2su4,
-            "hit_3su4": self.hit_3su4,
-            "hit_4su4": self.hit_4su4,
+            "hit_2": self.hit_2,
+            "hit_3": self.hit_3,
+            "hit_4": self.hit_4,
+            "hit_5": self.hit_5,
             "play_log": self.play_log[-800:],
             "recent_results": self.recent_results[-50:]
         }
@@ -175,18 +181,21 @@ class SNIPER_V40_CORE4:
             self.processed_ids = data.get("processed_ids", [])[-PROCESSED_MAX:]
             self.processed_fps = data.get("processed_fps", [])[-PROCESSED_MAX:]
 
+            self.watch = data.get("watch", {})
+            self.frequenti = data.get("frequenti", {})
+
             self.active = bool(data.get("active", False))
             self.colpi = int(data.get("colpi", 0))
             self.active_snapshot = data.get("active_snapshot")
-            self.last_signal_block = data.get("last_signal_block")
 
             self.total_play = int(data.get("total_play", 0))
             self.total_hit = int(data.get("total_hit", 0))
             self.total_stop = int(data.get("total_stop", 0))
 
-            self.hit_2su4 = int(data.get("hit_2su4", 0))
-            self.hit_3su4 = int(data.get("hit_3su4", 0))
-            self.hit_4su4 = int(data.get("hit_4su4", 0))
+            self.hit_2 = int(data.get("hit_2", 0))
+            self.hit_3 = int(data.get("hit_3", 0))
+            self.hit_4 = int(data.get("hit_4", 0))
+            self.hit_5 = int(data.get("hit_5", 0))
 
             self.play_log = data.get("play_log", [])[-800:]
             self.recent_results = data.get("recent_results", [])[-50:]
@@ -208,7 +217,7 @@ class SNIPER_V40_CORE4:
             if diff.returncode == 0:
                 return
 
-            subprocess.run(["git", "commit", "-m", "update sniper v40 core4 state"], check=False)
+            subprocess.run(["git", "commit", "-m", "update sniper v41 ritardatari state"], check=False)
             subprocess.run(["git", "push"], check=False)
 
         except Exception:
@@ -240,14 +249,7 @@ class SNIPER_V40_CORE4:
         self.processed_ids = self.processed_ids[-PROCESSED_MAX:]
         self.processed_fps = self.processed_fps[-PROCESSED_MAX:]
 
-    # ===================== FEATURES ==========================
-
-    def heat(self, n):
-        weights = [5, 4, 3, 2, 1]
-        return sum(
-            w for i, w in enumerate(weights)
-            if i < len(self.last_draws) and n in self.last_draws[-(i + 1)]
-        )
+    # ===================== RITARDI ============================
 
     def lag(self, n):
         lag = 0
@@ -257,88 +259,117 @@ class SNIPER_V40_CORE4:
                 return lag
         return lag
 
-    def dominance(self, n, window=6):
-        return sum(1 for d in self.last_draws[-window:] if n in d)
+    def top_ritardatari(self):
+        data = []
 
-    def pressure(self, n):
-        weights = [5, 4, 3, 2, 1]
-        score = 0
+        for n in range(1, 91):
+            data.append({
+                "number": n,
+                "lag": self.lag(n)
+            })
 
-        for i, w in enumerate(weights):
-            if i >= len(self.last_draws):
-                break
-            if n in self.last_draws[-(i + 1)]:
-                score += w
+        data.sort(key=lambda x: (-x["lag"], x["number"]))
+        return data[:TOP_RITARDATARI]
 
-        return score
+    def selected_ritardatari(self):
+        top10 = self.top_ritardatari()
 
-    def score_number(self, n, freq):
-        h = self.heat(n)
-        l = self.lag(n)
-        d = self.dominance(n, 6)
-        p = self.pressure(n)
+        selected = []
 
-        score = (freq * 4) + (h * 2) + (d * 3) + p - l
+        for pos in PLAY_POSITIONS:
+            idx = pos - 1
+            if idx < len(top10):
+                selected.append({
+                    "position": pos,
+                    "number": top10[idx]["number"],
+                    "lag": top10[idx]["lag"]
+                })
 
-        return {
-            "number": n,
-            "freq": freq,
-            "heat": h,
-            "lag": l,
-            "dominance": d,
-            "pressure": p,
-            "score": score
-        }
+        return top10, selected
 
-    # ===================== ENGINE ============================
+    # ===================== WATCH / FREQUENTE ==================
 
-    def is_block_end(self, e):
-        return e % BLOCK_SIZE == 0
+    def clean_old_watch(self, current_e):
+        remove = []
 
-    def calculate_play(self, e):
-        if len(self.last_draws) < BLOCK_SIZE:
-            return None
+        for n, data in self.watch.items():
+            age = current_e - int(data["first_e"])
+            if age > WATCH_WINDOW:
+                remove.append(n)
 
-        if self.last_signal_block == e:
-            return None
+        for n in remove:
+            self.watch.pop(n, None)
 
-        block = self.last_draws[-BLOCK_SIZE:]
-
-        counter = Counter()
-        for draw in block:
-            counter.update(draw)
-
-        top10_raw = sorted(counter.items(), key=lambda x: (-x[1], x[0]))[:TOP_N]
-
-        scored = [self.score_number(n, freq) for n, freq in top10_raw]
-        scored.sort(key=lambda x: (-x["score"], -x["freq"], x["number"]))
-
-        core4 = [x["number"] for x in scored[:CORE_SIZE]]
-        riga10 = [x["number"] for x in scored]
-
-        return {
-            "reason": "CORE4_TOP_FREQUENTI_PLUS_HOTLAG",
-            "block_end": e,
-            "valid_from": e + 1,
-            "valid_to": e + MAX_COLPI,
-            "core4": core4,
-            "riga10": riga10,
-            "scored": scored,
-            "top10_raw": [
-                {"position": i + 1, "number": n, "freq": freq}
-                for i, (n, freq) in enumerate(top10_raw)
-            ]
-        }
-
-    def check_hits(self, nums):
+    def update_watch(self, e, nums, selected):
         s = set(nums)
-        core4 = self.active_snapshot["core4"]
+        selected_numbers = [x["number"] for x in selected]
 
-        usciti_core = [n for n in core4 if n in s]
+        new_frequenti = []
+
+        for item in selected:
+            n = item["number"]
+            key = str(n)
+
+            if n not in s:
+                continue
+
+            if key not in self.watch:
+                self.watch[key] = {
+                    "number": n,
+                    "first_e": e,
+                    "last_e": e,
+                    "hits": 1,
+                    "position": item["position"],
+                    "initial_lag": item["lag"]
+                }
+            else:
+                self.watch[key]["hits"] += 1
+                self.watch[key]["last_e"] = e
+
+                if self.watch[key]["hits"] >= 2:
+                    self.frequenti[key] = {
+                        **self.watch[key],
+                        "confirmed_e": e
+                    }
+
+                    new_frequenti.append({
+                        "number": n,
+                        "position": self.watch[key]["position"],
+                        "initial_lag": self.watch[key]["initial_lag"],
+                        "hits": self.watch[key]["hits"],
+                        "first_e": self.watch[key]["first_e"],
+                        "confirmed_e": e
+                    })
+
+        self.clean_old_watch(e)
+        return new_frequenti
+
+    def build_play_from_frequenti(self, e):
+        if len(self.frequenti) < MIN_PLAY_NUMBERS:
+            return None
+
+        items = list(self.frequenti.values())
+
+        items.sort(
+            key=lambda x: (
+                -int(x.get("hits", 0)),
+                int(x.get("position", 99)),
+                -int(x.get("initial_lag", 0))
+            )
+        )
+
+        chosen = items[:MAX_PLAY_NUMBERS]
+        numbers = [int(x["number"]) for x in chosen]
+
+        if len(numbers) < MIN_PLAY_NUMBERS:
+            return None
 
         return {
-            "usciti_core": usciti_core,
-            "count_core": len(usciti_core)
+            "reason": "RITARDATARI_RIENTRO_CONFERMA_FREQUENTE",
+            "start_e": e + 1,
+            "valid_to": e + MAX_COLPI,
+            "numbers": numbers,
+            "details": chosen
         }
 
     # ===================== STATS ==============================
@@ -360,42 +391,49 @@ class SNIPER_V40_CORE4:
     def register_play(self, snapshot):
         self.total_play += 1
         self.play_log.append({
-            "event": "PLAY_CORE4",
+            "event": "PLAY",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             **snapshot
         })
         self.play_log = self.play_log[-800:]
 
-    def register_hit_result(self, colpo, nums, hit_data):
-        c = hit_data["count_core"]
+    def check_hit(self, nums):
+        s = set(nums)
+        play_nums = self.active_snapshot["numbers"]
+        usciti = [n for n in play_nums if n in s]
 
-        if c < MIN_CLOSE_HIT:
-            return False
+        return {
+            "usciti": usciti,
+            "count": len(usciti)
+        }
 
+    def register_hit(self, colpo, nums, hit_data):
         self.total_hit += 1
 
-        if c == 3:
-            self.hit_3su4 += 1
-        elif c >= 4:
-            self.hit_4su4 += 1
+        c = hit_data["count"]
+
+        if c == 2:
+            self.hit_2 += 1
+        elif c == 3:
+            self.hit_3 += 1
+        elif c == 4:
+            self.hit_4 += 1
+        elif c >= 5:
+            self.hit_5 += 1
 
         self.recent_results.append("HIT")
         self.recent_results = self.recent_results[-50:]
 
         self.play_log.append({
-            "event": "HIT_CORE4",
+            "event": "HIT",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "colpo": colpo,
             "draw": nums,
             "hit_data": hit_data,
             "snapshot": self.active_snapshot
         })
+
         self.play_log = self.play_log[-800:]
-
-        return True
-
-    def register_soft_2su4(self):
-        self.hit_2su4 += 1
 
     def register_stop(self):
         self.total_stop += 1
@@ -403,11 +441,12 @@ class SNIPER_V40_CORE4:
         self.recent_results = self.recent_results[-50:]
 
         self.play_log.append({
-            "event": "STOP_CORE4",
+            "event": "STOP",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "colpi": MAX_COLPI,
             "snapshot": self.active_snapshot
         })
+
         self.play_log = self.play_log[-800:]
 
     # ===================== MAIN ===============================
@@ -427,45 +466,45 @@ class SNIPER_V40_CORE4:
 
         await self.tg(app, f"📌 Estrazione {e}\n🎱 {', '.join(map(str, nums))}")
 
-        # ===================== CONTROLLO PLAY ATTIVO ===========
+        # ===================== PLAY ATTIVO =====================
 
         if self.active:
             self.colpi += 1
 
-            hit_data = self.check_hits(nums)
-
-            core_txt = ", ".join(map(str, hit_data["usciti_core"])) or "nessuno"
-
-            if hit_data["count_core"] == 2:
-                self.register_soft_2su4()
+            hit_data = self.check_hit(nums)
+            usciti_txt = ", ".join(map(str, hit_data["usciti"])) or "nessuno"
 
             await self.tg(
                 app,
-                f"🔎 CHECK CORE4 v40 | colpo {self.colpi}/{MAX_COLPI}\n"
-                f"• usciti core = {hit_data['count_core']}/4 → {core_txt}"
+                f"🔎 CHECK v41 RITARDATARI | colpo {self.colpi}/{MAX_COLPI}\n"
+                f"• numeri giocati = {', '.join(map(str, self.active_snapshot['numbers']))}\n"
+                f"• usciti = {hit_data['count']}/{len(self.active_snapshot['numbers'])} → {usciti_txt}"
             )
 
-            if hit_data["count_core"] >= MIN_CLOSE_HIT:
-                self.register_hit_result(self.colpi, nums, hit_data)
+            if hit_data["count"] >= 3:
+                self.register_hit(self.colpi, nums, hit_data)
 
                 await self.tg(
                     app,
-                    f"🔥 HIT CORE4 v40 | colpo {self.colpi}\n"
-                    f"🎯 Risultato = {hit_data['count_core']}/4\n"
-                    f"✅ Numeri usciti = {core_txt}\n\n"
-                    f"📊 STATS v40\n"
+                    f"🔥 HIT v41 RITARDATARI-FREQUENTI | colpo {self.colpi}\n"
+                    f"🎯 Risultato = {hit_data['count']}/{len(self.active_snapshot['numbers'])}\n"
+                    f"✅ Usciti = {usciti_txt}\n\n"
+                    f"📊 STATS v41\n"
                     f"• play totali = {self.total_play}\n"
-                    f"• hit 3/4+ = {self.total_hit}\n"
+                    f"• hit = {self.total_hit}\n"
                     f"• stop = {self.total_stop}\n"
                     f"• hitrate = {self.hitrate()}%\n"
-                    f"• 2/4 osservati = {self.hit_2su4}\n"
-                    f"• 3/4 = {self.hit_3su4}\n"
-                    f"• 4/4 = {self.hit_4su4}"
+                    f"• 2 = {self.hit_2}\n"
+                    f"• 3 = {self.hit_3}\n"
+                    f"• 4 = {self.hit_4}\n"
+                    f"• 5 = {self.hit_5}"
                 )
 
                 self.active = False
                 self.colpi = 0
                 self.active_snapshot = None
+                self.frequenti = {}
+                self.watch = {}
                 self.save_state()
                 return
 
@@ -474,10 +513,10 @@ class SNIPER_V40_CORE4:
 
                 await self.tg(
                     app,
-                    f"🛑 STOP CORE4 v40 | {MAX_COLPI} colpi\n"
-                    f"📊 STATS v40\n"
+                    f"🛑 STOP v41 RITARDATARI | {MAX_COLPI} colpi\n"
+                    f"📊 STATS v41\n"
                     f"• play totali = {self.total_play}\n"
-                    f"• hit 3/4+ = {self.total_hit}\n"
+                    f"• hit = {self.total_hit}\n"
                     f"• stop = {self.total_stop}\n"
                     f"• hitrate = {self.hitrate()}%\n"
                     f"• stop streak = {self.consecutive_stops()}"
@@ -486,60 +525,77 @@ class SNIPER_V40_CORE4:
                 self.active = False
                 self.colpi = 0
                 self.active_snapshot = None
+                self.frequenti = {}
+                self.watch = {}
                 self.save_state()
                 return
 
             self.save_state()
             return
 
-        # ===================== NUOVO PLAY ======================
+        # ===================== OSSERVAZIONE RITARDATARI ========
 
-        if len(self.last_draws) < BLOCK_SIZE:
+        if len(self.last_draws) < 30:
             self.save_state()
             return
 
-        if not self.is_block_end(e):
-            self.save_state()
-            return
+        top10, selected = self.selected_ritardatari()
+        nuovi_frequenti = self.update_watch(e, nums, selected)
 
-        data = self.calculate_play(e)
+        top10_txt = ", ".join(
+            f"{i+1}:{x['number']}({x['lag']})"
+            for i, x in enumerate(top10)
+        )
 
-        if not data:
+        selected_txt = ", ".join(
+            f"pos{x['position']}={x['number']} lag{x['lag']}"
+            for x in selected
+        )
+
+        if nuovi_frequenti:
+            nf_txt = ", ".join(
+                f"{x['number']} pos{x['position']} lag{x['initial_lag']} hits{x['hits']}"
+                for x in nuovi_frequenti
+            )
+
+            await self.tg(
+                app,
+                f"🔥 RIENTRO CONFERMATO v41\n"
+                f"• nuovi frequenti = {nf_txt}\n"
+                f"• top10 ritardatari = {top10_txt}\n"
+                f"• zona osservata = {selected_txt}"
+            )
+
+        play = self.build_play_from_frequenti(e)
+
+        if not play:
             self.save_state()
             return
 
         self.active = True
         self.colpi = 0
-        self.active_snapshot = data
-        self.last_signal_block = e
+        self.active_snapshot = play
 
-        self.register_play(data)
+        self.register_play(play)
 
-        core_txt = ", ".join(map(str, data["core4"]))
-        riga_txt = ", ".join(map(str, data["riga10"]))
-
-        scored_txt = "\n".join(
-            f"{i+1}) {x['number']} | score={x['score']} | "
-            f"freq={x['freq']} heat={x['heat']} lag={x['lag']} "
-            f"dom={x['dominance']} pressure={x['pressure']}"
-            for i, x in enumerate(data["scored"])
-        )
-
-        top10_txt = ", ".join(
-            f"{x['position']}:{x['number']}({x['freq']})"
-            for x in data["top10_raw"]
+        details_txt = ", ".join(
+            f"{x['number']}[pos{x['position']}/lag{x['initial_lag']}/hits{x['hits']}]"
+            for x in play["details"]
         )
 
         await self.tg(
             app,
-            "🎯 PLAY CORE4 v40 TOP+HOTLAG\n"
-            f"• blocco analizzato = fino estrazione {data['block_end']}\n"
-            f"• valido da = {data['valid_from']}\n"
-            f"• max_colpi = {MAX_COLPI}\n\n"
-            f"💎 GIOCA CORE 4:\n{core_txt}\n\n"
-            f"👀 RIGA 10 osservazione:\n{riga_txt}\n\n"
-            f"📌 Top10 grezzi:\n{top10_txt}\n\n"
-            f"📊 Ranking:\n{scored_txt}"
+            "🎯 PLAY v41 RITARDATARI → FREQUENTI\n"
+            f"• logica = rientro + conferma entro {WATCH_WINDOW} colpi\n"
+            f"• numeri = {', '.join(map(str, play['numbers']))}\n"
+            f"• valido da = {play['start_e']}\n"
+            f"• max_colpi = {MAX_COLPI}\n"
+            f"• dettagli = {details_txt}\n\n"
+            f"📊 STATS v41\n"
+            f"• play totali = {self.total_play}\n"
+            f"• hit = {self.total_hit}\n"
+            f"• stop = {self.total_stop}\n"
+            f"• hitrate = {self.hitrate()}%"
         )
 
         self.save_state()
@@ -547,21 +603,23 @@ class SNIPER_V40_CORE4:
     async def send_report(self, app):
         await self.tg(
             app,
-            "📊 REPORT v40 CORE4\n"
+            "📊 REPORT v41 RITARDATARI-FREQUENTI\n"
             f"• play totali = {self.total_play}\n"
-            f"• hit 3/4+ = {self.total_hit}\n"
+            f"• hit = {self.total_hit}\n"
             f"• stop = {self.total_stop}\n"
             f"• hitrate = {self.hitrate()}%\n"
-            f"• 2/4 osservati = {self.hit_2su4}\n"
-            f"• 3/4 = {self.hit_3su4}\n"
-            f"• 4/4 = {self.hit_4su4}\n"
-            f"• stop streak = {self.consecutive_stops()}"
+            f"• 2 = {self.hit_2}\n"
+            f"• 3 = {self.hit_3}\n"
+            f"• 4 = {self.hit_4}\n"
+            f"• 5 = {self.hit_5}\n"
+            f"• watch attivi = {len(self.watch)}\n"
+            f"• frequenti attivi = {len(self.frequenti)}"
         )
 
 
 # ===================== LOOP ================================
 
-bot = SNIPER_V40_CORE4()
+bot = SNIPER_V41_RITARDATARI()
 
 
 async def live():
@@ -588,17 +646,18 @@ async def live():
 
         await bot.tg(
             app,
-            "🚀 SNIPER v40 CORE4 AVVIATO | LIVE_ONLY\n"
+            "🚀 SNIPER v41 RITARDATARI-FREQUENTI AVVIATO | LIVE_ONLY\n"
             f"• storico caricato fino estrazione {bot.max_e}\n"
-            "• attendo prossima estrazione reale"
+            "• osservo prossime estrazioni reali"
         )
     else:
         await bot.tg(
             app,
-            "🚀 SNIPER v40 CORE4 RIAVVIATO\n"
+            "🚀 SNIPER v41 RITARDATARI-FREQUENTI RIAVVIATO\n"
             f"• max_e state = {bot.max_e}\n"
             f"• active = {bot.active}\n"
-            f"• ultimo blocco = {bot.last_signal_block}"
+            f"• watch attivi = {len(bot.watch)}\n"
+            f"• frequenti attivi = {len(bot.frequenti)}"
         )
 
     while True:
@@ -612,7 +671,7 @@ async def live():
                 await bot.on_new(app, e, nums)
 
         except Exception as ex:
-            await bot.tg(app, f"⚠️ Errore loop v40: {ex}")
+            await bot.tg(app, f"⚠️ Errore loop v41: {ex}")
 
         await asyncio.sleep(LOOP_SEC)
 
