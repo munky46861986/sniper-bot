@@ -1,9 +1,10 @@
 # ============================================================
-# 🚀 SNIPER v37 — RIGA 10 TOP FREQUENTI + HOT-LAG
+# 🚀 SNIPER v38 — CINQUINA 5 TOP FREQUENTI + HOT-LAG
 # Ogni 12 estrazioni:
 # - calcola top 10 frequenti dell'ora appena chiusa
-# - calcola score HOT-LAG
-# - manda su Telegram la riga da 10 numeri già ordinata
+# - ordina con score HOT-LAG
+# - manda la CINQUINA migliore da giocare
+# - mostra anche la riga 10 come osservazione
 # ============================================================
 
 import asyncio
@@ -27,7 +28,7 @@ CHAT_ID = int(os.getenv("CHAT_ID"))
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-STATE_FILE = "sniper_v37_riga10_top_hotlag_state.json"
+STATE_FILE = "sniper_v38_cinquina5_top_hotlag_state.json"
 
 LOOP_SEC = 60
 HISTORY_MAX = 240
@@ -35,6 +36,7 @@ PROCESSED_MAX = 1000
 
 BLOCK_SIZE = 12
 TOP_N = 10
+PLAY_SIZE = 5
 CORE_SIZE = 4
 
 
@@ -87,10 +89,10 @@ def day_key():
     return datetime.now().strftime("%Y-%m-%d")
 
 
-class SNIPER_RIGA10_TOP_HOTLAG:
+class SNIPER_CINQUINA5_TOP_HOTLAG:
 
     def __init__(self):
-        self.version = "v37_riga10_top_hotlag"
+        self.version = "v38_cinquina5_top_hotlag"
 
         self.day = day_key()
         self.max_e = 0
@@ -168,7 +170,7 @@ class SNIPER_RIGA10_TOP_HOTLAG:
             if diff.returncode == 0:
                 return
 
-            subprocess.run(["git", "commit", "-m", "update sniper v37 riga10 state"], check=False)
+            subprocess.run(["git", "commit", "-m", "update sniper v38 cinquina state"], check=False)
             subprocess.run(["git", "push"], check=False)
 
         except Exception:
@@ -252,12 +254,12 @@ class SNIPER_RIGA10_TOP_HOTLAG:
             "score": score
         }
 
-    # ===================== RIGA 10 ENGINE =====================
+    # ===================== ENGINE ============================
 
     def is_block_end(self, e):
         return e % BLOCK_SIZE == 0
 
-    def calculate_riga10(self, e):
+    def calculate_play(self, e):
         if len(self.last_draws) < BLOCK_SIZE:
             return None
 
@@ -276,11 +278,12 @@ class SNIPER_RIGA10_TOP_HOTLAG:
         scored.sort(key=lambda x: (-x["score"], -x["freq"], x["number"]))
 
         riga10 = [x["number"] for x in scored]
-        core = riga10[:CORE_SIZE]
-        support = riga10[CORE_SIZE:]
+        cinquina = riga10[:PLAY_SIZE]
+        core4 = riga10[:CORE_SIZE]
+        support5 = cinquina[CORE_SIZE:]
 
         return {
-            "reason": "RIGA10_TOP_FREQUENTI_PLUS_HOTLAG",
+            "reason": "CINQUINA5_TOP_FREQUENTI_PLUS_HOTLAG",
             "block_end": e,
             "valid_from": e + 1,
             "valid_to": e + BLOCK_SIZE,
@@ -293,8 +296,9 @@ class SNIPER_RIGA10_TOP_HOTLAG:
                 for i, (n, freq) in enumerate(top10_raw)
             ],
             "scored": scored,
-            "core": core,
-            "support": support,
+            "core4": core4,
+            "support5": support5,
+            "cinquina": cinquina,
             "riga10": riga10
         }
 
@@ -323,7 +327,7 @@ class SNIPER_RIGA10_TOP_HOTLAG:
             self.save_state()
             return
 
-        data = self.calculate_riga10(e)
+        data = self.calculate_play(e)
 
         if not data:
             self.save_state()
@@ -332,14 +336,15 @@ class SNIPER_RIGA10_TOP_HOTLAG:
         self.last_signal_block = e
 
         self.play_log.append({
-            "event": "RIGA10",
+            "event": "CINQUINA5",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             **data
         })
         self.play_log = self.play_log[-800:]
 
-        core_txt = ", ".join(map(str, data["core"]))
-        support_txt = ", ".join(map(str, data["support"]))
+        cinquina_txt = ", ".join(map(str, data["cinquina"]))
+        core_txt = ", ".join(map(str, data["core4"]))
+        support_txt = ", ".join(map(str, data["support5"]))
         riga_txt = ", ".join(map(str, data["riga10"]))
 
         scored_txt = "\n".join(
@@ -356,13 +361,14 @@ class SNIPER_RIGA10_TOP_HOTLAG:
 
         await self.tg(
             app,
-            "🎯 RIGA 10 NUMERI v37 TOP+HOTLAG\n"
+            "🎯 PLAY CINQUINA v38 TOP+HOTLAG\n"
             f"• blocco analizzato = fino estrazione {data['block_end']}\n"
             f"• valida da estrazione = {data['valid_from']}\n"
             f"• valida fino circa = {data['valid_to']}\n\n"
-            f"🔥 CORE 4:\n{core_txt}\n\n"
-            f"➕ SUPPORT 6:\n{support_txt}\n\n"
-            f"🎱 RIGA COMPLETA:\n{riga_txt}\n\n"
+            f"🔥 GIOCA 5 NUMERI:\n{cinquina_txt}\n\n"
+            f"💎 CORE 4:\n{core_txt}\n\n"
+            f"➕ SUPPORT scelto:\n{support_txt}\n\n"
+            f"👀 RIGA 10 osservazione:\n{riga_txt}\n\n"
             f"📌 Top10 frequenti grezzi:\n{top10_txt}\n\n"
             f"📊 Ranking score:\n{scored_txt}"
         )
@@ -372,9 +378,10 @@ class SNIPER_RIGA10_TOP_HOTLAG:
     async def send_report(self, app):
         await self.tg(
             app,
-            "📊 REPORT v37 RIGA10 TOP+HOTLAG\n"
+            "📊 REPORT v38 CINQUINA TOP+HOTLAG\n"
             f"• blocco = {BLOCK_SIZE} estrazioni\n"
-            f"• top numeri = {TOP_N}\n"
+            f"• top osservati = {TOP_N}\n"
+            f"• numeri giocati = {PLAY_SIZE}\n"
             f"• core = {CORE_SIZE}\n"
             f"• ultimo blocco segnalato = {self.last_signal_block}"
         )
@@ -382,7 +389,7 @@ class SNIPER_RIGA10_TOP_HOTLAG:
 
 # ===================== LOOP ================================
 
-bot = SNIPER_RIGA10_TOP_HOTLAG()
+bot = SNIPER_CINQUINA5_TOP_HOTLAG()
 
 
 async def live():
@@ -409,14 +416,14 @@ async def live():
 
         await bot.tg(
             app,
-            "🚀 SNIPER v37 RIGA10 TOP+HOTLAG AVVIATO | LIVE_ONLY\n"
+            "🚀 SNIPER v38 CINQUINA TOP+HOTLAG AVVIATO | LIVE_ONLY\n"
             f"• storico caricato fino estrazione {bot.max_e}\n"
             "• attendo prossima estrazione reale"
         )
     else:
         await bot.tg(
             app,
-            "🚀 SNIPER v37 RIGA10 TOP+HOTLAG RIAVVIATO\n"
+            "🚀 SNIPER v38 CINQUINA TOP+HOTLAG RIAVVIATO\n"
             f"• max_e state = {bot.max_e}\n"
             f"• ultimo blocco segnalato = {bot.last_signal_block}"
         )
@@ -432,7 +439,7 @@ async def live():
                 await bot.on_new(app, e, nums)
 
         except Exception as ex:
-            await bot.tg(app, f"⚠️ Errore loop v37: {ex}")
+            await bot.tg(app, f"⚠️ Errore loop v38: {ex}")
 
         await asyncio.sleep(LOOP_SEC)
 
