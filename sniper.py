@@ -1,9 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v35 — ORA TOP FREQUENTI AMBI
-# Blocchi da 12 estrazioni:
-# - calcola top 10 frequenti dell'ora appena chiusa
-# - prende posizioni 1,2,3,6
-# - gioca tutti gli ambi tra questi numeri nell'ora successiva
+# 🚀 SNIPER v36 — ORA TOP FREQUENTI + HOT-LAG TERNI
 # ============================================================
 
 import asyncio
@@ -28,7 +24,7 @@ CHAT_ID = int(os.getenv("CHAT_ID"))
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-STATE_FILE = "sniper_v35_ora_top_frequenti_ambi_state.json"
+STATE_FILE = "sniper_v36_ora_top_hotlag_terni_state.json"
 
 LOOP_SEC = 60
 HISTORY_MAX = 240
@@ -41,6 +37,14 @@ PLAY_POSITIONS = [1, 2, 3, 6]
 MAX_COLPI = 6
 COOLDOWN_AFTER_PLAY = 0
 MIN_HISTORY = 12
+
+MIN_HEAT = 10
+MIN_LAG = 1
+MAX_LAG = 3
+MIN_DOMINANCE = 3
+MAX_DOMINANCE = 6
+
+MIN_HOT_IN_TERNO = 1
 
 
 def parse_site():
@@ -92,10 +96,10 @@ def day_key():
     return datetime.now().strftime("%Y-%m-%d")
 
 
-class SNIPER_ORA_TOP_FREQUENTI_AMBI:
+class SNIPER_V36_TOP_HOTLAG_TERNI:
 
     def __init__(self):
-        self.version = "v35_ora_top_frequenti_ambi"
+        self.version = "v36_ora_top_hotlag_terni"
 
         self.day = day_key()
         self.max_e = 0
@@ -219,7 +223,7 @@ class SNIPER_ORA_TOP_FREQUENTI_AMBI:
             if diff.returncode == 0:
                 return
 
-            subprocess.run(["git", "commit", "-m", "update sniper v35 ora top frequenti state"], check=False)
+            subprocess.run(["git", "commit", "-m", "update sniper v36 terni state"], check=False)
             subprocess.run(["git", "push"], check=False)
 
         except Exception:
@@ -253,12 +257,50 @@ class SNIPER_ORA_TOP_FREQUENTI_AMBI:
         self.processed_ids = self.processed_ids[-PROCESSED_MAX:]
         self.processed_fps = self.processed_fps[-PROCESSED_MAX:]
 
-    # ===================== STRATEGIA ORARIA ===================
+    # ===================== HOT-LAG ============================
+
+    def heat(self, n):
+        weights = [5, 4, 3, 2, 1]
+        return sum(
+            w for i, w in enumerate(weights)
+            if i < len(self.last_draws) and n in self.last_draws[-(i + 1)]
+        )
+
+    def lag(self, n):
+        lag = 0
+        for d in reversed(self.last_draws[:-1]):
+            lag += 1
+            if n in d:
+                return lag
+        return lag
+
+    def dominance(self, n, window=6):
+        return sum(1 for d in self.last_draws[-window:] if n in d)
+
+    def is_hotlag(self, n):
+        h = self.heat(n)
+        l = self.lag(n)
+        d = self.dominance(n, 6)
+
+        ok = (
+            h >= MIN_HEAT and
+            MIN_LAG <= l <= MAX_LAG and
+            MIN_DOMINANCE <= d <= MAX_DOMINANCE
+        )
+
+        return ok, {
+            "number": n,
+            "heat": h,
+            "lag": l,
+            "dominance": d
+        }
+
+    # ===================== STRATEGIA ==========================
 
     def is_block_end(self, e):
         return e % BLOCK_SIZE == 0
 
-    def calculate_hour_strategy(self, e):
+    def calculate_strategy(self, e):
         if len(self.last_draws) < BLOCK_SIZE:
             return None
 
@@ -268,13 +310,9 @@ class SNIPER_ORA_TOP_FREQUENTI_AMBI:
         for draw in block:
             counter.update(draw)
 
-        top10 = sorted(
-            counter.items(),
-            key=lambda x: (-x[1], x[0])
-        )[:TOP_N]
+        top10 = sorted(counter.items(), key=lambda x: (-x[1], x[0]))[:TOP_N]
 
         selected = []
-
         for pos in PLAY_POSITIONS:
             idx = pos - 1
             if idx < len(top10):
@@ -287,13 +325,31 @@ class SNIPER_ORA_TOP_FREQUENTI_AMBI:
 
         numbers = [x["number"] for x in selected]
 
-        if len(numbers) < 2:
+        if len(numbers) < 3:
             return None
 
-        ambi = list(combinations(numbers, 2))
+        hot_details = []
+        hot_numbers = []
+
+        for n in numbers:
+            ok, detail = self.is_hotlag(n)
+            if ok:
+                hot_numbers.append(n)
+            hot_details.append(detail)
+
+        terni_all = list(combinations(numbers, 3))
+
+        terni = []
+        for t in terni_all:
+            hot_count = sum(1 for n in t if n in hot_numbers)
+            if hot_count >= MIN_HOT_IN_TERNO:
+                terni.append(t)
+
+        if not terni:
+            return None
 
         return {
-            "reason": "ORA_TOP_FREQUENTI_POS_1_2_3_6",
+            "reason": "ORA_TOP_FREQUENTI_PLUS_HOTLAG_TERNI",
             "block_end": e,
             "next_block_from": e + 1,
             "next_block_to": e + BLOCK_SIZE,
@@ -307,19 +363,21 @@ class SNIPER_ORA_TOP_FREQUENTI_AMBI:
             ],
             "selected": selected,
             "numbers": numbers,
-            "ambi": ambi
+            "hot_numbers": hot_numbers,
+            "hot_details": hot_details,
+            "terni": terni
         }
 
-    def check_ambo_hit(self, nums):
+    def check_terno_hit(self, nums):
         if not self.active_snapshot:
             return []
 
         s = set(nums)
         hits = []
 
-        for a, b in self.active_snapshot["ambi"]:
-            if a in s and b in s:
-                hits.append((a, b))
+        for t in self.active_snapshot["terni"]:
+            if all(n in s for n in t):
+                hits.append(t)
 
         return hits
 
@@ -341,16 +399,14 @@ class SNIPER_ORA_TOP_FREQUENTI_AMBI:
 
     def register_play(self, snapshot):
         self.total_play += 1
-
         self.play_log.append({
-            "event": "PLAY",
+            "event": "PLAY_TERNI",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             **snapshot
         })
-
         self.play_log = self.play_log[-800:]
 
-    def register_hit(self, colpo, nums, ambi_hit):
+    def register_hit(self, colpo, nums, terni_hit):
         self.total_hit += 1
 
         if colpo == 1:
@@ -370,29 +426,26 @@ class SNIPER_ORA_TOP_FREQUENTI_AMBI:
         self.recent_results = self.recent_results[-50:]
 
         self.play_log.append({
-            "event": "HIT_AMBO",
+            "event": "HIT_TERNO",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "ambi_hit": ambi_hit,
+            "terni_hit": terni_hit,
             "colpo": colpo,
             "draw": nums,
             "snapshot": self.active_snapshot
         })
-
         self.play_log = self.play_log[-800:]
 
     def register_stop(self):
         self.total_stop += 1
-
         self.recent_results.append("STOP")
         self.recent_results = self.recent_results[-50:]
 
         self.play_log.append({
-            "event": "STOP",
+            "event": "STOP_TERNI",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "colpi": MAX_COLPI,
             "snapshot": self.active_snapshot
         })
-
         self.play_log = self.play_log[-800:]
 
     # ===================== MAIN ===============================
@@ -417,18 +470,18 @@ class SNIPER_ORA_TOP_FREQUENTI_AMBI:
         if self.active:
             self.colpi += 1
 
-            ambi_hit = self.check_ambo_hit(nums)
+            terni_hit = self.check_terno_hit(nums)
 
-            if ambi_hit:
-                self.register_hit(self.colpi, nums, ambi_hit)
+            if terni_hit:
+                self.register_hit(self.colpi, nums, terni_hit)
 
-                ambi_txt = ", ".join(f"{a}-{b}" for a, b in ambi_hit)
+                terni_txt = ", ".join("-".join(map(str, t)) for t in terni_hit)
 
                 await self.tg(
                     app,
-                    f"🔥 HIT AMBO v35 | colpo {self.colpi}\n"
-                    f"🎯 Ambi usciti = {ambi_txt}\n"
-                    f"📊 STATS v35\n"
+                    f"🔥 HIT TERNO v36 | colpo {self.colpi}\n"
+                    f"🎯 Terni usciti = {terni_txt}\n"
+                    f"📊 STATS v36\n"
                     f"• play totali = {self.total_play}\n"
                     f"• hit = {self.total_hit}\n"
                     f"• stop = {self.total_stop}\n"
@@ -454,8 +507,8 @@ class SNIPER_ORA_TOP_FREQUENTI_AMBI:
 
                 await self.tg(
                     app,
-                    f"🛑 STOP AMBO v35 | {MAX_COLPI} colpi\n"
-                    f"📊 STATS v35\n"
+                    f"🛑 STOP TERNI v36 | {MAX_COLPI} colpi\n"
+                    f"📊 STATS v36\n"
                     f"• play totali = {self.total_play}\n"
                     f"• hit = {self.total_hit}\n"
                     f"• stop = {self.total_stop}\n"
@@ -477,11 +530,11 @@ class SNIPER_ORA_TOP_FREQUENTI_AMBI:
 
         if self.cooldown > 0:
             self.cooldown -= 1
-            await self.tg(app, f"⏸ cooldown v35 | restano = {self.cooldown}")
+            await self.tg(app, f"⏸ cooldown v36 | restano = {self.cooldown}")
             self.save_state()
             return
 
-        # ===================== NUOVO PLAY ORARIO ===============
+        # ===================== NUOVO PLAY ======================
 
         if len(self.last_draws) < MIN_HISTORY:
             self.save_state()
@@ -491,7 +544,7 @@ class SNIPER_ORA_TOP_FREQUENTI_AMBI:
             self.save_state()
             return
 
-        data = self.calculate_hour_strategy(e)
+        data = self.calculate_strategy(e)
 
         if not data:
             self.save_state()
@@ -508,25 +561,36 @@ class SNIPER_ORA_TOP_FREQUENTI_AMBI:
             for x in data["selected"]
         )
 
-        ambi_txt = ", ".join(f"{a}-{b}" for a, b in data["ambi"])
+        hot_txt = ", ".join(map(str, data["hot_numbers"]))
+
+        terni_txt = ", ".join(
+            "-".join(map(str, t)) for t in data["terni"]
+        )
 
         top10_txt = ", ".join(
             f"{x['position']}:{x['number']}({x['frequency']})"
             for x in data["top10"]
         )
 
+        hot_details_txt = ", ".join(
+            f"{x['number']}[h{x['heat']}/l{x['lag']}/d{x['dominance']}]"
+            for x in data["hot_details"]
+        )
+
         await self.tg(
             app,
-            "🎯 PLAY AMBI v35 ORA TOP FREQUENTI\n"
+            "🎯 PLAY TERNI v36 TOP+HOTLAG\n"
             f"• blocco analizzato = fino estrazione {data['block_end']}\n"
             f"• valido da estrazione = {data['next_block_from']}\n"
             f"• valido fino circa = {data['next_block_to']}\n"
             f"• posizioni usate = 1,2,3,6\n"
             f"• numeri scelti = {selected_txt}\n"
-            f"• ambi = {ambi_txt}\n"
+            f"• numeri HOT-LAG = {hot_txt}\n"
+            f"• dettagli HOT = {hot_details_txt}\n"
+            f"• terni = {terni_txt}\n"
             f"• max_colpi = {MAX_COLPI}\n"
             f"• top10 ora = {top10_txt}\n"
-            f"\n📊 STATS v35\n"
+            f"\n📊 STATS v36\n"
             f"• play totali = {self.total_play}\n"
             f"• hit = {self.total_hit}\n"
             f"• stop = {self.total_stop}\n"
@@ -538,9 +602,10 @@ class SNIPER_ORA_TOP_FREQUENTI_AMBI:
     async def send_report(self, app):
         await self.tg(
             app,
-            "📊 REPORT v35 ORA TOP FREQUENTI AMBI\n"
+            "📊 REPORT v36 TOP+HOTLAG TERNI\n"
             f"• blocco = {BLOCK_SIZE} estrazioni\n"
-            f"• posizioni giocate = {PLAY_POSITIONS}\n"
+            f"• posizioni = {PLAY_POSITIONS}\n"
+            f"• min hot nel terno = {MIN_HOT_IN_TERNO}\n"
             f"• max_colpi = {MAX_COLPI}\n"
             f"• play totali = {self.total_play}\n"
             f"• hit = {self.total_hit}\n"
@@ -558,7 +623,7 @@ class SNIPER_ORA_TOP_FREQUENTI_AMBI:
 
 # ===================== LOOP ================================
 
-bot = SNIPER_ORA_TOP_FREQUENTI_AMBI()
+bot = SNIPER_V36_TOP_HOTLAG_TERNI()
 
 
 async def live():
@@ -570,7 +635,6 @@ async def live():
         await bot.tg(app, "⚠️ parser vuoto")
         return
 
-    # LIVE_ONLY: carica storico già uscito oggi, ma non gioca il passato
     if not bot.last_draws:
         for e, nums in es:
             bot.last_draws.append(nums)
@@ -586,14 +650,14 @@ async def live():
 
         await bot.tg(
             app,
-            "🚀 SNIPER v35 ORA TOP FREQUENTI AMBI AVVIATO | LIVE_ONLY\n"
+            "🚀 SNIPER v36 TOP+HOTLAG TERNI AVVIATO | LIVE_ONLY\n"
             f"• storico caricato fino estrazione {bot.max_e}\n"
             "• attendo prossima estrazione reale"
         )
     else:
         await bot.tg(
             app,
-            "🚀 SNIPER v35 ORA TOP FREQUENTI AMBI RIAVVIATO\n"
+            "🚀 SNIPER v36 TOP+HOTLAG TERNI RIAVVIATO\n"
             f"• max_e state = {bot.max_e}\n"
             f"• active = {bot.active}\n"
             f"• cooldown = {bot.cooldown}"
@@ -610,7 +674,7 @@ async def live():
                 await bot.on_new(app, e, nums)
 
         except Exception as ex:
-            await bot.tg(app, f"⚠️ Errore loop v35: {ex}")
+            await bot.tg(app, f"⚠️ Errore loop v36: {ex}")
 
         await asyncio.sleep(LOOP_SEC)
 
