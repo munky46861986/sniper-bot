@@ -1,11 +1,12 @@
 # ============================================================
-# 🚀 SNIPER v41 — RITARDATARI → RIENTRO → FREQUENTE
+# 🚀 SNIPER v42 — RIENTRI CONFERMATI AMBO
 # Logica:
 # 1) calcola top 10 ritardatari
 # 2) osserva posizioni 6-7-8-9-10
-# 3) se un numero rientra = WATCH
-# 4) se rientra ancora entro 10 colpi = diventa FREQUENTE
-# 5) manda PLAY CORE ritardatari-frequenti
+# 3) quando un numero rientra 2 volte entro WATCH_WINDOW = confermato
+# 4) mantiene i confermati caldi per HOT_TTL estrazioni
+# 5) quando arriva un nuovo confermato, lo abbina ai confermati precedenti
+# 6) gioca ambi per MAX_COLPI
 # ============================================================
 
 import asyncio
@@ -28,7 +29,7 @@ CHAT_ID = int(os.getenv("CHAT_ID"))
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-STATE_FILE = "sniper_v41_ritardatari_frequenti_state.json"
+STATE_FILE = "sniper_v42_rientri_confermati_ambo_state.json"
 
 LOOP_SEC = 60
 HISTORY_MAX = 240
@@ -38,10 +39,10 @@ TOP_RITARDATARI = 10
 PLAY_POSITIONS = [6, 7, 8, 9, 10]
 
 WATCH_WINDOW = 10
-MAX_COLPI = 10
+HOT_TTL = 60
 
-MIN_PLAY_NUMBERS = 3
-MAX_PLAY_NUMBERS = 5
+MAX_COLPI = 20
+MAX_AMBI_PER_PLAY = 3
 
 
 def parse_site():
@@ -93,10 +94,10 @@ def day_key():
     return datetime.now().strftime("%Y-%m-%d")
 
 
-class SNIPER_V41_RITARDATARI:
+class SNIPER_V42_RIENTRI_AMBO:
 
     def __init__(self):
-        self.version = "v41_ritardatari_rientro_frequente"
+        self.version = "v42_rientri_confermati_ambo"
 
         self.day = day_key()
         self.max_e = 0
@@ -107,7 +108,7 @@ class SNIPER_V41_RITARDATARI:
         self.processed_fps = []
 
         self.watch = {}
-        self.frequenti = {}
+        self.hot_confirmed = {}
 
         self.active = False
         self.colpi = 0
@@ -117,10 +118,10 @@ class SNIPER_V41_RITARDATARI:
         self.total_hit = 0
         self.total_stop = 0
 
-        self.hit_2 = 0
-        self.hit_3 = 0
-        self.hit_4 = 0
-        self.hit_5 = 0
+        self.hit_colpo_1 = 0
+        self.hit_colpo_2_5 = 0
+        self.hit_colpo_6_10 = 0
+        self.hit_colpo_11_20 = 0
 
         self.play_log = []
         self.recent_results = []
@@ -142,17 +143,17 @@ class SNIPER_V41_RITARDATARI:
             "processed_ids": self.processed_ids[-PROCESSED_MAX:],
             "processed_fps": self.processed_fps[-PROCESSED_MAX:],
             "watch": self.watch,
-            "frequenti": self.frequenti,
+            "hot_confirmed": self.hot_confirmed,
             "active": self.active,
             "colpi": self.colpi,
             "active_snapshot": self.active_snapshot,
             "total_play": self.total_play,
             "total_hit": self.total_hit,
             "total_stop": self.total_stop,
-            "hit_2": self.hit_2,
-            "hit_3": self.hit_3,
-            "hit_4": self.hit_4,
-            "hit_5": self.hit_5,
+            "hit_colpo_1": self.hit_colpo_1,
+            "hit_colpo_2_5": self.hit_colpo_2_5,
+            "hit_colpo_6_10": self.hit_colpo_6_10,
+            "hit_colpo_11_20": self.hit_colpo_11_20,
             "play_log": self.play_log[-800:],
             "recent_results": self.recent_results[-50:]
         }
@@ -182,7 +183,7 @@ class SNIPER_V41_RITARDATARI:
             self.processed_fps = data.get("processed_fps", [])[-PROCESSED_MAX:]
 
             self.watch = data.get("watch", {})
-            self.frequenti = data.get("frequenti", {})
+            self.hot_confirmed = data.get("hot_confirmed", {})
 
             self.active = bool(data.get("active", False))
             self.colpi = int(data.get("colpi", 0))
@@ -192,10 +193,10 @@ class SNIPER_V41_RITARDATARI:
             self.total_hit = int(data.get("total_hit", 0))
             self.total_stop = int(data.get("total_stop", 0))
 
-            self.hit_2 = int(data.get("hit_2", 0))
-            self.hit_3 = int(data.get("hit_3", 0))
-            self.hit_4 = int(data.get("hit_4", 0))
-            self.hit_5 = int(data.get("hit_5", 0))
+            self.hit_colpo_1 = int(data.get("hit_colpo_1", 0))
+            self.hit_colpo_2_5 = int(data.get("hit_colpo_2_5", 0))
+            self.hit_colpo_6_10 = int(data.get("hit_colpo_6_10", 0))
+            self.hit_colpo_11_20 = int(data.get("hit_colpo_11_20", 0))
 
             self.play_log = data.get("play_log", [])[-800:]
             self.recent_results = data.get("recent_results", [])[-50:]
@@ -217,7 +218,7 @@ class SNIPER_V41_RITARDATARI:
             if diff.returncode == 0:
                 return
 
-            subprocess.run(["git", "commit", "-m", "update sniper v41 ritardatari state"], check=False)
+            subprocess.run(["git", "commit", "-m", "update sniper v42 rientri ambo state"], check=False)
             subprocess.run(["git", "push"], check=False)
 
         except Exception:
@@ -249,7 +250,7 @@ class SNIPER_V41_RITARDATARI:
         self.processed_ids = self.processed_ids[-PROCESSED_MAX:]
         self.processed_fps = self.processed_fps[-PROCESSED_MAX:]
 
-    # ===================== RITARDI ============================
+    # ===================== RITARDATARI ========================
 
     def lag(self, n):
         lag = 0
@@ -273,7 +274,6 @@ class SNIPER_V41_RITARDATARI:
 
     def selected_ritardatari(self):
         top10 = self.top_ritardatari()
-
         selected = []
 
         for pos in PLAY_POSITIONS:
@@ -287,27 +287,36 @@ class SNIPER_V41_RITARDATARI:
 
         return top10, selected
 
-    # ===================== WATCH / FREQUENTE ==================
+    # ===================== CLEAN ==============================
 
     def clean_old_watch(self, current_e):
         remove = []
 
-        for n, data in self.watch.items():
-            age = current_e - int(data["first_e"])
-            if age > WATCH_WINDOW:
-                remove.append(n)
+        for key, data in self.watch.items():
+            if current_e - int(data["first_e"]) > WATCH_WINDOW:
+                remove.append(key)
 
-        for n in remove:
-            self.watch.pop(n, None)
+        for key in remove:
+            self.watch.pop(key, None)
 
-    def update_watch(self, e, nums, selected):
+    def clean_old_hot(self, current_e):
+        remove = []
+
+        for key, data in self.hot_confirmed.items():
+            if current_e - int(data["confirmed_e"]) > HOT_TTL:
+                remove.append(key)
+
+        for key in remove:
+            self.hot_confirmed.pop(key, None)
+
+    # ===================== WATCH / CONFIRMED ==================
+
+    def update_watch_and_confirmed(self, e, nums, selected):
         s = set(nums)
-        selected_numbers = [x["number"] for x in selected]
-
-        new_frequenti = []
+        new_confirmed = []
 
         for item in selected:
-            n = item["number"]
+            n = int(item["number"])
             key = str(n)
 
             if n not in s:
@@ -327,49 +336,94 @@ class SNIPER_V41_RITARDATARI:
                 self.watch[key]["last_e"] = e
 
                 if self.watch[key]["hits"] >= 2:
-                    self.frequenti[key] = {
+                    confirmed = {
                         **self.watch[key],
                         "confirmed_e": e
                     }
 
-                    new_frequenti.append({
-                        "number": n,
-                        "position": self.watch[key]["position"],
-                        "initial_lag": self.watch[key]["initial_lag"],
-                        "hits": self.watch[key]["hits"],
-                        "first_e": self.watch[key]["first_e"],
-                        "confirmed_e": e
-                    })
+                    self.hot_confirmed[key] = confirmed
+                    new_confirmed.append(confirmed)
+
+                    self.watch.pop(key, None)
 
         self.clean_old_watch(e)
-        return new_frequenti
+        self.clean_old_hot(e)
 
-    def build_play_from_frequenti(self, e):
-        if len(self.frequenti) < MIN_PLAY_NUMBERS:
+        return new_confirmed
+
+    # ===================== PLAY BUILDER =======================
+
+    def build_ambo_play(self, e, new_confirmed):
+        if not new_confirmed:
             return None
 
-        items = list(self.frequenti.values())
+        ambi = []
+        used = set()
 
-        items.sort(
-            key=lambda x: (
-                -int(x.get("hits", 0)),
-                int(x.get("position", 99)),
-                -int(x.get("initial_lag", 0))
+        hot_items = list(self.hot_confirmed.values())
+
+        for new_item in new_confirmed:
+            new_n = int(new_item["number"])
+
+            partners = []
+
+            for old in hot_items:
+                old_n = int(old["number"])
+
+                if old_n == new_n:
+                    continue
+
+                age = e - int(old["confirmed_e"])
+
+                if age < 0 or age > HOT_TTL:
+                    continue
+
+                partners.append({
+                    "number": old_n,
+                    "age": age,
+                    "hits": int(old.get("hits", 0)),
+                    "position": int(old.get("position", 99)),
+                    "initial_lag": int(old.get("initial_lag", 0)),
+                    "confirmed_e": int(old.get("confirmed_e", 0))
+                })
+
+            partners.sort(
+                key=lambda x: (
+                    x["age"],
+                    -x["hits"],
+                    x["position"],
+                    -x["initial_lag"]
+                )
             )
-        )
 
-        chosen = items[:MAX_PLAY_NUMBERS]
-        numbers = [int(x["number"]) for x in chosen]
+            for p in partners:
+                pair = tuple(sorted((new_n, p["number"])))
 
-        if len(numbers) < MIN_PLAY_NUMBERS:
+                if pair in used:
+                    continue
+
+                used.add(pair)
+                ambi.append({
+                    "ambo": pair,
+                    "new_number": new_n,
+                    "partner": p["number"],
+                    "partner_age": p["age"],
+                    "new_detail": new_item,
+                    "partner_detail": p
+                })
+
+                if len(ambi) >= MAX_AMBI_PER_PLAY:
+                    break
+
+        if not ambi:
             return None
 
         return {
-            "reason": "RITARDATARI_RIENTRO_CONFERMA_FREQUENTE",
+            "reason": "RIENTRI_CONFERMATI_AMBO",
             "start_e": e + 1,
             "valid_to": e + MAX_COLPI,
-            "numbers": numbers,
-            "details": chosen
+            "max_colpi": MAX_COLPI,
+            "ambi": ambi
         }
 
     # ===================== STATS ==============================
@@ -390,46 +444,47 @@ class SNIPER_V41_RITARDATARI:
 
     def register_play(self, snapshot):
         self.total_play += 1
+
         self.play_log.append({
-            "event": "PLAY",
+            "event": "PLAY_AMBO",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             **snapshot
         })
+
         self.play_log = self.play_log[-800:]
 
     def check_hit(self, nums):
         s = set(nums)
-        play_nums = self.active_snapshot["numbers"]
-        usciti = [n for n in play_nums if n in s]
+        hits = []
 
-        return {
-            "usciti": usciti,
-            "count": len(usciti)
-        }
+        for item in self.active_snapshot["ambi"]:
+            a, b = item["ambo"]
+            if a in s and b in s:
+                hits.append(item)
 
-    def register_hit(self, colpo, nums, hit_data):
+        return hits
+
+    def register_hit(self, colpo, nums, hits):
         self.total_hit += 1
 
-        c = hit_data["count"]
-
-        if c == 2:
-            self.hit_2 += 1
-        elif c == 3:
-            self.hit_3 += 1
-        elif c == 4:
-            self.hit_4 += 1
-        elif c >= 5:
-            self.hit_5 += 1
+        if colpo == 1:
+            self.hit_colpo_1 += 1
+        elif 2 <= colpo <= 5:
+            self.hit_colpo_2_5 += 1
+        elif 6 <= colpo <= 10:
+            self.hit_colpo_6_10 += 1
+        else:
+            self.hit_colpo_11_20 += 1
 
         self.recent_results.append("HIT")
         self.recent_results = self.recent_results[-50:]
 
         self.play_log.append({
-            "event": "HIT",
+            "event": "HIT_AMBO",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "colpo": colpo,
             "draw": nums,
-            "hit_data": hit_data,
+            "hits": hits,
             "snapshot": self.active_snapshot
         })
 
@@ -437,11 +492,12 @@ class SNIPER_V41_RITARDATARI:
 
     def register_stop(self):
         self.total_stop += 1
+
         self.recent_results.append("STOP")
         self.recent_results = self.recent_results[-50:]
 
         self.play_log.append({
-            "event": "STOP",
+            "event": "STOP_AMBO",
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "colpi": MAX_COLPI,
             "snapshot": self.active_snapshot
@@ -471,40 +527,39 @@ class SNIPER_V41_RITARDATARI:
         if self.active:
             self.colpi += 1
 
-            hit_data = self.check_hit(nums)
-            usciti_txt = ", ".join(map(str, hit_data["usciti"])) or "nessuno"
+            hits = self.check_hit(nums)
+
+            ambi_txt = ", ".join(
+                f"{a}-{b}" for h in hits for a, b in [h["ambo"]]
+            ) or "nessuno"
 
             await self.tg(
                 app,
-                f"🔎 CHECK v41 RITARDATARI | colpo {self.colpi}/{MAX_COLPI}\n"
-                f"• numeri giocati = {', '.join(map(str, self.active_snapshot['numbers']))}\n"
-                f"• usciti = {hit_data['count']}/{len(self.active_snapshot['numbers'])} → {usciti_txt}"
+                f"🔎 CHECK v42 AMBI | colpo {self.colpi}/{MAX_COLPI}\n"
+                f"• ambi usciti = {ambi_txt}"
             )
 
-            if hit_data["count"] >= 3:
-                self.register_hit(self.colpi, nums, hit_data)
+            if hits:
+                self.register_hit(self.colpi, nums, hits)
 
                 await self.tg(
                     app,
-                    f"🔥 HIT v41 RITARDATARI-FREQUENTI | colpo {self.colpi}\n"
-                    f"🎯 Risultato = {hit_data['count']}/{len(self.active_snapshot['numbers'])}\n"
-                    f"✅ Usciti = {usciti_txt}\n\n"
-                    f"📊 STATS v41\n"
+                    f"🔥 HIT AMBO v42 | colpo {self.colpi}\n"
+                    f"🎯 Ambi usciti = {ambi_txt}\n\n"
+                    f"📊 STATS v42\n"
                     f"• play totali = {self.total_play}\n"
                     f"• hit = {self.total_hit}\n"
                     f"• stop = {self.total_stop}\n"
                     f"• hitrate = {self.hitrate()}%\n"
-                    f"• 2 = {self.hit_2}\n"
-                    f"• 3 = {self.hit_3}\n"
-                    f"• 4 = {self.hit_4}\n"
-                    f"• 5 = {self.hit_5}"
+                    f"• hit colpo 1 = {self.hit_colpo_1}\n"
+                    f"• hit colpo 2-5 = {self.hit_colpo_2_5}\n"
+                    f"• hit colpo 6-10 = {self.hit_colpo_6_10}\n"
+                    f"• hit colpo 11-20 = {self.hit_colpo_11_20}"
                 )
 
                 self.active = False
                 self.colpi = 0
                 self.active_snapshot = None
-                self.frequenti = {}
-                self.watch = {}
                 self.save_state()
                 return
 
@@ -513,8 +568,8 @@ class SNIPER_V41_RITARDATARI:
 
                 await self.tg(
                     app,
-                    f"🛑 STOP v41 RITARDATARI | {MAX_COLPI} colpi\n"
-                    f"📊 STATS v41\n"
+                    f"🛑 STOP AMBO v42 | {MAX_COLPI} colpi\n"
+                    f"📊 STATS v42\n"
                     f"• play totali = {self.total_play}\n"
                     f"• hit = {self.total_hit}\n"
                     f"• stop = {self.total_stop}\n"
@@ -525,22 +580,20 @@ class SNIPER_V41_RITARDATARI:
                 self.active = False
                 self.colpi = 0
                 self.active_snapshot = None
-                self.frequenti = {}
-                self.watch = {}
                 self.save_state()
                 return
 
             self.save_state()
             return
 
-        # ===================== OSSERVAZIONE RITARDATARI ========
+        # ===================== OSSERVAZIONE ====================
 
         if len(self.last_draws) < 30:
             self.save_state()
             return
 
         top10, selected = self.selected_ritardatari()
-        nuovi_frequenti = self.update_watch(e, nums, selected)
+        new_confirmed = self.update_watch_and_confirmed(e, nums, selected)
 
         top10_txt = ", ".join(
             f"{i+1}:{x['number']}({x['lag']})"
@@ -552,74 +605,89 @@ class SNIPER_V41_RITARDATARI:
             for x in selected
         )
 
-        if nuovi_frequenti:
-            nf_txt = ", ".join(
+        if new_confirmed:
+            nc_txt = ", ".join(
                 f"{x['number']} pos{x['position']} lag{x['initial_lag']} hits{x['hits']}"
-                for x in nuovi_frequenti
+                for x in new_confirmed
+            )
+
+            hot_txt = ", ".join(
+                f"{x['number']}@{x['confirmed_e']}"
+                for x in self.hot_confirmed.values()
             )
 
             await self.tg(
                 app,
-                f"🔥 RIENTRO CONFERMATO v41\n"
-                f"• nuovi frequenti = {nf_txt}\n"
+                f"🔥 RIENTRO CONFERMATO v42\n"
+                f"• nuovi confermati = {nc_txt}\n"
+                f"• hot confermati attivi = {hot_txt}\n"
                 f"• top10 ritardatari = {top10_txt}\n"
                 f"• zona osservata = {selected_txt}"
             )
 
-        play = self.build_play_from_frequenti(e)
+            play = self.build_ambo_play(e, new_confirmed)
 
-        if not play:
-            self.save_state()
-            return
+            if play:
+                self.active = True
+                self.colpi = 0
+                self.active_snapshot = play
 
-        self.active = True
-        self.colpi = 0
-        self.active_snapshot = play
+                self.register_play(play)
 
-        self.register_play(play)
+                ambi_txt = ", ".join(
+                    f"{a}-{b}"
+                    for item in play["ambi"]
+                    for a, b in [item["ambo"]]
+                )
 
-        details_txt = ", ".join(
-            f"{x['number']}[pos{x['position']}/lag{x['initial_lag']}/hits{x['hits']}]"
-            for x in play["details"]
-        )
+                dettagli_txt = "\n".join(
+                    f"• {a}-{b} | nuovo={item['new_number']} partner={item['partner']} "
+                    f"age_partner={item['partner_age']}"
+                    for item in play["ambi"]
+                    for a, b in [item["ambo"]]
+                )
 
-        await self.tg(
-            app,
-            "🎯 PLAY v41 RITARDATARI → FREQUENTI\n"
-            f"• logica = rientro + conferma entro {WATCH_WINDOW} colpi\n"
-            f"• numeri = {', '.join(map(str, play['numbers']))}\n"
-            f"• valido da = {play['start_e']}\n"
-            f"• max_colpi = {MAX_COLPI}\n"
-            f"• dettagli = {details_txt}\n\n"
-            f"📊 STATS v41\n"
-            f"• play totali = {self.total_play}\n"
-            f"• hit = {self.total_hit}\n"
-            f"• stop = {self.total_stop}\n"
-            f"• hitrate = {self.hitrate()}%"
-        )
+                await self.tg(
+                    app,
+                    "🎯 PLAY AMBO v42 RIENTRI CONFERMATI\n"
+                    f"• ambi = {ambi_txt}\n"
+                    f"• valido da = {play['start_e']}\n"
+                    f"• max_colpi = {MAX_COLPI}\n"
+                    f"• logica = nuovo confermato + confermato caldo precedente\n\n"
+                    f"{dettagli_txt}\n\n"
+                    f"📊 STATS v42\n"
+                    f"• play totali = {self.total_play}\n"
+                    f"• hit = {self.total_hit}\n"
+                    f"• stop = {self.total_stop}\n"
+                    f"• hitrate = {self.hitrate()}%"
+                )
 
         self.save_state()
 
     async def send_report(self, app):
+        hot_txt = ", ".join(
+            f"{x['number']}@{x['confirmed_e']}"
+            for x in self.hot_confirmed.values()
+        ) or "nessuno"
+
         await self.tg(
             app,
-            "📊 REPORT v41 RITARDATARI-FREQUENTI\n"
+            "📊 REPORT v42 RIENTRI CONFERMATI AMBO\n"
             f"• play totali = {self.total_play}\n"
             f"• hit = {self.total_hit}\n"
             f"• stop = {self.total_stop}\n"
             f"• hitrate = {self.hitrate()}%\n"
-            f"• 2 = {self.hit_2}\n"
-            f"• 3 = {self.hit_3}\n"
-            f"• 4 = {self.hit_4}\n"
-            f"• 5 = {self.hit_5}\n"
-            f"• watch attivi = {len(self.watch)}\n"
-            f"• frequenti attivi = {len(self.frequenti)}"
+            f"• hit colpo 1 = {self.hit_colpo_1}\n"
+            f"• hit colpo 2-5 = {self.hit_colpo_2_5}\n"
+            f"• hit colpo 6-10 = {self.hit_colpo_6_10}\n"
+            f"• hit colpo 11-20 = {self.hit_colpo_11_20}\n"
+            f"• hot confermati attivi = {hot_txt}"
         )
 
 
 # ===================== LOOP ================================
 
-bot = SNIPER_V41_RITARDATARI()
+bot = SNIPER_V42_RIENTRI_AMBO()
 
 
 async def live():
@@ -646,18 +714,18 @@ async def live():
 
         await bot.tg(
             app,
-            "🚀 SNIPER v41 RITARDATARI-FREQUENTI AVVIATO | LIVE_ONLY\n"
+            "🚀 SNIPER v42 RIENTRI CONFERMATI AMBO AVVIATO | LIVE_ONLY\n"
             f"• storico caricato fino estrazione {bot.max_e}\n"
             "• osservo prossime estrazioni reali"
         )
     else:
         await bot.tg(
             app,
-            "🚀 SNIPER v41 RITARDATARI-FREQUENTI RIAVVIATO\n"
+            "🚀 SNIPER v42 RIENTRI CONFERMATI AMBO RIAVVIATO\n"
             f"• max_e state = {bot.max_e}\n"
             f"• active = {bot.active}\n"
             f"• watch attivi = {len(bot.watch)}\n"
-            f"• frequenti attivi = {len(bot.frequenti)}"
+            f"• hot confermati = {len(bot.hot_confirmed)}"
         )
 
     while True:
@@ -671,7 +739,7 @@ async def live():
                 await bot.on_new(app, e, nums)
 
         except Exception as ex:
-            await bot.tg(app, f"⚠️ Errore loop v41: {ex}")
+            await bot.tg(app, f"⚠️ Errore loop v42: {ex}")
 
         await asyncio.sleep(LOOP_SEC)
 
