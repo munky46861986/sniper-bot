@@ -2,7 +2,7 @@
   "version": "v43_cluster_rientri_confermati_ambo",
   "day": "2026-05-14",
   "max_e": 73,
-  "last_fp": "4358ae74277cdbf064a9fd81a0d6195b",
+  "last_fp": "949a2cd4945d8237209126ee30f20552",
   "last_draws": [
     [
       4,
@@ -3149,6 +3149,28 @@
       75,
       83,
       85
+    ],
+    [
+      5,
+      9,
+      10,
+      13,
+      14,
+      15,
+      17,
+      21,
+      27,
+      31,
+      48,
+      55,
+      58,
+      64,
+      71,
+      78,
+      79,
+      80,
+      81,
+      83
     ]
   ],
   "processed_ids": [
@@ -3222,7 +3244,8 @@
     67,
     68,
     69,
-    70
+    70,
+    71
   ],
   "processed_fps": [
     "f9b5aaf975107be84559aadca4e32f8e",
@@ -3295,7 +3318,8 @@
     "157e220d23f0dae339940c1bf93ec8de",
     "4bdffa29d8f722cb49846becc87b5982",
     "1e9bbd9ba7da85336be2d873b0692a47",
-    "4358ae74277cdbf064a9fd81a0d6195b"
+    "4358ae74277cdbf064a9fd81a0d6195b",
+    "949a2cd4945d8237209126ee30f20552"
   ],
   "watch": {
     "59": {
@@ -3440,102 +3464,14 @@
       "confirmed_e": 68
     }
   },
-  "active": true,
-  "colpi": 2,
-  "active_snapshot": {
-    "reason": "CLUSTER_RIENTRI_CONFERMATI_AMBO",
-    "start_e": 69,
-    "valid_to": 78,
-    "max_colpi": 10,
-    "hot_count": 3,
-    "hot_numbers": [
-      {
-        "number": 72,
-        "confirmed_e": 40,
-        "age": 28,
-        "hits": 2,
-        "position": 9,
-        "initial_lag": 9
-      },
-      {
-        "number": 78,
-        "confirmed_e": 42,
-        "age": 26,
-        "hits": 2,
-        "position": 6,
-        "initial_lag": 13
-      },
-      {
-        "number": 13,
-        "confirmed_e": 68,
-        "age": 0,
-        "hits": 2,
-        "position": 7,
-        "initial_lag": 12
-      }
-    ],
-    "ambi": [
-      {
-        "ambo": [
-          72,
-          78
-        ],
-        "score": 85.0,
-        "age_gap": 2,
-        "avg_age": 27.0,
-        "a": {
-          "number": 72,
-          "first_e": 29,
-          "last_e": 40,
-          "hits": 2,
-          "position": 9,
-          "initial_lag": 9,
-          "confirmed_e": 40
-        },
-        "b": {
-          "number": 78,
-          "first_e": 32,
-          "last_e": 42,
-          "hits": 2,
-          "position": 6,
-          "initial_lag": 13,
-          "confirmed_e": 42
-        }
-      },
-      {
-        "ambo": [
-          13,
-          78
-        ],
-        "score": 54.5,
-        "age_gap": 26,
-        "avg_age": 13.0,
-        "a": {
-          "number": 78,
-          "first_e": 32,
-          "last_e": 42,
-          "hits": 2,
-          "position": 6,
-          "initial_lag": 13,
-          "confirmed_e": 42
-        },
-        "b": {
-          "number": 13,
-          "first_e": 60,
-          "last_e": 68,
-          "hits": 2,
-          "position": 7,
-          "initial_lag": 12,
-          "confirmed_e": 68
-        }
-      }
-    ]
-  },
+  "active": false,
+  "colpi": 0,
+  "active_snapshot": null,
   "total_play": 2,
-  "total_hit": 0,
+  "total_hit": 1,
   "total_stop": 1,
   "hit_colpo_1": 0,
-  "hit_colpo_2_5": 0,
+  "hit_colpo_2_5": 1,
   "hit_colpo_6_10": 0,
   "play_log": [
     {
@@ -3813,9 +3749,155 @@
           }
         }
       ]
+    },
+    {
+      "event": "HIT_CLUSTER_AMBO",
+      "time": "2026-05-14 04:08:53",
+      "colpo": 3,
+      "draw": [
+        5,
+        9,
+        10,
+        13,
+        14,
+        15,
+        17,
+        21,
+        27,
+        31,
+        48,
+        55,
+        58,
+        64,
+        71,
+        78,
+        79,
+        80,
+        81,
+        83
+      ],
+      "hits": [
+        {
+          "ambo": [
+            13,
+            78
+          ],
+          "score": 54.5,
+          "age_gap": 26,
+          "avg_age": 13.0,
+          "a": {
+            "number": 78,
+            "first_e": 32,
+            "last_e": 42,
+            "hits": 2,
+            "position": 6,
+            "initial_lag": 13,
+            "confirmed_e": 42
+          },
+          "b": {
+            "number": 13,
+            "first_e": 60,
+            "last_e": 68,
+            "hits": 2,
+            "position": 7,
+            "initial_lag": 12,
+            "confirmed_e": 68
+          }
+        }
+      ],
+      "snapshot": {
+        "reason": "CLUSTER_RIENTRI_CONFERMATI_AMBO",
+        "start_e": 69,
+        "valid_to": 78,
+        "max_colpi": 10,
+        "hot_count": 3,
+        "hot_numbers": [
+          {
+            "number": 72,
+            "confirmed_e": 40,
+            "age": 28,
+            "hits": 2,
+            "position": 9,
+            "initial_lag": 9
+          },
+          {
+            "number": 78,
+            "confirmed_e": 42,
+            "age": 26,
+            "hits": 2,
+            "position": 6,
+            "initial_lag": 13
+          },
+          {
+            "number": 13,
+            "confirmed_e": 68,
+            "age": 0,
+            "hits": 2,
+            "position": 7,
+            "initial_lag": 12
+          }
+        ],
+        "ambi": [
+          {
+            "ambo": [
+              72,
+              78
+            ],
+            "score": 85.0,
+            "age_gap": 2,
+            "avg_age": 27.0,
+            "a": {
+              "number": 72,
+              "first_e": 29,
+              "last_e": 40,
+              "hits": 2,
+              "position": 9,
+              "initial_lag": 9,
+              "confirmed_e": 40
+            },
+            "b": {
+              "number": 78,
+              "first_e": 32,
+              "last_e": 42,
+              "hits": 2,
+              "position": 6,
+              "initial_lag": 13,
+              "confirmed_e": 42
+            }
+          },
+          {
+            "ambo": [
+              13,
+              78
+            ],
+            "score": 54.5,
+            "age_gap": 26,
+            "avg_age": 13.0,
+            "a": {
+              "number": 78,
+              "first_e": 32,
+              "last_e": 42,
+              "hits": 2,
+              "position": 6,
+              "initial_lag": 13,
+              "confirmed_e": 42
+            },
+            "b": {
+              "number": 13,
+              "first_e": 60,
+              "last_e": 68,
+              "hits": 2,
+              "position": 7,
+              "initial_lag": 12,
+              "confirmed_e": 68
+            }
+          }
+        ]
+      }
     }
   ],
   "recent_results": [
-    "STOP"
+    "STOP",
+    "HIT"
   ]
 }
