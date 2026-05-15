@@ -2,30 +2,8 @@
   "version": "v45_cluster_plus",
   "day": "2026-05-15",
   "max_e": 187,
-  "last_fp": "4866d1cf3b8e4d5b4c282dbf3a40f0e1",
+  "last_fp": "d5c25c6b719a62a193ef4e1883a92d63",
   "last_draws": [
-    [
-      1,
-      5,
-      9,
-      15,
-      20,
-      21,
-      23,
-      27,
-      38,
-      43,
-      49,
-      56,
-      57,
-      58,
-      61,
-      73,
-      74,
-      76,
-      81,
-      90
-    ],
     [
       1,
       7,
@@ -5283,6 +5261,28 @@
       73,
       75,
       83
+    ],
+    [
+      4,
+      10,
+      18,
+      21,
+      22,
+      23,
+      32,
+      43,
+      49,
+      58,
+      63,
+      64,
+      69,
+      70,
+      77,
+      80,
+      82,
+      86,
+      87,
+      88
     ]
   ],
   "processed_ids": [
@@ -5352,7 +5352,8 @@
     63,
     64,
     65,
-    66
+    66,
+    67
   ],
   "processed_fps": [
     "a8bced4ffdca40c87b0d720d67093c50",
@@ -5421,7 +5422,8 @@
     "5dfc031e7cca3cf0f497b906a3413b25",
     "a084edee82095644a935c67187080573",
     "4f5a35845cefe6bfc76a228d278b22da",
-    "4866d1cf3b8e4d5b4c282dbf3a40f0e1"
+    "4866d1cf3b8e4d5b4c282dbf3a40f0e1",
+    "d5c25c6b719a62a193ef4e1883a92d63"
   ],
   "watch": {
     "76": {
@@ -5509,84 +5511,13 @@
       "confirmed_e": 62
     }
   },
-  "active": true,
-  "colpi": 4,
-  "active_snapshot": {
-    "reason": "CLUSTER_PLUS_AMBATA_AMBI_TERNI",
-    "start_e": 63,
-    "valid_to": 69,
-    "max_colpi": 7,
-    "ambata": 32,
-    "jolly": {
-      "number": 33,
-      "score": 50,
-      "heat": 13,
-      "lag": 1,
-      "dominance": 4,
-      "pressure": 13
-    },
-    "ambi": [
-      {
-        "ambo": [
-          32,
-          64
-        ],
-        "score": 61.0,
-        "age_gap": 6,
-        "avg_age": 3.0,
-        "a": {
-          "number": 64,
-          "first_e": 47,
-          "last_e": 56,
-          "hits": 2,
-          "position": 6,
-          "initial_lag": 14,
-          "confirmed_e": 56
-        },
-        "b": {
-          "number": 32,
-          "first_e": 53,
-          "last_e": 62,
-          "hits": 2,
-          "position": 9,
-          "initial_lag": 10,
-          "confirmed_e": 62
-        }
-      }
-    ],
-    "terni": [
-      [
-        32,
-        33,
-        64
-      ]
-    ],
-    "hot_count": 2,
-    "hot_numbers": [
-      {
-        "number": 64,
-        "confirmed_e": 56,
-        "age": 6,
-        "hits": 2,
-        "position": 6,
-        "initial_lag": 14,
-        "score": 37
-      },
-      {
-        "number": 32,
-        "confirmed_e": 62,
-        "age": 0,
-        "hits": 2,
-        "position": 9,
-        "initial_lag": 10,
-        "score": 45
-      }
-    ]
-  },
+  "active": false,
+  "colpi": 0,
+  "active_snapshot": null,
   "total_play": 1,
-  "total_hit_ambo": 0,
+  "total_hit_ambo": 1,
   "total_hit_terno": 0,
-  "total_hit_ambata": 0,
+  "total_hit_ambata": 1,
   "total_stop": 0,
   "play_log": [
     {
@@ -5662,7 +5593,141 @@
           "score": 45
         }
       ]
+    },
+    {
+      "event": "HIT_CLUSTER_PLUS",
+      "time": "2026-05-15 13:39:12",
+      "colpo": 5,
+      "draw": [
+        4,
+        10,
+        18,
+        21,
+        22,
+        23,
+        32,
+        43,
+        49,
+        58,
+        63,
+        64,
+        69,
+        70,
+        77,
+        80,
+        82,
+        86,
+        87,
+        88
+      ],
+      "hit_data": {
+        "ambata_hit": true,
+        "ambi_hit": [
+          {
+            "ambo": [
+              32,
+              64
+            ],
+            "score": 61.0,
+            "age_gap": 6,
+            "avg_age": 3.0,
+            "a": {
+              "number": 64,
+              "first_e": 47,
+              "last_e": 56,
+              "hits": 2,
+              "position": 6,
+              "initial_lag": 14,
+              "confirmed_e": 56
+            },
+            "b": {
+              "number": 32,
+              "first_e": 53,
+              "last_e": 62,
+              "hits": 2,
+              "position": 9,
+              "initial_lag": 10,
+              "confirmed_e": 62
+            }
+          }
+        ],
+        "terni_hit": []
+      },
+      "snapshot": {
+        "reason": "CLUSTER_PLUS_AMBATA_AMBI_TERNI",
+        "start_e": 63,
+        "valid_to": 69,
+        "max_colpi": 7,
+        "ambata": 32,
+        "jolly": {
+          "number": 33,
+          "score": 50,
+          "heat": 13,
+          "lag": 1,
+          "dominance": 4,
+          "pressure": 13
+        },
+        "ambi": [
+          {
+            "ambo": [
+              32,
+              64
+            ],
+            "score": 61.0,
+            "age_gap": 6,
+            "avg_age": 3.0,
+            "a": {
+              "number": 64,
+              "first_e": 47,
+              "last_e": 56,
+              "hits": 2,
+              "position": 6,
+              "initial_lag": 14,
+              "confirmed_e": 56
+            },
+            "b": {
+              "number": 32,
+              "first_e": 53,
+              "last_e": 62,
+              "hits": 2,
+              "position": 9,
+              "initial_lag": 10,
+              "confirmed_e": 62
+            }
+          }
+        ],
+        "terni": [
+          [
+            32,
+            33,
+            64
+          ]
+        ],
+        "hot_count": 2,
+        "hot_numbers": [
+          {
+            "number": 64,
+            "confirmed_e": 56,
+            "age": 6,
+            "hits": 2,
+            "position": 6,
+            "initial_lag": 14,
+            "score": 37
+          },
+          {
+            "number": 32,
+            "confirmed_e": 62,
+            "age": 0,
+            "hits": 2,
+            "position": 9,
+            "initial_lag": 10,
+            "score": 45
+          }
+        ]
+      }
     }
   ],
-  "recent_results": []
+  "recent_results": [
+    "HIT"
+  ]
 }
