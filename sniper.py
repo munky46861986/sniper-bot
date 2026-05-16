@@ -1,5 +1,6 @@
 # ============================================================
-# 🚀 SNIPER v46 — CLUSTER PLUS MORE PLAY
+# 🚀 SNIPER v46.1 — CLUSTER PLUS MORE PLAY
+# FIX TELEGRAM TIMEOUT
 # ============================================================
 
 import asyncio
@@ -8,7 +9,6 @@ import re
 import os
 import json
 import hashlib
-import subprocess
 from datetime import datetime
 from itertools import combinations
 from collections import Counter
@@ -22,11 +22,15 @@ TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
 
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
-HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-STATE_FILE = "sniper_v46_cluster_plus_moreplay_state.json"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0"
+}
+
+STATE_FILE = "sniper_v46_1_state.json"
 
 LOOP_SEC = 60
+
 HISTORY_MAX = 240
 PROCESSED_MAX = 1000
 
@@ -37,41 +41,73 @@ WATCH_WINDOW = 12
 HOT_TTL = 45
 
 MIN_HOT_ACTIVE = 2
+
 MAX_AMBI_PER_PLAY = 3
 MAX_COLPI = 7
 
 COOLDOWN_AFTER_PLAY = 3
 
 
+# ============================================================
+# PARSER
+# ============================================================
+
 def parse_site():
-    r = requests.get(URL, headers=HEADERS, timeout=15)
+
+    r = requests.get(
+        URL,
+        headers=HEADERS,
+        timeout=20
+    )
+
     r.raise_for_status()
 
-    text = BeautifulSoup(r.text, "html.parser").get_text("\n", strip=True)
-    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    text = BeautifulSoup(
+        r.text,
+        "html.parser"
+    ).get_text("\n", strip=True)
+
+    lines = [
+        x.strip()
+        for x in text.splitlines()
+        if x.strip()
+    ]
 
     out = {}
+
     i = 0
 
     while i < len(lines):
-        m = re.search(r"Estrazione\s+.*?\bn\.\s*(\d+)", lines[i], re.IGNORECASE)
+
+        m = re.search(
+            r"Estrazione\s+.*?\bn\.\s*(\d+)",
+            lines[i],
+            re.IGNORECASE
+        )
 
         if not m:
             i += 1
             continue
 
         e = int(m.group(1))
+
         nums = []
 
         i += 1
 
         while i < len(lines):
+
             row = lines[i]
 
-            if re.search(r"Estrazione\s+.*?\bn\.\s*\d+", row, re.IGNORECASE):
+            if re.search(
+                r"Estrazione\s+.*?\bn\.\s*\d+",
+                row,
+                re.IGNORECASE
+            ):
                 break
 
             if re.fullmatch(r"\d{1,2}", row):
+
                 n = int(row)
 
                 if 1 <= n <= 90:
@@ -80,6 +116,7 @@ def parse_site():
             i += 1
 
         if len(nums) >= 20:
+
             clean = nums[:20]
 
             if len(set(clean)) == 20:
@@ -88,26 +125,37 @@ def parse_site():
     return sorted(out.items())
 
 
+# ============================================================
+# UTILS
+# ============================================================
+
 def fingerprint(e, nums):
+
     return hashlib.md5(
         f"{e}-{'-'.join(map(str, nums))}".encode()
     ).hexdigest()
 
 
 def day_key():
+
     return datetime.now().strftime("%Y-%m-%d")
 
 
-class SNIPER_V46:
+# ============================================================
+# BOT
+# ============================================================
+
+class SNIPER_V46_1:
 
     def __init__(self):
 
-        self.version = "v46_cluster_plus_moreplay"
+        self.version = "v46_1"
 
         self.day = day_key()
 
         self.max_e = 0
         self.last_fp = None
+
         self.last_draws = []
 
         self.processed_ids = []
@@ -118,26 +166,60 @@ class SNIPER_V46:
 
         self.active = False
         self.colpi = 0
+
         self.cooldown = 0
 
         self.active_snapshot = None
 
         self.total_play = 0
+        self.total_hit_ambata = 0
         self.total_hit_ambo = 0
         self.total_hit_terno = 0
-        self.total_hit_ambata = 0
         self.total_stop = 0
-
-        self.play_log = []
-        self.recent_results = []
 
         self.load_state()
 
+    # ========================================================
+    # TELEGRAM SAFE
+    # ========================================================
+
     async def tg(self, app, msg):
-        await app.bot.send_message(
-            chat_id=CHAT_ID,
-            text=msg
-        )
+
+        max_len = 3000
+
+        if not msg:
+            return
+
+        chunks = [
+            msg[i:i + max_len]
+            for i in range(0, len(msg), max_len)
+        ]
+
+        for chunk in chunks:
+
+            for attempt in range(3):
+
+                try:
+
+                    await app.bot.send_message(
+                        chat_id=CHAT_ID,
+                        text=chunk,
+                        read_timeout=30,
+                        write_timeout=30,
+                        connect_timeout=30,
+                        pool_timeout=30
+                    )
+
+                    break
+
+                except Exception as ex:
+
+                    print(
+                        f"Telegram send error "
+                        f"attempt {attempt + 1}: {ex}"
+                    )
+
+                    await asyncio.sleep(5)
 
     # ========================================================
     # STATE
@@ -168,17 +250,24 @@ class SNIPER_V46:
             "active_snapshot": self.active_snapshot,
 
             "total_play": self.total_play,
+            "total_hit_ambata": self.total_hit_ambata,
             "total_hit_ambo": self.total_hit_ambo,
             "total_hit_terno": self.total_hit_terno,
-            "total_hit_ambata": self.total_hit_ambata,
-            "total_stop": self.total_stop,
-
-            "play_log": self.play_log[-800:],
-            "recent_results": self.recent_results[-50:]
+            "total_stop": self.total_stop
         }
 
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with open(
+            STATE_FILE,
+            "w",
+            encoding="utf-8"
+        ) as f:
+
+            json.dump(
+                data,
+                f,
+                ensure_ascii=False,
+                indent=2
+            )
 
     def load_state(self):
 
@@ -187,10 +276,13 @@ class SNIPER_V46:
 
         try:
 
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            with open(
+                STATE_FILE,
+                "r",
+                encoding="utf-8"
+            ) as f:
 
-            self.day = data.get("day", day_key())
+                data = json.load(f)
 
             self.max_e = int(data.get("max_e", 0))
             self.last_fp = data.get("last_fp")
@@ -220,48 +312,13 @@ class SNIPER_V46:
             self.active_snapshot = data.get("active_snapshot")
 
             self.total_play = int(data.get("total_play", 0))
+            self.total_hit_ambata = int(data.get("total_hit_ambata", 0))
             self.total_hit_ambo = int(data.get("total_hit_ambo", 0))
             self.total_hit_terno = int(data.get("total_hit_terno", 0))
-            self.total_hit_ambata = int(data.get("total_hit_ambata", 0))
             self.total_stop = int(data.get("total_stop", 0))
-
-            self.play_log = data.get("play_log", [])[-800:]
-            self.recent_results = data.get("recent_results", [])[-50:]
 
         except Exception:
             pass
-
-    # ========================================================
-    # DEDUP
-    # ========================================================
-
-    def already_processed(self, e, nums):
-
-        fp = fingerprint(e, nums)
-
-        if fp == self.last_fp:
-            return True
-
-        if fp in self.processed_fps:
-            return True
-
-        if e <= self.max_e and e in self.processed_ids:
-            return True
-
-        return False
-
-    def remember_processed(self, e, nums):
-
-        fp = fingerprint(e, nums)
-
-        self.max_e = max(self.max_e, e)
-        self.last_fp = fp
-
-        self.processed_ids.append(e)
-        self.processed_fps.append(fp)
-
-        self.processed_ids = self.processed_ids[-PROCESSED_MAX:]
-        self.processed_fps = self.processed_fps[-PROCESSED_MAX:]
 
     # ========================================================
     # FEATURES
@@ -331,6 +388,7 @@ class SNIPER_V46:
     def selected_ritardatari(self):
 
         top10 = self.top_ritardatari()
+
         selected = []
 
         for pos in PLAY_POSITIONS:
@@ -379,14 +437,19 @@ class SNIPER_V46:
     # CONFIRMED
     # ========================================================
 
-    def update_watch_and_confirmed(self, e, nums, selected):
+    def update_watch_and_confirmed(
+        self,
+        e,
+        nums,
+        selected
+    ):
 
         s = set(nums)
-        new_confirmed = []
 
         for item in selected:
 
             n = int(item["number"])
+
             key = str(n)
 
             if n not in s:
@@ -395,9 +458,9 @@ class SNIPER_V46:
             if key not in self.watch:
 
                 self.watch[key] = {
+
                     "number": n,
                     "first_e": e,
-                    "last_e": e,
                     "hits": 1,
                     "position": item["position"],
                     "initial_lag": item["lag"]
@@ -406,24 +469,19 @@ class SNIPER_V46:
             else:
 
                 self.watch[key]["hits"] += 1
-                self.watch[key]["last_e"] = e
 
                 if self.watch[key]["hits"] >= 2:
 
-                    confirmed = {
+                    self.hot_confirmed[key] = {
+
                         **self.watch[key],
                         "confirmed_e": e
                     }
-
-                    self.hot_confirmed[key] = confirmed
-                    new_confirmed.append(confirmed)
 
                     self.watch.pop(key, None)
 
         self.clean_old_watch(e)
         self.clean_old_hot(e)
-
-        return new_confirmed
 
     # ========================================================
     # SCORE
@@ -432,14 +490,14 @@ class SNIPER_V46:
     def confirmed_score(self, item, e):
 
         n = int(item["number"])
+
         age = e - int(item["confirmed_e"])
 
         return (
 
-            int(item.get("hits", 0)) * 20
+            item["hits"] * 20
             - age * 2
-            - int(item.get("position", 99)) * 2
-            + int(item.get("initial_lag", 0))
+            + item["initial_lag"]
             + self.heat(n)
             + self.dominance(n, 6) * 3
             + self.pressure(n)
@@ -449,7 +507,7 @@ class SNIPER_V46:
     # BUILD PLAY
     # ========================================================
 
-    def build_cluster_plus_play(self, e):
+    def build_play(self, e):
 
         hot_items = [
 
@@ -476,29 +534,16 @@ class SNIPER_V46:
             )
 
             pair_candidates.append({
+
                 "ambo": pair,
-                "score": score,
-                "a": a,
-                "b": b
+                "score": round(score, 2)
             })
 
         pair_candidates.sort(
             key=lambda x: -x["score"]
         )
 
-        ambi = []
-        used = set()
-
-        for p in pair_candidates:
-
-            if p["ambo"] in used:
-                continue
-
-            used.add(p["ambo"])
-            ambi.append(p)
-
-            if len(ambi) >= MAX_AMBI_PER_PLAY:
-                break
+        ambi = pair_candidates[:MAX_AMBI_PER_PLAY]
 
         if not ambi:
             return None
@@ -559,29 +604,20 @@ class SNIPER_V46:
 
         return {
 
-            "reason": "CLUSTER_PLUS",
-
-            "start_e": e + 1,
-            "valid_to": e + MAX_COLPI,
-
-            "max_colpi": MAX_COLPI,
-
             "ambata": ambata,
-            "jolly": jolly,
-
             "ambi": ambi,
             "terni": terni,
-
-            "hot_count": len(hot_items)
+            "jolly": jolly
         }
 
     # ========================================================
-    # CHECK
+    # CHECK HIT
     # ========================================================
 
     def check_hit(self, nums):
 
         s = set(nums)
+
         snap = self.active_snapshot
 
         ambata_hit = snap["ambata"] in s
@@ -615,20 +651,20 @@ class SNIPER_V46:
 
     async def on_new(self, app, e, nums):
 
-        if len(set(nums)) != 20:
+        fp = fingerprint(e, nums)
+
+        if fp == self.last_fp:
             return
 
-        if self.already_processed(e, nums):
-            return
-
-        self.remember_processed(e, nums)
+        self.last_fp = fp
 
         self.last_draws.append(nums)
         self.last_draws = self.last_draws[-HISTORY_MAX:]
 
         await self.tg(
             app,
-            f"📌 Estrazione {e}\n🎱 {', '.join(map(str, nums))}"
+            f"📌 Estrazione {e}\n"
+            f"🎱 {', '.join(map(str, nums))}"
         )
 
         # ====================================================
@@ -656,15 +692,6 @@ class SNIPER_V46:
                 for t in hit_data["terni_hit"]
             ) or "nessuno"
 
-            await self.tg(
-                app,
-                f"🔎 CHECK v46 | colpo {self.colpi}/{MAX_COLPI}\n"
-                f"• ambata {self.active_snapshot['ambata']} = "
-                f"{'SI' if hit_data['ambata_hit'] else 'NO'}\n"
-                f"• ambi usciti = {ambi_txt}\n"
-                f"• terni usciti = {terni_txt}"
-            )
-
             # ================= AMBATA =================
 
             if hit_data["ambata_hit"]:
@@ -673,12 +700,13 @@ class SNIPER_V46:
 
                 await self.tg(
                     app,
-                    f"🎯 AMBATA PRESA v46 | colpo {self.colpi}\n"
-                    f"• ambata = {self.active_snapshot['ambata']}\n"
-                    f"• play continua per cercare ambo/terno"
+                    f"🎯 AMBATA PRESA | "
+                    f"colpo {self.colpi}\n"
+                    f"• ambata = "
+                    f"{self.active_snapshot['ambata']}"
                 )
 
-            # ================= CHIUSURA SOLO AMBO/TERNO =================
+            # ================= CHIUSURA =================
 
             if hit_data["ambi_hit"] or hit_data["terni_hit"]:
 
@@ -688,23 +716,17 @@ class SNIPER_V46:
                 if hit_data["terni_hit"]:
                     self.total_hit_terno += 1
 
-                self.recent_results.append("HIT")
-
                 await self.tg(
                     app,
-                    f"🔥 HIT v46 | colpo {self.colpi}\n"
+                    f"🔥 HIT v46.1 | "
+                    f"colpo {self.colpi}\n"
                     f"• ambi = {ambi_txt}\n"
-                    f"• terni = {terni_txt}\n\n"
-                    f"📊 STATS\n"
-                    f"• play = {self.total_play}\n"
-                    f"• hit ambata = {self.total_hit_ambata}\n"
-                    f"• hit ambo = {self.total_hit_ambo}\n"
-                    f"• hit terno = {self.total_hit_terno}\n"
-                    f"• stop = {self.total_stop}"
+                    f"• terni = {terni_txt}"
                 )
 
                 self.active = False
                 self.colpi = 0
+
                 self.cooldown = COOLDOWN_AFTER_PLAY
 
                 self.active_snapshot = None
@@ -717,21 +739,15 @@ class SNIPER_V46:
             if self.colpi >= MAX_COLPI:
 
                 self.total_stop += 1
-                self.recent_results.append("STOP")
 
                 await self.tg(
                     app,
-                    f"🛑 STOP v46 | {MAX_COLPI} colpi\n"
-                    f"📊 STATS\n"
-                    f"• play = {self.total_play}\n"
-                    f"• hit ambata = {self.total_hit_ambata}\n"
-                    f"• hit ambo = {self.total_hit_ambo}\n"
-                    f"• hit terno = {self.total_hit_terno}\n"
-                    f"• stop = {self.total_stop}"
+                    f"🛑 STOP | {MAX_COLPI} colpi"
                 )
 
                 self.active = False
                 self.colpi = 0
+
                 self.cooldown = COOLDOWN_AFTER_PLAY
 
                 self.active_snapshot = None
@@ -749,6 +765,7 @@ class SNIPER_V46:
         if self.cooldown > 0:
 
             self.cooldown -= 1
+
             self.save_state()
 
             return
@@ -762,93 +779,61 @@ class SNIPER_V46:
 
         top10, selected = self.selected_ritardatari()
 
-        new_confirmed = self.update_watch_and_confirmed(
+        self.update_watch_and_confirmed(
             e,
             nums,
             selected
         )
 
-        if new_confirmed:
-
-            nc_txt = ", ".join(
-
-                f"{x['number']} pos{x['position']} "
-                f"lag{x['initial_lag']} hits{x['hits']}"
-
-                for x in new_confirmed
-            )
-
-            await self.tg(
-                app,
-                f"🔥 RIENTRO CONFERMATO v46\n"
-                f"• nuovi confermati = {nc_txt}\n"
-                f"• hot attivi = {len(self.hot_confirmed)}"
-            )
-
         # ====================================================
-        # PLAY SEMPRE CONTROLLATO
+        # PLAY
         # ====================================================
 
-        play = self.build_cluster_plus_play(e)
+        if not self.active:
 
-        if play and not self.active:
+            play = self.build_play(e)
 
-            self.active = True
-            self.colpi = 0
+            if play:
 
-            self.active_snapshot = play
+                self.active = True
+                self.colpi = 0
 
-            self.total_play += 1
+                self.active_snapshot = play
 
-            ambi_txt = ", ".join(
+                self.total_play += 1
 
-                f"{a}-{b}"
+                ambi_txt = ", ".join(
 
-                for item in play["ambi"]
+                    f"{a}-{b}"
 
-                for a, b in [item["ambo"]]
-            )
+                    for item in play["ambi"]
 
-            terni_txt = ", ".join(
-                "-".join(map(str, t))
-                for t in play["terni"]
-            )
+                    for a, b in [item["ambo"]]
+                )
 
-            await self.tg(
-                app,
-                "🎯 PLAY v46 CLUSTER PLUS\n"
-                f"🔥 AMBATA = {play['ambata']}\n"
-                f"✅ AMBI = {ambi_txt}\n"
-                f"🎲 JOLLY = {play['jolly']['number']}\n"
-                f"💥 TERNI = {terni_txt}\n"
-                f"• hot attivi = {play['hot_count']}\n"
-                f"• max_colpi = {MAX_COLPI}"
-            )
+                terni_txt = ", ".join(
+                    "-".join(map(str, t))
+                    for t in play["terni"]
+                )
+
+                await self.tg(
+                    app,
+                    "🎯 PLAY v46.1\n"
+                    f"🔥 AMBATA = {play['ambata']}\n"
+                    f"✅ AMBI = {ambi_txt}\n"
+                    f"🎲 JOLLY = {play['jolly']['number']}\n"
+                    f"💥 TERNI = {terni_txt}\n"
+                    f"• max_colpi = {MAX_COLPI}"
+                )
 
         self.save_state()
-
-    # ========================================================
-    # REPORT
-    # ========================================================
-
-    async def send_report(self, app):
-
-        await self.tg(
-            app,
-            "📊 REPORT v46\n"
-            f"• play = {self.total_play}\n"
-            f"• hit ambata = {self.total_hit_ambata}\n"
-            f"• hit ambo = {self.total_hit_ambo}\n"
-            f"• hit terno = {self.total_hit_terno}\n"
-            f"• stop = {self.total_stop}"
-        )
 
 
 # ============================================================
 # LOOP
 # ============================================================
 
-bot = SNIPER_V46()
+bot = SNIPER_V46_1()
 
 
 async def live():
@@ -859,7 +844,11 @@ async def live():
 
     if not es:
 
-        await bot.tg(app, "⚠️ parser vuoto")
+        await bot.tg(
+            app,
+            "⚠️ parser vuoto"
+        )
+
         return
 
     if not bot.last_draws:
@@ -876,25 +865,11 @@ async def live():
             es[-1][1]
         )
 
-        bot.processed_ids.append(es[-1][0])
-        bot.processed_fps.append(bot.last_fp)
-
         bot.save_state()
 
         await bot.tg(
             app,
-            "🚀 SNIPER v46 AVVIATO | LIVE_ONLY\n"
-            f"• storico caricato fino estrazione {bot.max_e}"
-        )
-
-    else:
-
-        await bot.tg(
-            app,
-            "🚀 SNIPER v46 RIAVVIATO\n"
-            f"• max_e = {bot.max_e}\n"
-            f"• active = {bot.active}\n"
-            f"• cooldown = {bot.cooldown}"
+            "🚀 SNIPER v46.1 AVVIATO"
         )
 
     while True:
@@ -905,16 +880,22 @@ async def live():
 
             for e, nums in es:
 
-                if bot.already_processed(e, nums):
+                fp = fingerprint(e, nums)
+
+                if fp == bot.last_fp:
                     continue
 
-                await bot.on_new(app, e, nums)
+                await bot.on_new(
+                    app,
+                    e,
+                    nums
+                )
 
         except Exception as ex:
 
             await bot.tg(
                 app,
-                f"⚠️ errore v46: {ex}"
+                f"⚠️ errore: {ex}"
             )
 
         await asyncio.sleep(LOOP_SEC)
