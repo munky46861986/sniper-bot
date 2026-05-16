@@ -18,7 +18,7 @@ nest_asyncio.apply()
 
 # ===================== CONFIG ===============================
 
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
 
 SYMBOL = "GC=F"
