@@ -1,6 +1,7 @@
 # ============================================================
-# 🟡 GOLD BOT TRADER PRO v5
+# 🟡 GOLD BOT TRADER PRO v5.1
 # GitHub Ready
+# Versione equilibrata veloce: 1m / check 20 sec
 # PRE-LONG / PRE-SHORT + LONG/SHORT + TP/SL Tracking
 # ============================================================
 
@@ -21,13 +22,13 @@ CHAT_ID = int(os.getenv("CHAT_ID"))
 
 SYMBOL = "GC=F"
 
-TIMEFRAME = "5m"
-PERIOD = "5d"
+TIMEFRAME = "1m"
+PERIOD = "1d"
 
 HIGHER_TIMEFRAME = "1h"
 HIGHER_PERIOD = "30d"
 
-LOOP_SEC = 30
+LOOP_SEC = 20
 
 EMA_FAST = 20
 EMA_SLOW = 50
@@ -37,11 +38,11 @@ ATR_PERIOD = 14
 RSI_LONG = 58
 RSI_SHORT = 42
 
-RSI_PRE_LONG = 54
-RSI_PRE_SHORT = 46
+RSI_PRE_LONG = 53
+RSI_PRE_SHORT = 47
 
 COOLDOWN_MINUTES = 20
-PRE_COOLDOWN_MINUTES = 10
+PRE_COOLDOWN_MINUTES = 8
 
 
 def now_italy():
@@ -73,7 +74,6 @@ def get_data(interval, period):
 
 def calc_rsi(series, period=14):
     delta = series.diff()
-
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
 
@@ -81,7 +81,6 @@ def calc_rsi(series, period=14):
     avg_loss = loss.rolling(period).mean()
 
     rs = avg_gain / avg_loss
-
     return 100 - (100 / (1 + rs))
 
 
@@ -296,33 +295,61 @@ class GoldBot:
         return diff.total_seconds() >= PRE_COOLDOWN_MINUTES * 60
 
     async def send_pre_alert(self, app, signal, data):
-        if signal == "PRE_LONG":
-            title = "⚠️ PRE-LONG XAUUSD"
-            confirm = f"Possibile LONG se RSI supera {RSI_LONG}."
 
-        else:
-            title = "⚠️ PRE-SHORT XAUUSD"
-            confirm = f"Possibile SHORT se RSI scende sotto {RSI_SHORT}."
+    atr = data["atr"]
+    price = data["price"]
 
-        msg = (
-            f"{title}\n\n"
-            f"🕒 Ora Italia: {now_italy()}\n"
-            f"📌 Simbolo: {SYMBOL}\n"
-            f"⏱️ Timeframe: {TIMEFRAME}\n\n"
-            f"💰 Prezzo attuale: {data['price']:.2f}\n\n"
-            f"📈 EMA20: {data['ema20']:.2f}\n"
-            f"📉 EMA50: {data['ema50']:.2f}\n"
-            f"⚡ RSI14: {data['rsi']:.2f}\n"
-            f"🌪️ ATR14: {data['atr']:.2f}\n"
-            f"📊 Trend H1: {data['trend_h1']}\n\n"
-            f"🧠 {confirm}\n\n"
-            f"⚠️ Allerta anticipata, non conferma definitiva."
-        )
+    if signal == "PRE_LONG":
 
-        await self.tg(app, msg)
+        title = "⚠️ PRE-LONG XAUUSD"
 
-        self.last_pre_signal = signal
-        self.last_pre_alert_time = datetime.now(ZoneInfo("Europe/Rome"))
+        confirm = f"Possibile LONG se RSI supera {RSI_LONG}."
+
+        tp1 = price + atr * 1.0
+        tp2 = price + atr * 1.8
+        sl = price - atr * 0.8
+
+    else:
+
+        title = "⚠️ PRE-SHORT XAUUSD"
+
+        confirm = f"Possibile SHORT se RSI scende sotto {RSI_SHORT}."
+
+        tp1 = price - atr * 1.0
+        tp2 = price - atr * 1.8
+        sl = price + atr * 0.8
+
+    msg = (
+        f"{title}\n\n"
+
+        f"🕒 Ora Italia: {now_italy()}\n"
+        f"📌 Simbolo: {SYMBOL}\n"
+        f"⏱️ Timeframe: {TIMEFRAME}\n\n"
+
+        f"💰 Entry possibile: {price:.2f}\n\n"
+
+        f"🎯 TP1: {tp1:.2f}\n"
+        f"🎯 TP2: {tp2:.2f}\n"
+        f"🛑 SL: {sl:.2f}\n\n"
+
+        f"📈 EMA20: {data['ema20']:.2f}\n"
+        f"📉 EMA50: {data['ema50']:.2f}\n"
+        f"⚡ RSI14: {data['rsi']:.2f}\n"
+        f"🌪️ ATR14: {data['atr']:.2f}\n"
+        f"📊 Trend H1: {data['trend_h1']}\n\n"
+
+        f"🧠 {confirm}\n\n"
+
+        f"⚠️ Allerta anticipata, non conferma definitiva."
+    )
+
+    await self.tg(app, msg)
+
+    self.last_pre_signal = signal
+
+    self.last_pre_alert_time = datetime.now(
+        ZoneInfo("Europe/Rome")
+    )
 
     async def open_trade(self, app, data):
         msg = (
@@ -417,13 +444,13 @@ class GoldBot:
     async def start(self, app):
         await self.tg(
             app,
-            "🟡 GOLD BOT TRADER PRO v5 AVVIATO\n\n"
+            "🟡 GOLD BOT TRADER PRO v5.1 AVVIATO\n\n"
             f"📌 Simbolo: {SYMBOL}\n"
             f"⏱️ Timeframe: {TIMEFRAME}\n"
             f"📊 Trend filter: {HIGHER_TIMEFRAME}\n"
             f"🔁 Check ogni {LOOP_SEC} sec\n\n"
             "Funzioni:\n"
-            "✅ PRE-LONG / PRE-SHORT\n"
+            "✅ PRE-LONG / PRE-SHORT anticipati\n"
             "✅ LONG / SHORT confermati\n"
             "✅ TP1 / TP2 tracking\n"
             "✅ SL tracking\n\n"
