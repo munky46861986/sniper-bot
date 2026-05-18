@@ -1,10 +1,10 @@
 # ============================================================
-# 🚀 SNIPER v46.2 — CLUSTER PLUS MORE PLAY
-# FIX:
-# - deduplica completa anti-spam
-# - Telegram timeout safe
-# - non chiude su sola ambata
-# - chiude solo su ambo/terno
+# 🚀 SNIPER v47 — CLUSTER PLUS CLEAN
+# - più pulito della v46.2
+# - meno play duplicati
+# - MIN_HOT_ACTIVE = 3
+# - cooldown più lungo
+# - anti-ripetizione cluster
 # ============================================================
 
 import asyncio
@@ -28,7 +28,7 @@ CHAT_ID = int(os.getenv("CHAT_ID"))
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-STATE_FILE = "sniper_v46_2_state.json"
+STATE_FILE = "sniper_v47_cluster_plus_clean_state.json"
 
 LOOP_SEC = 60
 HISTORY_MAX = 240
@@ -40,10 +40,12 @@ PLAY_POSITIONS = [6, 7, 8, 9, 10]
 WATCH_WINDOW = 12
 HOT_TTL = 45
 
-MIN_HOT_ACTIVE = 2
+MIN_HOT_ACTIVE = 3
 MAX_AMBI_PER_PLAY = 3
 MAX_COLPI = 7
-COOLDOWN_AFTER_PLAY = 3
+COOLDOWN_AFTER_PLAY = 6
+
+CLUSTER_OVERLAP_BLOCK = 2
 
 
 def parse_site():
@@ -96,10 +98,10 @@ def day_key():
     return datetime.now().strftime("%Y-%m-%d")
 
 
-class SNIPER_V46_2:
+class SNIPER_V47:
 
     def __init__(self):
-        self.version = "v46_2"
+        self.version = "v47_cluster_plus_clean"
 
         self.day = day_key()
         self.max_e = 0
@@ -116,6 +118,9 @@ class SNIPER_V46_2:
         self.colpi = 0
         self.cooldown = 0
         self.active_snapshot = None
+
+        self.last_cluster_numbers = []
+        self.last_cluster_e = 0
 
         self.total_play = 0
         self.total_hit_ambata = 0
@@ -166,6 +171,8 @@ class SNIPER_V46_2:
             "colpi": self.colpi,
             "cooldown": self.cooldown,
             "active_snapshot": self.active_snapshot,
+            "last_cluster_numbers": self.last_cluster_numbers,
+            "last_cluster_e": self.last_cluster_e,
             "total_play": self.total_play,
             "total_hit_ambata": self.total_hit_ambata,
             "total_hit_ambo": self.total_hit_ambo,
@@ -205,6 +212,9 @@ class SNIPER_V46_2:
             self.colpi = int(data.get("colpi", 0))
             self.cooldown = int(data.get("cooldown", 0))
             self.active_snapshot = data.get("active_snapshot")
+
+            self.last_cluster_numbers = data.get("last_cluster_numbers", [])
+            self.last_cluster_e = int(data.get("last_cluster_e", 0))
 
             self.total_play = int(data.get("total_play", 0))
             self.total_hit_ambata = int(data.get("total_hit_ambata", 0))
@@ -390,6 +400,19 @@ class SNIPER_V46_2:
             + self.pressure(n)
         )
 
+    # ===================== ANTI DUPLICATO ====================
+
+    def is_duplicate_cluster(self, cluster_numbers, e):
+        if not self.last_cluster_numbers:
+            return False
+
+        overlap = len(set(cluster_numbers) & set(self.last_cluster_numbers))
+
+        if overlap >= CLUSTER_OVERLAP_BLOCK:
+            return True
+
+        return False
+
     # ===================== BUILD PLAY ========================
 
     def build_play(self, e):
@@ -406,14 +429,22 @@ class SNIPER_V46_2:
         for a, b in combinations(hot_items, 2):
             pair = tuple(sorted((int(a["number"]), int(b["number"]))))
 
-            score = self.confirmed_score(a, e) + self.confirmed_score(b, e)
+            age_gap = abs(int(a["confirmed_e"]) - int(b["confirmed_e"]))
+
+            score = (
+                self.confirmed_score(a, e)
+                + self.confirmed_score(b, e)
+                - age_gap * 2
+            )
 
             pair_candidates.append({
                 "ambo": pair,
-                "score": round(score, 2)
+                "score": round(score, 2),
+                "age_gap": age_gap
             })
 
-        pair_candidates.sort(key=lambda x: -x["score"])
+        pair_candidates.sort(key=lambda x: (-x["score"], x["age_gap"]))
+
         ambi = pair_candidates[:MAX_AMBI_PER_PLAY]
 
         if not ambi:
@@ -423,6 +454,11 @@ class SNIPER_V46_2:
 
         for item in ambi:
             all_numbers.extend(item["ambo"])
+
+        cluster_numbers = sorted(set(all_numbers))
+
+        if self.is_duplicate_cluster(cluster_numbers, e):
+            return None
 
         freq = Counter(all_numbers)
         ambata = freq.most_common(1)[0][0]
@@ -459,7 +495,9 @@ class SNIPER_V46_2:
             "ambata": ambata,
             "ambi": ambi,
             "terni": terni,
-            "jolly": jolly
+            "jolly": jolly,
+            "cluster_numbers": cluster_numbers,
+            "hot_count": len(hot_items)
         }
 
     # ===================== CHECK =============================
@@ -532,14 +570,14 @@ class SNIPER_V46_2:
 
                 await self.tg(
                     app,
-                    f"🎯 AMBATA PRESA v46.2 | colpo {self.colpi}\n"
+                    f"🎯 AMBATA PRESA v47 | colpo {self.colpi}\n"
                     f"• ambata = {self.active_snapshot['ambata']}\n"
                     f"• play continua per ambo/terno"
                 )
 
             await self.tg(
                 app,
-                f"🔎 CHECK v46.2 | colpo {self.colpi}/{MAX_COLPI}\n"
+                f"🔎 CHECK v47 | colpo {self.colpi}/{MAX_COLPI}\n"
                 f"• ambata {self.active_snapshot['ambata']} = "
                 f"{'SI' if hit_data['ambata_hit'] else 'NO'}\n"
                 f"• ambi usciti = {ambi_txt}\n"
@@ -555,7 +593,7 @@ class SNIPER_V46_2:
 
                 await self.tg(
                     app,
-                    f"🔥 HIT v46.2 | colpo {self.colpi}\n"
+                    f"🔥 HIT v47 | colpo {self.colpi}\n"
                     f"• ambi = {ambi_txt}\n"
                     f"• terni = {terni_txt}\n\n"
                     f"📊 STATS\n"
@@ -565,6 +603,9 @@ class SNIPER_V46_2:
                     f"• hit terno = {self.total_hit_terno}\n"
                     f"• stop = {self.total_stop}"
                 )
+
+                self.last_cluster_numbers = self.active_snapshot.get("cluster_numbers", [])
+                self.last_cluster_e = e
 
                 self.active = False
                 self.colpi = 0
@@ -578,7 +619,7 @@ class SNIPER_V46_2:
 
                 await self.tg(
                     app,
-                    f"🛑 STOP v46.2 | {MAX_COLPI} colpi\n"
+                    f"🛑 STOP v47 | {MAX_COLPI} colpi\n"
                     f"📊 STATS\n"
                     f"• play = {self.total_play}\n"
                     f"• hit ambata = {self.total_hit_ambata}\n"
@@ -586,6 +627,9 @@ class SNIPER_V46_2:
                     f"• hit terno = {self.total_hit_terno}\n"
                     f"• stop = {self.total_stop}"
                 )
+
+                self.last_cluster_numbers = self.active_snapshot.get("cluster_numbers", [])
+                self.last_cluster_e = e
 
                 self.active = False
                 self.colpi = 0
@@ -622,12 +666,12 @@ class SNIPER_V46_2:
 
             await self.tg(
                 app,
-                f"🔥 RIENTRO CONFERMATO v46.2\n"
+                f"🔥 RIENTRO CONFERMATO v47\n"
                 f"• nuovi confermati = {nc_txt}\n"
                 f"• hot attivi = {len(self.hot_confirmed)}"
             )
 
-        # ===================== PLAY SEMPRE CONTROLLATO =========
+        # ===================== PLAY ===========================
 
         play = self.build_play(e)
 
@@ -648,13 +692,17 @@ class SNIPER_V46_2:
                 for t in play["terni"]
             )
 
+            cluster_txt = ", ".join(map(str, play["cluster_numbers"]))
+
             await self.tg(
                 app,
-                "🎯 PLAY v46.2 CLUSTER PLUS\n"
+                "🎯 PLAY v47 CLUSTER PLUS CLEAN\n"
                 f"🔥 AMBATA = {play['ambata']}\n"
                 f"✅ AMBI = {ambi_txt}\n"
                 f"🎲 JOLLY = {play['jolly']['number']}\n"
                 f"💥 TERNI = {terni_txt}\n"
+                f"• cluster = {cluster_txt}\n"
+                f"• hot attivi = {play['hot_count']}\n"
                 f"• max_colpi = {MAX_COLPI}"
             )
 
@@ -663,7 +711,7 @@ class SNIPER_V46_2:
     async def send_report(self, app):
         await self.tg(
             app,
-            "📊 REPORT v46.2\n"
+            "📊 REPORT v47\n"
             f"• play = {self.total_play}\n"
             f"• hit ambata = {self.total_hit_ambata}\n"
             f"• hit ambo = {self.total_hit_ambo}\n"
@@ -674,7 +722,7 @@ class SNIPER_V46_2:
 
 # ===================== LOOP ================================
 
-bot = SNIPER_V46_2()
+bot = SNIPER_V47()
 
 
 async def live():
@@ -702,14 +750,14 @@ async def live():
 
         await bot.tg(
             app,
-            "🚀 SNIPER v46.2 AVVIATO | LIVE_ONLY\n"
+            "🚀 SNIPER v47 AVVIATO | LIVE_ONLY\n"
             f"• storico caricato fino estrazione {bot.max_e}"
         )
 
     else:
         await bot.tg(
             app,
-            "🚀 SNIPER v46.2 RIAVVIATO\n"
+            "🚀 SNIPER v47 RIAVVIATO\n"
             f"• max_e = {bot.max_e}\n"
             f"• active = {bot.active}\n"
             f"• cooldown = {bot.cooldown}"
@@ -726,7 +774,7 @@ async def live():
                 await bot.on_new(app, e, nums)
 
         except Exception as ex:
-            await bot.tg(app, f"⚠️ errore v46.2: {ex}")
+            await bot.tg(app, f"⚠️ errore v47: {ex}")
 
         await asyncio.sleep(LOOP_SEC)
 
