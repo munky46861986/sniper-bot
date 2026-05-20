@@ -1,7 +1,7 @@
 # ============================================================
-# 🟡 GOLD BOT TRADER PRO v5.3
+# 🟡 GOLD BOT TRADER PRO v5.4
+# EARLY MOMENTUM + PRE ALERT + TP/SL
 # GitHub Ready
-# PRE ALERT più veloce + Entry/TP/SL
 # ============================================================
 
 import os
@@ -9,7 +9,6 @@ import asyncio
 import nest_asyncio
 import yfinance as yf
 import pandas as pd
-
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from telegram.ext import ApplicationBuilder
@@ -31,18 +30,18 @@ LOOP_SEC = 10
 
 EMA_FAST = 20
 EMA_SLOW = 50
-
 RSI_PERIOD = 14
 ATR_PERIOD = 14
 
 RSI_LONG = 58
 RSI_SHORT = 42
 
-RSI_PRE_LONG = 51
-RSI_PRE_SHORT = 49
+RSI_PRE_LONG = 50
+RSI_PRE_SHORT = 50
 
 COOLDOWN_MINUTES = 20
 PRE_COOLDOWN_MINUTES = 3
+EARLY_COOLDOWN_MINUTES = 2
 
 
 def now_italy():
@@ -74,7 +73,6 @@ def get_data(interval, period):
 
 def calc_rsi(series, period=14):
     delta = series.diff()
-
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
 
@@ -82,7 +80,6 @@ def calc_rsi(series, period=14):
     avg_loss = loss.rolling(period).mean()
 
     rs = avg_gain / avg_loss
-
     return 100 - (100 / (1 + rs))
 
 
@@ -93,11 +90,11 @@ def calc_atr(df, period=14):
 
     prev_close = close.shift(1)
 
-    tr1 = high - low
-    tr2 = (high - prev_close).abs()
-    tr3 = (low - prev_close).abs()
-
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
 
     return tr.rolling(period).mean()
 
@@ -160,6 +157,7 @@ def analyze_gold():
         return None
 
     close = df["Close"]
+    open_ = df["Open"]
 
     ema20_series = close.ewm(span=EMA_FAST, adjust=False).mean()
     ema50_series = close.ewm(span=EMA_SLOW, adjust=False).mean()
@@ -167,39 +165,38 @@ def analyze_gold():
     atr_series = calc_atr(df, ATR_PERIOD)
 
     price = float(close.iloc[-1])
+    prev_price = float(close.iloc[-2])
+
     ema20 = float(ema20_series.iloc[-1])
     ema50 = float(ema50_series.iloc[-1])
+
+    ema20_prev = float(ema20_series.iloc[-2])
+    ema50_prev = float(ema50_series.iloc[-2])
+
     rsi = float(rsi_series.iloc[-1])
+    rsi_prev = float(rsi_series.iloc[-2])
+    rsi_prev2 = float(rsi_series.iloc[-3])
+
     atr = float(atr_series.iloc[-1])
+
+    candle_open = float(open_.iloc[-1])
+    candle_close = float(close.iloc[-1])
 
     if pd.isna(rsi) or pd.isna(atr):
         return None
 
     trend_h1 = higher_trend()
 
-    pre_long = (
-        ema20 > ema50 and
-        price > ema20 and
-        RSI_PRE_LONG <= rsi < RSI_LONG
-    )
+    ema20_slope = ema20 - ema20_prev
+    ema50_slope = ema50 - ema50_prev
+    rsi_slope = rsi - rsi_prev
+    rsi_acceleration = (rsi - rsi_prev) + (rsi_prev - rsi_prev2)
 
-    pre_short = (
-        ema20 < ema50 and
-        price < ema20 and
-        RSI_SHORT < rsi <= RSI_PRE_SHORT
-    )
+    bullish_candle = candle_close > candle_open
+    bearish_candle = candle_close < candle_open
 
-    long_signal = (
-        ema20 > ema50 and
-        price > ema20 and
-        rsi >= RSI_LONG
-    )
-
-    short_signal = (
-        ema20 < ema50 and
-        price < ema20 and
-        rsi <= RSI_SHORT
-    )
+    price_momentum_up = price > prev_price
+    price_momentum_down = price < prev_price
 
     base = {
         "price": price,
@@ -208,7 +205,68 @@ def analyze_gold():
         "rsi": rsi,
         "atr": atr,
         "trend_h1": trend_h1,
+        "rsi_slope": rsi_slope,
+        "rsi_acceleration": rsi_acceleration,
+        "ema20_slope": ema20_slope,
     }
+
+    # ================= EARLY MOMENTUM =================
+
+    early_long = (
+        ema20 > ema50
+        and ema20_slope > 0
+        and price > ema20
+        and rsi >= 48
+        and rsi_slope > 0.8
+        and rsi_acceleration > 0
+        and bullish_candle
+        and price_momentum_up
+    )
+
+    early_short = (
+        ema20 < ema50
+        and ema20_slope < 0
+        and price < ema20
+        and rsi <= 52
+        and rsi_slope < -0.8
+        and rsi_acceleration < 0
+        and bearish_candle
+        and price_momentum_down
+    )
+
+    # ================= PRE SIGNAL =================
+
+    pre_long = (
+        ema20 > ema50
+        and price > ema20
+        and RSI_PRE_LONG <= rsi < RSI_LONG
+    )
+
+    pre_short = (
+        ema20 < ema50
+        and price < ema20
+        and RSI_SHORT < rsi <= RSI_PRE_SHORT
+    )
+
+    # ================= CONFIRMED =================
+
+    long_signal = (
+        ema20 > ema50
+        and price > ema20
+        and rsi >= RSI_LONG
+    )
+
+    short_signal = (
+        ema20 < ema50
+        and price < ema20
+        and rsi <= RSI_SHORT
+    )
+
+    if early_long:
+        return "EARLY_LONG", base
+
+    if early_short:
+        return "EARLY_SHORT", base
 
     if pre_long:
         return "PRE_LONG", base
@@ -237,19 +295,8 @@ def analyze_gold():
 
     prob = probability_score(signal, price, ema20, ema50, rsi, trend_h1)
 
-    if prob >= 75:
-        strength = "FORTE"
-    elif prob >= 60:
-        strength = "MEDIA"
-    else:
-        strength = "DEBOLE"
-
-    if atr > 2.5:
-        volatility = "ALTA"
-    elif atr > 1.2:
-        volatility = "MEDIA"
-    else:
-        volatility = "BASSA"
+    strength = "FORTE" if prob >= 75 else "MEDIA" if prob >= 60 else "DEBOLE"
+    volatility = "ALTA" if atr > 2.5 else "MEDIA" if atr > 1.2 else "BASSA"
 
     data = {
         **base,
@@ -272,8 +319,13 @@ class GoldBot:
     def __init__(self):
         self.last_signal = None
         self.last_alert_time = None
+
         self.last_pre_signal = None
         self.last_pre_alert_time = None
+
+        self.last_early_signal = None
+        self.last_early_alert_time = None
+
         self.active_trade = None
 
     async def tg(self, app, msg):
@@ -293,6 +345,55 @@ class GoldBot:
 
         diff = datetime.now(ZoneInfo("Europe/Rome")) - self.last_pre_alert_time
         return diff.total_seconds() >= PRE_COOLDOWN_MINUTES * 60
+
+    def early_cooldown_ok(self):
+        if self.last_early_alert_time is None:
+            return True
+
+        diff = datetime.now(ZoneInfo("Europe/Rome")) - self.last_early_alert_time
+        return diff.total_seconds() >= EARLY_COOLDOWN_MINUTES * 60
+
+    async def send_early_alert(self, app, signal, data):
+        price = data["price"]
+        atr = data["atr"]
+
+        if signal == "EARLY_LONG":
+            title = "⚡ EARLY LONG MOMENTUM XAUUSD"
+            tp1 = price + atr * 0.8
+            tp2 = price + atr * 1.5
+            sl = price - atr * 0.7
+            direction = "Momentum rialzista in accelerazione."
+        else:
+            title = "⚡ EARLY SHORT MOMENTUM XAUUSD"
+            tp1 = price - atr * 0.8
+            tp2 = price - atr * 1.5
+            sl = price + atr * 0.7
+            direction = "Momentum ribassista in accelerazione."
+
+        msg = (
+            f"{title}\n\n"
+            f"🕒 Ora Italia: {now_italy()}\n"
+            f"📌 Simbolo: {SYMBOL}\n"
+            f"⏱️ Timeframe: {TIMEFRAME}\n\n"
+            f"💰 Entry anticipata: {price:.2f}\n\n"
+            f"🎯 TP1 veloce: {tp1:.2f}\n"
+            f"🎯 TP2 veloce: {tp2:.2f}\n"
+            f"🛑 SL stretto: {sl:.2f}\n\n"
+            f"📈 EMA20: {data['ema20']:.2f}\n"
+            f"📉 EMA50: {data['ema50']:.2f}\n"
+            f"⚡ RSI14: {data['rsi']:.2f}\n"
+            f"🚀 RSI slope: {data['rsi_slope']:.2f}\n"
+            f"🔥 RSI acceleration: {data['rsi_acceleration']:.2f}\n"
+            f"🌪️ ATR14: {data['atr']:.2f}\n"
+            f"📊 Trend H1: {data['trend_h1']}\n\n"
+            f"🧠 {direction}\n\n"
+            f"⚠️ Segnale anticipato: più veloce, ma più rischioso."
+        )
+
+        await self.tg(app, msg)
+
+        self.last_early_signal = signal
+        self.last_early_alert_time = datetime.now(ZoneInfo("Europe/Rome"))
 
     async def send_pre_alert(self, app, signal, data):
         atr = data["atr"]
@@ -411,6 +512,11 @@ class GoldBot:
         if signal == "NEUTRAL":
             return
 
+        if signal in ["EARLY_LONG", "EARLY_SHORT"]:
+            if self.early_cooldown_ok():
+                await self.send_early_alert(app, signal, data)
+            return
+
         if signal in ["PRE_LONG", "PRE_SHORT"]:
             if self.pre_cooldown_ok():
                 await self.send_pre_alert(app, signal, data)
@@ -427,14 +533,14 @@ class GoldBot:
     async def start(self, app):
         await self.tg(
             app,
-            "🟡 GOLD BOT TRADER PRO v5.3 AVVIATO\n\n"
+            "🟡 GOLD BOT TRADER PRO v5.4 AVVIATO\n\n"
             f"📌 Simbolo: {SYMBOL}\n"
             f"⏱️ Timeframe: {TIMEFRAME}\n"
             f"📊 Trend filter: {HIGHER_TIMEFRAME}\n"
             f"🔁 Check ogni {LOOP_SEC} sec\n\n"
             "Funzioni:\n"
-            "✅ PRE ALERT più veloce\n"
-            "✅ Entry / TP / SL anticipati\n"
+            "✅ EARLY MOMENTUM ultra anticipato\n"
+            "✅ PRE ALERT con Entry / TP / SL\n"
             "✅ LONG / SHORT confermati\n"
             "✅ TP1 / TP2 tracking\n"
             "✅ SL tracking\n\n"
