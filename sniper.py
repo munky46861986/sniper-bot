@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v51 — DOPPIA AMBATA + EVENTI AMBO
+# 🚀 SNIPER v52 — DUAL AMBATA + EVENTI AMBO
 # ============================================================
 
 import asyncio
@@ -8,13 +8,10 @@ import re
 import os
 import json
 import hashlib
-
 from datetime import datetime
 from itertools import combinations
-
 from bs4 import BeautifulSoup
 from telegram.ext import ApplicationBuilder
-
 import nest_asyncio
 
 nest_asyncio.apply()
@@ -23,15 +20,11 @@ TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))
 
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0"
-}
-
-STATE_FILE = "sniper_v51_double_ambata.json"
+STATE_FILE = "sniper_v52_dual_ambata_eventi.json"
 
 LOOP_SEC = 60
-
 HISTORY_MAX = 240
 PROCESSED_MAX = 1000
 
@@ -45,155 +38,88 @@ MIN_HOT_ACTIVE = 3
 
 MAX_AMBI_PER_EVENT = 3
 MAX_COLPI_EVENTO = 6
-
 COOLDOWN_EVENTO = 4
 
-CLUSTER_REUSE_AFTER = 10
+SWITCH_THRESHOLD = 25
 
-SWITCH_THRESHOLD = 35
-
-
-# ============================================================
-# PARSER
-# ============================================================
 
 def parse_site():
-
-    r = requests.get(
-        URL,
-        headers=HEADERS,
-        timeout=20
-    )
-
+    r = requests.get(URL, headers=HEADERS, timeout=20)
     r.raise_for_status()
 
-    text = BeautifulSoup(
-        r.text,
-        "html.parser"
-    ).get_text("\n", strip=True)
-
-    lines = [
-        x.strip()
-        for x in text.splitlines()
-        if x.strip()
-    ]
+    text = BeautifulSoup(r.text, "html.parser").get_text("\n", strip=True)
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
 
     out = {}
-
     i = 0
 
     while i < len(lines):
-
-        m = re.search(
-            r"Estrazione\s+.*?\bn\.\s*(\d+)",
-            lines[i],
-            re.IGNORECASE
-        )
+        m = re.search(r"Estrazione\s+.*?\bn\.\s*(\d+)", lines[i], re.IGNORECASE)
 
         if not m:
             i += 1
             continue
 
         e = int(m.group(1))
-
         nums = []
-
         i += 1
 
         while i < len(lines):
-
             row = lines[i]
 
-            if re.search(
-                r"Estrazione\s+.*?\bn\.\s*\d+",
-                row,
-                re.IGNORECASE
-            ):
+            if re.search(r"Estrazione\s+.*?\bn\.\s*\d+", row, re.IGNORECASE):
                 break
 
             if re.fullmatch(r"\d{1,2}", row):
-
                 n = int(row)
-
                 if 1 <= n <= 90:
                     nums.append(n)
 
             i += 1
 
         if len(nums) >= 20:
-
             clean = nums[:20]
-
             if len(set(clean)) == 20:
                 out[e] = clean
 
     return sorted(out.items())
 
 
-# ============================================================
-# UTILS
-# ============================================================
-
 def fingerprint(e, nums):
-
-    return hashlib.md5(
-        f"{e}-{'-'.join(map(str, nums))}".encode()
-    ).hexdigest()
+    return hashlib.md5(f"{e}-{'-'.join(map(str, nums))}".encode()).hexdigest()
 
 
 def day_key():
-
     return datetime.now().strftime("%Y-%m-%d")
 
 
-# ============================================================
-# BOT
-# ============================================================
-
-class SNIPER_V51:
+class SNIPER_V52:
 
     def __init__(self):
-
-        self.version = "v51_double_ambata"
+        self.version = "v52_dual_ambata_eventi"
 
         self.day = day_key()
-
         self.max_e = 0
         self.last_fp = None
 
         self.last_draws = []
-
         self.processed_ids = []
         self.processed_fps = []
 
         self.watch = {}
         self.hot_confirmed = {}
 
-        # ================= MAIN AMBATA =================
+        self.dual_ambate = []
+        self.dual_score = 0
+        self.dual_switch = 0
 
-        self.current_super_ambata = None
-        self.current_super_score = 0
-
-        # ================= SHADOW =================
-
-        self.shadow_ambata = None
-        self.shadow_score = 0
-
-        # ================= EVENTI =================
+        self.total_dual_hit = 0
+        self.total_double_hit = 0
 
         self.active_event = False
         self.event_colpi = 0
         self.event_snapshot = None
         self.cooldown_event = 0
-
-        self.last_cluster_numbers = []
-        self.last_cluster_e = 0
-
-        # ================= STATS =================
-
-        self.total_ambata_hit = 0
-        self.total_shadow_hit = 0
-        self.total_ambata_switch = 0
 
         self.total_event_play = 0
         self.total_event_hit = 0
@@ -201,186 +127,106 @@ class SNIPER_V51:
 
         self.load_state()
 
-    # ========================================================
-    # TELEGRAM
-    # ========================================================
-
     async def tg(self, app, msg):
-
         if not msg:
             return
 
-        try:
+        max_len = 3000
+        chunks = [msg[i:i + max_len] for i in range(0, len(msg), max_len)]
 
-            await app.bot.send_message(
-                chat_id=CHAT_ID,
-                text=msg
-            )
+        for chunk in chunks:
+            for attempt in range(3):
+                try:
+                    await app.bot.send_message(
+                        chat_id=CHAT_ID,
+                        text=chunk,
+                        read_timeout=30,
+                        write_timeout=30,
+                        connect_timeout=30,
+                        pool_timeout=30
+                    )
+                    break
+                except Exception as ex:
+                    print(f"Telegram error attempt {attempt + 1}: {ex}")
+                    await asyncio.sleep(5)
 
-        except Exception as ex:
-
-            print(ex)
-
-    # ========================================================
-    # SAVE
-    # ========================================================
+    # ===================== STATE =============================
 
     def save_state(self):
-
         data = {
-
             "version": self.version,
             "day": self.day,
-
             "max_e": self.max_e,
             "last_fp": self.last_fp,
-
             "last_draws": self.last_draws[-HISTORY_MAX:],
-
             "processed_ids": self.processed_ids[-PROCESSED_MAX:],
             "processed_fps": self.processed_fps[-PROCESSED_MAX:],
-
             "watch": self.watch,
             "hot_confirmed": self.hot_confirmed,
-
-            "current_super_ambata": self.current_super_ambata,
-            "current_super_score": self.current_super_score,
-
-            "shadow_ambata": self.shadow_ambata,
-            "shadow_score": self.shadow_score,
-
+            "dual_ambate": self.dual_ambate,
+            "dual_score": self.dual_score,
+            "dual_switch": self.dual_switch,
+            "total_dual_hit": self.total_dual_hit,
+            "total_double_hit": self.total_double_hit,
             "active_event": self.active_event,
             "event_colpi": self.event_colpi,
             "event_snapshot": self.event_snapshot,
             "cooldown_event": self.cooldown_event,
-
-            "last_cluster_numbers": self.last_cluster_numbers,
-            "last_cluster_e": self.last_cluster_e,
-
-            "total_ambata_hit": self.total_ambata_hit,
-            "total_shadow_hit": self.total_shadow_hit,
-            "total_ambata_switch": self.total_ambata_switch,
-
             "total_event_play": self.total_event_play,
             "total_event_hit": self.total_event_hit,
             "total_event_stop": self.total_event_stop
         }
 
-        with open(
-            STATE_FILE,
-            "w",
-            encoding="utf-8"
-        ) as f:
-
-            json.dump(
-                data,
-                f,
-                ensure_ascii=False,
-                indent=2
-            )
-
-    # ========================================================
-    # LOAD
-    # ========================================================
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
     def load_state(self):
-
         if not os.path.exists(STATE_FILE):
             return
 
         try:
-
-            with open(
-                STATE_FILE,
-                "r",
-                encoding="utf-8"
-            ) as f:
-
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            self.day = data.get("day", day_key())
+            saved_day = data.get("day", day_key())
 
-            self.max_e = data.get("max_e", 0)
+            if saved_day != day_key():
+                self.day = day_key()
+                return
+
+            self.day = saved_day
+            self.max_e = int(data.get("max_e", 0))
             self.last_fp = data.get("last_fp")
 
-            self.last_draws = data.get(
-                "last_draws",
-                []
-            )[-HISTORY_MAX:]
-
-            self.processed_ids = data.get(
-                "processed_ids",
-                []
-            )[-PROCESSED_MAX:]
-
-            self.processed_fps = data.get(
-                "processed_fps",
-                []
-            )[-PROCESSED_MAX:]
+            self.last_draws = data.get("last_draws", [])[-HISTORY_MAX:]
+            self.processed_ids = data.get("processed_ids", [])[-PROCESSED_MAX:]
+            self.processed_fps = data.get("processed_fps", [])[-PROCESSED_MAX:]
 
             self.watch = data.get("watch", {})
             self.hot_confirmed = data.get("hot_confirmed", {})
 
-            self.current_super_ambata = data.get("current_super_ambata")
-            self.current_super_score = data.get("current_super_score", 0)
+            self.dual_ambate = data.get("dual_ambate", [])
+            self.dual_score = float(data.get("dual_score", 0))
+            self.dual_switch = int(data.get("dual_switch", 0))
 
-            self.shadow_ambata = data.get("shadow_ambata")
-            self.shadow_score = data.get("shadow_score", 0)
+            self.total_dual_hit = int(data.get("total_dual_hit", 0))
+            self.total_double_hit = int(data.get("total_double_hit", 0))
 
-            self.active_event = data.get("active_event", False)
-            self.event_colpi = data.get("event_colpi", 0)
+            self.active_event = bool(data.get("active_event", False))
+            self.event_colpi = int(data.get("event_colpi", 0))
             self.event_snapshot = data.get("event_snapshot")
-            self.cooldown_event = data.get("cooldown_event", 0)
+            self.cooldown_event = int(data.get("cooldown_event", 0))
 
-            self.last_cluster_numbers = data.get(
-                "last_cluster_numbers",
-                []
-            )
-
-            self.last_cluster_e = data.get(
-                "last_cluster_e",
-                0
-            )
-
-            self.total_ambata_hit = data.get(
-                "total_ambata_hit",
-                0
-            )
-
-            self.total_shadow_hit = data.get(
-                "total_shadow_hit",
-                0
-            )
-
-            self.total_ambata_switch = data.get(
-                "total_ambata_switch",
-                0
-            )
-
-            self.total_event_play = data.get(
-                "total_event_play",
-                0
-            )
-
-            self.total_event_hit = data.get(
-                "total_event_hit",
-                0
-            )
-
-            self.total_event_stop = data.get(
-                "total_event_stop",
-                0
-            )
+            self.total_event_play = int(data.get("total_event_play", 0))
+            self.total_event_hit = int(data.get("total_event_hit", 0))
+            self.total_event_stop = int(data.get("total_event_stop", 0))
 
         except Exception:
             pass
 
-    # ========================================================
-    # DEDUP
-    # ========================================================
+    # ===================== DEDUP =============================
 
     def already_processed(self, e, nums):
-
         fp = fingerprint(e, nums)
 
         if fp == self.last_fp:
@@ -395,7 +241,6 @@ class SNIPER_V51:
         return False
 
     def remember_processed(self, e, nums):
-
         fp = fingerprint(e, nums)
 
         self.max_e = max(self.max_e, e)
@@ -404,89 +249,65 @@ class SNIPER_V51:
         self.processed_ids.append(e)
         self.processed_fps.append(fp)
 
-    # ========================================================
-    # FEATURES
-    # ========================================================
+        self.processed_ids = self.processed_ids[-PROCESSED_MAX:]
+        self.processed_fps = self.processed_fps[-PROCESSED_MAX:]
+
+    # ===================== FEATURES ==========================
 
     def lag(self, n):
-
         lag = 0
 
         for d in reversed(self.last_draws[:-1]):
-
             lag += 1
-
             if n in d:
                 return lag
 
         return lag
 
     def heat(self, n):
-
         weights = [5, 4, 3, 2, 1]
 
         return sum(
-
             w for i, w in enumerate(weights)
-
             if i < len(self.last_draws)
             and n in self.last_draws[-(i + 1)]
         )
 
     def dominance(self, n, window=6):
-
-        return sum(
-            1 for d in self.last_draws[-window:]
-            if n in d
-        )
+        return sum(1 for d in self.last_draws[-window:] if n in d)
 
     def pressure(self, n):
-
         weights = [5, 4, 3, 2, 1]
 
         return sum(
-
             w for i, w in enumerate(weights)
-
             if i < len(self.last_draws)
             and n in self.last_draws[-(i + 1)]
         )
 
-    # ========================================================
-    # TOP RITARDATARI
-    # ========================================================
+    # ===================== RITARDATARI =======================
 
     def top_ritardatari(self):
-
         data = []
 
         for n in range(1, 91):
-
             data.append({
                 "number": n,
                 "lag": self.lag(n)
             })
 
-        data.sort(
-            key=lambda x: (-x["lag"], x["number"])
-        )
-
+        data.sort(key=lambda x: (-x["lag"], x["number"]))
         return data[:TOP_RITARDATARI]
 
     def selected_ritardatari(self):
-
         top10 = self.top_ritardatari()
-
         selected = []
 
         for pos in PLAY_POSITIONS:
-
             idx = pos - 1
 
             if idx < len(top10):
-
                 selected.append({
-
                     "position": pos,
                     "number": top10[idx]["number"],
                     "lag": top10[idx]["lag"]
@@ -494,118 +315,152 @@ class SNIPER_V51:
 
         return selected
 
-    # ========================================================
-    # UPDATE HOT
-    # ========================================================
+    # ===================== CLEAN =============================
+
+    def clean_old_watch(self, current_e):
+        remove = []
+
+        for key, data in self.watch.items():
+            if current_e - int(data["first_e"]) > WATCH_WINDOW:
+                remove.append(key)
+
+        for key in remove:
+            self.watch.pop(key, None)
+
+    def clean_old_hot(self, current_e):
+        remove = []
+
+        for key, data in self.hot_confirmed.items():
+            if current_e - int(data["confirmed_e"]) > HOT_TTL:
+                remove.append(key)
+
+        for key in remove:
+            self.hot_confirmed.pop(key, None)
+
+    # ===================== UPDATE HOT ========================
 
     def update_watch(self, e, nums):
-
         selected = self.selected_ritardatari()
-
         s = set(nums)
 
         for item in selected:
-
-            n = item["number"]
-
+            n = int(item["number"])
             key = str(n)
 
             if n not in s:
                 continue
 
             if key not in self.watch:
-
                 self.watch[key] = {
-
                     "number": n,
                     "hits": 1,
                     "first_e": e,
                     "last_e": e,
-                    "lag": item["lag"]
+                    "position": item["position"],
+                    "initial_lag": item["lag"]
                 }
 
             else:
-
                 self.watch[key]["hits"] += 1
                 self.watch[key]["last_e"] = e
 
                 if self.watch[key]["hits"] >= 2:
-
                     self.hot_confirmed[key] = {
-
                         **self.watch[key],
                         "confirmed_e": e
                     }
+                    self.watch.pop(key, None)
 
-    # ========================================================
-    # SCORE
-    # ========================================================
+        self.clean_old_watch(e)
+        self.clean_old_hot(e)
+
+    # ===================== SCORE =============================
 
     def super_score(self, n, e):
-
         hot = self.hot_confirmed.get(str(n))
-
         hot_bonus = 0
 
         if hot:
-
-            age = e - hot["confirmed_e"]
-
+            age = e - int(hot["confirmed_e"])
             hot_bonus = (
-                hot["hits"] * 20
+                int(hot.get("hits", 0)) * 22
                 - age * 2
+                + int(hot.get("initial_lag", 0))
+                - int(hot.get("position", 99))
             )
 
         return (
-
             hot_bonus
-
             + self.heat(n) * 3
-
             + self.dominance(n, 6) * 4
-
             + self.pressure(n) * 2
-
             - self.lag(n)
         )
 
-    # ========================================================
-    # BUILD SCORES
-    # ========================================================
-
     def build_scores(self, e):
-
         scores = []
 
         for item in self.hot_confirmed.values():
-
-            n = item["number"]
+            n = int(item["number"])
 
             scores.append({
-
                 "number": n,
-
-                "score": round(
-                    self.super_score(n, e),
-                    2
-                )
+                "score": round(self.super_score(n, e), 2),
+                "heat": self.heat(n),
+                "lag": self.lag(n),
+                "dominance": self.dominance(n, 6),
+                "pressure": self.pressure(n)
             })
 
-        scores.sort(
-            key=lambda x: -x["score"]
-        )
-
+        scores.sort(key=lambda x: -x["score"])
         return scores
 
-    # ========================================================
-    # EVENTI
-    # ========================================================
+    # ===================== DUAL AMBATA =======================
+
+    def update_dual_ambata(self, app, e, scores):
+        if len(scores) < 2:
+            return None
+
+        new_dual = [scores[0]["number"], scores[1]["number"]]
+        new_score = scores[0]["score"] + scores[1]["score"]
+
+        if not self.dual_ambate:
+            self.dual_ambate = new_dual
+            self.dual_score = new_score
+
+            return (
+                "🔥 DUAL AMBATA ATTIVA v52\n"
+                f"• A = {new_dual[0]} score {scores[0]['score']}\n"
+                f"• B = {new_dual[1]} score {scores[1]['score']}"
+            )
+
+        old_set = set(self.dual_ambate)
+        new_set = set(new_dual)
+
+        if old_set != new_set and new_score > self.dual_score + SWITCH_THRESHOLD:
+            old = self.dual_ambate
+
+            self.dual_ambate = new_dual
+            self.dual_score = new_score
+            self.dual_switch += 1
+
+            return (
+                "🔁 SWITCH DUAL AMBATA v52\n"
+                f"• vecchie = {old[0]}, {old[1]}\n"
+                f"• nuove = {new_dual[0]}, {new_dual[1]}\n"
+                f"• score = {new_score}"
+            )
+
+        self.dual_score = max(self.dual_score, new_score)
+        return None
+
+    # ===================== EVENTI AMBO =======================
 
     def build_event(self, e):
-
-        hot_items = list(
-            self.hot_confirmed.values()
-        )
+        hot_items = [
+            x for x in self.hot_confirmed.values()
+            if 0 <= e - int(x["confirmed_e"]) <= HOT_TTL
+        ]
 
         if len(hot_items) < MIN_HOT_ACTIVE:
             return None
@@ -613,47 +468,29 @@ class SNIPER_V51:
         pairs = []
 
         for a, b in combinations(hot_items, 2):
+            na = int(a["number"])
+            nb = int(b["number"])
 
-            na = a["number"]
-            nb = b["number"]
-
-            score = (
-                self.super_score(na, e)
-                +
-                self.super_score(nb, e)
-            )
+            score = self.super_score(na, e) + self.super_score(nb, e)
 
             pairs.append({
-
-                "ambo": (na, nb),
+                "ambo": tuple(sorted((na, nb))),
                 "score": round(score, 2)
             })
 
-        pairs.sort(
-            key=lambda x: -x["score"]
-        )
-
+        pairs.sort(key=lambda x: -x["score"])
         ambi = pairs[:MAX_AMBI_PER_EVENT]
 
         if not ambi:
             return None
 
-        return {
-            "ambi": ambi
-        }
-
-    # ========================================================
-    # CHECK EVENT
-    # ========================================================
+        return {"ambi": ambi}
 
     def check_event_hit(self, nums):
-
         s = set(nums)
-
         hits = []
 
         for item in self.event_snapshot["ambi"]:
-
             a, b = item["ambo"]
 
             if a in s and b in s:
@@ -661,12 +498,9 @@ class SNIPER_V51:
 
         return hits
 
-    # ========================================================
-    # MAIN
-    # ========================================================
+    # ===================== MAIN ==============================
 
     async def on_new(self, app, e, nums):
-
         if len(set(nums)) != 20:
             return
 
@@ -686,320 +520,182 @@ class SNIPER_V51:
             f"🎱 {', '.join(map(str, nums))}"
         )
 
-        # ====================================================
-        # UPDATE WATCH
-        # ====================================================
-
         if len(self.last_draws) >= 30:
             self.update_watch(e, nums)
 
-        # ====================================================
-        # BUILD MAIN + SHADOW
-        # ====================================================
+        # ================= DUAL AMBATA =================
 
         scores = self.build_scores(e)
 
         if len(scores) >= 2:
+            msg = self.update_dual_ambata(app, e, scores)
 
-            main = scores[0]
-            shadow = scores[1]
+            if msg:
+                await self.tg(app, msg)
 
-            main_n = main["number"]
-            main_score = main["score"]
+            hit_dual = [n for n in self.dual_ambate if n in s]
 
-            shadow_n = shadow["number"]
-            shadow_score = shadow["score"]
+            if hit_dual:
+                self.total_dual_hit += 1
 
-            # ================================================
-            # INIT
-            # ================================================
-
-            if self.current_super_ambata is None:
-
-                self.current_super_ambata = main_n
-                self.current_super_score = main_score
-
-                self.shadow_ambata = shadow_n
-                self.shadow_score = shadow_score
+                if len(hit_dual) == 2:
+                    self.total_double_hit += 1
 
                 await self.tg(
                     app,
-                    "🔥 DOPPIA AMBATA ATTIVA v51\n"
-                    f"• MAIN = {main_n}\n"
-                    f"• SHADOW = {shadow_n}"
+                    "🎯 HIT DUAL AMBATA v52\n"
+                    f"• ambate = {', '.join(map(str, self.dual_ambate))}\n"
+                    f"• uscite = {', '.join(map(str, hit_dual))}\n\n"
+                    f"📊 STATS AMBATA\n"
+                    f"• hit almeno 1 = {self.total_dual_hit}\n"
+                    f"• hit doppio = {self.total_double_hit}\n"
+                    f"• switch = {self.dual_switch}"
                 )
 
-            # ================================================
-            # SWITCH
-            # ================================================
-
-            else:
-
-                if (
-
-                    main_n != self.current_super_ambata
-
-                    and
-
-                    main_score >
-                    self.current_super_score + SWITCH_THRESHOLD
-                ):
-
-                    old_main = self.current_super_ambata
-
-                    self.shadow_ambata = old_main
-                    self.shadow_score = self.current_super_score
-
-                    self.current_super_ambata = main_n
-                    self.current_super_score = main_score
-
-                    self.total_ambata_switch += 1
-
-                    await self.tg(
-                        app,
-                        "🔁 SWITCH MAIN v51\n"
-                        f"• {old_main} → {main_n}\n"
-                        f"• nuova shadow = {old_main}"
-                    )
-
-                else:
-
-                    self.current_super_score = main_score
-
-                    if shadow_n != self.current_super_ambata:
-
-                        self.shadow_ambata = shadow_n
-                        self.shadow_score = shadow_score
-
-            # ================================================
-            # HIT MAIN
-            # ================================================
-
-            if self.current_super_ambata in s:
-
-                self.total_ambata_hit += 1
-
-                await self.tg(
-                    app,
-                    "🎯 HIT MAIN AMBATA v51\n"
-                    f"• numero = {self.current_super_ambata}\n\n"
-                    f"📊 STATS\n"
-                    f"• hit main = {self.total_ambata_hit}\n"
-                    f"• hit shadow = {self.total_shadow_hit}\n"
-                    f"• switch = {self.total_ambata_switch}"
-                )
-
-            # ================================================
-            # HIT SHADOW
-            # ================================================
-
-            if (
-
-                self.shadow_ambata
-
-                and
-
-                self.shadow_ambata in s
-            ):
-
-                self.total_shadow_hit += 1
-
-                await self.tg(
-                    app,
-                    "🌑 HIT SHADOW v51\n"
-                    f"• numero = {self.shadow_ambata}\n\n"
-                    f"📊 STATS\n"
-                    f"• hit main = {self.total_ambata_hit}\n"
-                    f"• hit shadow = {self.total_shadow_hit}"
-                )
-
-        # ====================================================
-        # EVENTI
-        # ====================================================
+        # ================= EVENTO AMBO ATTIVO ================
 
         if self.active_event:
-
             self.event_colpi += 1
 
             hits = self.check_event_hit(nums)
 
             if hits:
-
                 self.total_event_hit += 1
 
                 ambi_txt = ", ".join(
-
                     f"{a}-{b}"
-
                     for item in hits
-
                     for a, b in [item["ambo"]]
                 )
 
                 await self.tg(
                     app,
-                    "🔥 HIT EVENTO AMBO v51\n"
+                    "🔥 HIT EVENTO AMBO v52\n"
                     f"• colpo = {self.event_colpi}\n"
-                    f"• ambi = {ambi_txt}"
+                    f"• ambi = {ambi_txt}\n\n"
+                    f"📊 EVENTI\n"
+                    f"• play = {self.total_event_play}\n"
+                    f"• hit = {self.total_event_hit}\n"
+                    f"• stop = {self.total_event_stop}"
                 )
 
                 self.active_event = False
                 self.event_colpi = 0
                 self.event_snapshot = None
                 self.cooldown_event = COOLDOWN_EVENTO
+                self.save_state()
+                return
 
-            elif self.event_colpi >= MAX_COLPI_EVENTO:
-
+            if self.event_colpi >= MAX_COLPI_EVENTO:
                 self.total_event_stop += 1
 
                 await self.tg(
                     app,
-                    "🛑 STOP EVENTO v51"
+                    "🛑 STOP EVENTO v52\n"
+                    f"• {MAX_COLPI_EVENTO} colpi\n\n"
+                    f"📊 EVENTI\n"
+                    f"• play = {self.total_event_play}\n"
+                    f"• hit = {self.total_event_hit}\n"
+                    f"• stop = {self.total_event_stop}"
                 )
 
                 self.active_event = False
                 self.event_colpi = 0
                 self.event_snapshot = None
                 self.cooldown_event = COOLDOWN_EVENTO
+                self.save_state()
+                return
 
-        else:
+        # ================= CREA EVENTO =======================
 
+        if not self.active_event:
             if self.cooldown_event > 0:
-
                 self.cooldown_event -= 1
-
             else:
-
                 evento = self.build_event(e)
 
                 if evento:
-
                     self.active_event = True
                     self.event_colpi = 0
                     self.event_snapshot = evento
-
                     self.total_event_play += 1
 
                     ambi_txt = ", ".join(
-
                         f"{a}-{b}"
-
                         for item in evento["ambi"]
-
                         for a, b in [item["ambo"]]
                     )
 
                     await self.tg(
                         app,
-                        "🚀 EVENTO AMBI v51\n"
-                        f"• ambi = {ambi_txt}"
+                        "🚀 EVENTO AMBI v52\n"
+                        f"• ambi = {ambi_txt}\n"
+                        f"• max_colpi = {MAX_COLPI_EVENTO}"
                     )
 
         self.save_state()
 
-    # ========================================================
-    # REPORT
-    # ========================================================
-
     async def send_report(self, app):
-
         await self.tg(
             app,
-            "📊 REPORT v51\n\n"
-
-            f"🔥 MAIN\n"
-            f"• numero = {self.current_super_ambata}\n"
-            f"• hit = {self.total_ambata_hit}\n\n"
-
-            f"🌑 SHADOW\n"
-            f"• numero = {self.shadow_ambata}\n"
-            f"• hit = {self.total_shadow_hit}\n\n"
-
-            f"🔁 switch = {self.total_ambata_switch}\n\n"
-
-            f"🔥 EVENTI\n"
+            "📊 REPORT v52\n\n"
+            f"🎯 DUAL AMBATA\n"
+            f"• attive = {', '.join(map(str, self.dual_ambate)) if self.dual_ambate else 'nessuna'}\n"
+            f"• hit almeno 1 = {self.total_dual_hit}\n"
+            f"• hit doppio = {self.total_double_hit}\n"
+            f"• switch = {self.dual_switch}\n\n"
+            f"🔥 EVENTI AMBO\n"
             f"• play = {self.total_event_play}\n"
             f"• hit = {self.total_event_hit}\n"
             f"• stop = {self.total_event_stop}"
         )
 
 
-# ============================================================
-# LOOP
-# ============================================================
+# ===================== LOOP ================================
 
-bot = SNIPER_V51()
+bot = SNIPER_V52()
 
 
 async def live():
-
     app = ApplicationBuilder().token(TOKEN).build()
 
     es = parse_site()
 
     if not es:
-
-        await bot.tg(
-            app,
-            "⚠️ parser vuoto"
-        )
-
+        await bot.tg(app, "⚠️ parser vuoto")
         return
 
     if not bot.last_draws:
-
         for e, nums in es:
             bot.last_draws.append(nums)
 
         bot.last_draws = bot.last_draws[-HISTORY_MAX:]
 
         bot.max_e = es[-1][0]
-
-        bot.last_fp = fingerprint(
-            es[-1][0],
-            es[-1][1]
-        )
+        bot.last_fp = fingerprint(es[-1][0], es[-1][1])
 
         bot.processed_ids.append(es[-1][0])
         bot.processed_fps.append(bot.last_fp)
 
         bot.save_state()
 
-        await bot.tg(
-            app,
-            "🚀 SNIPER v51 AVVIATO"
-        )
+        await bot.tg(app, "🚀 SNIPER v52 AVVIATO")
 
     else:
-
-        await bot.tg(
-            app,
-            "🚀 SNIPER v51 RIAVVIATO"
-        )
+        await bot.tg(app, "🚀 SNIPER v52 RIAVVIATO")
 
     while True:
-
         try:
-
             es = parse_site()
 
             for e, nums in es:
-
                 if bot.already_processed(e, nums):
                     continue
 
-                await bot.on_new(
-                    app,
-                    e,
-                    nums
-                )
+                await bot.on_new(app, e, nums)
 
         except Exception as ex:
-
-            await bot.tg(
-                app,
-                f"⚠️ errore v51: {ex}"
-            )
+            await bot.tg(app, f"⚠️ errore v52: {ex}")
 
         await asyncio.sleep(LOOP_SEC)
 
