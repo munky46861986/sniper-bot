@@ -1,15 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v54 — V48 FILTRATA + BONUS CLUSTER STORICO
-#
-# Gioca:
-# • 1 AMBATA leader
-# • 3 AMBI cluster
-# • TERNO solo osservazione
-# • max_colpi = 3
-#
-# Miglioria:
-# • bonus se il cluster è storico forte
-# • bonus se il leader è storico forte
+# 🚀 SNIPER v48 — AMBATA + 3 AMBI CLEAN
 # ============================================================
 
 import asyncio
@@ -33,7 +23,7 @@ CHAT_ID = int(os.getenv("CHAT_ID"))
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-STATE_FILE = "sniper_v54_v48_filtrata_cluster_bonus.json"
+STATE_FILE = "sniper_v48_clean_state.json"
 
 LOOP_SEC = 60
 HISTORY_MAX = 240
@@ -47,38 +37,10 @@ HOT_TTL = 45
 
 MIN_HOT_ACTIVE = 3
 MAX_AMBI_PER_PLAY = 3
-MAX_COLPI = 3
-COOLDOWN_AFTER_PLAY = 4
+MAX_COLPI = 4
+COOLDOWN_AFTER_PLAY = 5
 
-TOP_CLUSTERS = {
-    (15, 43, 49): 30,
-    (4, 8, 86): 28,
-    (18, 62, 73): 28,
-    (24, 45, 85): 26,
-    (5, 24, 38): 26,
-    (4, 8, 24): 26,
-    (1, 65, 67): 26,
-    (13, 33, 48): 22,
-    (36, 66, 89): 22,
-    (26, 29, 72): 22,
-    (10, 23, 90): 22,
-    (18, 19, 20): 22,
-    (19, 37, 38): 22,
-}
-
-TOP_LEADERS = {
-    45: 18,
-    36: 16,
-    15: 16,
-    8: 16,
-    1: 16,
-    17: 14,
-    18: 12,
-    5: 10,
-    4: 10,
-    19: 10,
-    24: 10,
-}
+CLUSTER_REUSE_AFTER = 12
 
 
 def parse_site():
@@ -131,10 +93,10 @@ def day_key():
     return datetime.now().strftime("%Y-%m-%d")
 
 
-class SNIPER_V54:
+class SNIPER_V48:
 
     def __init__(self):
-        self.version = "v54_v48_filtrata_cluster_bonus"
+        self.version = "v48_clean"
 
         self.day = day_key()
         self.max_e = 0
@@ -151,6 +113,9 @@ class SNIPER_V54:
         self.colpi = 0
         self.cooldown = 0
         self.active_snapshot = None
+
+        self.last_cluster_numbers = []
+        self.last_cluster_e = 0
 
         self.total_play = 0
         self.total_hit_ambata = 0
@@ -199,6 +164,8 @@ class SNIPER_V54:
             "colpi": self.colpi,
             "cooldown": self.cooldown,
             "active_snapshot": self.active_snapshot,
+            "last_cluster_numbers": self.last_cluster_numbers,
+            "last_cluster_e": self.last_cluster_e,
             "total_play": self.total_play,
             "total_hit_ambata": self.total_hit_ambata,
             "total_hit_ambo": self.total_hit_ambo,
@@ -225,6 +192,7 @@ class SNIPER_V54:
             self.day = saved_day
             self.max_e = int(data.get("max_e", 0))
             self.last_fp = data.get("last_fp")
+
             self.last_draws = data.get("last_draws", [])[-HISTORY_MAX:]
             self.processed_ids = data.get("processed_ids", [])[-PROCESSED_MAX:]
             self.processed_fps = data.get("processed_fps", [])[-PROCESSED_MAX:]
@@ -236,6 +204,9 @@ class SNIPER_V54:
             self.colpi = int(data.get("colpi", 0))
             self.cooldown = int(data.get("cooldown", 0))
             self.active_snapshot = data.get("active_snapshot")
+
+            self.last_cluster_numbers = data.get("last_cluster_numbers", [])
+            self.last_cluster_e = int(data.get("last_cluster_e", 0))
 
             self.total_play = int(data.get("total_play", 0))
             self.total_hit_ambata = int(data.get("total_hit_ambata", 0))
@@ -277,14 +248,17 @@ class SNIPER_V54:
 
     def lag(self, n):
         lag = 0
+
         for d in reversed(self.last_draws[:-1]):
             lag += 1
             if n in d:
                 return lag
+
         return lag
 
     def heat(self, n):
         weights = [5, 4, 3, 2, 1]
+
         return sum(
             w for i, w in enumerate(weights)
             if i < len(self.last_draws)
@@ -292,10 +266,14 @@ class SNIPER_V54:
         )
 
     def dominance(self, n, window=6):
-        return sum(1 for d in self.last_draws[-window:] if n in d)
+        return sum(
+            1 for d in self.last_draws[-window:]
+            if n in d
+        )
 
     def pressure(self, n):
         weights = [5, 4, 3, 2, 1]
+
         return sum(
             w for i, w in enumerate(weights)
             if i < len(self.last_draws)
@@ -400,7 +378,7 @@ class SNIPER_V54:
         if hot:
             age = e - int(hot["confirmed_e"])
             hot_bonus = (
-                int(hot.get("hits", 0)) * 22
+                int(hot.get("hits", 0)) * 20
                 - age * 2
                 + int(hot.get("initial_lag", 0))
                 - int(hot.get("position", 99))
@@ -414,25 +392,18 @@ class SNIPER_V54:
             - self.lag(n)
         )
 
-    def cluster_bonus(self, cluster):
-        key = tuple(sorted(cluster))
+    # ===================== CLUSTER ===========================
 
-        if key in TOP_CLUSTERS:
-            return TOP_CLUSTERS[key]
+    def duplicate_cluster(self, cluster_numbers, e):
+        if not self.last_cluster_numbers:
+            return False
 
-        bonus = 0
+        if e - self.last_cluster_e >= CLUSTER_REUSE_AFTER:
+            return False
 
-        for top_cluster, value in TOP_CLUSTERS.items():
-            overlap = len(set(key) & set(top_cluster))
-            if overlap == 2:
-                bonus = max(bonus, int(value * 0.45))
+        overlap = len(set(cluster_numbers) & set(self.last_cluster_numbers))
 
-        return bonus
-
-    def leader_bonus(self, leader):
-        return TOP_LEADERS.get(int(leader), 0)
-
-    # ===================== BUILD PLAY ========================
+        return overlap >= 2
 
     def build_play(self, e):
         hot_items = [
@@ -443,7 +414,7 @@ class SNIPER_V54:
         if len(hot_items) < MIN_HOT_ACTIVE:
             return None
 
-        pair_candidates = []
+        pairs = []
 
         for a, b in combinations(hot_items, 2):
             na = int(a["number"])
@@ -451,18 +422,19 @@ class SNIPER_V54:
 
             score = self.number_score(na, e) + self.number_score(nb, e)
 
-            pair_candidates.append({
+            pairs.append({
                 "ambo": tuple(sorted((na, nb))),
                 "score": round(score, 2)
             })
 
-        pair_candidates.sort(key=lambda x: -x["score"])
-        ambi = pair_candidates[:MAX_AMBI_PER_PLAY]
+        pairs.sort(key=lambda x: -x["score"])
+        ambi = pairs[:MAX_AMBI_PER_PLAY]
 
         if not ambi:
             return None
 
         all_numbers = []
+
         for item in ambi:
             all_numbers.extend(item["ambo"])
 
@@ -471,49 +443,18 @@ class SNIPER_V54:
         if len(cluster_numbers) < 3:
             return None
 
+        if self.duplicate_cluster(cluster_numbers, e):
+            return None
+
         freq = Counter(all_numbers)
+        ambata = freq.most_common(1)[0][0]
 
-        leader_candidates = []
-
-        for n in cluster_numbers:
-            leader_candidates.append({
-                "number": n,
-                "score": round(
-                    self.number_score(n, e)
-                    + freq.get(n, 0) * 20
-                    + self.leader_bonus(n),
-                    2
-                ),
-                "freq": freq.get(n, 0),
-                "leader_bonus": self.leader_bonus(n)
-            })
-
-        leader_candidates.sort(key=lambda x: (-x["score"], -x["freq"]))
-        leader = leader_candidates[0]["number"]
-
-        cluster_score = (
-            sum(x["score"] for x in pair_candidates[:MAX_AMBI_PER_PLAY])
-            + self.cluster_bonus(cluster_numbers)
-            + self.leader_bonus(leader)
-        )
-
-        cluster_b = self.cluster_bonus(cluster_numbers)
-        leader_b = self.leader_bonus(leader)
-
-        terni_osservazione = []
-
-        if len(cluster_numbers) >= 3:
-            terni_osservazione = list(combinations(cluster_numbers, 3))[:3]
+        terni_osservazione = list(combinations(cluster_numbers, 3))[:3]
 
         return {
-            "leader": leader,
-            "ambata": leader,
+            "ambata": ambata,
             "ambi": ambi,
             "cluster_numbers": cluster_numbers,
-            "cluster_score": round(cluster_score, 2),
-            "cluster_bonus": cluster_b,
-            "leader_bonus": leader_b,
-            "leader_candidates": leader_candidates,
             "terni_osservazione": terni_osservazione
         }
 
@@ -529,6 +470,7 @@ class SNIPER_V54:
 
         for item in snap["ambi"]:
             a, b = item["ambo"]
+
             if a in s and b in s:
                 ambi_hit.append(item)
 
@@ -577,13 +519,13 @@ class SNIPER_V54:
 
                 await self.tg(
                     app,
-                    f"🎯 AMBATA LEADER PRESA v54 | colpo {self.colpi}\n"
+                    f"🎯 AMBATA PRESA v48 | colpo {self.colpi}\n"
                     f"• ambata = {self.active_snapshot['ambata']}"
                 )
 
             await self.tg(
                 app,
-                f"🔎 CHECK v54 | colpo {self.colpi}/{MAX_COLPI}\n"
+                f"🔎 CHECK v48 | colpo {self.colpi}/{MAX_COLPI}\n"
                 f"• ambata = {'SI' if hit_data['ambata_hit'] else 'NO'}\n"
                 f"• ambi usciti = {ambi_txt}"
             )
@@ -593,14 +535,17 @@ class SNIPER_V54:
 
                 await self.tg(
                     app,
-                    f"🔥 HIT AMBO v54 | colpo {self.colpi}\n"
+                    f"🔥 HIT AMBO v48 | colpo {self.colpi}\n"
                     f"• ambi = {ambi_txt}\n\n"
-                    f"📊 STATS v54\n"
+                    f"📊 STATS v48\n"
                     f"• play = {self.total_play}\n"
                     f"• hit ambata = {self.total_hit_ambata}\n"
                     f"• hit ambo = {self.total_hit_ambo}\n"
                     f"• stop = {self.total_stop}"
                 )
+
+                self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
+                self.last_cluster_e = e
 
                 self.active = False
                 self.colpi = 0
@@ -614,13 +559,16 @@ class SNIPER_V54:
 
                 await self.tg(
                     app,
-                    f"🛑 STOP v54 | {MAX_COLPI} colpi\n\n"
-                    f"📊 STATS v54\n"
+                    f"🛑 STOP v48 | {MAX_COLPI} colpi\n\n"
+                    f"📊 STATS v48\n"
                     f"• play = {self.total_play}\n"
                     f"• hit ambata = {self.total_hit_ambata}\n"
                     f"• hit ambo = {self.total_hit_ambo}\n"
                     f"• stop = {self.total_stop}"
                 )
+
+                self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
+                self.last_cluster_e = e
 
                 self.active = False
                 self.colpi = 0
@@ -662,22 +610,13 @@ class SNIPER_V54:
                 for t in play["terni_osservazione"]
             ) or "nessuno"
 
-            leader_rank = ", ".join(
-                f"{x['number']}({x['score']})"
-                for x in play["leader_candidates"][:5]
-            )
-
             await self.tg(
                 app,
-                "🎯 PLAY v54 LEADER CLUSTER\n"
-                f"🔥 AMBATA LEADER = {play['ambata']}\n"
+                "🎯 PLAY v48 CLEAN\n"
+                f"🔥 AMBATA = {play['ambata']}\n"
                 f"✅ AMBI = {ambi_txt}\n"
                 f"👀 TERNI OSSERVAZIONE = {terni_txt}\n"
                 f"• cluster = {cluster_txt}\n"
-                f"• cluster_bonus = {play['cluster_bonus']}\n"
-                f"• leader_bonus = {play['leader_bonus']}\n"
-                f"• cluster_score = {play['cluster_score']}\n"
-                f"• ranking leader = {leader_rank}\n"
                 f"• max_colpi = {MAX_COLPI}"
             )
 
@@ -686,7 +625,7 @@ class SNIPER_V54:
     async def send_report(self, app):
         await self.tg(
             app,
-            "📊 REPORT v54\n"
+            "📊 REPORT v48 CLEAN\n"
             f"• play = {self.total_play}\n"
             f"• hit ambata = {self.total_hit_ambata}\n"
             f"• hit ambo = {self.total_hit_ambo}\n"
@@ -696,7 +635,7 @@ class SNIPER_V54:
 
 # ===================== LOOP ================================
 
-bot = SNIPER_V54()
+bot = SNIPER_V48()
 
 
 async def live():
@@ -722,10 +661,16 @@ async def live():
 
         bot.save_state()
 
-        await bot.tg(app, "🚀 SNIPER v54 AVVIATO | LIVE_ONLY")
+        await bot.tg(app, "🚀 SNIPER v48 CLEAN AVVIATO | LIVE_ONLY")
 
     else:
-        await bot.tg(app, "🚀 SNIPER v54 RIAVVIATO")
+        await bot.tg(
+            app,
+            "🚀 SNIPER v48 CLEAN RIAVVIATO\n"
+            f"• max_e = {bot.max_e}\n"
+            f"• active = {bot.active}\n"
+            f"• cooldown = {bot.cooldown}"
+        )
 
     while True:
         try:
@@ -738,7 +683,7 @@ async def live():
                 await bot.on_new(app, e, nums)
 
         except Exception as ex:
-            await bot.tg(app, f"⚠️ errore v54: {ex}")
+            await bot.tg(app, f"⚠️ errore v48: {ex}")
 
         await asyncio.sleep(LOOP_SEC)
 
