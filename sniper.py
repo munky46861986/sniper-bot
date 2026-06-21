@@ -1,13 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v48 — AMBATA + 3 AMBI CLEAN
-#
-# FILOSOFIA:
-# ✅ focus profitto reale
-# ✅ ambata forte
-# ✅ 3 ambi principali
-# ✅ terni solo osservazione
-# ✅ anti-spam cluster
-# ✅ cluster riutilizzabile dopo 12 estrazioni
+# 🚀 SNIPER v48 — AMBATA + 3 AMBI CLEAN + TEST 9 TERNI
 # ============================================================
 
 import asyncio
@@ -60,75 +52,41 @@ COOLDOWN_AFTER_PLAY = 5
 CLUSTER_REUSE_AFTER = 12
 
 
-# ============================================================
-# PARSER
-# ============================================================
-
 def parse_site():
-
-    r = requests.get(
-        URL,
-        headers=HEADERS,
-        timeout=20
-    )
-
+    r = requests.get(URL, headers=HEADERS, timeout=20)
     r.raise_for_status()
 
-    text = BeautifulSoup(
-        r.text,
-        "html.parser"
-    ).get_text("\n", strip=True)
-
-    lines = [
-        x.strip()
-        for x in text.splitlines()
-        if x.strip()
-    ]
+    text = BeautifulSoup(r.text, "html.parser").get_text("\n", strip=True)
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
 
     out = {}
-
     i = 0
 
     while i < len(lines):
-
-        m = re.search(
-            r"Estrazione\s+.*?\bn\.\s*(\d+)",
-            lines[i],
-            re.IGNORECASE
-        )
+        m = re.search(r"Estrazione\s+.*?\bn\.\s*(\d+)", lines[i], re.IGNORECASE)
 
         if not m:
             i += 1
             continue
 
         e = int(m.group(1))
-
         nums = []
-
         i += 1
 
         while i < len(lines):
-
             row = lines[i]
 
-            if re.search(
-                r"Estrazione\s+.*?\bn\.\s*\d+",
-                row,
-                re.IGNORECASE
-            ):
+            if re.search(r"Estrazione\s+.*?\bn\.\s*\d+", row, re.IGNORECASE):
                 break
 
             if re.fullmatch(r"\d{1,2}", row):
-
                 n = int(row)
-
                 if 1 <= n <= 90:
                     nums.append(n)
 
             i += 1
 
         if len(nums) >= 20:
-
             clean = nums[:20]
 
             if len(set(clean)) == 20:
@@ -137,31 +95,20 @@ def parse_site():
     return sorted(out.items())
 
 
-# ============================================================
-# UTILS
-# ============================================================
-
 def fingerprint(e, nums):
-
     return hashlib.md5(
         f"{e}-{'-'.join(map(str, nums))}".encode()
     ).hexdigest()
 
 
 def day_key():
-
     return datetime.now().strftime("%Y-%m-%d")
 
-
-# ============================================================
-# BOT
-# ============================================================
 
 class SNIPER_V48:
 
     def __init__(self):
-
-        self.version = "v48"
+        self.version = "v48_test_9_terni"
 
         self.day = day_key()
 
@@ -178,9 +125,7 @@ class SNIPER_V48:
 
         self.active = False
         self.colpi = 0
-
         self.cooldown = 0
-
         self.active_snapshot = None
 
         self.last_cluster_numbers = []
@@ -191,14 +136,13 @@ class SNIPER_V48:
         self.total_hit_ambo = 0
         self.total_stop = 0
 
+        self.hit_terno_op1 = 0
+        self.hit_terno_op2 = 0
+        self.hit_terno_op3 = 0
+
         self.load_state()
 
-    # ========================================================
-    # TELEGRAM SAFE
-    # ========================================================
-
     async def tg(self, app, msg):
-
         max_len = 3000
 
         if not msg:
@@ -210,11 +154,8 @@ class SNIPER_V48:
         ]
 
         for chunk in chunks:
-
             for attempt in range(3):
-
                 try:
-
                     await app.bot.send_message(
                         chat_id=CHAT_ID,
                         text=chunk,
@@ -223,16 +164,10 @@ class SNIPER_V48:
                         connect_timeout=30,
                         pool_timeout=30
                     )
-
                     break
 
                 except Exception as ex:
-
-                    print(
-                        f"Telegram send error "
-                        f"attempt {attempt + 1}: {ex}"
-                    )
-
+                    print(f"Telegram send error attempt {attempt + 1}: {ex}")
                     await asyncio.sleep(5)
 
     # ========================================================
@@ -240,9 +175,7 @@ class SNIPER_V48:
     # ========================================================
 
     def save_state(self):
-
         data = {
-
             "version": self.version,
             "day": self.day,
 
@@ -269,59 +202,32 @@ class SNIPER_V48:
             "total_play": self.total_play,
             "total_hit_ambata": self.total_hit_ambata,
             "total_hit_ambo": self.total_hit_ambo,
-            "total_stop": self.total_stop
+            "total_stop": self.total_stop,
+
+            "hit_terno_op1": self.hit_terno_op1,
+            "hit_terno_op2": self.hit_terno_op2,
+            "hit_terno_op3": self.hit_terno_op3
         }
 
-        with open(
-            STATE_FILE,
-            "w",
-            encoding="utf-8"
-        ) as f:
-
-            json.dump(
-                data,
-                f,
-                ensure_ascii=False,
-                indent=2
-            )
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
     def load_state(self):
-
         if not os.path.exists(STATE_FILE):
             return
 
         try:
-
-            with open(
-                STATE_FILE,
-                "r",
-                encoding="utf-8"
-            ) as f:
-
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            self.day = data.get(
-                "day",
-                day_key()
-            )
+            self.day = data.get("day", day_key())
 
             self.max_e = int(data.get("max_e", 0))
             self.last_fp = data.get("last_fp")
 
-            self.last_draws = data.get(
-                "last_draws",
-                []
-            )[-HISTORY_MAX:]
-
-            self.processed_ids = data.get(
-                "processed_ids",
-                []
-            )[-PROCESSED_MAX:]
-
-            self.processed_fps = data.get(
-                "processed_fps",
-                []
-            )[-PROCESSED_MAX:]
+            self.last_draws = data.get("last_draws", [])[-HISTORY_MAX:]
+            self.processed_ids = data.get("processed_ids", [])[-PROCESSED_MAX:]
+            self.processed_fps = data.get("processed_fps", [])[-PROCESSED_MAX:]
 
             self.watch = data.get("watch", {})
             self.hot_confirmed = data.get("hot_confirmed", {})
@@ -332,19 +238,17 @@ class SNIPER_V48:
 
             self.active_snapshot = data.get("active_snapshot")
 
-            self.last_cluster_numbers = data.get(
-                "last_cluster_numbers",
-                []
-            )
-
-            self.last_cluster_e = int(
-                data.get("last_cluster_e", 0)
-            )
+            self.last_cluster_numbers = data.get("last_cluster_numbers", [])
+            self.last_cluster_e = int(data.get("last_cluster_e", 0))
 
             self.total_play = int(data.get("total_play", 0))
             self.total_hit_ambata = int(data.get("total_hit_ambata", 0))
             self.total_hit_ambo = int(data.get("total_hit_ambo", 0))
             self.total_stop = int(data.get("total_stop", 0))
+
+            self.hit_terno_op1 = int(data.get("hit_terno_op1", 0))
+            self.hit_terno_op2 = int(data.get("hit_terno_op2", 0))
+            self.hit_terno_op3 = int(data.get("hit_terno_op3", 0))
 
         except Exception:
             pass
@@ -354,7 +258,6 @@ class SNIPER_V48:
     # ========================================================
 
     def already_processed(self, e, nums):
-
         fp = fingerprint(e, nums)
 
         if fp == self.last_fp:
@@ -369,7 +272,6 @@ class SNIPER_V48:
         return False
 
     def remember_processed(self, e, nums):
-
         fp = fingerprint(e, nums)
 
         self.max_e = max(self.max_e, e)
@@ -386,11 +288,9 @@ class SNIPER_V48:
     # ========================================================
 
     def lag(self, n):
-
         lag = 0
 
         for d in reversed(self.last_draws[:-1]):
-
             lag += 1
 
             if n in d:
@@ -399,7 +299,6 @@ class SNIPER_V48:
         return lag
 
     def heat(self, n):
-
         weights = [5, 4, 3, 2, 1]
 
         return sum(
@@ -409,14 +308,12 @@ class SNIPER_V48:
         )
 
     def dominance(self, n, window=6):
-
         return sum(
             1 for d in self.last_draws[-window:]
             if n in d
         )
 
     def pressure(self, n):
-
         weights = [5, 4, 3, 2, 1]
 
         return sum(
@@ -430,34 +327,26 @@ class SNIPER_V48:
     # ========================================================
 
     def top_ritardatari(self):
-
         data = []
 
         for n in range(1, 91):
-
             data.append({
                 "number": n,
                 "lag": self.lag(n)
             })
 
-        data.sort(
-            key=lambda x: (-x["lag"], x["number"])
-        )
+        data.sort(key=lambda x: (-x["lag"], x["number"]))
 
         return data[:TOP_RITARDATARI]
 
     def selected_ritardatari(self):
-
         top10 = self.top_ritardatari()
-
         selected = []
 
         for pos in PLAY_POSITIONS:
-
             idx = pos - 1
 
             if idx < len(top10):
-
                 selected.append({
                     "position": pos,
                     "number": top10[idx]["number"],
@@ -471,11 +360,9 @@ class SNIPER_V48:
     # ========================================================
 
     def clean_old_watch(self, current_e):
-
         remove = []
 
         for key, data in self.watch.items():
-
             if current_e - int(data["first_e"]) > WATCH_WINDOW:
                 remove.append(key)
 
@@ -483,11 +370,9 @@ class SNIPER_V48:
             self.watch.pop(key, None)
 
     def clean_old_hot(self, current_e):
-
         remove = []
 
         for key, data in self.hot_confirmed.items():
-
             if current_e - int(data["confirmed_e"]) > HOT_TTL:
                 remove.append(key)
 
@@ -498,47 +383,32 @@ class SNIPER_V48:
     # UPDATE HOT
     # ========================================================
 
-    def update_watch_and_confirmed(
-        self,
-        e,
-        nums,
-        selected
-    ):
-
+    def update_watch_and_confirmed(self, e, nums, selected):
         s = set(nums)
 
         for item in selected:
-
             n = int(item["number"])
-
             key = str(n)
 
             if n not in s:
                 continue
 
             if key not in self.watch:
-
                 self.watch[key] = {
-
                     "number": n,
                     "first_e": e,
                     "last_e": e,
-
                     "hits": 1,
-
                     "position": item["position"],
                     "initial_lag": item["lag"]
                 }
 
             else:
-
                 self.watch[key]["hits"] += 1
                 self.watch[key]["last_e"] = e
 
                 if self.watch[key]["hits"] >= 2:
-
                     self.hot_confirmed[key] = {
-
                         **self.watch[key],
                         "confirmed_e": e
                     }
@@ -553,21 +423,32 @@ class SNIPER_V48:
     # ========================================================
 
     def confirmed_score(self, item, e):
-
         n = int(item["number"])
-
         age = e - int(item["confirmed_e"])
 
         return (
-
             item["hits"] * 20
             - age * 2
-
             + item["initial_lag"]
-
             + self.heat(n)
             + self.dominance(n, 6) * 3
             + self.pressure(n)
+        )
+
+    def number_score(self, n, e):
+        hot = self.hot_confirmed.get(str(n))
+
+        hot_score = 0
+
+        if hot:
+            hot_score = self.confirmed_score(hot, e)
+
+        return (
+            hot_score
+            + self.heat(n) * 2
+            + self.dominance(n, 6) * 3
+            + self.pressure(n)
+            - self.lag(n)
         )
 
     # ========================================================
@@ -575,7 +456,6 @@ class SNIPER_V48:
     # ========================================================
 
     def duplicate_cluster(self, cluster_numbers, e):
-
         if not self.last_cluster_numbers:
             return False
 
@@ -595,11 +475,8 @@ class SNIPER_V48:
     # ========================================================
 
     def build_play(self, e):
-
         hot_items = [
-
             x for x in self.hot_confirmed.values()
-
             if 0 <= e - int(x["confirmed_e"]) <= HOT_TTL
         ]
 
@@ -609,26 +486,19 @@ class SNIPER_V48:
         pair_candidates = []
 
         for a, b in combinations(hot_items, 2):
-
             pair = tuple(sorted((
                 int(a["number"]),
                 int(b["number"])
             )))
 
-            score = (
-                self.confirmed_score(a, e)
-                + self.confirmed_score(b, e)
-            )
+            score = self.confirmed_score(a, e) + self.confirmed_score(b, e)
 
             pair_candidates.append({
-
                 "ambo": pair,
                 "score": round(score, 2)
             })
 
-        pair_candidates.sort(
-            key=lambda x: -x["score"]
-        )
+        pair_candidates.sort(key=lambda x: -x["score"])
 
         ambi = pair_candidates[:MAX_AMBI_PER_PLAY]
 
@@ -646,14 +516,88 @@ class SNIPER_V48:
             return None
 
         freq = Counter(all_numbers)
-
         ambata = freq.most_common(1)[0][0]
 
-        return {
+        # ==================================================
+        # TEST TERNI - OPZIONE 1
+        # miglior hot confermato fuori cluster
+        # ==================================================
 
+        hot_outside = []
+
+        for item in hot_items:
+            n = int(item["number"])
+
+            if n in cluster_numbers:
+                continue
+
+            hot_outside.append((n, self.number_score(n, e)))
+
+        hot_outside.sort(key=lambda x: -x[1])
+
+        terno_num_1 = hot_outside[0][0] if hot_outside else None
+
+        # ==================================================
+        # TEST TERNI - OPZIONE 2
+        # miglior ritardatario fuori cluster
+        # ==================================================
+
+        top10 = self.top_ritardatari()
+
+        terno_num_2 = None
+
+        for r in top10:
+            n = int(r["number"])
+
+            if n not in cluster_numbers:
+                terno_num_2 = n
+                break
+
+        # ==================================================
+        # TEST TERNI - OPZIONE 3
+        # miglior score assoluto fuori cluster
+        # ==================================================
+
+        all_scores = []
+
+        for n in range(1, 91):
+            if n in cluster_numbers:
+                continue
+
+            all_scores.append((n, self.number_score(n, e)))
+
+        all_scores.sort(key=lambda x: -x[1])
+
+        terno_num_3 = all_scores[0][0] if all_scores else None
+
+        terni_op1 = []
+        terni_op2 = []
+        terni_op3 = []
+
+        for item in ambi:
+            a, b = item["ambo"]
+
+            if terno_num_1:
+                terni_op1.append(tuple(sorted((a, b, terno_num_1))))
+
+            if terno_num_2:
+                terni_op2.append(tuple(sorted((a, b, terno_num_2))))
+
+            if terno_num_3:
+                terni_op3.append(tuple(sorted((a, b, terno_num_3))))
+
+        return {
             "ambata": ambata,
             "ambi": ambi,
-            "cluster_numbers": cluster_numbers
+            "cluster_numbers": cluster_numbers,
+
+            "terno_num_1": terno_num_1,
+            "terno_num_2": terno_num_2,
+            "terno_num_3": terno_num_3,
+
+            "terni_op1": terni_op1,
+            "terni_op2": terni_op2,
+            "terni_op3": terni_op3
         }
 
     # ========================================================
@@ -661,9 +605,7 @@ class SNIPER_V48:
     # ========================================================
 
     def check_hit(self, nums):
-
         s = set(nums)
-
         snap = self.active_snapshot
 
         ambata_hit = snap["ambata"] in s
@@ -671,16 +613,33 @@ class SNIPER_V48:
         ambi_hit = []
 
         for item in snap["ambi"]:
-
             a, b = item["ambo"]
 
             if a in s and b in s:
                 ambi_hit.append(item)
 
-        return {
+        terni_op1_hit = []
+        terni_op2_hit = []
+        terni_op3_hit = []
 
+        for t in snap.get("terni_op1", []):
+            if all(x in s for x in t):
+                terni_op1_hit.append(t)
+
+        for t in snap.get("terni_op2", []):
+            if all(x in s for x in t):
+                terni_op2_hit.append(t)
+
+        for t in snap.get("terni_op3", []):
+            if all(x in s for x in t):
+                terni_op3_hit.append(t)
+
+        return {
             "ambata_hit": ambata_hit,
-            "ambi_hit": ambi_hit
+            "ambi_hit": ambi_hit,
+            "terni_op1_hit": terni_op1_hit,
+            "terni_op2_hit": terni_op2_hit,
+            "terni_op3_hit": terni_op3_hit
         }
 
     # ========================================================
@@ -688,7 +647,6 @@ class SNIPER_V48:
     # ========================================================
 
     async def on_new(self, app, e, nums):
-
         if len(set(nums)) != 20:
             return
 
@@ -711,64 +669,96 @@ class SNIPER_V48:
         # ====================================================
 
         if self.active:
-
             self.colpi += 1
 
             hit_data = self.check_hit(nums)
 
             ambi_txt = ", ".join(
-
                 f"{a}-{b}"
-
                 for h in hit_data["ambi_hit"]
-
                 for a, b in [h["ambo"]]
+            ) or "nessuno"
 
+            op1_txt = ", ".join(
+                "-".join(map(str, t))
+                for t in hit_data["terni_op1_hit"]
+            ) or "nessuno"
+
+            op2_txt = ", ".join(
+                "-".join(map(str, t))
+                for t in hit_data["terni_op2_hit"]
+            ) or "nessuno"
+
+            op3_txt = ", ".join(
+                "-".join(map(str, t))
+                for t in hit_data["terni_op3_hit"]
             ) or "nessuno"
 
             # ================= AMBATA =================
 
             if hit_data["ambata_hit"]:
-
                 self.total_hit_ambata += 1
 
                 await self.tg(
                     app,
-                    f"🎯 AMBATA PRESA v48 | "
-                    f"colpo {self.colpi}\n"
-                    f"• ambata = "
-                    f"{self.active_snapshot['ambata']}"
+                    f"🎯 AMBATA PRESA v48 | colpo {self.colpi}\n"
+                    f"• ambata = {self.active_snapshot['ambata']}"
+                )
+
+            # ================= TERNI TEST =================
+
+            if hit_data["terni_op1_hit"]:
+                self.hit_terno_op1 += 1
+
+            if hit_data["terni_op2_hit"]:
+                self.hit_terno_op2 += 1
+
+            if hit_data["terni_op3_hit"]:
+                self.hit_terno_op3 += 1
+
+            if (
+                hit_data["terni_op1_hit"]
+                or hit_data["terni_op2_hit"]
+                or hit_data["terni_op3_hit"]
+            ):
+                await self.tg(
+                    app,
+                    f"💥 HIT TERNO TEST v48 | colpo {self.colpi}\n"
+                    f"• OP1 = {op1_txt}\n"
+                    f"• OP2 = {op2_txt}\n"
+                    f"• OP3 = {op3_txt}\n\n"
+                    f"📊 TERNI TEST\n"
+                    f"• op1 = {self.hit_terno_op1}\n"
+                    f"• op2 = {self.hit_terno_op2}\n"
+                    f"• op3 = {self.hit_terno_op3}"
                 )
 
             # ================= HIT AMBO =================
 
             if hit_data["ambi_hit"]:
-
                 self.total_hit_ambo += 1
 
                 await self.tg(
                     app,
-                    f"🔥 HIT AMBO v48 | "
-                    f"colpo {self.colpi}\n"
+                    f"🔥 HIT AMBO v48 | colpo {self.colpi}\n"
                     f"• ambi = {ambi_txt}\n\n"
                     f"📊 STATS\n"
                     f"• play = {self.total_play}\n"
                     f"• hit ambata = {self.total_hit_ambata}\n"
                     f"• hit ambo = {self.total_hit_ambo}\n"
-                    f"• stop = {self.total_stop}"
+                    f"• stop = {self.total_stop}\n\n"
+                    f"📊 TERNI TEST\n"
+                    f"• op1 = {self.hit_terno_op1}\n"
+                    f"• op2 = {self.hit_terno_op2}\n"
+                    f"• op3 = {self.hit_terno_op3}"
                 )
 
-                self.last_cluster_numbers = self.active_snapshot[
-                    "cluster_numbers"
-                ]
-
+                self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
                 self.last_cluster_e = e
 
                 self.active = False
                 self.colpi = 0
-
                 self.cooldown = COOLDOWN_AFTER_PLAY
-
                 self.active_snapshot = None
 
                 self.save_state()
@@ -777,26 +767,28 @@ class SNIPER_V48:
             # ================= STOP =================
 
             if self.colpi >= MAX_COLPI:
-
                 self.total_stop += 1
 
                 await self.tg(
                     app,
-                    f"🛑 STOP v48 | "
-                    f"{MAX_COLPI} colpi"
+                    f"🛑 STOP v48 | {MAX_COLPI} colpi\n\n"
+                    f"📊 STATS\n"
+                    f"• play = {self.total_play}\n"
+                    f"• hit ambata = {self.total_hit_ambata}\n"
+                    f"• hit ambo = {self.total_hit_ambo}\n"
+                    f"• stop = {self.total_stop}\n\n"
+                    f"📊 TERNI TEST\n"
+                    f"• op1 = {self.hit_terno_op1}\n"
+                    f"• op2 = {self.hit_terno_op2}\n"
+                    f"• op3 = {self.hit_terno_op3}"
                 )
 
-                self.last_cluster_numbers = self.active_snapshot[
-                    "cluster_numbers"
-                ]
-
+                self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
                 self.last_cluster_e = e
 
                 self.active = False
                 self.colpi = 0
-
                 self.cooldown = COOLDOWN_AFTER_PLAY
-
                 self.active_snapshot = None
 
                 self.save_state()
@@ -810,11 +802,8 @@ class SNIPER_V48:
         # ====================================================
 
         if self.cooldown > 0:
-
             self.cooldown -= 1
-
             self.save_state()
-
             return
 
         # ====================================================
@@ -843,20 +832,14 @@ class SNIPER_V48:
         play = self.build_play(e)
 
         if play and not self.active:
-
             self.active = True
             self.colpi = 0
-
             self.active_snapshot = play
-
             self.total_play += 1
 
             ambi_txt = ", ".join(
-
                 f"{a}-{b}"
-
                 for item in play["ambi"]
-
                 for a, b in [item["ambo"]]
             )
 
@@ -864,16 +847,51 @@ class SNIPER_V48:
                 map(str, play["cluster_numbers"])
             )
 
+            op1_txt = ", ".join(
+                "-".join(map(str, t))
+                for t in play["terni_op1"]
+            ) or "nessuno"
+
+            op2_txt = ", ".join(
+                "-".join(map(str, t))
+                for t in play["terni_op2"]
+            ) or "nessuno"
+
+            op3_txt = ", ".join(
+                "-".join(map(str, t))
+                for t in play["terni_op3"]
+            ) or "nessuno"
+
             await self.tg(
                 app,
-                "🎯 PLAY v48\n"
+                "🎯 PLAY v48 + TEST 9 TERNI\n"
                 f"🔥 AMBATA = {play['ambata']}\n"
                 f"✅ AMBI = {ambi_txt}\n"
                 f"• cluster = {cluster_txt}\n"
-                f"• max_colpi = {MAX_COLPI}"
+                f"• max_colpi = {MAX_COLPI}\n\n"
+                f"🧪 OP1 HOT CONFERMATO | jolly = {play['terno_num_1']}\n"
+                f"{op1_txt}\n\n"
+                f"🧪 OP2 RITARDATARIO | jolly = {play['terno_num_2']}\n"
+                f"{op2_txt}\n\n"
+                f"🧪 OP3 SCORE FUORI CLUSTER | jolly = {play['terno_num_3']}\n"
+                f"{op3_txt}"
             )
 
         self.save_state()
+
+    async def send_report(self, app):
+        await self.tg(
+            app,
+            "📊 REPORT v48 + TEST TERNI\n"
+            f"• play = {self.total_play}\n"
+            f"• hit ambata = {self.total_hit_ambata}\n"
+            f"• hit ambo = {self.total_hit_ambo}\n"
+            f"• stop = {self.total_stop}\n\n"
+            f"📊 TERNI TEST\n"
+            f"• op1 = {self.hit_terno_op1}\n"
+            f"• op2 = {self.hit_terno_op2}\n"
+            f"• op3 = {self.hit_terno_op3}"
+        )
 
 
 # ============================================================
@@ -884,22 +902,15 @@ bot = SNIPER_V48()
 
 
 async def live():
-
     app = ApplicationBuilder().token(TOKEN).build()
 
     es = parse_site()
 
     if not es:
-
-        await bot.tg(
-            app,
-            "⚠️ parser vuoto"
-        )
-
+        await bot.tg(app, "⚠️ parser vuoto")
         return
 
     if not bot.last_draws:
-
         for e, nums in es:
             bot.last_draws.append(nums)
 
@@ -919,17 +930,14 @@ async def live():
 
         await bot.tg(
             app,
-            "🚀 SNIPER v48 AVVIATO"
+            "🚀 SNIPER v48 + TEST 9 TERNI AVVIATO"
         )
 
     while True:
-
         try:
-
             es = parse_site()
 
             for e, nums in es:
-
                 if bot.already_processed(e, nums):
                     continue
 
@@ -940,7 +948,6 @@ async def live():
                 )
 
         except Exception as ex:
-
             await bot.tg(
                 app,
                 f"⚠️ errore v48: {ex}"
