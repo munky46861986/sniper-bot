@@ -1,5 +1,6 @@
 # ============================================================
 # 🚀 SNIPER v48 — AMBATA + 3 AMBI CLEAN + TEST 9 TERNI
+# PATCH: dedup/startup pulito + cambio giorno + CSV eventi
 # ============================================================
 
 import asyncio
@@ -8,6 +9,7 @@ import re
 import os
 import json
 import hashlib
+import csv
 
 from datetime import datetime
 from itertools import combinations
@@ -30,6 +32,7 @@ HEADERS = {
 }
 
 STATE_FILE = "sniper_v48_state.json"
+CSV_FILE = "sniper_v48_terni_lab_events.csv"
 
 LOOP_SEC = 60
 
@@ -51,6 +54,10 @@ COOLDOWN_AFTER_PLAY = 5
 
 CLUSTER_REUSE_AFTER = 12
 
+
+# ============================================================
+# PARSER
+# ============================================================
 
 def parse_site():
     r = requests.get(URL, headers=HEADERS, timeout=20)
@@ -105,10 +112,86 @@ def day_key():
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def now_txt():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def fmt_nums(nums):
+    if not nums:
+        return ""
+    return "-".join(map(str, nums))
+
+
+def fmt_ambi(ambi):
+    if not ambi:
+        return ""
+
+    parts = []
+    for item in ambi:
+        a, b = item["ambo"]
+        parts.append(f"{a}-{b}")
+
+    return ", ".join(parts)
+
+
+def fmt_terni(terni):
+    if not terni:
+        return ""
+    return ", ".join("-".join(map(str, t)) for t in terni)
+
+
+CSV_FIELDS = [
+    "time",
+    "day",
+    "event",
+    "play_id",
+    "estrazione",
+    "colpo",
+    "ambata",
+    "ambi",
+    "cluster",
+    "op1_jolly",
+    "op1_terni",
+    "op2_jolly",
+    "op2_terni",
+    "op3_jolly",
+    "op3_terni",
+    "hit_ambata",
+    "hit_ambo",
+    "hit_ambo_list",
+    "hit_op1",
+    "hit_op1_list",
+    "hit_op2",
+    "hit_op2_list",
+    "hit_op3",
+    "hit_op3_list",
+    "total_play",
+    "total_hit_ambata",
+    "total_hit_ambo",
+    "total_stop",
+    "total_hit_op1",
+    "total_hit_op2",
+    "total_hit_op3"
+]
+
+
+def ensure_csv():
+    if os.path.exists(CSV_FILE):
+        return
+
+    with open(CSV_FILE, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        writer.writeheader()
+
+
+# ============================================================
+# BOT
+# ============================================================
+
 class SNIPER_V48:
 
     def __init__(self):
-        self.version = "v48_test_9_terni"
+        self.version = "v48_test_9_terni_cleanlog"
 
         self.day = day_key()
 
@@ -140,7 +223,10 @@ class SNIPER_V48:
         self.hit_terno_op2 = 0
         self.hit_terno_op3 = 0
 
+        self.play_uid = 0
+
         self.load_state()
+        ensure_csv()
 
     async def tg(self, app, msg):
         max_len = 3000
@@ -206,7 +292,9 @@ class SNIPER_V48:
 
             "hit_terno_op1": self.hit_terno_op1,
             "hit_terno_op2": self.hit_terno_op2,
-            "hit_terno_op3": self.hit_terno_op3
+            "hit_terno_op3": self.hit_terno_op3,
+
+            "play_uid": self.play_uid
         }
 
         with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -250,8 +338,98 @@ class SNIPER_V48:
             self.hit_terno_op2 = int(data.get("hit_terno_op2", 0))
             self.hit_terno_op3 = int(data.get("hit_terno_op3", 0))
 
+            self.play_uid = int(data.get("play_uid", self.total_play))
+
         except Exception:
             pass
+
+    def reset_for_new_day(self, new_day):
+        """
+        Reset operativo per cambio giorno.
+        Le estrazioni ripartono da 1, quindi non si possono riusare max_e,
+        processed_ids, watch e hot_confirmed del giorno precedente.
+        Lo storico last_draws resta per dare continuità a lag/heat/pressure.
+        """
+        self.day = new_day
+
+        self.max_e = 0
+        self.last_fp = None
+        self.processed_ids = []
+        self.processed_fps = []
+
+        self.watch = {}
+        self.hot_confirmed = {}
+
+        self.active = False
+        self.colpi = 0
+        self.cooldown = 0
+        self.active_snapshot = None
+
+        self.last_cluster_numbers = []
+        self.last_cluster_e = 0
+
+        self.save_state()
+
+    # ========================================================
+    # CSV EVENTS
+    # ========================================================
+
+    def append_csv_event(self, event, e=None, hit_data=None):
+        ensure_csv()
+
+        snap = self.active_snapshot or {}
+
+        row = {
+            "time": now_txt(),
+            "day": self.day,
+            "event": event,
+            "play_id": snap.get("play_id", ""),
+            "estrazione": e if e is not None else "",
+            "colpo": self.colpi if self.active or event in ["HIT_AMBO", "STOP", "HIT_TERNO", "HIT_AMBATA"] else "",
+            "ambata": snap.get("ambata", ""),
+            "ambi": fmt_ambi(snap.get("ambi", [])),
+            "cluster": fmt_nums(snap.get("cluster_numbers", [])),
+            "op1_jolly": snap.get("terno_num_1", ""),
+            "op1_terni": fmt_terni(snap.get("terni_op1", [])),
+            "op2_jolly": snap.get("terno_num_2", ""),
+            "op2_terni": fmt_terni(snap.get("terni_op2", [])),
+            "op3_jolly": snap.get("terno_num_3", ""),
+            "op3_terni": fmt_terni(snap.get("terni_op3", [])),
+            "hit_ambata": False,
+            "hit_ambo": False,
+            "hit_ambo_list": "",
+            "hit_op1": False,
+            "hit_op1_list": "",
+            "hit_op2": False,
+            "hit_op2_list": "",
+            "hit_op3": False,
+            "hit_op3_list": "",
+            "total_play": self.total_play,
+            "total_hit_ambata": self.total_hit_ambata,
+            "total_hit_ambo": self.total_hit_ambo,
+            "total_stop": self.total_stop,
+            "total_hit_op1": self.hit_terno_op1,
+            "total_hit_op2": self.hit_terno_op2,
+            "total_hit_op3": self.hit_terno_op3
+        }
+
+        if hit_data:
+            row["hit_ambata"] = bool(hit_data.get("ambata_hit"))
+            row["hit_ambo"] = bool(hit_data.get("ambi_hit"))
+            row["hit_ambo_list"] = fmt_ambi(hit_data.get("ambi_hit", []))
+
+            row["hit_op1"] = bool(hit_data.get("terni_op1_hit"))
+            row["hit_op1_list"] = fmt_terni(hit_data.get("terni_op1_hit", []))
+
+            row["hit_op2"] = bool(hit_data.get("terni_op2_hit"))
+            row["hit_op2_list"] = fmt_terni(hit_data.get("terni_op2_hit", []))
+
+            row["hit_op3"] = bool(hit_data.get("terni_op3_hit"))
+            row["hit_op3_list"] = fmt_terni(hit_data.get("terni_op3_hit", []))
+
+        with open(CSV_FILE, "a", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+            writer.writerow(row)
 
     # ========================================================
     # DEDUP
@@ -282,6 +460,31 @@ class SNIPER_V48:
 
         self.processed_ids = self.processed_ids[-PROCESSED_MAX:]
         self.processed_fps = self.processed_fps[-PROCESSED_MAX:]
+
+    def preload_today_as_processed(self, es):
+        """
+        Usa le estrazioni già presenti sul sito solo come storico iniziale.
+        Importantissimo: le marca tutte come processate, non solo l'ultima.
+        Così il bot non ristampa e non rigioca vecchie estrazioni dopo l'avvio.
+        """
+        for e, nums in es:
+            if len(set(nums)) != 20:
+                continue
+
+            self.last_draws.append(nums)
+            self.processed_ids.append(e)
+            self.processed_fps.append(fingerprint(e, nums))
+
+        self.last_draws = self.last_draws[-HISTORY_MAX:]
+        self.processed_ids = self.processed_ids[-PROCESSED_MAX:]
+        self.processed_fps = self.processed_fps[-PROCESSED_MAX:]
+
+        if es:
+            last_e, last_nums = es[-1]
+            self.max_e = last_e
+            self.last_fp = fingerprint(last_e, last_nums)
+
+        self.save_state()
 
     # ========================================================
     # FEATURES
@@ -698,6 +901,7 @@ class SNIPER_V48:
 
             if hit_data["ambata_hit"]:
                 self.total_hit_ambata += 1
+                self.append_csv_event("HIT_AMBATA", e, hit_data)
 
                 await self.tg(
                     app,
@@ -721,6 +925,8 @@ class SNIPER_V48:
                 or hit_data["terni_op2_hit"]
                 or hit_data["terni_op3_hit"]
             ):
+                self.append_csv_event("HIT_TERNO", e, hit_data)
+
                 await self.tg(
                     app,
                     f"💥 HIT TERNO TEST v48 | colpo {self.colpi}\n"
@@ -737,6 +943,7 @@ class SNIPER_V48:
 
             if hit_data["ambi_hit"]:
                 self.total_hit_ambo += 1
+                self.append_csv_event("HIT_AMBO", e, hit_data)
 
                 await self.tg(
                     app,
@@ -768,6 +975,7 @@ class SNIPER_V48:
 
             if self.colpi >= MAX_COLPI:
                 self.total_stop += 1
+                self.append_csv_event("STOP", e, hit_data)
 
                 await self.tg(
                     app,
@@ -834,8 +1042,12 @@ class SNIPER_V48:
         if play and not self.active:
             self.active = True
             self.colpi = 0
+            self.play_uid += 1
+            play["play_id"] = self.play_uid
             self.active_snapshot = play
             self.total_play += 1
+
+            self.append_csv_event("PLAY", e)
 
             ambi_txt = ", ".join(
                 f"{a}-{b}"
@@ -868,7 +1080,8 @@ class SNIPER_V48:
                 f"🔥 AMBATA = {play['ambata']}\n"
                 f"✅ AMBI = {ambi_txt}\n"
                 f"• cluster = {cluster_txt}\n"
-                f"• max_colpi = {MAX_COLPI}\n\n"
+                f"• max_colpi = {MAX_COLPI}\n"
+                f"• play_id = {play['play_id']}\n\n"
                 f"🧪 OP1 HOT CONFERMATO | jolly = {play['terno_num_1']}\n"
                 f"{op1_txt}\n\n"
                 f"🧪 OP2 RITARDATARIO | jolly = {play['terno_num_2']}\n"
@@ -890,7 +1103,8 @@ class SNIPER_V48:
             f"📊 TERNI TEST\n"
             f"• op1 = {self.hit_terno_op1}\n"
             f"• op2 = {self.hit_terno_op2}\n"
-            f"• op3 = {self.hit_terno_op3}"
+            f"• op3 = {self.hit_terno_op3}\n\n"
+            f"🧾 CSV = {CSV_FILE}"
         )
 
 
@@ -904,6 +1118,16 @@ bot = SNIPER_V48()
 async def live():
     app = ApplicationBuilder().token(TOKEN).build()
 
+    current_day = day_key()
+
+    if bot.day != current_day:
+        bot.reset_for_new_day(current_day)
+        await bot.tg(
+            app,
+            "🗓️ Nuovo giorno rilevato: reset operativo dedup/watch/hot. "
+            "Storico numerico conservato."
+        )
+
     es = parse_site()
 
     if not es:
@@ -911,30 +1135,42 @@ async def live():
         return
 
     if not bot.last_draws:
-        for e, nums in es:
-            bot.last_draws.append(nums)
-
-        bot.last_draws = bot.last_draws[-HISTORY_MAX:]
-
-        bot.max_e = es[-1][0]
-
-        bot.last_fp = fingerprint(
-            es[-1][0],
-            es[-1][1]
-        )
-
-        bot.processed_ids.append(es[-1][0])
-        bot.processed_fps.append(bot.last_fp)
-
-        bot.save_state()
+        bot.preload_today_as_processed(es)
 
         await bot.tg(
             app,
-            "🚀 SNIPER v48 + TEST 9 TERNI AVVIATO"
+            "🚀 SNIPER v48 + TEST 9 TERNI AVVIATO\n"
+            "✅ storico iniziale caricato\n"
+            "✅ tutte le estrazioni già presenti sono marcate come processate\n"
+            "✅ niente replay iniziale"
         )
 
     while True:
         try:
+            current_day = day_key()
+
+            if bot.day != current_day:
+                bot.reset_for_new_day(current_day)
+                await bot.tg(
+                    app,
+                    "🗓️ Nuovo giorno rilevato: reset operativo dedup/watch/hot. "
+                    "Storico numerico conservato."
+                )
+
+                es = parse_site()
+
+                if es:
+                    bot.preload_today_as_processed(es)
+                    await bot.tg(
+                        app,
+                        "🚀 SNIPER v48 + TEST 9 TERNI AVVIATO\n"
+                        "✅ nuovo giorno inizializzato\n"
+                        "✅ estrazioni già uscite oggi marcate come storico/processate"
+                    )
+
+                await asyncio.sleep(LOOP_SEC)
+                continue
+
             es = parse_site()
 
             for e, nums in es:
