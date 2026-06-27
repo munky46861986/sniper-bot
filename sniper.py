@@ -1,6 +1,7 @@
 # ============================================================
-# 🚀 SNIPER v48 — AMBATA + 3 AMBI CLEAN + TEST 9 TERNI
-# PATCH: dedup/startup pulito + cambio giorno + CSV eventi
+# 🚀 SNIPER v48 — AMBATA + 3 AMBI CLEAN + TERNI LAB ESPANSO
+# PATCH: dedup/startup pulito + cambio giorno + CSV eventi + lock anti doppia istanza
+# NOTA: motore v48 invariato; i terni extra sono solo test statistici
 # ============================================================
 
 import asyncio
@@ -10,6 +11,13 @@ import os
 import json
 import hashlib
 import csv
+import sys
+import atexit
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 from datetime import datetime
 from itertools import combinations
@@ -33,6 +41,7 @@ HEADERS = {
 
 STATE_FILE = "sniper_v48_state.json"
 CSV_FILE = "sniper_v48_terni_lab_events.csv"
+LOCK_FILE = "sniper_v48_terni_lab.lock"
 
 LOOP_SEC = 60
 
@@ -140,6 +149,16 @@ def fmt_terni(terni):
     return ", ".join("-".join(map(str, t)) for t in terni)
 
 
+def fmt_jolly(value):
+    if value is None:
+        return ""
+
+    if isinstance(value, (list, tuple, set)):
+        return "-".join(map(str, value))
+
+    return str(value)
+
+
 CSV_FIELDS = [
     "time",
     "day",
@@ -156,6 +175,18 @@ CSV_FIELDS = [
     "op2_terni",
     "op3_jolly",
     "op3_terni",
+    "op4_jolly",
+    "op4_terni",
+    "op5_jolly",
+    "op5_terni",
+    "op6_jolly",
+    "op6_terni",
+    "op7_jolly",
+    "op7_terni",
+    "op8_jolly",
+    "op8_terni",
+    "op9_jolly",
+    "op9_terni",
     "hit_ambata",
     "hit_ambo",
     "hit_ambo_list",
@@ -165,19 +196,55 @@ CSV_FIELDS = [
     "hit_op2_list",
     "hit_op3",
     "hit_op3_list",
+    "hit_op4",
+    "hit_op4_list",
+    "hit_op5",
+    "hit_op5_list",
+    "hit_op6",
+    "hit_op6_list",
+    "hit_op7",
+    "hit_op7_list",
+    "hit_op8",
+    "hit_op8_list",
+    "hit_op9",
+    "hit_op9_list",
     "total_play",
     "total_hit_ambata",
     "total_hit_ambo",
     "total_stop",
     "total_hit_op1",
     "total_hit_op2",
-    "total_hit_op3"
+    "total_hit_op3",
+    "total_hit_op4",
+    "total_hit_op5",
+    "total_hit_op6",
+    "total_hit_op7",
+    "total_hit_op8",
+    "total_hit_op9"
 ]
 
-
 def ensure_csv():
+    """
+    Crea il CSV. Se esiste già un CSV con vecchie colonne, lo archivia
+    e ne crea uno nuovo compatibile con il Terni Lab espanso.
+    """
     if os.path.exists(CSV_FILE):
-        return
+        try:
+            with open(CSV_FILE, "r", encoding="utf-8", newline="") as f:
+                header = f.readline().strip().split(",")
+
+            if header == CSV_FIELDS:
+                return
+
+            backup = CSV_FILE.replace(".csv", f"_old_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+            os.replace(CSV_FILE, backup)
+
+        except Exception:
+            backup = CSV_FILE.replace(".csv", f"_old_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+            try:
+                os.replace(CSV_FILE, backup)
+            except Exception:
+                pass
 
     with open(CSV_FILE, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
@@ -191,7 +258,7 @@ def ensure_csv():
 class SNIPER_V48:
 
     def __init__(self):
-        self.version = "v48_test_9_terni_cleanlog"
+        self.version = "v48_terni_lab_expanded_cleanlog_lock"
 
         self.day = day_key()
 
@@ -222,6 +289,12 @@ class SNIPER_V48:
         self.hit_terno_op1 = 0
         self.hit_terno_op2 = 0
         self.hit_terno_op3 = 0
+        self.hit_terno_op4 = 0
+        self.hit_terno_op5 = 0
+        self.hit_terno_op6 = 0
+        self.hit_terno_op7 = 0
+        self.hit_terno_op8 = 0
+        self.hit_terno_op9 = 0
 
         self.play_uid = 0
 
@@ -293,6 +366,12 @@ class SNIPER_V48:
             "hit_terno_op1": self.hit_terno_op1,
             "hit_terno_op2": self.hit_terno_op2,
             "hit_terno_op3": self.hit_terno_op3,
+            "hit_terno_op4": self.hit_terno_op4,
+            "hit_terno_op5": self.hit_terno_op5,
+            "hit_terno_op6": self.hit_terno_op6,
+            "hit_terno_op7": self.hit_terno_op7,
+            "hit_terno_op8": self.hit_terno_op8,
+            "hit_terno_op9": self.hit_terno_op9,
 
             "play_uid": self.play_uid
         }
@@ -337,6 +416,12 @@ class SNIPER_V48:
             self.hit_terno_op1 = int(data.get("hit_terno_op1", 0))
             self.hit_terno_op2 = int(data.get("hit_terno_op2", 0))
             self.hit_terno_op3 = int(data.get("hit_terno_op3", 0))
+            self.hit_terno_op4 = int(data.get("hit_terno_op4", 0))
+            self.hit_terno_op5 = int(data.get("hit_terno_op5", 0))
+            self.hit_terno_op6 = int(data.get("hit_terno_op6", 0))
+            self.hit_terno_op7 = int(data.get("hit_terno_op7", 0))
+            self.hit_terno_op8 = int(data.get("hit_terno_op8", 0))
+            self.hit_terno_op9 = int(data.get("hit_terno_op9", 0))
 
             self.play_uid = int(data.get("play_uid", self.total_play))
 
@@ -389,47 +474,64 @@ class SNIPER_V48:
             "ambata": snap.get("ambata", ""),
             "ambi": fmt_ambi(snap.get("ambi", [])),
             "cluster": fmt_nums(snap.get("cluster_numbers", [])),
-            "op1_jolly": snap.get("terno_num_1", ""),
-            "op1_terni": fmt_terni(snap.get("terni_op1", [])),
-            "op2_jolly": snap.get("terno_num_2", ""),
-            "op2_terni": fmt_terni(snap.get("terni_op2", [])),
-            "op3_jolly": snap.get("terno_num_3", ""),
-            "op3_terni": fmt_terni(snap.get("terni_op3", [])),
             "hit_ambata": False,
             "hit_ambo": False,
             "hit_ambo_list": "",
-            "hit_op1": False,
-            "hit_op1_list": "",
-            "hit_op2": False,
-            "hit_op2_list": "",
-            "hit_op3": False,
-            "hit_op3_list": "",
             "total_play": self.total_play,
             "total_hit_ambata": self.total_hit_ambata,
             "total_hit_ambo": self.total_hit_ambo,
             "total_stop": self.total_stop,
-            "total_hit_op1": self.hit_terno_op1,
-            "total_hit_op2": self.hit_terno_op2,
-            "total_hit_op3": self.hit_terno_op3
         }
+
+        for idx in range(1, 10):
+            row[f"op{idx}_jolly"] = fmt_jolly(snap.get(f"terno_num_{idx}", ""))
+            row[f"op{idx}_terni"] = fmt_terni(snap.get(f"terni_op{idx}", []))
+            row[f"hit_op{idx}"] = False
+            row[f"hit_op{idx}_list"] = ""
+            row[f"total_hit_op{idx}"] = getattr(self, f"hit_terno_op{idx}", 0)
 
         if hit_data:
             row["hit_ambata"] = bool(hit_data.get("ambata_hit"))
             row["hit_ambo"] = bool(hit_data.get("ambi_hit"))
             row["hit_ambo_list"] = fmt_ambi(hit_data.get("ambi_hit", []))
 
-            row["hit_op1"] = bool(hit_data.get("terni_op1_hit"))
-            row["hit_op1_list"] = fmt_terni(hit_data.get("terni_op1_hit", []))
-
-            row["hit_op2"] = bool(hit_data.get("terni_op2_hit"))
-            row["hit_op2_list"] = fmt_terni(hit_data.get("terni_op2_hit", []))
-
-            row["hit_op3"] = bool(hit_data.get("terni_op3_hit"))
-            row["hit_op3_list"] = fmt_terni(hit_data.get("terni_op3_hit", []))
+            for idx in range(1, 10):
+                hits = hit_data.get(f"terni_op{idx}_hit", [])
+                row[f"hit_op{idx}"] = bool(hits)
+                row[f"hit_op{idx}_list"] = fmt_terni(hits)
 
         with open(CSV_FILE, "a", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
             writer.writerow(row)
+
+    def terni_stats_text(self):
+        return "\n".join(
+            f"• op{i} = {getattr(self, f'hit_terno_op{i}', 0)}"
+            for i in range(1, 10)
+        )
+
+    def terni_play_blocks_text(self, play):
+        labels = {
+            1: "HOT CONFERMATO",
+            2: "RITARDATARIO TOP 1",
+            3: "SCORE FUORI CLUSTER",
+            4: "SUPER FREQUENTE 20",
+            5: "SUPER FREQUENTE 60",
+            6: "STESSA DECINA AMBATA",
+            7: "STESSA DECINA DINAMICA",
+            8: "RITARDATARI TOP 3",
+            9: "MIX SCORE+RITARDO",
+        }
+
+        blocks = []
+
+        for idx in range(1, 10):
+            terni = play.get(f"terni_op{idx}", [])
+            txt = fmt_terni(terni) or "nessuno"
+            jolly = fmt_jolly(play.get(f"terno_num_{idx}")) or "None"
+            blocks.append(f"🧪 OP{idx} {labels[idx]} | jolly = {jolly}\n{txt}")
+
+        return "\n\n".join(blocks)
 
     # ========================================================
     # DEDUP
@@ -524,6 +626,48 @@ class SNIPER_V48:
             if i < len(self.last_draws)
             and n in self.last_draws[-(i + 1)]
         )
+
+    def recent_frequency(self, n, window=20):
+        return sum(
+            1 for d in self.last_draws[-window:]
+            if n in d
+        )
+
+    def decina_numbers(self, n):
+        start = ((int(n) - 1) // 10) * 10 + 1
+        end = min(start + 9, 90)
+        return list(range(start, end + 1))
+
+    def build_terni_single_jolly(self, ambi, jolly):
+        terni = []
+
+        if not jolly:
+            return terni
+
+        for item in ambi:
+            a, b = item["ambo"]
+            if jolly not in (a, b):
+                terni.append(tuple(sorted((a, b, int(jolly)))))
+
+        return sorted(set(terni))
+
+    def best_by_score(self, candidates, e):
+        clean = [int(n) for n in candidates if 1 <= int(n) <= 90]
+
+        if not clean:
+            return None
+
+        clean = sorted(set(clean))
+        clean.sort(
+            key=lambda n: (
+                -self.number_score(n, e),
+                -self.recent_frequency(n, 20),
+                self.lag(n),
+                n
+            )
+        )
+
+        return clean[0]
 
     # ========================================================
     # TOP RITARDATARI
@@ -688,6 +832,10 @@ class SNIPER_V48:
 
         pair_candidates = []
 
+        # ==================================================
+        # MOTORE v48 ORIGINALE: NON MODIFICARE
+        # ==================================================
+
         for a, b in combinations(hot_items, 2):
             pair = tuple(sorted((
                 int(a["number"]),
@@ -722,10 +870,12 @@ class SNIPER_V48:
         ambata = freq.most_common(1)[0][0]
 
         # ==================================================
-        # TEST TERNI - OPZIONE 1
-        # miglior hot confermato fuori cluster
+        # DA QUI IN POI: SOLO TERNI LAB, NON TOCCA GLI AMBI
         # ==================================================
 
+        outside_cluster = [n for n in range(1, 91) if n not in cluster_numbers]
+
+        # OP1 - miglior hot confermato fuori cluster
         hot_outside = []
 
         for item in hot_items:
@@ -737,57 +887,119 @@ class SNIPER_V48:
             hot_outside.append((n, self.number_score(n, e)))
 
         hot_outside.sort(key=lambda x: -x[1])
-
         terno_num_1 = hot_outside[0][0] if hot_outside else None
 
-        # ==================================================
-        # TEST TERNI - OPZIONE 2
-        # miglior ritardatario fuori cluster
-        # ==================================================
-
+        # OP2 - miglior ritardatario fuori cluster
         top10 = self.top_ritardatari()
+        ritardatari_outside = [
+            int(r["number"])
+            for r in top10
+            if int(r["number"]) not in cluster_numbers
+        ]
 
-        terno_num_2 = None
+        terno_num_2 = ritardatari_outside[0] if ritardatari_outside else None
 
-        for r in top10:
-            n = int(r["number"])
-
-            if n not in cluster_numbers:
-                terno_num_2 = n
-                break
-
-        # ==================================================
-        # TEST TERNI - OPZIONE 3
-        # miglior score assoluto fuori cluster
-        # ==================================================
-
+        # OP3 - miglior score assoluto fuori cluster
         all_scores = []
 
-        for n in range(1, 91):
-            if n in cluster_numbers:
-                continue
-
+        for n in outside_cluster:
             all_scores.append((n, self.number_score(n, e)))
 
         all_scores.sort(key=lambda x: -x[1])
-
         terno_num_3 = all_scores[0][0] if all_scores else None
 
-        terni_op1 = []
-        terni_op2 = []
-        terni_op3 = []
+        # OP4 - numero super frequente nelle ultime 20 estrazioni
+        freq20 = []
+
+        for n in outside_cluster:
+            freq20.append((
+                n,
+                self.recent_frequency(n, 20),
+                self.recent_frequency(n, 60),
+                self.number_score(n, e)
+            ))
+
+        freq20.sort(key=lambda x: (-x[1], -x[2], -x[3], x[0]))
+        terno_num_4 = freq20[0][0] if freq20 else None
+
+        # OP5 - numero super frequente nelle ultime 60 estrazioni
+        freq60 = []
+
+        for n in outside_cluster:
+            freq60.append((
+                n,
+                self.recent_frequency(n, 60),
+                self.recent_frequency(n, 20),
+                self.number_score(n, e)
+            ))
+
+        freq60.sort(key=lambda x: (-x[1], -x[2], -x[3], x[0]))
+        terno_num_5 = freq60[0][0] if freq60 else None
+
+        # OP6 - miglior numero della stessa decina dell'ambata
+        decina_ambata = [
+            n for n in self.decina_numbers(ambata)
+            if n not in cluster_numbers
+        ]
+
+        terno_num_6 = self.best_by_score(decina_ambata, e)
+
+        # OP7 - stessa decina dinamica: un jolly diverso per ogni ambo
+        # Per ogni ambo cerca il miglior numero nella stessa decina di uno
+        # dei due numeri dell'ambo, escluso il cluster.
+        terni_op7 = []
+        terno_num_7 = []
 
         for item in ambi:
             a, b = item["ambo"]
 
-            if terno_num_1:
-                terni_op1.append(tuple(sorted((a, b, terno_num_1))))
+            decina_candidates = set(self.decina_numbers(a)) | set(self.decina_numbers(b))
+            decina_candidates = [
+                n for n in decina_candidates
+                if n not in cluster_numbers
+            ]
 
-            if terno_num_2:
-                terni_op2.append(tuple(sorted((a, b, terno_num_2))))
+            jolly = self.best_by_score(decina_candidates, e)
 
-            if terno_num_3:
-                terni_op3.append(tuple(sorted((a, b, terno_num_3))))
+            if jolly:
+                terno_num_7.append(jolly)
+                terni_op7.append(tuple(sorted((a, b, jolly))))
+
+        terno_num_7 = sorted(set(terno_num_7))
+        terni_op7 = sorted(set(terni_op7))
+
+        # OP8 - primi 3 ritardatari fuori cluster
+        terno_num_8 = ritardatari_outside[:3]
+
+        # OP9 - mix score + ritardo + frequenza recente
+        mix_candidates = []
+
+        for n in outside_cluster:
+            mix = (
+                self.number_score(n, e)
+                + self.lag(n) * 0.60
+                + self.recent_frequency(n, 20) * 2.00
+                + self.recent_frequency(n, 60) * 0.50
+            )
+
+            mix_candidates.append((n, mix))
+
+        mix_candidates.sort(key=lambda x: (-x[1], x[0]))
+        terno_num_9 = mix_candidates[0][0] if mix_candidates else None
+
+        terni_op1 = self.build_terni_single_jolly(ambi, terno_num_1)
+        terni_op2 = self.build_terni_single_jolly(ambi, terno_num_2)
+        terni_op3 = self.build_terni_single_jolly(ambi, terno_num_3)
+        terni_op4 = self.build_terni_single_jolly(ambi, terno_num_4)
+        terni_op5 = self.build_terni_single_jolly(ambi, terno_num_5)
+        terni_op6 = self.build_terni_single_jolly(ambi, terno_num_6)
+
+        terni_op8 = []
+        for jolly in terno_num_8:
+            terni_op8.extend(self.build_terni_single_jolly(ambi, jolly))
+        terni_op8 = sorted(set(terni_op8))
+
+        terni_op9 = self.build_terni_single_jolly(ambi, terno_num_9)
 
         return {
             "ambata": ambata,
@@ -797,10 +1009,22 @@ class SNIPER_V48:
             "terno_num_1": terno_num_1,
             "terno_num_2": terno_num_2,
             "terno_num_3": terno_num_3,
+            "terno_num_4": terno_num_4,
+            "terno_num_5": terno_num_5,
+            "terno_num_6": terno_num_6,
+            "terno_num_7": terno_num_7,
+            "terno_num_8": terno_num_8,
+            "terno_num_9": terno_num_9,
 
             "terni_op1": terni_op1,
             "terni_op2": terni_op2,
-            "terni_op3": terni_op3
+            "terni_op3": terni_op3,
+            "terni_op4": terni_op4,
+            "terni_op5": terni_op5,
+            "terni_op6": terni_op6,
+            "terni_op7": terni_op7,
+            "terni_op8": terni_op8,
+            "terni_op9": terni_op9
         }
 
     # ========================================================
@@ -821,29 +1045,21 @@ class SNIPER_V48:
             if a in s and b in s:
                 ambi_hit.append(item)
 
-        terni_op1_hit = []
-        terni_op2_hit = []
-        terni_op3_hit = []
-
-        for t in snap.get("terni_op1", []):
-            if all(x in s for x in t):
-                terni_op1_hit.append(t)
-
-        for t in snap.get("terni_op2", []):
-            if all(x in s for x in t):
-                terni_op2_hit.append(t)
-
-        for t in snap.get("terni_op3", []):
-            if all(x in s for x in t):
-                terni_op3_hit.append(t)
-
-        return {
+        out = {
             "ambata_hit": ambata_hit,
-            "ambi_hit": ambi_hit,
-            "terni_op1_hit": terni_op1_hit,
-            "terni_op2_hit": terni_op2_hit,
-            "terni_op3_hit": terni_op3_hit
+            "ambi_hit": ambi_hit
         }
+
+        for idx in range(1, 10):
+            hits = []
+
+            for t in snap.get(f"terni_op{idx}", []):
+                if all(x in s for x in t):
+                    hits.append(t)
+
+            out[f"terni_op{idx}_hit"] = hits
+
+        return out
 
     # ========================================================
     # MAIN
@@ -882,20 +1098,17 @@ class SNIPER_V48:
                 for a, b in [h["ambo"]]
             ) or "nessuno"
 
-            op1_txt = ", ".join(
-                "-".join(map(str, t))
-                for t in hit_data["terni_op1_hit"]
-            ) or "nessuno"
+            terni_hit_lines = []
 
-            op2_txt = ", ".join(
-                "-".join(map(str, t))
-                for t in hit_data["terni_op2_hit"]
-            ) or "nessuno"
+            for idx in range(1, 10):
+                hits = hit_data.get(f"terni_op{idx}_hit", [])
 
-            op3_txt = ", ".join(
-                "-".join(map(str, t))
-                for t in hit_data["terni_op3_hit"]
-            ) or "nessuno"
+                if hits:
+                    terni_hit_lines.append(
+                        f"• OP{idx} = {fmt_terni(hits)}"
+                    )
+
+            terni_hit_txt = "\n".join(terni_hit_lines) or "• nessun terno"
 
             # ================= AMBATA =================
 
@@ -911,32 +1124,26 @@ class SNIPER_V48:
 
             # ================= TERNI TEST =================
 
-            if hit_data["terni_op1_hit"]:
-                self.hit_terno_op1 += 1
+            any_terno_hit = False
 
-            if hit_data["terni_op2_hit"]:
-                self.hit_terno_op2 += 1
+            for idx in range(1, 10):
+                if hit_data.get(f"terni_op{idx}_hit", []):
+                    setattr(
+                        self,
+                        f"hit_terno_op{idx}",
+                        getattr(self, f"hit_terno_op{idx}", 0) + 1
+                    )
+                    any_terno_hit = True
 
-            if hit_data["terni_op3_hit"]:
-                self.hit_terno_op3 += 1
-
-            if (
-                hit_data["terni_op1_hit"]
-                or hit_data["terni_op2_hit"]
-                or hit_data["terni_op3_hit"]
-            ):
+            if any_terno_hit:
                 self.append_csv_event("HIT_TERNO", e, hit_data)
 
                 await self.tg(
                     app,
                     f"💥 HIT TERNO TEST v48 | colpo {self.colpi}\n"
-                    f"• OP1 = {op1_txt}\n"
-                    f"• OP2 = {op2_txt}\n"
-                    f"• OP3 = {op3_txt}\n\n"
+                    f"{terni_hit_txt}\n\n"
                     f"📊 TERNI TEST\n"
-                    f"• op1 = {self.hit_terno_op1}\n"
-                    f"• op2 = {self.hit_terno_op2}\n"
-                    f"• op3 = {self.hit_terno_op3}"
+                    f"{self.terni_stats_text()}"
                 )
 
             # ================= HIT AMBO =================
@@ -955,9 +1162,7 @@ class SNIPER_V48:
                     f"• hit ambo = {self.total_hit_ambo}\n"
                     f"• stop = {self.total_stop}\n\n"
                     f"📊 TERNI TEST\n"
-                    f"• op1 = {self.hit_terno_op1}\n"
-                    f"• op2 = {self.hit_terno_op2}\n"
-                    f"• op3 = {self.hit_terno_op3}"
+                    f"{self.terni_stats_text()}"
                 )
 
                 self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
@@ -986,9 +1191,7 @@ class SNIPER_V48:
                     f"• hit ambo = {self.total_hit_ambo}\n"
                     f"• stop = {self.total_stop}\n\n"
                     f"📊 TERNI TEST\n"
-                    f"• op1 = {self.hit_terno_op1}\n"
-                    f"• op2 = {self.hit_terno_op2}\n"
-                    f"• op3 = {self.hit_terno_op3}"
+                    f"{self.terni_stats_text()}"
                 )
 
                 self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
@@ -1059,35 +1262,15 @@ class SNIPER_V48:
                 map(str, play["cluster_numbers"])
             )
 
-            op1_txt = ", ".join(
-                "-".join(map(str, t))
-                for t in play["terni_op1"]
-            ) or "nessuno"
-
-            op2_txt = ", ".join(
-                "-".join(map(str, t))
-                for t in play["terni_op2"]
-            ) or "nessuno"
-
-            op3_txt = ", ".join(
-                "-".join(map(str, t))
-                for t in play["terni_op3"]
-            ) or "nessuno"
-
             await self.tg(
                 app,
-                "🎯 PLAY v48 + TEST 9 TERNI\n"
+                "🎯 PLAY v48 + TERNI LAB ESPANSO\n"
                 f"🔥 AMBATA = {play['ambata']}\n"
                 f"✅ AMBI = {ambi_txt}\n"
                 f"• cluster = {cluster_txt}\n"
                 f"• max_colpi = {MAX_COLPI}\n"
                 f"• play_id = {play['play_id']}\n\n"
-                f"🧪 OP1 HOT CONFERMATO | jolly = {play['terno_num_1']}\n"
-                f"{op1_txt}\n\n"
-                f"🧪 OP2 RITARDATARIO | jolly = {play['terno_num_2']}\n"
-                f"{op2_txt}\n\n"
-                f"🧪 OP3 SCORE FUORI CLUSTER | jolly = {play['terno_num_3']}\n"
-                f"{op3_txt}"
+                f"{self.terni_play_blocks_text(play)}"
             )
 
         self.save_state()
@@ -1095,22 +1278,65 @@ class SNIPER_V48:
     async def send_report(self, app):
         await self.tg(
             app,
-            "📊 REPORT v48 + TEST TERNI\n"
+            "📊 REPORT v48 + TERNI LAB ESPANSO\n"
             f"• play = {self.total_play}\n"
             f"• hit ambata = {self.total_hit_ambata}\n"
             f"• hit ambo = {self.total_hit_ambo}\n"
             f"• stop = {self.total_stop}\n\n"
             f"📊 TERNI TEST\n"
-            f"• op1 = {self.hit_terno_op1}\n"
-            f"• op2 = {self.hit_terno_op2}\n"
-            f"• op3 = {self.hit_terno_op3}\n\n"
+            f"{self.terni_stats_text()}\n\n"
             f"🧾 CSV = {CSV_FILE}"
         )
 
 
 # ============================================================
+# LOCK ANTI-DOPPIA ISTANZA
+# ============================================================
+
+_LOCK_HANDLE = None
+
+
+def acquire_single_instance_lock():
+    """
+    Evita che due copie del bot girino insieme.
+    È la patch più importante per non avere doppioni Telegram e CSV falsati.
+    """
+    global _LOCK_HANDLE
+
+    _LOCK_HANDLE = open(LOCK_FILE, "w", encoding="utf-8")
+
+    if fcntl is None:
+        _LOCK_HANDLE.write(str(os.getpid()))
+        _LOCK_HANDLE.flush()
+        return
+
+    try:
+        fcntl.flock(_LOCK_HANDLE, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("⚠️ Bot già attivo: seconda istanza bloccata.")
+        sys.exit(1)
+
+    _LOCK_HANDLE.seek(0)
+    _LOCK_HANDLE.truncate()
+    _LOCK_HANDLE.write(str(os.getpid()))
+    _LOCK_HANDLE.flush()
+
+    def cleanup_lock():
+        try:
+            if fcntl is not None:
+                fcntl.flock(_LOCK_HANDLE, fcntl.LOCK_UN)
+            _LOCK_HANDLE.close()
+        except Exception:
+            pass
+
+    atexit.register(cleanup_lock)
+
+
+# ============================================================
 # LOOP
 # ============================================================
+
+acquire_single_instance_lock()
 
 bot = SNIPER_V48()
 
@@ -1139,7 +1365,7 @@ async def live():
 
         await bot.tg(
             app,
-            "🚀 SNIPER v48 + TEST 9 TERNI AVVIATO\n"
+            "🚀 SNIPER v48 + TERNI LAB ESPANSO AVVIATO\n"
             "✅ storico iniziale caricato\n"
             "✅ tutte le estrazioni già presenti sono marcate come processate\n"
             "✅ niente replay iniziale"
@@ -1163,7 +1389,7 @@ async def live():
                     bot.preload_today_as_processed(es)
                     await bot.tg(
                         app,
-                        "🚀 SNIPER v48 + TEST 9 TERNI AVVIATO\n"
+                        "🚀 SNIPER v48 + TERNI LAB ESPANSO AVVIATO\n"
                         "✅ nuovo giorno inizializzato\n"
                         "✅ estrazioni già uscite oggi marcate come storico/processate"
                     )
