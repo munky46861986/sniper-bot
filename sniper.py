@@ -1,7 +1,8 @@
 # ============================================================
-# 🚀 SNIPER v48 — AMBATA + 3 AMBI CLEAN + TERNI LAB ESPANSO
-# PATCH: dedup/startup pulito + cambio giorno + CSV eventi + lock anti doppia istanza
-# NOTA: motore v48 invariato; i terni extra sono solo test statistici
+# 🚀 SNIPER v48 — AMBATA + 3 AMBI CLEAN + TERNI LAB ESPANSO + AMBATA LAB
+# PATCH: dedup/startup pulito + cambio giorno + CSV eventi + lock anti doppia istanza globale
+# NUOVO: OP8A/OP8B/OP8C + Ambata Lab statistico
+# NOTA: motore v48 invariato; tutto il Lab è solo test statistico
 # ============================================================
 
 import asyncio
@@ -39,9 +40,13 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
-STATE_FILE = "sniper_v48_state.json"
-CSV_FILE = "sniper_v48_terni_lab_events.csv"
-LOCK_FILE = "sniper_v48_terni_lab.lock"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_terni_lab_events.csv")
+
+# Lock globale in /tmp: blocca doppie istanze anche se il bot viene lanciato da cartelle diverse.
+LOCK_FILE = "/tmp/sniper_v48_terni_lab.lock"
 
 LOOP_SEC = 60
 
@@ -62,6 +67,14 @@ MAX_COLPI = 7
 COOLDOWN_AFTER_PLAY = 5
 
 CLUSTER_REUSE_AFTER = 12
+
+# ============================================================
+# AMBATA LAB - SOLO STATISTICA, NON MODIFICA LA v48
+# ============================================================
+
+AMBATA_LAB_MAX_COLPI = 4
+AMBATA_HOT_MAX_COLPO = 2
+AMBATA_REPEAT_WINDOW = 3
 
 
 # ============================================================
@@ -185,6 +198,12 @@ CSV_FIELDS = [
     "op7_terni",
     "op8_jolly",
     "op8_terni",
+    "op8a_jolly",
+    "op8a_terni",
+    "op8b_jolly",
+    "op8b_terni",
+    "op8c_jolly",
+    "op8c_terni",
     "op9_jolly",
     "op9_terni",
     "hit_ambata",
@@ -206,6 +225,12 @@ CSV_FIELDS = [
     "hit_op7_list",
     "hit_op8",
     "hit_op8_list",
+    "hit_op8a",
+    "hit_op8a_list",
+    "hit_op8b",
+    "hit_op8b_list",
+    "hit_op8c",
+    "hit_op8c_list",
     "hit_op9",
     "hit_op9_list",
     "total_play",
@@ -220,7 +245,30 @@ CSV_FIELDS = [
     "total_hit_op6",
     "total_hit_op7",
     "total_hit_op8",
-    "total_hit_op9"
+    "total_hit_op8a",
+    "total_hit_op8b",
+    "total_hit_op8c",
+    "total_hit_op9",
+    "ambata_lab_first_hit_colpo",
+    "ambata_lab_hit_count_play",
+    "ambata_lab_hit_colpi",
+    "ambata_lab_hot",
+    "ambata_lab_repeat",
+    "total_ambata_first_hit_play",
+    "total_ambata_within_1",
+    "total_ambata_within_2",
+    "total_ambata_within_3",
+    "total_ambata_within_4",
+    "total_ambata_within_7",
+    "total_ambata_hot",
+    "total_ambata_hot_to_ambo",
+    "total_ambata_hot_to_stop",
+    "total_ambata_repeat",
+    "total_ambata_repeat_within_3",
+    "total_ambata_first_hit_to_ambo",
+    "total_ambata_first_hit_to_stop",
+    "total_ambo_without_ambata",
+    "total_stop_without_ambata"
 ]
 
 def ensure_csv():
@@ -258,7 +306,7 @@ def ensure_csv():
 class SNIPER_V48:
 
     def __init__(self):
-        self.version = "v48_terni_lab_expanded_cleanlog_lock"
+        self.version = "v48_terni_lab_expanded_ambata_lab_op8_split"
 
         self.day = day_key()
 
@@ -294,7 +342,27 @@ class SNIPER_V48:
         self.hit_terno_op6 = 0
         self.hit_terno_op7 = 0
         self.hit_terno_op8 = 0
+        self.hit_terno_op8a = 0
+        self.hit_terno_op8b = 0
+        self.hit_terno_op8c = 0
         self.hit_terno_op9 = 0
+
+        # AMBATA LAB - statistiche per play, non per singola uscita Telegram
+        self.ambata_first_hit_play = 0
+        self.ambata_within_1 = 0
+        self.ambata_within_2 = 0
+        self.ambata_within_3 = 0
+        self.ambata_within_4 = 0
+        self.ambata_within_7 = 0
+        self.ambata_hot = 0
+        self.ambata_hot_to_ambo = 0
+        self.ambata_hot_to_stop = 0
+        self.ambata_repeat = 0
+        self.ambata_repeat_within_3 = 0
+        self.ambata_first_hit_to_ambo = 0
+        self.ambata_first_hit_to_stop = 0
+        self.ambo_without_ambata = 0
+        self.stop_without_ambata = 0
 
         self.play_uid = 0
 
@@ -371,7 +439,26 @@ class SNIPER_V48:
             "hit_terno_op6": self.hit_terno_op6,
             "hit_terno_op7": self.hit_terno_op7,
             "hit_terno_op8": self.hit_terno_op8,
+            "hit_terno_op8a": self.hit_terno_op8a,
+            "hit_terno_op8b": self.hit_terno_op8b,
+            "hit_terno_op8c": self.hit_terno_op8c,
             "hit_terno_op9": self.hit_terno_op9,
+
+            "ambata_first_hit_play": self.ambata_first_hit_play,
+            "ambata_within_1": self.ambata_within_1,
+            "ambata_within_2": self.ambata_within_2,
+            "ambata_within_3": self.ambata_within_3,
+            "ambata_within_4": self.ambata_within_4,
+            "ambata_within_7": self.ambata_within_7,
+            "ambata_hot": self.ambata_hot,
+            "ambata_hot_to_ambo": self.ambata_hot_to_ambo,
+            "ambata_hot_to_stop": self.ambata_hot_to_stop,
+            "ambata_repeat": self.ambata_repeat,
+            "ambata_repeat_within_3": self.ambata_repeat_within_3,
+            "ambata_first_hit_to_ambo": self.ambata_first_hit_to_ambo,
+            "ambata_first_hit_to_stop": self.ambata_first_hit_to_stop,
+            "ambo_without_ambata": self.ambo_without_ambata,
+            "stop_without_ambata": self.stop_without_ambata,
 
             "play_uid": self.play_uid
         }
@@ -421,7 +508,26 @@ class SNIPER_V48:
             self.hit_terno_op6 = int(data.get("hit_terno_op6", 0))
             self.hit_terno_op7 = int(data.get("hit_terno_op7", 0))
             self.hit_terno_op8 = int(data.get("hit_terno_op8", 0))
+            self.hit_terno_op8a = int(data.get("hit_terno_op8a", 0))
+            self.hit_terno_op8b = int(data.get("hit_terno_op8b", 0))
+            self.hit_terno_op8c = int(data.get("hit_terno_op8c", 0))
             self.hit_terno_op9 = int(data.get("hit_terno_op9", 0))
+
+            self.ambata_first_hit_play = int(data.get("ambata_first_hit_play", 0))
+            self.ambata_within_1 = int(data.get("ambata_within_1", 0))
+            self.ambata_within_2 = int(data.get("ambata_within_2", 0))
+            self.ambata_within_3 = int(data.get("ambata_within_3", 0))
+            self.ambata_within_4 = int(data.get("ambata_within_4", 0))
+            self.ambata_within_7 = int(data.get("ambata_within_7", 0))
+            self.ambata_hot = int(data.get("ambata_hot", 0))
+            self.ambata_hot_to_ambo = int(data.get("ambata_hot_to_ambo", 0))
+            self.ambata_hot_to_stop = int(data.get("ambata_hot_to_stop", 0))
+            self.ambata_repeat = int(data.get("ambata_repeat", 0))
+            self.ambata_repeat_within_3 = int(data.get("ambata_repeat_within_3", 0))
+            self.ambata_first_hit_to_ambo = int(data.get("ambata_first_hit_to_ambo", 0))
+            self.ambata_first_hit_to_stop = int(data.get("ambata_first_hit_to_stop", 0))
+            self.ambo_without_ambata = int(data.get("ambo_without_ambata", 0))
+            self.stop_without_ambata = int(data.get("stop_without_ambata", 0))
 
             self.play_uid = int(data.get("play_uid", self.total_play))
 
@@ -464,6 +570,8 @@ class SNIPER_V48:
 
         snap = self.active_snapshot or {}
 
+        lab = snap.get("ambata_lab", {}) or {}
+
         row = {
             "time": now_txt(),
             "day": self.day,
@@ -481,6 +589,43 @@ class SNIPER_V48:
             "total_hit_ambata": self.total_hit_ambata,
             "total_hit_ambo": self.total_hit_ambo,
             "total_stop": self.total_stop,
+
+            "op8a_jolly": fmt_jolly(snap.get("terno_num_8a", "")),
+            "op8a_terni": fmt_terni(snap.get("terni_op8a", [])),
+            "op8b_jolly": fmt_jolly(snap.get("terno_num_8b", "")),
+            "op8b_terni": fmt_terni(snap.get("terni_op8b", [])),
+            "op8c_jolly": fmt_jolly(snap.get("terno_num_8c", "")),
+            "op8c_terni": fmt_terni(snap.get("terni_op8c", [])),
+            "hit_op8a": False,
+            "hit_op8a_list": "",
+            "hit_op8b": False,
+            "hit_op8b_list": "",
+            "hit_op8c": False,
+            "hit_op8c_list": "",
+            "total_hit_op8a": self.hit_terno_op8a,
+            "total_hit_op8b": self.hit_terno_op8b,
+            "total_hit_op8c": self.hit_terno_op8c,
+
+            "ambata_lab_first_hit_colpo": lab.get("first_hit_colpo", ""),
+            "ambata_lab_hit_count_play": lab.get("hit_count", 0),
+            "ambata_lab_hit_colpi": fmt_jolly(lab.get("hit_colpi", [])),
+            "ambata_lab_hot": bool(lab.get("hot", False)),
+            "ambata_lab_repeat": bool(lab.get("repeat_counted", False)),
+            "total_ambata_first_hit_play": self.ambata_first_hit_play,
+            "total_ambata_within_1": self.ambata_within_1,
+            "total_ambata_within_2": self.ambata_within_2,
+            "total_ambata_within_3": self.ambata_within_3,
+            "total_ambata_within_4": self.ambata_within_4,
+            "total_ambata_within_7": self.ambata_within_7,
+            "total_ambata_hot": self.ambata_hot,
+            "total_ambata_hot_to_ambo": self.ambata_hot_to_ambo,
+            "total_ambata_hot_to_stop": self.ambata_hot_to_stop,
+            "total_ambata_repeat": self.ambata_repeat,
+            "total_ambata_repeat_within_3": self.ambata_repeat_within_3,
+            "total_ambata_first_hit_to_ambo": self.ambata_first_hit_to_ambo,
+            "total_ambata_first_hit_to_stop": self.ambata_first_hit_to_stop,
+            "total_ambo_without_ambata": self.ambo_without_ambata,
+            "total_stop_without_ambata": self.stop_without_ambata,
         }
 
         for idx in range(1, 10):
@@ -500,15 +645,141 @@ class SNIPER_V48:
                 row[f"hit_op{idx}"] = bool(hits)
                 row[f"hit_op{idx}_list"] = fmt_terni(hits)
 
+            for sub in ["8a", "8b", "8c"]:
+                hits = hit_data.get(f"terni_op{sub}_hit", [])
+                row[f"hit_op{sub}"] = bool(hits)
+                row[f"hit_op{sub}_list"] = fmt_terni(hits)
+
         with open(CSV_FILE, "a", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
             writer.writerow(row)
 
     def terni_stats_text(self):
-        return "\n".join(
-            f"• op{i} = {getattr(self, f'hit_terno_op{i}', 0)}"
-            for i in range(1, 10)
+        lines = []
+
+        for i in range(1, 10):
+            lines.append(f"• op{i} = {getattr(self, f'hit_terno_op{i}', 0)}")
+
+            if i == 8:
+                lines.append(f"  - op8A = {self.hit_terno_op8a}")
+                lines.append(f"  - op8B = {self.hit_terno_op8b}")
+                lines.append(f"  - op8C = {self.hit_terno_op8c}")
+
+        return "\n".join(lines)
+
+    def ambata_lab_stats_text(self):
+        return (
+            "📊 AMBATA LAB\n"
+            f"• play con ambata uscita = {self.ambata_first_hit_play}\n"
+            f"• entro colpo 1 = {self.ambata_within_1}\n"
+            f"• entro colpo 2 = {self.ambata_within_2}\n"
+            f"• entro colpo 3 = {self.ambata_within_3}\n"
+            f"• entro colpo 4 = {self.ambata_within_4}\n"
+            f"• entro colpo 7 = {self.ambata_within_7}\n"
+            f"• ambata hot <= {AMBATA_HOT_MAX_COLPO} colpi = {self.ambata_hot}\n"
+            f"• hot -> ambo = {self.ambata_hot_to_ambo}\n"
+            f"• hot -> stop = {self.ambata_hot_to_stop}\n"
+            f"• repeat ambata = {self.ambata_repeat}\n"
+            f"• repeat entro {AMBATA_REPEAT_WINDOW} colpi = {self.ambata_repeat_within_3}\n"
+            f"• ambo senza ambata = {self.ambo_without_ambata}\n"
+            f"• stop senza ambata = {self.stop_without_ambata}"
         )
+
+    def new_ambata_lab_snapshot(self):
+        return {
+            "first_hit_colpo": None,
+            "hit_count": 0,
+            "hit_colpi": [],
+            "hot": False,
+            "repeat_counted": False,
+            "closed": False
+        }
+
+    def update_ambata_lab_on_draw(self, hit_data):
+        """
+        Statistica parallela: studia come esce l'ambata del play v48.
+        Non modifica colpi, ambi, stop o costruzione play.
+        """
+        if not self.active_snapshot:
+            return
+
+        lab = self.active_snapshot.setdefault(
+            "ambata_lab",
+            self.new_ambata_lab_snapshot()
+        )
+
+        if not hit_data.get("ambata_hit"):
+            return
+
+        lab["hit_count"] = int(lab.get("hit_count", 0)) + 1
+        lab.setdefault("hit_colpi", []).append(self.colpi)
+
+        if lab.get("first_hit_colpo") is None:
+            lab["first_hit_colpo"] = self.colpi
+            self.ambata_first_hit_play += 1
+
+            if self.colpi <= 1:
+                self.ambata_within_1 += 1
+            if self.colpi <= 2:
+                self.ambata_within_2 += 1
+            if self.colpi <= 3:
+                self.ambata_within_3 += 1
+            if self.colpi <= AMBATA_LAB_MAX_COLPI:
+                self.ambata_within_4 += 1
+            if self.colpi <= MAX_COLPI:
+                self.ambata_within_7 += 1
+
+            if self.colpi <= AMBATA_HOT_MAX_COLPO:
+                lab["hot"] = True
+                self.ambata_hot += 1
+
+            return
+
+        if not lab.get("repeat_counted"):
+            lab["repeat_counted"] = True
+            self.ambata_repeat += 1
+
+            first = int(lab.get("first_hit_colpo") or self.colpi)
+            if self.colpi - first <= AMBATA_REPEAT_WINDOW:
+                self.ambata_repeat_within_3 += 1
+
+    def finalize_ambata_lab_on_close(self, close_event):
+        """
+        Chiude il conteggio Ambata Lab quando il play finisce con HIT_AMBO o STOP.
+        """
+        if not self.active_snapshot:
+            return
+
+        lab = self.active_snapshot.setdefault(
+            "ambata_lab",
+            self.new_ambata_lab_snapshot()
+        )
+
+        if lab.get("closed"):
+            return
+
+        lab["closed"] = True
+
+        has_first = lab.get("first_hit_colpo") is not None
+        is_hot = bool(lab.get("hot"))
+
+        if close_event == "HIT_AMBO":
+            if has_first:
+                self.ambata_first_hit_to_ambo += 1
+            else:
+                self.ambo_without_ambata += 1
+
+            if is_hot:
+                self.ambata_hot_to_ambo += 1
+
+        elif close_event == "STOP":
+            if has_first:
+                self.ambata_first_hit_to_stop += 1
+            else:
+                self.stop_without_ambata += 1
+
+            if is_hot:
+                self.ambata_hot_to_stop += 1
 
     def terni_play_blocks_text(self, play):
         labels = {
@@ -526,9 +797,23 @@ class SNIPER_V48:
         blocks = []
 
         for idx in range(1, 10):
+            jolly = fmt_jolly(play.get(f"terno_num_{idx}")) or "None"
+
+            if idx == 8:
+                a_txt = fmt_terni(play.get("terni_op8a", [])) or "nessuno"
+                b_txt = fmt_terni(play.get("terni_op8b", [])) or "nessuno"
+                c_txt = fmt_terni(play.get("terni_op8c", [])) or "nessuno"
+
+                blocks.append(
+                    f"🧪 OP8 {labels[idx]} | jolly = {jolly}\n"
+                    f"OP8A primo ritardatario = {fmt_jolly(play.get('terno_num_8a')) or 'None'}\n{a_txt}\n"
+                    f"OP8B secondo ritardatario = {fmt_jolly(play.get('terno_num_8b')) or 'None'}\n{b_txt}\n"
+                    f"OP8C terzo ritardatario = {fmt_jolly(play.get('terno_num_8c')) or 'None'}\n{c_txt}"
+                )
+                continue
+
             terni = play.get(f"terni_op{idx}", [])
             txt = fmt_terni(terni) or "nessuno"
-            jolly = fmt_jolly(play.get(f"terno_num_{idx}")) or "None"
             blocks.append(f"🧪 OP{idx} {labels[idx]} | jolly = {jolly}\n{txt}")
 
         return "\n\n".join(blocks)
@@ -969,7 +1254,12 @@ class SNIPER_V48:
         terni_op7 = sorted(set(terni_op7))
 
         # OP8 - primi 3 ritardatari fuori cluster
+        # OP8 totale resta la somma; OP8A/B/C servono solo a capire
+        # quale posizione del ritardatario prende di più.
         terno_num_8 = ritardatari_outside[:3]
+        terno_num_8a = terno_num_8[0] if len(terno_num_8) >= 1 else None
+        terno_num_8b = terno_num_8[1] if len(terno_num_8) >= 2 else None
+        terno_num_8c = terno_num_8[2] if len(terno_num_8) >= 3 else None
 
         # OP9 - mix score + ritardo + frequenza recente
         mix_candidates = []
@@ -994,10 +1284,11 @@ class SNIPER_V48:
         terni_op5 = self.build_terni_single_jolly(ambi, terno_num_5)
         terni_op6 = self.build_terni_single_jolly(ambi, terno_num_6)
 
-        terni_op8 = []
-        for jolly in terno_num_8:
-            terni_op8.extend(self.build_terni_single_jolly(ambi, jolly))
-        terni_op8 = sorted(set(terni_op8))
+        terni_op8a = self.build_terni_single_jolly(ambi, terno_num_8a)
+        terni_op8b = self.build_terni_single_jolly(ambi, terno_num_8b)
+        terni_op8c = self.build_terni_single_jolly(ambi, terno_num_8c)
+
+        terni_op8 = sorted(set(terni_op8a + terni_op8b + terni_op8c))
 
         terni_op9 = self.build_terni_single_jolly(ambi, terno_num_9)
 
@@ -1014,7 +1305,12 @@ class SNIPER_V48:
             "terno_num_6": terno_num_6,
             "terno_num_7": terno_num_7,
             "terno_num_8": terno_num_8,
+            "terno_num_8a": terno_num_8a,
+            "terno_num_8b": terno_num_8b,
+            "terno_num_8c": terno_num_8c,
             "terno_num_9": terno_num_9,
+
+            "ambata_lab": self.new_ambata_lab_snapshot(),
 
             "terni_op1": terni_op1,
             "terni_op2": terni_op2,
@@ -1024,6 +1320,9 @@ class SNIPER_V48:
             "terni_op6": terni_op6,
             "terni_op7": terni_op7,
             "terni_op8": terni_op8,
+            "terni_op8a": terni_op8a,
+            "terni_op8b": terni_op8b,
+            "terni_op8c": terni_op8c,
             "terni_op9": terni_op9
         }
 
@@ -1059,6 +1358,15 @@ class SNIPER_V48:
 
             out[f"terni_op{idx}_hit"] = hits
 
+        for sub in ["8a", "8b", "8c"]:
+            hits = []
+
+            for t in snap.get(f"terni_op{sub}", []):
+                if all(x in s for x in t):
+                    hits.append(t)
+
+            out[f"terni_op{sub}_hit"] = hits
+
         return out
 
     # ========================================================
@@ -1091,6 +1399,7 @@ class SNIPER_V48:
             self.colpi += 1
 
             hit_data = self.check_hit(nums)
+            self.update_ambata_lab_on_draw(hit_data)
 
             ambi_txt = ", ".join(
                 f"{a}-{b}"
@@ -1107,6 +1416,18 @@ class SNIPER_V48:
                     terni_hit_lines.append(
                         f"• OP{idx} = {fmt_terni(hits)}"
                     )
+
+                    if idx == 8:
+                        for sub_label, sub_key in [
+                            ("OP8A", "8a"),
+                            ("OP8B", "8b"),
+                            ("OP8C", "8c"),
+                        ]:
+                            sub_hits = hit_data.get(f"terni_op{sub_key}_hit", [])
+                            if sub_hits:
+                                terni_hit_lines.append(
+                                    f"  - {sub_label} = {fmt_terni(sub_hits)}"
+                                )
 
             terni_hit_txt = "\n".join(terni_hit_lines) or "• nessun terno"
 
@@ -1135,6 +1456,15 @@ class SNIPER_V48:
                     )
                     any_terno_hit = True
 
+            for sub in ["8a", "8b", "8c"]:
+                if hit_data.get(f"terni_op{sub}_hit", []):
+                    setattr(
+                        self,
+                        f"hit_terno_op{sub}",
+                        getattr(self, f"hit_terno_op{sub}", 0) + 1
+                    )
+                    any_terno_hit = True
+
             if any_terno_hit:
                 self.append_csv_event("HIT_TERNO", e, hit_data)
 
@@ -1143,13 +1473,15 @@ class SNIPER_V48:
                     f"💥 HIT TERNO TEST v48 | colpo {self.colpi}\n"
                     f"{terni_hit_txt}\n\n"
                     f"📊 TERNI TEST\n"
-                    f"{self.terni_stats_text()}"
+                    f"{self.terni_stats_text()}\n\n"
+                    f"{self.ambata_lab_stats_text()}"
                 )
 
             # ================= HIT AMBO =================
 
             if hit_data["ambi_hit"]:
                 self.total_hit_ambo += 1
+                self.finalize_ambata_lab_on_close("HIT_AMBO")
                 self.append_csv_event("HIT_AMBO", e, hit_data)
 
                 await self.tg(
@@ -1162,7 +1494,8 @@ class SNIPER_V48:
                     f"• hit ambo = {self.total_hit_ambo}\n"
                     f"• stop = {self.total_stop}\n\n"
                     f"📊 TERNI TEST\n"
-                    f"{self.terni_stats_text()}"
+                    f"{self.terni_stats_text()}\n\n"
+                    f"{self.ambata_lab_stats_text()}"
                 )
 
                 self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
@@ -1180,6 +1513,7 @@ class SNIPER_V48:
 
             if self.colpi >= MAX_COLPI:
                 self.total_stop += 1
+                self.finalize_ambata_lab_on_close("STOP")
                 self.append_csv_event("STOP", e, hit_data)
 
                 await self.tg(
@@ -1191,7 +1525,8 @@ class SNIPER_V48:
                     f"• hit ambo = {self.total_hit_ambo}\n"
                     f"• stop = {self.total_stop}\n\n"
                     f"📊 TERNI TEST\n"
-                    f"{self.terni_stats_text()}"
+                    f"{self.terni_stats_text()}\n\n"
+                    f"{self.ambata_lab_stats_text()}"
                 )
 
                 self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
@@ -1264,7 +1599,7 @@ class SNIPER_V48:
 
             await self.tg(
                 app,
-                "🎯 PLAY v48 + TERNI LAB ESPANSO\n"
+                "🎯 PLAY v48 + TERNI LAB ESPANSO + AMBATA LAB\n"
                 f"🔥 AMBATA = {play['ambata']}\n"
                 f"✅ AMBI = {ambi_txt}\n"
                 f"• cluster = {cluster_txt}\n"
@@ -1278,13 +1613,14 @@ class SNIPER_V48:
     async def send_report(self, app):
         await self.tg(
             app,
-            "📊 REPORT v48 + TERNI LAB ESPANSO\n"
+            "📊 REPORT v48 + TERNI LAB ESPANSO + AMBATA LAB\n"
             f"• play = {self.total_play}\n"
             f"• hit ambata = {self.total_hit_ambata}\n"
             f"• hit ambo = {self.total_hit_ambo}\n"
             f"• stop = {self.total_stop}\n\n"
             f"📊 TERNI TEST\n"
             f"{self.terni_stats_text()}\n\n"
+            f"{self.ambata_lab_stats_text()}\n\n"
             f"🧾 CSV = {CSV_FILE}"
         )
 
@@ -1365,7 +1701,7 @@ async def live():
 
         await bot.tg(
             app,
-            "🚀 SNIPER v48 + TERNI LAB ESPANSO AVVIATO\n"
+            "🚀 SNIPER v48 + TERNI LAB ESPANSO + AMBATA LAB AVVIATO\n"
             "✅ storico iniziale caricato\n"
             "✅ tutte le estrazioni già presenti sono marcate come processate\n"
             "✅ niente replay iniziale"
@@ -1389,7 +1725,7 @@ async def live():
                     bot.preload_today_as_processed(es)
                     await bot.tg(
                         app,
-                        "🚀 SNIPER v48 + TERNI LAB ESPANSO AVVIATO\n"
+                        "🚀 SNIPER v48 + TERNI LAB ESPANSO + AMBATA LAB AVVIATO\n"
                         "✅ nuovo giorno inizializzato\n"
                         "✅ estrazioni già uscite oggi marcate come storico/processate"
                     )
