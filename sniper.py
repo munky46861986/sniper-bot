@@ -106,7 +106,7 @@ DECINA_LAB_MAX_COLPI = 2
 # Il segnale storico scatta spesso (~48% delle occasioni nel file testato).
 # Per evitare spam Telegram, il Lab resta sempre attivo e registra tutto nel CSV,
 # mentre le notifiche sono opzionali via variabile ambiente DECINA_LAB_NOTIFY=1.
- DECINA_LAB_NOTIFY = True
+DECINA_LAB_NOTIFY = True
 
 
 # Strategie mantenute dopo il backtest storico.
