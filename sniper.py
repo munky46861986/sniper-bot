@@ -18,8 +18,12 @@
 #   - OP7 CONTROL: stessa decina dinamica per ambo
 #   - TERNI LAB indipendente per 7 colpi anche dopo HIT AMBO
 #   - AMBATA RAFFICA 2 indipendente per 2 colpi
-#   - DECINA LAB 10-19: TOP 3 Heat ultime 5, soglia totale >= 8
+#   - DECINA LAB 10-19 BASE: TOP 3 Heat ultime 5, soglia totale >= 8
 #     sessione indipendente per 2 colpi, target statistici K1/K2/K3
+#   - DECINA CORE TOP2 LAB: Heat >= 9, 3 terni A-B-C/A-B-D/A-B-E
+#   - DECINA PIVOT LAB: Heat >= 9, 6 terni tutti contenenti il pivot A
+#     CORE/PIVOT indipendenti per 2 colpi, stop al primo colpo vincente
+#     bilancio teorico separato a payout 45x per unita' puntata
 #
 # PATCH OPERATIVE:
 #   - lock globale anti doppia istanza
@@ -68,8 +72,8 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # File nuovi: non mischiano stato/statistiche delle versioni precedenti.
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_final_decina_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_final_decina_events.csv")
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_final_decina_multi_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_final_decina_multi_events.csv")
 
 # Stesso lock globale delle versioni Lab precedenti: impedisce di lasciare
 # accidentalmente attivo un vecchio bot insieme a questo.
@@ -103,11 +107,19 @@ DECINA_LAB_TOP_N = 3
 DECINA_LAB_HEAT_THRESHOLD = 8
 DECINA_LAB_MAX_COLPI = 2
 
-# Il segnale storico scatta spesso (~48% delle occasioni nel file testato).
-# Per evitare spam Telegram, il Lab resta sempre attivo e registra tutto nel CSV,
-# mentre le notifiche sono opzionali via variabile ambiente DECINA_LAB_NOTIFY=1.
-DECINA_LAB_NOTIFY = True
+# Nuovi pacchetti multi-terno emersi dal backtest:
+# - CORE TOP2: A-B-C / A-B-D / A-B-E (3 terni)
+# - PIVOT: tutti i terni del TOP5 che contengono A (6 terni)
+# Si aprono solo con Heat totale TOP3 >= 9.
+DECINA_MULTI_HEAT_THRESHOLD = 9
+DECINA_MULTI_TOP_N = 5
+DECINA_MULTI_MAX_COLPI = 2
+DECINA_TERNO_PAYOUT = 45.0
 
+# L'utente ha scelto notifiche Telegram permanenti.
+# Per silenziarle in futuro basta impostare queste costanti a False.
+DECINA_LAB_NOTIFY = True
+DECINA_MULTI_NOTIFY = True
 
 # Strategie mantenute dopo il backtest storico.
 LAB_STRATEGIES = ("op3", "op9", "op6", "op7")
@@ -272,6 +284,37 @@ CSV_FIELDS = [
     "decina_k3_hits",
     "decina_k2_colpo1",
     "decina_k2_colpo2",
+    "decina_multi_signal_id",
+    "decina_multi_package",
+    "decina_top5",
+    "decina_package_terni",
+    "decina_terni_hit_count",
+    "core_sessions",
+    "core_closed",
+    "core_winning_sessions",
+    "core_losing_sessions",
+    "core_hit_colpo1",
+    "core_hit_colpo2",
+    "core_winning_terni",
+    "core_multi_2plus_sessions",
+    "core_max_terni_same_draw",
+    "core_cost_units",
+    "core_gross_units",
+    "core_net_units",
+    "core_roi_pct",
+    "pivot_sessions",
+    "pivot_closed",
+    "pivot_winning_sessions",
+    "pivot_losing_sessions",
+    "pivot_hit_colpo1",
+    "pivot_hit_colpo2",
+    "pivot_winning_terni",
+    "pivot_multi_2plus_sessions",
+    "pivot_max_terni_same_draw",
+    "pivot_cost_units",
+    "pivot_gross_units",
+    "pivot_net_units",
+    "pivot_roi_pct",
 ]
 
 
@@ -311,7 +354,7 @@ def ensure_csv():
 class SNIPER_V48:
 
     def __init__(self):
-        self.version = "v48_final_research_op3_r2_decina10_19"
+        self.version = "v48_final_research_op3_r2_decina10_19_multi_terni"
 
         self.day = day_key()
 
@@ -371,6 +414,16 @@ class SNIPER_V48:
             "k2_colpo2": 0,
         }
 
+        # DECINA MULTI-TERNO LAB indipendente.
+        # Le sessioni CORE/PIVOT possono sovrapporsi e si fermano al primo
+        # colpo vincente oppure al secondo colpo in caso di miss.
+        self.decina_multi_uid = 0
+        self.decina_multi_sessions = []
+        self.decina_multi_stats = {
+            "core": self.new_decina_multi_stats(),
+            "pivot": self.new_decina_multi_stats(),
+        }
+
         self.load_state()
         ensure_csv()
 
@@ -405,6 +458,22 @@ class SNIPER_V48:
     # STATE
     # ========================================================
 
+    @staticmethod
+    def new_decina_multi_stats():
+        return {
+            "sessions": 0,
+            "closed": 0,
+            "winning_sessions": 0,
+            "losing_sessions": 0,
+            "hit_colpo1": 0,
+            "hit_colpo2": 0,
+            "winning_terni": 0,
+            "multi_2plus_sessions": 0,
+            "max_terni_same_draw": 0,
+            "cost_units": 0.0,
+            "gross_units": 0.0,
+        }
+
     def save_state(self):
         data = {
             "version": self.version,
@@ -434,6 +503,9 @@ class SNIPER_V48:
             "decina_lab_uid": self.decina_lab_uid,
             "decina_lab_sessions": self.decina_lab_sessions,
             "decina_lab_stats": self.decina_lab_stats,
+            "decina_multi_uid": self.decina_multi_uid,
+            "decina_multi_sessions": self.decina_multi_sessions,
+            "decina_multi_stats": self.decina_multi_stats,
         }
 
         tmp = STATE_FILE + ".tmp"
@@ -492,6 +564,17 @@ class SNIPER_V48:
             for key in self.decina_lab_stats:
                 self.decina_lab_stats[key] = int(loaded_decina.get(key, 0))
 
+            self.decina_multi_uid = int(data.get("decina_multi_uid", 0))
+            self.decina_multi_sessions = data.get("decina_multi_sessions", [])
+            loaded_multi = data.get("decina_multi_stats", {})
+            for package in ("core", "pivot"):
+                src = loaded_multi.get(package, {})
+                fresh = self.new_decina_multi_stats()
+                for key, default in fresh.items():
+                    value = src.get(key, default)
+                    fresh[key] = float(value) if key in {"cost_units", "gross_units"} else int(value)
+                self.decina_multi_stats[package] = fresh
+
         except Exception as ex:
             print(f"⚠️ Stato non caricato: {ex}")
 
@@ -523,6 +606,7 @@ class SNIPER_V48:
         self.terni_sessions = []
         self.ambata_r2_sessions = []
         self.decina_lab_sessions = []
+        self.decina_multi_sessions = []
 
         self.save_state()
 
@@ -548,6 +632,11 @@ class SNIPER_V48:
         decina_top3=None,
         decina_heat_total=None,
         decina_hit_numbers=None,
+        decina_multi_signal_id=None,
+        decina_multi_package="",
+        decina_top5=None,
+        decina_package_terni=None,
+        decina_terni_hit_count=None,
     ):
         ensure_csv()
 
@@ -597,7 +686,34 @@ class SNIPER_V48:
             "decina_k3_hits": self.decina_lab_stats["k3_hits"],
             "decina_k2_colpo1": self.decina_lab_stats["k2_colpo1"],
             "decina_k2_colpo2": self.decina_lab_stats["k2_colpo2"],
+            "decina_multi_signal_id": decina_multi_signal_id if decina_multi_signal_id is not None else "",
+            "decina_multi_package": decina_multi_package,
+            "decina_top5": fmt_nums(decina_top5),
+            "decina_package_terni": fmt_terni(decina_package_terni),
+            "decina_terni_hit_count": decina_terni_hit_count if decina_terni_hit_count is not None else "",
         }
+
+        for package in ("core", "pivot"):
+            st = self.decina_multi_stats[package]
+            cost = float(st["cost_units"])
+            gross = float(st["gross_units"])
+            net = gross - cost
+            roi = (net / cost * 100.0) if cost else 0.0
+            row.update({
+                f"{package}_sessions": st["sessions"],
+                f"{package}_closed": st["closed"],
+                f"{package}_winning_sessions": st["winning_sessions"],
+                f"{package}_losing_sessions": st["losing_sessions"],
+                f"{package}_hit_colpo1": st["hit_colpo1"],
+                f"{package}_hit_colpo2": st["hit_colpo2"],
+                f"{package}_winning_terni": st["winning_terni"],
+                f"{package}_multi_2plus_sessions": st["multi_2plus_sessions"],
+                f"{package}_max_terni_same_draw": st["max_terni_same_draw"],
+                f"{package}_cost_units": f"{cost:.2f}",
+                f"{package}_gross_units": f"{gross:.2f}",
+                f"{package}_net_units": f"{net:.2f}",
+                f"{package}_roi_pct": f"{roi:.4f}",
+            })
 
         with open(CSV_FILE, "a", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
@@ -1024,8 +1140,11 @@ class SNIPER_V48:
 
         ranked.sort(key=lambda x: (-x[1], -x[2], x[0]))
         top = ranked[:DECINA_LAB_TOP_N]
+        top5_rows = ranked[:DECINA_MULTI_TOP_N]
         top3 = [int(x[0]) for x in top]
+        top5 = [int(x[0]) for x in top5_rows]
         heat_counts = [int(x[1]) for x in top]
+        top5_heat_counts = [int(x[1]) for x in top5_rows]
         heat_total = sum(heat_counts)
 
         if heat_total < DECINA_LAB_HEAT_THRESHOLD:
@@ -1033,7 +1152,9 @@ class SNIPER_V48:
 
         return {
             "top3": top3,
+            "top5": top5,
             "heat_counts": heat_counts,
+            "top5_heat_counts": top5_heat_counts,
             "heat_total": int(heat_total),
         }
 
@@ -1050,6 +1171,7 @@ class SNIPER_V48:
             "colpi": 0,
             "max_colpi": DECINA_LAB_MAX_COLPI,
             "top3": signal["top3"],
+            "top5": signal.get("top5", signal["top3"]),
             "heat_counts": signal["heat_counts"],
             "heat_total": signal["heat_total"],
             "k1_hit": False,
@@ -1086,6 +1208,172 @@ class SNIPER_V48:
                 f"• osservazione = prossimi {DECINA_LAB_MAX_COLPI} colpi\n"
                 "• target principale = almeno 2 dei 3 insieme"
             )
+
+        # CORE/PIVOT si aprono solo nella fascia Heat >= 9.
+        if signal["heat_total"] >= DECINA_MULTI_HEAT_THRESHOLD:
+            await self.open_decina_multi_sessions(app, e, signal)
+
+    @staticmethod
+    def build_decina_multi_packages(top5):
+        if len(top5) < 5:
+            return {}
+
+        a, b, c, d, e = map(int, top5[:5])
+        core = normalize_terni([
+            (a, b, c),
+            (a, b, d),
+            (a, b, e),
+        ])
+        pivot = normalize_terni(
+            (a, x, y)
+            for x, y in combinations((b, c, d, e), 2)
+        )
+        return {"core": core, "pivot": pivot}
+
+    async def open_decina_multi_sessions(self, app, e, signal):
+        top5 = [int(n) for n in signal.get("top5", [])]
+        packages = self.build_decina_multi_packages(top5)
+        if not packages:
+            return
+
+        self.decina_multi_uid += 1
+        multi_signal_id = self.decina_multi_uid
+
+        for package in ("core", "pivot"):
+            terni = packages[package]
+            session = {
+                "multi_signal_id": multi_signal_id,
+                "package": package,
+                "day": self.day,
+                "origin_e": e,
+                "colpi": 0,
+                "max_colpi": DECINA_MULTI_MAX_COLPI,
+                "top5": top5,
+                "heat_total": int(signal["heat_total"]),
+                "terni": [list(t) for t in terni],
+            }
+            self.decina_multi_sessions.append(session)
+            self.decina_multi_stats[package]["sessions"] += 1
+
+            self.append_csv_event(
+                f"DECINA_MULTI_{package.upper()}_OPEN",
+                e=e,
+                colpo=0,
+                session_type=f"DECINA_MULTI_{package.upper()}_H5_T2",
+                strategy=f"DECINA_{package.upper()}_HEAT5",
+                terni=terni,
+                outcome="OPEN",
+                decina_multi_signal_id=multi_signal_id,
+                decina_multi_package=package,
+                decina_top5=top5,
+                decina_package_terni=terni,
+                decina_heat_total=signal["heat_total"],
+            )
+
+        if DECINA_MULTI_NOTIFY:
+            core = packages["core"]
+            pivot = packages["pivot"]
+            await self.tg(
+                app,
+                "🧪 DECINA MULTI-TERNO 10-19 — SEGNALE\n"
+                f"• multi_signal_id = {multi_signal_id}\n"
+                f"• TOP 5 Heat = {fmt_nums(top5)}\n"
+                f"• Heat TOP3 = {signal['heat_total']} (soglia >= {DECINA_MULTI_HEAT_THRESHOLD})\n\n"
+                f"🔷 CORE TOP2 — {len(core)} terni\n"
+                f"{fmt_terni(core)}\n\n"
+                f"🔶 PIVOT — {len(pivot)} terni\n"
+                f"{fmt_terni(pivot)}\n\n"
+                f"• osservazione = prossimi {DECINA_MULTI_MAX_COLPI} colpi\n"
+                "• stop pacchetto = primo colpo vincente"
+            )
+
+    async def process_decina_multi_sessions(self, app, e, nums):
+        if not self.decina_multi_sessions:
+            return
+
+        draw_set = set(nums)
+        survivors = []
+
+        for session in self.decina_multi_sessions:
+            package = session["package"]
+            st = self.decina_multi_stats[package]
+            session["colpi"] = int(session.get("colpi", 0)) + 1
+            colpo = session["colpi"]
+            terni = normalize_terni(session.get("terni", []))
+
+            # Una unita' per ogni terno del pacchetto a ogni colpo giocato.
+            st["cost_units"] += float(len(terni))
+
+            hits = [t for t in terni if set(t).issubset(draw_set)]
+            hit_count = len(hits)
+
+            if hit_count > 0:
+                st["closed"] += 1
+                st["winning_sessions"] += 1
+                st["winning_terni"] += hit_count
+                st["max_terni_same_draw"] = max(st["max_terni_same_draw"], hit_count)
+                if hit_count >= 2:
+                    st["multi_2plus_sessions"] += 1
+                if colpo == 1:
+                    st["hit_colpo1"] += 1
+                elif colpo == 2:
+                    st["hit_colpo2"] += 1
+                st["gross_units"] += float(hit_count) * DECINA_TERNO_PAYOUT
+
+                self.append_csv_event(
+                    f"DECINA_MULTI_{package.upper()}_HIT",
+                    e=e,
+                    colpo=colpo,
+                    session_type=f"DECINA_MULTI_{package.upper()}_H5_T2",
+                    strategy=f"DECINA_{package.upper()}_HEAT5",
+                    terni=terni,
+                    hit_list=hits,
+                    outcome=f"HIT_{hit_count}_TERNI",
+                    decina_multi_signal_id=session["multi_signal_id"],
+                    decina_multi_package=package,
+                    decina_top5=session.get("top5", []),
+                    decina_package_terni=terni,
+                    decina_terni_hit_count=hit_count,
+                    decina_heat_total=session.get("heat_total"),
+                )
+
+                if DECINA_MULTI_NOTIFY:
+                    label = "CORE TOP2" if package == "core" else "PIVOT"
+                    await self.tg(
+                        app,
+                        f"💥 DECINA {label} — HIT TERNO\n"
+                        f"• multi_signal_id = {session['multi_signal_id']}\n"
+                        f"• colpo = {colpo}\n"
+                        f"• Heat origine = {session.get('heat_total')}\n"
+                        f"• terni presi insieme = {hit_count}\n"
+                        f"• hit = {fmt_terni(hits)}"
+                    )
+                # Stop al primo colpo vincente: non sopravvive.
+                continue
+
+            if colpo >= int(session.get("max_colpi", DECINA_MULTI_MAX_COLPI)):
+                st["closed"] += 1
+                st["losing_sessions"] += 1
+                self.append_csv_event(
+                    f"DECINA_MULTI_{package.upper()}_MISS",
+                    e=e,
+                    colpo=colpo,
+                    session_type=f"DECINA_MULTI_{package.upper()}_H5_T2",
+                    strategy=f"DECINA_{package.upper()}_HEAT5",
+                    terni=terni,
+                    outcome="MISS",
+                    decina_multi_signal_id=session["multi_signal_id"],
+                    decina_multi_package=package,
+                    decina_top5=session.get("top5", []),
+                    decina_package_terni=terni,
+                    decina_terni_hit_count=0,
+                    decina_heat_total=session.get("heat_total"),
+                )
+                continue
+
+            survivors.append(session)
+
+        self.decina_multi_sessions = survivors
 
     async def process_decina_10_19_sessions(self, app, e, nums):
         if not self.decina_lab_sessions:
@@ -1354,7 +1642,8 @@ class SNIPER_V48:
                     f"• play_id = {session['play_id']}\n"
                     f"• ambata = {session['ambata']}\n\n"
                     f"{self.ambata_r2_stats_text()}\n\n"
-                    f"{self.decina_lab_stats_text()}"
+                    f"{self.decina_lab_stats_text()}\n\n"
+                    f"{self.decina_multi_stats_text()}"
                 )
                 continue
 
@@ -1434,6 +1723,37 @@ class SNIPER_V48:
             f"• sessioni aperte ora = {len(self.decina_lab_sessions)}"
         )
 
+    def decina_multi_stats_text(self):
+        lines = [
+            "📊 DECINA MULTI-TERNO 10-19 — HEAT 5 / 2 COLPI",
+            f"• soglia apertura = Heat TOP3 >= {DECINA_MULTI_HEAT_THRESHOLD}",
+            f"• payout teorico = {DECINA_TERNO_PAYOUT:.0f}x per terno vincente",
+        ]
+
+        for package, label in (("core", "CORE TOP2 (3 terni)"), ("pivot", "PIVOT (6 terni)")):
+            st = self.decina_multi_stats[package]
+            closed = st["closed"]
+            win_rate = (st["winning_sessions"] / closed * 100.0) if closed else 0.0
+            cost = float(st["cost_units"])
+            gross = float(st["gross_units"])
+            net = gross - cost
+            roi = (net / cost * 100.0) if cost else 0.0
+            lines.extend([
+                "",
+                f"{'🔷' if package == 'core' else '🔶'} {label}",
+                f"• sessioni = {st['sessions']} | chiuse = {closed}",
+                f"• vincenti = {st['winning_sessions']} ({win_rate:.2f}%) | miss = {st['losing_sessions']}",
+                f"• hit colpo 1 = {st['hit_colpo1']} | colpo 2 = {st['hit_colpo2']}",
+                f"• terni vincenti totali = {st['winning_terni']}",
+                f"• sessioni con 2+ terni insieme = {st['multi_2plus_sessions']}",
+                f"• max terni nello stesso colpo = {st['max_terni_same_draw']}",
+                f"• costo teorico = {cost:.2f}u | lordo = {gross:.2f}u",
+                f"• netto = {net:+.2f}u | ROI = {roi:+.2f}%",
+            ])
+
+        lines.append(f"\n• sessioni multi aperte ora = {len(self.decina_multi_sessions)}")
+        return "\n".join(lines)
+
     def play_lab_text(self, play):
         blocks = []
 
@@ -1478,6 +1798,7 @@ class SNIPER_V48:
         await self.process_terni_sessions(app, e, nums)
         await self.process_ambata_r2_sessions(app, e, nums)
         await self.process_decina_10_19_sessions(app, e, nums)
+        await self.process_decina_multi_sessions(app, e, nums)
 
         # Il nuovo segnale usa le ultime 5 estrazioni già note (inclusa questa)
         # e viene verificato SOLO sulle future 2 estrazioni successive.
@@ -1535,7 +1856,8 @@ class SNIPER_V48:
                     f"• stop = {self.total_stop}\n\n"
                     f"{self.terni_lab_stats_text()}\n\n"
                     f"{self.ambata_r2_stats_text()}\n\n"
-                    f"{self.decina_lab_stats_text()}"
+                    f"{self.decina_lab_stats_text()}\n\n"
+                    f"{self.decina_multi_stats_text()}"
                 )
 
                 self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
@@ -1570,7 +1892,8 @@ class SNIPER_V48:
                     f"• stop = {self.total_stop}\n\n"
                     f"{self.terni_lab_stats_text()}\n\n"
                     f"{self.ambata_r2_stats_text()}\n\n"
-                    f"{self.decina_lab_stats_text()}"
+                    f"{self.decina_lab_stats_text()}\n\n"
+                    f"{self.decina_multi_stats_text()}"
                 )
 
                 self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
@@ -1681,17 +2004,19 @@ class SNIPER_V48:
     async def send_report(self, app):
         await self.tg(
             app,
-            "📊 REPORT SNIPER v48 + FINAL RESEARCH\n"
+            "📊 REPORT SNIPER v48 + FINAL RESEARCH + DECINA MULTI\n"
             f"• play v48 = {self.total_play}\n"
             f"• hit ambata eventi = {self.total_hit_ambata}\n"
             f"• hit ambo = {self.total_hit_ambo}\n"
             f"• stop = {self.total_stop}\n"
             f"• sessioni terni aperte ora = {len(self.terni_sessions)}\n"
             f"• sessioni ambata R2 aperte ora = {len(self.ambata_r2_sessions)}\n"
-            f"• sessioni decina aperte ora = {len(self.decina_lab_sessions)}\n\n"
+            f"• sessioni decina base aperte ora = {len(self.decina_lab_sessions)}\n"
+            f"• sessioni decina multi aperte ora = {len(self.decina_multi_sessions)}\n\n"
             f"{self.terni_lab_stats_text()}\n\n"
             f"{self.ambata_r2_stats_text()}\n\n"
             f"{self.decina_lab_stats_text()}\n\n"
+            f"{self.decina_multi_stats_text()}\n\n"
             f"🧾 CSV = {CSV_FILE}"
         )
 
@@ -1777,13 +2102,16 @@ async def live():
 
         await bot.tg(
             app,
-            "🚀 SNIPER v48 + FINAL RESEARCH + DECINA LAB AVVIATO\n"
+            "🚀 SNIPER v48 + FINAL RESEARCH + DECINA MULTI LAB AVVIATO\n"
             "✅ core v48 invariato\n"
             "✅ OP3 primary + OP9/OP6/OP7 control\n"
             "✅ Terni Lab indipendente 7 colpi\n"
             "✅ Ambata Raffica 2 indipendente\n"
-            "✅ Decina Lab 10-19 Heat5 TOP3 soglia>=8, 2 colpi\n"
-            f"✅ notifiche Decina Lab = {'ON' if DECINA_LAB_NOTIFY else 'OFF (CSV/statistiche attive)'}\n"
+            "✅ Decina Base 10-19 Heat5 TOP3 soglia>=8, 2 colpi\n"
+            "✅ Decina CORE TOP2 3 terni soglia>=9, 2 colpi\n"
+            "✅ Decina PIVOT 6 terni soglia>=9, 2 colpi\n"
+            f"✅ notifiche Decina Base = {'ON' if DECINA_LAB_NOTIFY else 'OFF'}\n"
+            f"✅ notifiche Decina Multi = {'ON' if DECINA_MULTI_NOTIFY else 'OFF'}\n"
             "✅ storico iniziale marcato come processato\n"
             "✅ niente replay iniziale"
         )
