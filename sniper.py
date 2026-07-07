@@ -24,6 +24,11 @@
 #   - DECINA PIVOT LAB: Heat >= 9, 6 terni tutti contenenti il pivot A
 #     CORE/PIVOT indipendenti per 2 colpi, stop al primo colpo vincente
 #     bilancio teorico separato a payout 45x per unita' puntata
+#   - AMBO-JOLLY AJ1 LAB: 1° ambo v48 + jolly OP3 globale
+#     un solo terno, osservato in parallelo a 2/3/4/7 colpi
+#     ma censurato alla chiusura del PLAY v48 (HIT AMBO o STOP),
+#     esattamente come nel backtest di conversione ambo->terno
+#     bilancio teorico separato a payout 45x per unita' puntata
 #
 # PATCH OPERATIVE:
 #   - lock globale anti doppia istanza
@@ -73,7 +78,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # File nuovi: non mischiano stato/statistiche delle versioni precedenti.
 STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_final_decina_multi_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_final_decina_multi_events.csv")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_final_decina_multi_aj1_events.csv")
 
 # Stesso lock globale delle versioni Lab precedenti: impedisce di lasciare
 # accidentalmente attivo un vecchio bot insieme a questo.
@@ -116,10 +121,19 @@ DECINA_MULTI_TOP_N = 5
 DECINA_MULTI_MAX_COLPI = 2
 DECINA_TERNO_PAYOUT = 45.0
 
+# AMBO-JOLLY AJ1 — candidato emerso dal backtest storico.
+# Un solo terno: 1° ambo v48 (rank 1 per score pair) + jolly OP3 globale.
+# Le quattro strategie 2/3/4/7 colpi vengono seguite in parallelo e
+# contabilizzate separatamente, senza scegliere a posteriori l'orizzonte.
+# Ogni orizzonte si ferma anche se il PLAY v48 chiude prima per un altro ambo.
+AMBO_JOLLY_HORIZONS = (2, 3, 4, 7)
+AMBO_JOLLY_PAYOUT = 45.0
+
 # L'utente ha scelto notifiche Telegram permanenti.
 # Per silenziarle in futuro basta impostare queste costanti a False.
 DECINA_LAB_NOTIFY = True
 DECINA_MULTI_NOTIFY = True
+AMBO_JOLLY_NOTIFY = True
 
 # Strategie mantenute dopo il backtest storico.
 LAB_STRATEGIES = ("op3", "op9", "op6", "op7")
@@ -315,7 +329,23 @@ CSV_FIELDS = [
     "pivot_gross_units",
     "pivot_net_units",
     "pivot_roi_pct",
+    "ambo_jolly_terno",
+    "ambo_jolly_rank1_ambo",
+    "ambo_jolly_op3",
+    "ambo_jolly_horizon",
 ]
+
+for _h in AMBO_JOLLY_HORIZONS:
+    CSV_FIELDS.extend([
+        f"aj{_h}_sessions",
+        f"aj{_h}_closed",
+        f"aj{_h}_hits",
+        f"aj{_h}_misses",
+        f"aj{_h}_cost_units",
+        f"aj{_h}_gross_units",
+        f"aj{_h}_net_units",
+        f"aj{_h}_roi_pct",
+    ])
 
 
 def ensure_csv():
@@ -354,7 +384,7 @@ def ensure_csv():
 class SNIPER_V48:
 
     def __init__(self):
-        self.version = "v48_final_research_op3_r2_decina10_19_multi_terni"
+        self.version = "v48_final_research_op3_r2_decina10_19_multi_terni_aj1"
 
         self.day = day_key()
 
@@ -424,6 +454,15 @@ class SNIPER_V48:
             "pivot": self.new_decina_multi_stats(),
         }
 
+        # AMBO-JOLLY AJ1: un solo terno = 1° ambo v48 + OP3.
+        # Ogni orizzonte 2/3/4/7 ha contabilità autonoma ma viene
+        # censurato quando il relativo PLAY v48 chiude.
+        self.ambo_jolly_sessions = []
+        self.ambo_jolly_stats = {
+            str(h): self.new_ambo_jolly_stats(h)
+            for h in AMBO_JOLLY_HORIZONS
+        }
+
         self.load_state()
         ensure_csv()
 
@@ -474,6 +513,19 @@ class SNIPER_V48:
             "gross_units": 0.0,
         }
 
+    @staticmethod
+    def new_ambo_jolly_stats(horizon):
+        return {
+            "horizon": int(horizon),
+            "sessions": 0,
+            "closed": 0,
+            "hits": 0,
+            "misses": 0,
+            "cost_units": 0.0,
+            "gross_units": 0.0,
+            "hit_by_colpo": {str(i): 0 for i in range(1, int(horizon) + 1)},
+        }
+
     def save_state(self):
         data = {
             "version": self.version,
@@ -506,6 +558,8 @@ class SNIPER_V48:
             "decina_multi_uid": self.decina_multi_uid,
             "decina_multi_sessions": self.decina_multi_sessions,
             "decina_multi_stats": self.decina_multi_stats,
+            "ambo_jolly_sessions": self.ambo_jolly_sessions,
+            "ambo_jolly_stats": self.ambo_jolly_stats,
         }
 
         tmp = STATE_FILE + ".tmp"
@@ -575,6 +629,23 @@ class SNIPER_V48:
                     fresh[key] = float(value) if key in {"cost_units", "gross_units"} else int(value)
                 self.decina_multi_stats[package] = fresh
 
+            self.ambo_jolly_sessions = data.get("ambo_jolly_sessions", [])
+            loaded_aj = data.get("ambo_jolly_stats", {})
+            for horizon in AMBO_JOLLY_HORIZONS:
+                hkey = str(horizon)
+                src = loaded_aj.get(hkey, {})
+                fresh = self.new_ambo_jolly_stats(horizon)
+                for key in ("sessions", "closed", "hits", "misses"):
+                    fresh[key] = int(src.get(key, fresh[key]))
+                for key in ("cost_units", "gross_units"):
+                    fresh[key] = float(src.get(key, fresh[key]))
+                loaded_hits = src.get("hit_by_colpo", {})
+                fresh["hit_by_colpo"] = {
+                    str(i): int(loaded_hits.get(str(i), 0))
+                    for i in range(1, horizon + 1)
+                }
+                self.ambo_jolly_stats[hkey] = fresh
+
         except Exception as ex:
             print(f"⚠️ Stato non caricato: {ex}")
 
@@ -607,6 +678,7 @@ class SNIPER_V48:
         self.ambata_r2_sessions = []
         self.decina_lab_sessions = []
         self.decina_multi_sessions = []
+        self.ambo_jolly_sessions = []
 
         self.save_state()
 
@@ -637,6 +709,10 @@ class SNIPER_V48:
         decina_top5=None,
         decina_package_terni=None,
         decina_terni_hit_count=None,
+        ambo_jolly_terno=None,
+        ambo_jolly_rank1_ambo=None,
+        ambo_jolly_op3=None,
+        ambo_jolly_horizon=None,
     ):
         ensure_csv()
 
@@ -691,6 +767,10 @@ class SNIPER_V48:
             "decina_top5": fmt_nums(decina_top5),
             "decina_package_terni": fmt_terni(decina_package_terni),
             "decina_terni_hit_count": decina_terni_hit_count if decina_terni_hit_count is not None else "",
+            "ambo_jolly_terno": fmt_terni([ambo_jolly_terno]) if ambo_jolly_terno else "",
+            "ambo_jolly_rank1_ambo": fmt_nums(ambo_jolly_rank1_ambo),
+            "ambo_jolly_op3": ambo_jolly_op3 if ambo_jolly_op3 is not None else "",
+            "ambo_jolly_horizon": ambo_jolly_horizon if ambo_jolly_horizon is not None else "",
         }
 
         for package in ("core", "pivot"):
@@ -713,6 +793,24 @@ class SNIPER_V48:
                 f"{package}_gross_units": f"{gross:.2f}",
                 f"{package}_net_units": f"{net:.2f}",
                 f"{package}_roi_pct": f"{roi:.4f}",
+            })
+
+        for horizon in AMBO_JOLLY_HORIZONS:
+            hkey = str(horizon)
+            st = self.ambo_jolly_stats[hkey]
+            cost = float(st["cost_units"])
+            gross = float(st["gross_units"])
+            net = gross - cost
+            roi = (net / cost * 100.0) if cost else 0.0
+            row.update({
+                f"aj{horizon}_sessions": st["sessions"],
+                f"aj{horizon}_closed": st["closed"],
+                f"aj{horizon}_hits": st["hits"],
+                f"aj{horizon}_misses": st["misses"],
+                f"aj{horizon}_cost_units": f"{cost:.2f}",
+                f"aj{horizon}_gross_units": f"{gross:.2f}",
+                f"aj{horizon}_net_units": f"{net:.2f}",
+                f"aj{horizon}_roi_pct": f"{roi:.4f}",
             })
 
         with open(CSV_FILE, "a", encoding="utf-8", newline="") as f:
@@ -1509,6 +1607,177 @@ class SNIPER_V48:
         self.ambata_r2_sessions.append(session)
         self.ambata_r2_stats["sessions"] += 1
 
+    def create_ambo_jolly_session(self, play, e):
+        """Apre AJ1 usando solo dati congelati al momento del PLAY.
+
+        Terno = primo ambo v48 (rank 1 del pair score) + jolly OP3 globale.
+        La sessione vive nel ciclo del PLAY v48: ogni orizzonte 2/3/4/7
+        chiude al proprio limite oppure prima se il PLAY v48 termina.
+        """
+        ambi = play.get("ambi", [])
+        jolly = play.get("terno_num_3")
+        if not ambi or not jolly:
+            return None
+
+        a, b = map(int, ambi[0]["ambo"])
+        jolly = int(jolly)
+        if jolly in (a, b):
+            return None
+
+        terno = tuple(sorted((a, b, jolly)))
+        horizon_state = {str(h): {"closed": False} for h in AMBO_JOLLY_HORIZONS}
+
+        session = {
+            "play_id": play["play_id"],
+            "day": self.day,
+            "start_e": e,
+            "colpi": 0,
+            "max_colpi": max(AMBO_JOLLY_HORIZONS),
+            "rank1_ambo": [a, b],
+            "op3": jolly,
+            "terno": list(terno),
+            "horizons": horizon_state,
+        }
+        self.ambo_jolly_sessions.append(session)
+
+        for horizon in AMBO_JOLLY_HORIZONS:
+            self.ambo_jolly_stats[str(horizon)]["sessions"] += 1
+
+        return session
+
+    def close_ambo_jolly_for_play(self, play_id, e, colpo, reason):
+        """Chiude come MISS gli orizzonti AJ1 ancora aperti quando v48 termina.
+
+        Non aggiunge costo: il costo del colpo corrente è già stato contato da
+        process_ambo_jolly_sessions(), eseguito prima del controllo core v48.
+        """
+        survivors = []
+
+        for session in self.ambo_jolly_sessions:
+            if int(session.get("play_id", -1)) != int(play_id):
+                survivors.append(session)
+                continue
+
+            terno = tuple(sorted(map(int, session.get("terno", []))))
+            for horizon in AMBO_JOLLY_HORIZONS:
+                hkey = str(horizon)
+                hstate = session.setdefault("horizons", {}).setdefault(hkey, {"closed": False})
+                if hstate.get("closed", False):
+                    continue
+
+                hstate["closed"] = True
+                st = self.ambo_jolly_stats[hkey]
+                st["closed"] += 1
+                st["misses"] += 1
+
+                self.append_csv_event(
+                    "AMBO_JOLLY_MISS_V48_CLOSE",
+                    play_id=session["play_id"],
+                    e=e,
+                    colpo=colpo,
+                    session_type=f"AMBO_JOLLY_AJ1_H{horizon}",
+                    strategy="AJ1_RANK1_AMBO_PLUS_OP3",
+                    terni=[terno],
+                    outcome=f"MISS_{reason}",
+                    ambo_jolly_terno=terno,
+                    ambo_jolly_rank1_ambo=session.get("rank1_ambo", []),
+                    ambo_jolly_op3=session.get("op3"),
+                    ambo_jolly_horizon=horizon,
+                )
+
+        self.ambo_jolly_sessions = survivors
+
+    async def process_ambo_jolly_sessions(self, app, e, nums):
+        if not self.ambo_jolly_sessions:
+            return
+
+        draw_set = set(nums)
+        survivors = []
+
+        for session in self.ambo_jolly_sessions:
+            session["colpi"] = int(session.get("colpi", 0)) + 1
+            colpo = session["colpi"]
+            terno = tuple(sorted(map(int, session.get("terno", []))))
+            is_hit = len(terno) == 3 and set(terno).issubset(draw_set)
+
+            newly_hit = []
+            newly_missed = []
+
+            for horizon in AMBO_JOLLY_HORIZONS:
+                hkey = str(horizon)
+                hstate = session.setdefault("horizons", {}).setdefault(hkey, {"closed": False})
+                if hstate.get("closed", False):
+                    continue
+
+                st = self.ambo_jolly_stats[hkey]
+                st["cost_units"] += 1.0
+
+                if is_hit:
+                    hstate["closed"] = True
+                    st["closed"] += 1
+                    st["hits"] += 1
+                    st["gross_units"] += AMBO_JOLLY_PAYOUT
+                    st["hit_by_colpo"][str(colpo)] = st["hit_by_colpo"].get(str(colpo), 0) + 1
+                    newly_hit.append(horizon)
+
+                    self.append_csv_event(
+                        "AMBO_JOLLY_HIT",
+                        play_id=session["play_id"],
+                        e=e,
+                        colpo=colpo,
+                        session_type=f"AMBO_JOLLY_AJ1_H{horizon}",
+                        strategy="AJ1_RANK1_AMBO_PLUS_OP3",
+                        terni=[terno],
+                        hit_list=[terno],
+                        outcome="HIT",
+                        ambo_jolly_terno=terno,
+                        ambo_jolly_rank1_ambo=session.get("rank1_ambo", []),
+                        ambo_jolly_op3=session.get("op3"),
+                        ambo_jolly_horizon=horizon,
+                    )
+                elif colpo >= horizon:
+                    hstate["closed"] = True
+                    st["closed"] += 1
+                    st["misses"] += 1
+                    newly_missed.append(horizon)
+
+                    self.append_csv_event(
+                        "AMBO_JOLLY_MISS",
+                        play_id=session["play_id"],
+                        e=e,
+                        colpo=colpo,
+                        session_type=f"AMBO_JOLLY_AJ1_H{horizon}",
+                        strategy="AJ1_RANK1_AMBO_PLUS_OP3",
+                        terni=[terno],
+                        outcome="MISS",
+                        ambo_jolly_terno=terno,
+                        ambo_jolly_rank1_ambo=session.get("rank1_ambo", []),
+                        ambo_jolly_op3=session.get("op3"),
+                        ambo_jolly_horizon=horizon,
+                    )
+
+            if newly_hit and AMBO_JOLLY_NOTIFY:
+                await self.tg(
+                    app,
+                    "💥 AMBO-JOLLY AJ1 — HIT TERNO\n"
+                    f"• play_id = {session['play_id']}\n"
+                    f"• colpo = {colpo}\n"
+                    f"• 1° ambo v48 = {fmt_nums(session.get('rank1_ambo', []))}\n"
+                    f"• jolly OP3 = {session.get('op3')}\n"
+                    f"• TERNO = {fmt_nums(terno)}\n"
+                    f"• orizzonti vinti = {', '.join(map(str, newly_hit))} colpi\n\n"
+                    f"{self.ambo_jolly_stats_text()}"
+                )
+
+            any_open = any(
+                not session.get("horizons", {}).get(str(h), {}).get("closed", False)
+                for h in AMBO_JOLLY_HORIZONS
+            )
+            if any_open:
+                survivors.append(session)
+
+        self.ambo_jolly_sessions = survivors
+
     # ========================================================
     # LAB SESSION PROCESSING — INDIPENDENTE DAL CORE v48
     # ========================================================
@@ -1643,7 +1912,8 @@ class SNIPER_V48:
                     f"• ambata = {session['ambata']}\n\n"
                     f"{self.ambata_r2_stats_text()}\n\n"
                     f"{self.decina_lab_stats_text()}\n\n"
-                    f"{self.decina_multi_stats_text()}"
+                    f"{self.decina_multi_stats_text()}\n\n"
+                    f"{self.ambo_jolly_stats_text()}"
                 )
                 continue
 
@@ -1754,6 +2024,39 @@ class SNIPER_V48:
         lines.append(f"\n• sessioni multi aperte ora = {len(self.decina_multi_sessions)}")
         return "\n".join(lines)
 
+    def ambo_jolly_stats_text(self):
+        lines = [
+            "📊 AMBO-JOLLY AJ1 — 1° AMBO v48 + OP3",
+            f"• payout teorico = {AMBO_JOLLY_PAYOUT:.0f}x",
+            "• un solo terno per PLAY",
+            "• stop anticipato se il PLAY v48 chiude",
+        ]
+
+        for horizon in AMBO_JOLLY_HORIZONS:
+            st = self.ambo_jolly_stats[str(horizon)]
+            closed = st["closed"]
+            hit_rate = (st["hits"] / closed * 100.0) if closed else 0.0
+            cost = float(st["cost_units"])
+            gross = float(st["gross_units"])
+            net = gross - cost
+            roi = (net / cost * 100.0) if cost else 0.0
+            by_colpo = ", ".join(
+                f"C{i}={st['hit_by_colpo'].get(str(i), 0)}"
+                for i in range(1, horizon + 1)
+            )
+            lines.extend([
+                "",
+                f"⭐ AJ1 max {horizon} colpi",
+                f"• sessioni = {st['sessions']} | chiuse = {closed}",
+                f"• hit = {st['hits']} ({hit_rate:.2f}%) | miss = {st['misses']}",
+                f"• distribuzione hit = {by_colpo}",
+                f"• costo = {cost:.2f}u | lordo = {gross:.2f}u",
+                f"• netto = {net:+.2f}u | ROI = {roi:+.2f}%",
+            ])
+
+        lines.append(f"\n• sessioni AJ1 aperte ora = {len(self.ambo_jolly_sessions)}")
+        return "\n".join(lines)
+
     def play_lab_text(self, play):
         blocks = []
 
@@ -1799,6 +2102,7 @@ class SNIPER_V48:
         await self.process_ambata_r2_sessions(app, e, nums)
         await self.process_decina_10_19_sessions(app, e, nums)
         await self.process_decina_multi_sessions(app, e, nums)
+        await self.process_ambo_jolly_sessions(app, e, nums)
 
         # Il nuovo segnale usa le ultime 5 estrazioni già note (inclusa questa)
         # e viene verificato SOLO sulle future 2 estrazioni successive.
@@ -1857,11 +2161,17 @@ class SNIPER_V48:
                     f"{self.terni_lab_stats_text()}\n\n"
                     f"{self.ambata_r2_stats_text()}\n\n"
                     f"{self.decina_lab_stats_text()}\n\n"
-                    f"{self.decina_multi_stats_text()}"
+                    f"{self.decina_multi_stats_text()}\n\n"
+                    f"{self.ambo_jolly_stats_text()}"
                 )
 
                 self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
                 self.last_cluster_e = e
+
+                # AJ1 replica il backtest: si ferma quando il PLAY v48 chiude.
+                self.close_ambo_jolly_for_play(
+                    self.active_snapshot["play_id"], e, self.colpi, "V48_HIT_AMBO"
+                )
 
                 self.active = False
                 self.colpi = 0
@@ -1893,11 +2203,17 @@ class SNIPER_V48:
                     f"{self.terni_lab_stats_text()}\n\n"
                     f"{self.ambata_r2_stats_text()}\n\n"
                     f"{self.decina_lab_stats_text()}\n\n"
-                    f"{self.decina_multi_stats_text()}"
+                    f"{self.decina_multi_stats_text()}\n\n"
+                    f"{self.ambo_jolly_stats_text()}"
                 )
 
                 self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
                 self.last_cluster_e = e
+
+                # AJ1 replica il backtest: si ferma quando il PLAY v48 chiude.
+                self.close_ambo_jolly_for_play(
+                    self.active_snapshot["play_id"], e, self.colpi, "V48_STOP"
+                )
 
                 self.active = False
                 self.colpi = 0
@@ -1947,6 +2263,7 @@ class SNIPER_V48:
             # Sessioni parallele indipendenti.
             self.create_terni_session(play, e)
             self.create_ambata_r2_session(play, e)
+            aj_session = self.create_ambo_jolly_session(play, e)
 
             self.append_csv_event(
                 "PLAY",
@@ -1986,6 +2303,24 @@ class SNIPER_V48:
                 outcome="OPEN",
             )
 
+            if aj_session:
+                aj_terno = tuple(sorted(map(int, aj_session["terno"])))
+                self.append_csv_event(
+                    "AMBO_JOLLY_OPEN",
+                    play=play,
+                    play_id=play["play_id"],
+                    e=e,
+                    colpo=0,
+                    session_type="AMBO_JOLLY_AJ1",
+                    strategy="AJ1_RANK1_AMBO_PLUS_OP3",
+                    jolly=aj_session["op3"],
+                    terni=[aj_terno],
+                    outcome="OPEN",
+                    ambo_jolly_terno=aj_terno,
+                    ambo_jolly_rank1_ambo=aj_session["rank1_ambo"],
+                    ambo_jolly_op3=aj_session["op3"],
+                )
+
             await self.tg(
                 app,
                 "🎯 PLAY v48 + FINAL RESEARCH\n"
@@ -1996,7 +2331,16 @@ class SNIPER_V48:
                 f"• terni lab indipendente = {TERNI_LAB_MAX_COLPI} colpi\n"
                 f"• ambata raffica = {AMBATA_RAFFICA_MAX_COLPI} colpi\n"
                 f"• play_id = {play['play_id']}\n\n"
-                f"{self.play_lab_text(play)}"
+                + (
+                    "⭐ AMBO-JOLLY AJ1\n"
+                    f"• 1° ambo v48 = {fmt_nums(aj_session['rank1_ambo'])}\n"
+                    f"• jolly OP3 = {aj_session['op3']}\n"
+                    f"• TERNO = {fmt_nums(aj_session['terno'])}\n"
+                    f"• orizzonti paralleli = {', '.join(map(str, AMBO_JOLLY_HORIZONS))} colpi\n"
+                    "• stop anticipato = chiusura PLAY v48\n\n"
+                    if aj_session else ""
+                )
+                + f"{self.play_lab_text(play)}"
             )
 
         self.save_state()
@@ -2004,7 +2348,7 @@ class SNIPER_V48:
     async def send_report(self, app):
         await self.tg(
             app,
-            "📊 REPORT SNIPER v48 + FINAL RESEARCH + DECINA MULTI\n"
+            "📊 REPORT SNIPER v48 + FINAL RESEARCH + DECINA MULTI + AJ1\n"
             f"• play v48 = {self.total_play}\n"
             f"• hit ambata eventi = {self.total_hit_ambata}\n"
             f"• hit ambo = {self.total_hit_ambo}\n"
@@ -2012,11 +2356,13 @@ class SNIPER_V48:
             f"• sessioni terni aperte ora = {len(self.terni_sessions)}\n"
             f"• sessioni ambata R2 aperte ora = {len(self.ambata_r2_sessions)}\n"
             f"• sessioni decina base aperte ora = {len(self.decina_lab_sessions)}\n"
-            f"• sessioni decina multi aperte ora = {len(self.decina_multi_sessions)}\n\n"
+            f"• sessioni decina multi aperte ora = {len(self.decina_multi_sessions)}\n"
+            f"• sessioni AJ1 aperte ora = {len(self.ambo_jolly_sessions)}\n\n"
             f"{self.terni_lab_stats_text()}\n\n"
             f"{self.ambata_r2_stats_text()}\n\n"
             f"{self.decina_lab_stats_text()}\n\n"
             f"{self.decina_multi_stats_text()}\n\n"
+            f"{self.ambo_jolly_stats_text()}\n\n"
             f"🧾 CSV = {CSV_FILE}"
         )
 
@@ -2102,7 +2448,7 @@ async def live():
 
         await bot.tg(
             app,
-            "🚀 SNIPER v48 + FINAL RESEARCH + DECINA MULTI LAB AVVIATO\n"
+            "🚀 SNIPER v48 + FINAL RESEARCH + DECINA MULTI + AJ1 LAB AVVIATO\n"
             "✅ core v48 invariato\n"
             "✅ OP3 primary + OP9/OP6/OP7 control\n"
             "✅ Terni Lab indipendente 7 colpi\n"
@@ -2110,8 +2456,10 @@ async def live():
             "✅ Decina Base 10-19 Heat5 TOP3 soglia>=8, 2 colpi\n"
             "✅ Decina CORE TOP2 3 terni soglia>=9, 2 colpi\n"
             "✅ Decina PIVOT 6 terni soglia>=9, 2 colpi\n"
+            "✅ AMBO-JOLLY AJ1 = 1° ambo v48 + OP3, orizzonti 2/3/4/7, stop con v48\n"
             f"✅ notifiche Decina Base = {'ON' if DECINA_LAB_NOTIFY else 'OFF'}\n"
             f"✅ notifiche Decina Multi = {'ON' if DECINA_MULTI_NOTIFY else 'OFF'}\n"
+            f"✅ notifiche AMBO-JOLLY AJ1 = {'ON' if AMBO_JOLLY_NOTIFY else 'OFF'}\n"
             "✅ storico iniziale marcato come processato\n"
             "✅ niente replay iniziale"
         )
