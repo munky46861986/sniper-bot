@@ -20,11 +20,13 @@
 #   - AMBATA RAFFICA 2 indipendente per 2 colpi
 #   - DECINA LAB 10-19 BASE: TOP 3 Heat ultime 5, soglia totale >= 8
 #     sessione indipendente per 2 colpi, target statistici K1/K2/K3
+#   - MONITOR HEAT STRATA: Heat=8 / Heat=9 / Heat>=10
+#     statistiche K1/K2/K3 separate + simulazione economica K3 a 45x
 #   - DECINA CORE TOP2 LAB: Heat >= 9, 3 terni A-B-C/A-B-D/A-B-E
 #   - DECINA PIVOT LAB: Heat >= 9, 6 terni tutti contenenti il pivot A
 #     CORE/PIVOT indipendenti per 2 colpi, stop al primo colpo vincente
 #     bilancio teorico separato a payout 45x per unita' puntata
-#   - AMBO-JOLLY AJ1 LAB: 1° ambo v48 + jolly OP3 globale
+#   - AMBO-JOLLY AJ1 LAB (solo ricerca): 1° ambo v48 + jolly OP3 globale
 #     un solo terno, osservato in parallelo a 2/3/4/7 colpi
 #     ma censurato alla chiusura del PLAY v48 (HIT AMBO o STOP),
 #     esattamente come nel backtest di conversione ambo->terno
@@ -34,6 +36,7 @@
 #   - lock globale anti doppia istanza
 #   - startup senza replay
 #   - reset operativo cambio giorno
+#   - monitor rank degli ambi v48 vincenti (rank 1/2/3)
 #   - CSV eventi in formato lungo/pulito
 #   - stato persistente anche per sessioni LAB indipendenti
 # ============================================================
@@ -77,8 +80,8 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # File nuovi: non mischiano stato/statistiche delle versioni precedenti.
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_final_decina_multi_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_final_decina_multi_aj1_events.csv")
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_final_decina_heat9_monitor_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_final_decina_heat9_monitor_events.csv")
 
 # Stesso lock globale delle versioni Lab precedenti: impedisce di lasciare
 # accidentalmente attivo un vecchio bot insieme a questo.
@@ -120,6 +123,14 @@ DECINA_MULTI_HEAT_THRESHOLD = 9
 DECINA_MULTI_TOP_N = 5
 DECINA_MULTI_MAX_COLPI = 2
 DECINA_TERNO_PAYOUT = 45.0
+
+# Monitor economico del singolo terno TOP3 della Decina Base.
+# Simulazione: 1 unita' per colpo, massimo 2 colpi, stop economico sul K3.
+DECINA_BASE_K3_PAYOUT = 45.0
+
+# Fasce monitorate separatamente, senza cambiare la regola di ingresso.
+# H8 = Heat esattamente 8; H9 = Heat esattamente 9; H10P = Heat >= 10.
+DECINA_HEAT_BUCKETS = ("H8", "H9", "H10P")
 
 # AMBO-JOLLY AJ1 — candidato emerso dal backtest storico.
 # Un solo terno: 1° ambo v48 (rank 1 per score pair) + jolly OP3 globale.
@@ -274,6 +285,10 @@ CSV_FIELDS = [
     "v48_hit_ambata_events",
     "v48_hit_ambo",
     "v48_stop",
+    "v48_rank1_hit_events",
+    "v48_rank2_hit_events",
+    "v48_rank3_hit_events",
+    "v48_multi_ambo_hit_draws",
     "op3_sessions",
     "op3_hit_sessions",
     "op9_sessions",
@@ -298,6 +313,12 @@ CSV_FIELDS = [
     "decina_k3_hits",
     "decina_k2_colpo1",
     "decina_k2_colpo2",
+    "decina_k3_colpo1",
+    "decina_k3_colpo2",
+    "decina_k3_cost_units",
+    "decina_k3_gross_units",
+    "decina_k3_net_units",
+    "decina_k3_roi_pct",
     "decina_multi_signal_id",
     "decina_multi_package",
     "decina_top5",
@@ -334,6 +355,25 @@ CSV_FIELDS = [
     "ambo_jolly_op3",
     "ambo_jolly_horizon",
 ]
+
+for _bucket in DECINA_HEAT_BUCKETS:
+    _p = _bucket.lower()
+    CSV_FIELDS.extend([
+        f"decina_{_p}_sessions",
+        f"decina_{_p}_closed",
+        f"decina_{_p}_k1_hits",
+        f"decina_{_p}_k2_hits",
+        f"decina_{_p}_k3_hits",
+        f"decina_{_p}_k2_colpo1",
+        f"decina_{_p}_k2_colpo2",
+        f"decina_{_p}_k3_colpo1",
+        f"decina_{_p}_k3_colpo2",
+        f"decina_{_p}_k3_cost_units",
+        f"decina_{_p}_k3_gross_units",
+        f"decina_{_p}_k3_net_units",
+        f"decina_{_p}_k3_roi_pct",
+    ])
+
 
 for _h in AMBO_JOLLY_HORIZONS:
     CSV_FIELDS.extend([
@@ -384,7 +424,7 @@ def ensure_csv():
 class SNIPER_V48:
 
     def __init__(self):
-        self.version = "v48_final_research_op3_r2_decina10_19_multi_terni_aj1"
+        self.version = "v48_final_research_decina_heat9_monitor_aj1"
 
         self.day = day_key()
 
@@ -410,6 +450,11 @@ class SNIPER_V48:
         self.total_hit_ambata = 0  # mantiene semantica v48: eventi di uscita durante play
         self.total_hit_ambo = 0
         self.total_stop = 0
+
+        # Monitor diagnostico: quale posizione dei 3 ambi v48 partecipa
+        # al colpo vincente. Non modifica in alcun modo il CORE.
+        self.v48_ambo_rank_hits = {"1": 0, "2": 0, "3": 0}
+        self.v48_multi_ambo_hit_draws = 0
 
         self.play_uid = 0
 
@@ -442,6 +487,14 @@ class SNIPER_V48:
             "k3_hits": 0,
             "k2_colpo1": 0,
             "k2_colpo2": 0,
+            "k3_colpo1": 0,
+            "k3_colpo2": 0,
+            "k3_cost_units": 0.0,
+            "k3_gross_units": 0.0,
+        }
+        self.decina_heat_stats = {
+            bucket: self.new_decina_heat_stats()
+            for bucket in DECINA_HEAT_BUCKETS
         }
 
         # DECINA MULTI-TERNO LAB indipendente.
@@ -498,6 +551,31 @@ class SNIPER_V48:
     # ========================================================
 
     @staticmethod
+    def decina_heat_bucket(heat_total):
+        heat_total = int(heat_total)
+        if heat_total == 8:
+            return "H8"
+        if heat_total == 9:
+            return "H9"
+        return "H10P"
+
+    @staticmethod
+    def new_decina_heat_stats():
+        return {
+            "sessions": 0,
+            "closed": 0,
+            "k1_hits": 0,
+            "k2_hits": 0,
+            "k3_hits": 0,
+            "k2_colpo1": 0,
+            "k2_colpo2": 0,
+            "k3_colpo1": 0,
+            "k3_colpo2": 0,
+            "k3_cost_units": 0.0,
+            "k3_gross_units": 0.0,
+        }
+
+    @staticmethod
     def new_decina_multi_stats():
         return {
             "sessions": 0,
@@ -547,6 +625,8 @@ class SNIPER_V48:
             "total_hit_ambata": self.total_hit_ambata,
             "total_hit_ambo": self.total_hit_ambo,
             "total_stop": self.total_stop,
+            "v48_ambo_rank_hits": self.v48_ambo_rank_hits,
+            "v48_multi_ambo_hit_draws": self.v48_multi_ambo_hit_draws,
             "play_uid": self.play_uid,
             "terni_sessions": self.terni_sessions,
             "terni_stats": self.terni_stats,
@@ -555,6 +635,7 @@ class SNIPER_V48:
             "decina_lab_uid": self.decina_lab_uid,
             "decina_lab_sessions": self.decina_lab_sessions,
             "decina_lab_stats": self.decina_lab_stats,
+            "decina_heat_stats": self.decina_heat_stats,
             "decina_multi_uid": self.decina_multi_uid,
             "decina_multi_sessions": self.decina_multi_sessions,
             "decina_multi_stats": self.decina_multi_stats,
@@ -596,6 +677,12 @@ class SNIPER_V48:
             self.total_hit_ambata = int(data.get("total_hit_ambata", 0))
             self.total_hit_ambo = int(data.get("total_hit_ambo", 0))
             self.total_stop = int(data.get("total_stop", 0))
+            loaded_rank_hits = data.get("v48_ambo_rank_hits", {})
+            self.v48_ambo_rank_hits = {
+                str(i): int(loaded_rank_hits.get(str(i), 0))
+                for i in (1, 2, 3)
+            }
+            self.v48_multi_ambo_hit_draws = int(data.get("v48_multi_ambo_hit_draws", 0))
             self.play_uid = int(data.get("play_uid", self.total_play))
 
             self.terni_sessions = data.get("terni_sessions", [])
@@ -616,7 +703,23 @@ class SNIPER_V48:
             self.decina_lab_sessions = data.get("decina_lab_sessions", [])
             loaded_decina = data.get("decina_lab_stats", {})
             for key in self.decina_lab_stats:
-                self.decina_lab_stats[key] = int(loaded_decina.get(key, 0))
+                value = loaded_decina.get(key, self.decina_lab_stats[key])
+                self.decina_lab_stats[key] = (
+                    float(value) if key in {"k3_cost_units", "k3_gross_units"}
+                    else int(value)
+                )
+
+            loaded_heat = data.get("decina_heat_stats", {})
+            for bucket in DECINA_HEAT_BUCKETS:
+                src = loaded_heat.get(bucket, {})
+                fresh = self.new_decina_heat_stats()
+                for key, default in fresh.items():
+                    value = src.get(key, default)
+                    fresh[key] = (
+                        float(value) if key in {"k3_cost_units", "k3_gross_units"}
+                        else int(value)
+                    )
+                self.decina_heat_stats[bucket] = fresh
 
             self.decina_multi_uid = int(data.get("decina_multi_uid", 0))
             self.decina_multi_sessions = data.get("decina_multi_sessions", [])
@@ -738,6 +841,10 @@ class SNIPER_V48:
             "v48_hit_ambata_events": self.total_hit_ambata,
             "v48_hit_ambo": self.total_hit_ambo,
             "v48_stop": self.total_stop,
+            "v48_rank1_hit_events": self.v48_ambo_rank_hits["1"],
+            "v48_rank2_hit_events": self.v48_ambo_rank_hits["2"],
+            "v48_rank3_hit_events": self.v48_ambo_rank_hits["3"],
+            "v48_multi_ambo_hit_draws": self.v48_multi_ambo_hit_draws,
             "op3_sessions": self.terni_stats["op3"]["sessions"],
             "op3_hit_sessions": self.terni_stats["op3"]["hit_sessions"],
             "op9_sessions": self.terni_stats["op9"]["sessions"],
@@ -762,6 +869,12 @@ class SNIPER_V48:
             "decina_k3_hits": self.decina_lab_stats["k3_hits"],
             "decina_k2_colpo1": self.decina_lab_stats["k2_colpo1"],
             "decina_k2_colpo2": self.decina_lab_stats["k2_colpo2"],
+            "decina_k3_colpo1": self.decina_lab_stats["k3_colpo1"],
+            "decina_k3_colpo2": self.decina_lab_stats["k3_colpo2"],
+            "decina_k3_cost_units": f"{float(self.decina_lab_stats['k3_cost_units']):.2f}",
+            "decina_k3_gross_units": f"{float(self.decina_lab_stats['k3_gross_units']):.2f}",
+            "decina_k3_net_units": f"{float(self.decina_lab_stats['k3_gross_units']) - float(self.decina_lab_stats['k3_cost_units']):.2f}",
+            "decina_k3_roi_pct": f"{(((float(self.decina_lab_stats['k3_gross_units']) - float(self.decina_lab_stats['k3_cost_units'])) / float(self.decina_lab_stats['k3_cost_units']) * 100.0) if float(self.decina_lab_stats['k3_cost_units']) else 0.0):.4f}",
             "decina_multi_signal_id": decina_multi_signal_id if decina_multi_signal_id is not None else "",
             "decina_multi_package": decina_multi_package,
             "decina_top5": fmt_nums(decina_top5),
@@ -772,6 +885,29 @@ class SNIPER_V48:
             "ambo_jolly_op3": ambo_jolly_op3 if ambo_jolly_op3 is not None else "",
             "ambo_jolly_horizon": ambo_jolly_horizon if ambo_jolly_horizon is not None else "",
         }
+
+        for bucket in DECINA_HEAT_BUCKETS:
+            st = self.decina_heat_stats[bucket]
+            p = bucket.lower()
+            cost = float(st["k3_cost_units"])
+            gross = float(st["k3_gross_units"])
+            net = gross - cost
+            roi = (net / cost * 100.0) if cost else 0.0
+            row.update({
+                f"decina_{p}_sessions": st["sessions"],
+                f"decina_{p}_closed": st["closed"],
+                f"decina_{p}_k1_hits": st["k1_hits"],
+                f"decina_{p}_k2_hits": st["k2_hits"],
+                f"decina_{p}_k3_hits": st["k3_hits"],
+                f"decina_{p}_k2_colpo1": st["k2_colpo1"],
+                f"decina_{p}_k2_colpo2": st["k2_colpo2"],
+                f"decina_{p}_k3_colpo1": st["k3_colpo1"],
+                f"decina_{p}_k3_colpo2": st["k3_colpo2"],
+                f"decina_{p}_k3_cost_units": f"{cost:.2f}",
+                f"decina_{p}_k3_gross_units": f"{gross:.2f}",
+                f"decina_{p}_k3_net_units": f"{net:.2f}",
+                f"decina_{p}_k3_roi_pct": f"{roi:.4f}",
+            })
 
         for package in ("core", "pivot"):
             st = self.decina_multi_stats[package]
@@ -1272,6 +1408,8 @@ class SNIPER_V48:
             "top5": signal.get("top5", signal["top3"]),
             "heat_counts": signal["heat_counts"],
             "heat_total": signal["heat_total"],
+            "heat_bucket": self.decina_heat_bucket(signal["heat_total"]),
+            "k3_bet_closed": False,
             "k1_hit": False,
             "k2_hit": False,
             "k3_hit": False,
@@ -1281,6 +1419,7 @@ class SNIPER_V48:
         }
         self.decina_lab_sessions.append(session)
         self.decina_lab_stats["sessions"] += 1
+        self.decina_heat_stats[session["heat_bucket"]]["sessions"] += 1
 
         self.append_csv_event(
             "DECINA_10_19_OPEN",
@@ -1302,6 +1441,7 @@ class SNIPER_V48:
                 f"• TOP 3 Heat 5 = {fmt_nums(session['top3'])}\n"
                 f"• conteggi = {fmt_nums(session['heat_counts'])}\n"
                 f"• Heat totale = {session['heat_total']}\n"
+                f"• fascia monitor = {session['heat_bucket']}" + (" ⭐ PRIORITARIA" if session["heat_bucket"] == "H9" else "") + "\n"
                 f"• soglia = {DECINA_LAB_HEAT_THRESHOLD}\n"
                 f"• osservazione = prossimi {DECINA_LAB_MAX_COLPI} colpi\n"
                 "• target principale = almeno 2 dei 3 insieme"
@@ -1486,6 +1626,15 @@ class SNIPER_V48:
             top3 = [int(n) for n in session.get("top3", [])]
             hit_numbers = [n for n in top3 if n in draw_set]
             count = len(hit_numbers)
+            bucket = session.get("heat_bucket") or self.decina_heat_bucket(session.get("heat_total", 8))
+            session["heat_bucket"] = bucket
+            bst = self.decina_heat_stats[bucket]
+
+            # Simulazione economica del singolo terno TOP3:
+            # 1 unita' per colpo, massimo 2, stop economico sul primo K3.
+            if not session.get("k3_bet_closed", False):
+                self.decina_lab_stats["k3_cost_units"] += 1.0
+                bst["k3_cost_units"] += 1.0
 
             newly_hit = []
             for k, flag_key, first_key, stat_key in (
@@ -1497,20 +1646,36 @@ class SNIPER_V48:
                     session[flag_key] = True
                     session[first_key] = colpo
                     self.decina_lab_stats[stat_key] += 1
+                    bst[stat_key] += 1
                     newly_hit.append(k)
 
                     if k == 2:
                         if colpo == 1:
                             self.decina_lab_stats["k2_colpo1"] += 1
+                            bst["k2_colpo1"] += 1
                         elif colpo == 2:
                             self.decina_lab_stats["k2_colpo2"] += 1
+                            bst["k2_colpo2"] += 1
+
+                    if k == 3:
+                        if colpo == 1:
+                            self.decina_lab_stats["k3_colpo1"] += 1
+                            bst["k3_colpo1"] += 1
+                        elif colpo == 2:
+                            self.decina_lab_stats["k3_colpo2"] += 1
+                            bst["k3_colpo2"] += 1
+
+                        if not session.get("k3_bet_closed", False):
+                            self.decina_lab_stats["k3_gross_units"] += DECINA_BASE_K3_PAYOUT
+                            bst["k3_gross_units"] += DECINA_BASE_K3_PAYOUT
+                            session["k3_bet_closed"] = True
 
                     self.append_csv_event(
                         f"DECINA_10_19_FIRST_HIT_K{k}",
                         e=e,
                         colpo=colpo,
                         session_type="DECINA_10_19_H5_T2",
-                        strategy=f"DECINA_K{k}",
+                        strategy=f"DECINA_K{k}_{bucket}",
                         outcome="HIT",
                         decina_signal_id=session["signal_id"],
                         decina_top3=top3,
@@ -1518,32 +1683,35 @@ class SNIPER_V48:
                         decina_hit_numbers=hit_numbers,
                     )
 
-            # Telegram opzionale: invia soprattutto il target K2 e l'eventuale K3.
+            # Telegram: K2/K3; H9 viene marcata come fascia prioritaria.
             if DECINA_LAB_NOTIFY and (2 in newly_hit or 3 in newly_hit):
                 label = "TRIS 3/3" if count == 3 else "ALMENO 2/3"
+                priority = " ⭐ HEAT 9" if bucket == "H9" else ""
                 await self.tg(
                     app,
-                    f"💥 DECINA LAB 10-19 — {label}\n"
+                    f"💥 DECINA LAB 10-19 — {label}{priority}\n"
                     f"• signal_id = {session['signal_id']}\n"
                     f"• colpo = {colpo}\n"
                     f"• TOP 3 = {fmt_nums(top3)}\n"
                     f"• usciti insieme = {fmt_nums(hit_numbers)}\n"
-                    f"• Heat origine = {session.get('heat_total')}"
+                    f"• Heat origine = {session.get('heat_total')} ({bucket})"
                 )
 
             if colpo >= int(session.get("max_colpi", DECINA_LAB_MAX_COLPI)):
                 self.decina_lab_stats["closed"] += 1
+                bst["closed"] += 1
                 outcome = (
                     f"K1={'HIT' if session.get('k1_hit') else 'MISS'};"
                     f"K2={'HIT' if session.get('k2_hit') else 'MISS'};"
-                    f"K3={'HIT' if session.get('k3_hit') else 'MISS'}"
+                    f"K3={'HIT' if session.get('k3_hit') else 'MISS'};"
+                    f"BUCKET={bucket}"
                 )
                 self.append_csv_event(
                     "DECINA_10_19_CLOSE",
                     e=e,
                     colpo=colpo,
                     session_type="DECINA_10_19_H5_T2",
-                    strategy="DECINA_10_19_TOP3_HEAT5",
+                    strategy=f"DECINA_10_19_TOP3_HEAT5_{bucket}",
                     outcome=outcome,
                     decina_signal_id=session["signal_id"],
                     decina_top3=top3,
@@ -1912,6 +2080,7 @@ class SNIPER_V48:
                     f"• ambata = {session['ambata']}\n\n"
                     f"{self.ambata_r2_stats_text()}\n\n"
                     f"{self.decina_lab_stats_text()}\n\n"
+                    f"{self.decina_heat_stats_text()}\n\n"
                     f"{self.decina_multi_stats_text()}\n\n"
                     f"{self.ambo_jolly_stats_text()}"
                 )
@@ -1939,6 +2108,17 @@ class SNIPER_V48:
     # ========================================================
     # REPORT TEXT
     # ========================================================
+
+    def v48_ambo_rank_stats_text(self):
+        total_rank_events = sum(self.v48_ambo_rank_hits.values())
+        return (
+            "📊 V48 — POSIZIONE AMBO VINCENTE\n"
+            f"• rank 1 = {self.v48_ambo_rank_hits['1']}\n"
+            f"• rank 2 = {self.v48_ambo_rank_hits['2']}\n"
+            f"• rank 3 = {self.v48_ambo_rank_hits['3']}\n"
+            f"• eventi rank totali = {total_rank_events}\n"
+            f"• colpi con 2+ ambi v48 insieme = {self.v48_multi_ambo_hit_draws}"
+        )
 
     def terni_lab_stats_text(self):
         lines = ["📊 TERNI LAB — SESSIONI VINCENTI / SESSIONI"]
@@ -1979,6 +2159,10 @@ class SNIPER_V48:
         k1_pct = (st["k1_hits"] / closed * 100) if closed else 0.0
         k2_pct = (st["k2_hits"] / closed * 100) if closed else 0.0
         k3_pct = (st["k3_hits"] / closed * 100) if closed else 0.0
+        cost = float(st["k3_cost_units"])
+        gross = float(st["k3_gross_units"])
+        net = gross - cost
+        roi = (net / cost * 100.0) if cost else 0.0
 
         return (
             "📊 DECINA LAB 10-19 — HEAT 5 / TOP 3 / 2 COLPI\n"
@@ -1988,10 +2172,44 @@ class SNIPER_V48:
             f"• almeno 1/3 = {st['k1_hits']} ({k1_pct:.2f}%)\n"
             f"• almeno 2/3 = {st['k2_hits']} ({k2_pct:.2f}%)\n"
             f"• tutti 3/3 = {st['k3_hits']} ({k3_pct:.2f}%)\n"
-            f"• K2 colpo 1 = {st['k2_colpo1']}\n"
-            f"• K2 colpo 2 = {st['k2_colpo2']}\n"
+            f"• K2 colpo 1 = {st['k2_colpo1']} | colpo 2 = {st['k2_colpo2']}\n"
+            f"• K3 colpo 1 = {st['k3_colpo1']} | colpo 2 = {st['k3_colpo2']}\n"
+            f"• K3 teorico {DECINA_BASE_K3_PAYOUT:.0f}x: costo = {cost:.2f}u | lordo = {gross:.2f}u\n"
+            f"• K3 netto = {net:+.2f}u | ROI = {roi:+.2f}%\n"
             f"• sessioni aperte ora = {len(self.decina_lab_sessions)}"
         )
+
+    def decina_heat_stats_text(self):
+        labels = {
+            "H8": "HEAT = 8",
+            "H9": "HEAT = 9 ⭐ PRIORITARIA",
+            "H10P": "HEAT >= 10",
+        }
+        lines = [
+            "📊 DECINA BASE — MONITOR FASCE HEAT",
+            "• stessa regola TOP3 / 2 colpi; solo statistiche separate",
+        ]
+
+        for bucket in DECINA_HEAT_BUCKETS:
+            st = self.decina_heat_stats[bucket]
+            closed = st["closed"]
+            k2_pct = (st["k2_hits"] / closed * 100.0) if closed else 0.0
+            k3_pct = (st["k3_hits"] / closed * 100.0) if closed else 0.0
+            cost = float(st["k3_cost_units"])
+            gross = float(st["k3_gross_units"])
+            net = gross - cost
+            roi = (net / cost * 100.0) if cost else 0.0
+            lines.extend([
+                "",
+                f"{'⭐' if bucket == 'H9' else '•'} {labels[bucket]}",
+                f"• sessioni = {st['sessions']} | chiuse = {closed}",
+                f"• K1 = {st['k1_hits']} | K2 = {st['k2_hits']} ({k2_pct:.2f}%) | K3 = {st['k3_hits']} ({k3_pct:.2f}%)",
+                f"• K2 C1/C2 = {st['k2_colpo1']}/{st['k2_colpo2']}",
+                f"• K3 C1/C2 = {st['k3_colpo1']}/{st['k3_colpo2']}",
+                f"• K3 costo = {cost:.2f}u | lordo = {gross:.2f}u | netto = {net:+.2f}u | ROI = {roi:+.2f}%",
+            ])
+
+        return "\n".join(lines)
 
     def decina_multi_stats_text(self):
         lines = [
@@ -2026,7 +2244,7 @@ class SNIPER_V48:
 
     def ambo_jolly_stats_text(self):
         lines = [
-            "📊 AMBO-JOLLY AJ1 — 1° AMBO v48 + OP3",
+            "📊 AMBO-JOLLY AJ1 — SOLO LAB / 1° AMBO v48 + OP3",
             f"• payout teorico = {AMBO_JOLLY_PAYOUT:.0f}x",
             "• un solo terno per PLAY",
             "• stop anticipato se il PLAY v48 chiude",
@@ -2134,6 +2352,22 @@ class SNIPER_V48:
             if hit_data["ambi_hit"]:
                 self.total_hit_ambo += 1
 
+                # Diagnostica pura: conta quali posizioni dei 3 ambi v48
+                # hanno partecipato al colpo vincente. Il CORE resta invariato.
+                hit_ranks = []
+                active_ambi = self.active_snapshot.get("ambi", [])
+                for hit_item in hit_data["ambi_hit"]:
+                    hit_pair = tuple(map(int, hit_item["ambo"]))
+                    for idx, item in enumerate(active_ambi, start=1):
+                        if tuple(map(int, item["ambo"])) == hit_pair:
+                            rank_key = str(idx)
+                            if rank_key in self.v48_ambo_rank_hits:
+                                self.v48_ambo_rank_hits[rank_key] += 1
+                                hit_ranks.append(idx)
+                            break
+                if len(set(hit_ranks)) >= 2:
+                    self.v48_multi_ambo_hit_draws += 1
+
                 ambi_txt = ", ".join(
                     f"{a}-{b}"
                     for h in hit_data["ambi_hit"]
@@ -2152,15 +2386,18 @@ class SNIPER_V48:
                 await self.tg(
                     app,
                     f"🔥 HIT AMBO v48 | colpo {self.colpi}\n"
-                    f"• ambi = {ambi_txt}\n\n"
+                    f"• ambi = {ambi_txt}\n"
+                    f"• rank vincenti = {', '.join(map(str, sorted(set(hit_ranks)))) or 'n/d'}\n\n"
                     f"📊 STATS v48\n"
                     f"• play = {self.total_play}\n"
                     f"• hit ambata eventi = {self.total_hit_ambata}\n"
                     f"• hit ambo = {self.total_hit_ambo}\n"
                     f"• stop = {self.total_stop}\n\n"
+                    f"{self.v48_ambo_rank_stats_text()}\n\n"
                     f"{self.terni_lab_stats_text()}\n\n"
                     f"{self.ambata_r2_stats_text()}\n\n"
                     f"{self.decina_lab_stats_text()}\n\n"
+                    f"{self.decina_heat_stats_text()}\n\n"
                     f"{self.decina_multi_stats_text()}\n\n"
                     f"{self.ambo_jolly_stats_text()}"
                 )
@@ -2200,9 +2437,11 @@ class SNIPER_V48:
                     f"• hit ambata eventi = {self.total_hit_ambata}\n"
                     f"• hit ambo = {self.total_hit_ambo}\n"
                     f"• stop = {self.total_stop}\n\n"
+                    f"{self.v48_ambo_rank_stats_text()}\n\n"
                     f"{self.terni_lab_stats_text()}\n\n"
                     f"{self.ambata_r2_stats_text()}\n\n"
                     f"{self.decina_lab_stats_text()}\n\n"
+                    f"{self.decina_heat_stats_text()}\n\n"
                     f"{self.decina_multi_stats_text()}\n\n"
                     f"{self.ambo_jolly_stats_text()}"
                 )
@@ -2353,6 +2592,7 @@ class SNIPER_V48:
             f"• hit ambata eventi = {self.total_hit_ambata}\n"
             f"• hit ambo = {self.total_hit_ambo}\n"
             f"• stop = {self.total_stop}\n"
+            f"• rank ambo hit = R1:{self.v48_ambo_rank_hits['1']} R2:{self.v48_ambo_rank_hits['2']} R3:{self.v48_ambo_rank_hits['3']}\n"
             f"• sessioni terni aperte ora = {len(self.terni_sessions)}\n"
             f"• sessioni ambata R2 aperte ora = {len(self.ambata_r2_sessions)}\n"
             f"• sessioni decina base aperte ora = {len(self.decina_lab_sessions)}\n"
@@ -2361,6 +2601,7 @@ class SNIPER_V48:
             f"{self.terni_lab_stats_text()}\n\n"
             f"{self.ambata_r2_stats_text()}\n\n"
             f"{self.decina_lab_stats_text()}\n\n"
+            f"{self.decina_heat_stats_text()}\n\n"
             f"{self.decina_multi_stats_text()}\n\n"
             f"{self.ambo_jolly_stats_text()}\n\n"
             f"🧾 CSV = {CSV_FILE}"
@@ -2448,15 +2689,15 @@ async def live():
 
         await bot.tg(
             app,
-            "🚀 SNIPER v48 + FINAL RESEARCH + DECINA MULTI + AJ1 LAB AVVIATO\n"
+            "🚀 SNIPER v48 + DECINA HEAT MONITOR + MULTI + AJ1 LAB AVVIATO\n"
             "✅ core v48 invariato\n"
             "✅ OP3 primary + OP9/OP6/OP7 control\n"
             "✅ Terni Lab indipendente 7 colpi\n"
             "✅ Ambata Raffica 2 indipendente\n"
-            "✅ Decina Base 10-19 Heat5 TOP3 soglia>=8, 2 colpi\n"
+            "✅ Decina Base 10-19 Heat5 TOP3 soglia>=8, 2 colpi\n✅ monitor separato Heat=8 / Heat=9 / Heat>=10 + economia K3 45x\n"
             "✅ Decina CORE TOP2 3 terni soglia>=9, 2 colpi\n"
             "✅ Decina PIVOT 6 terni soglia>=9, 2 colpi\n"
-            "✅ AMBO-JOLLY AJ1 = 1° ambo v48 + OP3, orizzonti 2/3/4/7, stop con v48\n"
+            "✅ AMBO-JOLLY AJ1 = solo LAB, 1° ambo v48 + OP3, orizzonti 2/3/4/7\n✅ monitor rank ambo v48 vincente = 1/2/3\n"
             f"✅ notifiche Decina Base = {'ON' if DECINA_LAB_NOTIFY else 'OFF'}\n"
             f"✅ notifiche Decina Multi = {'ON' if DECINA_MULTI_NOTIFY else 'OFF'}\n"
             f"✅ notifiche AMBO-JOLLY AJ1 = {'ON' if AMBO_JOLLY_NOTIFY else 'OFF'}\n"
