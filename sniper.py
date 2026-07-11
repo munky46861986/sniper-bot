@@ -86,8 +86,8 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # File nuovi: non mischiano stato/statistiche delle versioni precedenti.
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_final_spy_network_lab_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_final_spy_network_lab_events.csv")
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_final_spy_network_h123_lab_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_final_spy_network_h123_lab_events.csv")
 
 # Stesso lock globale delle versioni Lab precedenti: impedisce di lasciare
 # accidentalmente attivo un vecchio bot insieme a questo.
@@ -153,10 +153,12 @@ DECINA_MULTI_NOTIFY = True
 AMBO_JOLLY_NOTIFY = True
 
 # NUMERI SPIA LAB — candidati emersi dal test storico.
-# Osservazione: solo il colpo successivo alla condizione.
-# K3 economico: 1 unita' giocata sul terno TOP3, payout 45x.
+# Osservazione parallela: prossimo 1 / 2 / 3 colpi.
+# K3 economico: 1 unita' per colpo sul terno TOP3, payout 45x,
+# con stop economico sull'orizzonte appena arriva il 3/3.
 SPY_LAB_NOTIFY = True
-SPY_LAB_MAX_COLPI = 1
+SPY_LAB_HORIZONS = (1, 2, 3)
+SPY_LAB_MAX_COLPI = max(SPY_LAB_HORIZONS)
 SPY_LAB_PAYOUT = 45.0
 SPY_LAB_CANDIDATES = [
     # CATENA_5: rete 30 → 25 → 20 → 15 → 10 → 5
@@ -428,6 +430,13 @@ CSV_FIELDS = [
     "spy_k3_gross_units",
     "spy_k3_net_units",
     "spy_k3_roi_pct",
+    # Nuovi campi: statistiche Num. Spia separate per orizzonte H1/H2/H3.
+    "spy_h1_sessions", "spy_h1_closed", "spy_h1_k1_hits", "spy_h1_k2_hits", "spy_h1_k3_hits",
+    "spy_h1_k3_cost_units", "spy_h1_k3_gross_units", "spy_h1_k3_net_units", "spy_h1_k3_roi_pct",
+    "spy_h2_sessions", "spy_h2_closed", "spy_h2_k1_hits", "spy_h2_k2_hits", "spy_h2_k3_hits",
+    "spy_h2_k3_cost_units", "spy_h2_k3_gross_units", "spy_h2_k3_net_units", "spy_h2_k3_roi_pct",
+    "spy_h3_sessions", "spy_h3_closed", "spy_h3_k1_hits", "spy_h3_k2_hits", "spy_h3_k3_hits",
+    "spy_h3_k3_cost_units", "spy_h3_k3_gross_units", "spy_h3_k3_net_units", "spy_h3_k3_roi_pct",
 ]
 
 for _bucket in DECINA_HEAT_BUCKETS:
@@ -498,7 +507,7 @@ def ensure_csv():
 class SNIPER_V48:
 
     def __init__(self):
-        self.version = "v48_final_research_spy_network_lab"
+        self.version = "v48_final_research_spy_network_h123_lab"
 
         self.day = day_key()
 
@@ -590,21 +599,36 @@ class SNIPER_V48:
             for h in AMBO_JOLLY_HORIZONS
         }
 
-        # NUMERI SPIA LAB: sessioni indipendenti sul colpo successivo.
+        # NUMERI SPIA LAB: sessioni indipendenti su orizzonti 1/2/3 colpi.
         self.spy_lab_uid = 0
         self.spy_lab_sessions = []
-        self.spy_lab_stats = self.new_spy_lab_stats()
-        self.spy_candidate_stats = {
-            self.spy_candidate_key(c): self.new_spy_lab_stats()
+        self.spy_horizon_stats = {
+            str(h): self.new_spy_lab_stats()
+            for h in SPY_LAB_HORIZONS
+        }
+        self.spy_candidate_horizon_stats = {
+            self.spy_candidate_key(c): {str(h): self.new_spy_lab_stats() for h in SPY_LAB_HORIZONS}
             for c in SPY_LAB_CANDIDATES
         }
-        self.spy_network_stats = {
-            network: self.new_spy_lab_stats()
+        self.spy_network_horizon_stats = {
+            network: {str(h): self.new_spy_lab_stats() for h in SPY_LAB_HORIZONS}
             for network in SPY_NETWORK_BUCKETS
         }
-        self.spy_network_level_stats = {
-            level: self.new_spy_lab_stats()
+        self.spy_network_level_horizon_stats = {
+            level: {str(h): self.new_spy_lab_stats() for h in SPY_LAB_HORIZONS}
             for level in SPY_NETWORK_LEVELS
+        }
+
+        # Alias legacy: i vecchi campi CSV mostrano l'orizzonte H1.
+        self.spy_lab_stats = self.spy_horizon_stats["1"]
+        self.spy_candidate_stats = {
+            ckey: hstats["1"] for ckey, hstats in self.spy_candidate_horizon_stats.items()
+        }
+        self.spy_network_stats = {
+            network: hstats["1"] for network, hstats in self.spy_network_horizon_stats.items()
+        }
+        self.spy_network_level_stats = {
+            level: hstats["1"] for level, hstats in self.spy_network_level_horizon_stats.items()
         }
 
         self.load_state()
@@ -754,6 +778,10 @@ class SNIPER_V48:
             "spy_candidate_stats": self.spy_candidate_stats,
             "spy_network_stats": self.spy_network_stats,
             "spy_network_level_stats": self.spy_network_level_stats,
+            "spy_horizon_stats": self.spy_horizon_stats,
+            "spy_candidate_horizon_stats": self.spy_candidate_horizon_stats,
+            "spy_network_horizon_stats": self.spy_network_horizon_stats,
+            "spy_network_level_horizon_stats": self.spy_network_level_horizon_stats,
         }
 
         tmp = STATE_FILE + ".tmp"
@@ -862,43 +890,67 @@ class SNIPER_V48:
                 }
                 self.ambo_jolly_stats[hkey] = fresh
 
+            def _load_spy_stat(src):
+                fresh = self.new_spy_lab_stats()
+                src = src or {}
+                for key, default in fresh.items():
+                    value = src.get(key, default)
+                    fresh[key] = float(value) if key in {"k3_cost_units", "k3_gross_units"} else int(value)
+                return fresh
+
             self.spy_lab_uid = int(data.get("spy_lab_uid", 0))
             self.spy_lab_sessions = data.get("spy_lab_sessions", [])
-            loaded_spy = data.get("spy_lab_stats", {})
-            fresh_spy = self.new_spy_lab_stats()
-            for key, default in fresh_spy.items():
-                value = loaded_spy.get(key, default)
-                fresh_spy[key] = float(value) if key in {"k3_cost_units", "k3_gross_units"} else int(value)
-            self.spy_lab_stats = fresh_spy
 
-            loaded_spy_candidates = data.get("spy_candidate_stats", {})
+            loaded_horizons = data.get("spy_horizon_stats", {})
+            for h in SPY_LAB_HORIZONS:
+                hkey = str(h)
+                # compatibilita': se manca il nuovo formato, H1 prova dai vecchi campi.
+                fallback = data.get("spy_lab_stats", {}) if hkey == "1" else {}
+                self.spy_horizon_stats[hkey] = _load_spy_stat(loaded_horizons.get(hkey, fallback))
+            self.spy_lab_stats = self.spy_horizon_stats["1"]
+
+            loaded_candidate_h = data.get("spy_candidate_horizon_stats", {})
+            loaded_candidate_legacy = data.get("spy_candidate_stats", {})
             for candidate in SPY_LAB_CANDIDATES:
                 ckey = self.spy_candidate_key(candidate)
-                src = loaded_spy_candidates.get(ckey, {})
-                fresh = self.new_spy_lab_stats()
-                for key, default in fresh.items():
-                    value = src.get(key, default)
-                    fresh[key] = float(value) if key in {"k3_cost_units", "k3_gross_units"} else int(value)
-                self.spy_candidate_stats[ckey] = fresh
+                self.spy_candidate_horizon_stats[ckey] = {}
+                for h in SPY_LAB_HORIZONS:
+                    hkey = str(h)
+                    fallback = loaded_candidate_legacy.get(ckey, {}) if hkey == "1" else {}
+                    self.spy_candidate_horizon_stats[ckey][hkey] = _load_spy_stat(
+                        loaded_candidate_h.get(ckey, {}).get(hkey, fallback)
+                    )
+            self.spy_candidate_stats = {
+                ckey: hstats["1"] for ckey, hstats in self.spy_candidate_horizon_stats.items()
+            }
 
-            loaded_networks = data.get("spy_network_stats", {})
+            loaded_network_h = data.get("spy_network_horizon_stats", {})
+            loaded_network_legacy = data.get("spy_network_stats", {})
             for network in SPY_NETWORK_BUCKETS:
-                src = loaded_networks.get(network, {})
-                fresh = self.new_spy_lab_stats()
-                for key, default in fresh.items():
-                    value = src.get(key, default)
-                    fresh[key] = float(value) if key in {"k3_cost_units", "k3_gross_units"} else int(value)
-                self.spy_network_stats[network] = fresh
+                self.spy_network_horizon_stats[network] = {}
+                for h in SPY_LAB_HORIZONS:
+                    hkey = str(h)
+                    fallback = loaded_network_legacy.get(network, {}) if hkey == "1" else {}
+                    self.spy_network_horizon_stats[network][hkey] = _load_spy_stat(
+                        loaded_network_h.get(network, {}).get(hkey, fallback)
+                    )
+            self.spy_network_stats = {
+                network: hstats["1"] for network, hstats in self.spy_network_horizon_stats.items()
+            }
 
-            loaded_levels = data.get("spy_network_level_stats", {})
+            loaded_level_h = data.get("spy_network_level_horizon_stats", {})
+            loaded_level_legacy = data.get("spy_network_level_stats", {})
             for level in SPY_NETWORK_LEVELS:
-                src = loaded_levels.get(level, {})
-                fresh = self.new_spy_lab_stats()
-                for key, default in fresh.items():
-                    value = src.get(key, default)
-                    fresh[key] = float(value) if key in {"k3_cost_units", "k3_gross_units"} else int(value)
-                self.spy_network_level_stats[level] = fresh
-
+                self.spy_network_level_horizon_stats[level] = {}
+                for h in SPY_LAB_HORIZONS:
+                    hkey = str(h)
+                    fallback = loaded_level_legacy.get(level, {}) if hkey == "1" else {}
+                    self.spy_network_level_horizon_stats[level][hkey] = _load_spy_stat(
+                        loaded_level_h.get(level, {}).get(hkey, fallback)
+                    )
+            self.spy_network_level_stats = {
+                level: hstats["1"] for level, hstats in self.spy_network_level_horizon_stats.items()
+            }
         except Exception as ex:
             print(f"⚠️ Stato non caricato: {ex}")
 
@@ -1065,6 +1117,26 @@ class SNIPER_V48:
             "spy_k3_net_units": f"{float(self.spy_lab_stats['k3_gross_units']) - float(self.spy_lab_stats['k3_cost_units']):.2f}",
             "spy_k3_roi_pct": f"{(((float(self.spy_lab_stats['k3_gross_units']) - float(self.spy_lab_stats['k3_cost_units'])) / float(self.spy_lab_stats['k3_cost_units']) * 100.0) if float(self.spy_lab_stats['k3_cost_units']) else 0.0):.4f}",
         }
+
+        # Campi cumulativi horizon-specific per NUMERI SPIA LAB.
+        for _h in SPY_LAB_HORIZONS:
+            _hkey = str(_h)
+            _st = self.spy_horizon_stats.get(_hkey, self.new_spy_lab_stats())
+            _cost = float(_st.get("k3_cost_units", 0.0))
+            _gross = float(_st.get("k3_gross_units", 0.0))
+            _net = _gross - _cost
+            _roi = (_net / _cost * 100.0) if _cost else 0.0
+            row.update({
+                f"spy_h{_h}_sessions": _st.get("sessions", 0),
+                f"spy_h{_h}_closed": _st.get("closed", 0),
+                f"spy_h{_h}_k1_hits": _st.get("k1_hits", 0),
+                f"spy_h{_h}_k2_hits": _st.get("k2_hits", 0),
+                f"spy_h{_h}_k3_hits": _st.get("k3_hits", 0),
+                f"spy_h{_h}_k3_cost_units": f"{_cost:.2f}",
+                f"spy_h{_h}_k3_gross_units": f"{_gross:.2f}",
+                f"spy_h{_h}_k3_net_units": f"{_net:.2f}",
+                f"spy_h{_h}_k3_roi_pct": f"{_roi:.4f}",
+            })
 
         for bucket in DECINA_HEAT_BUCKETS:
             st = self.decina_heat_stats[bucket]
@@ -1956,11 +2028,37 @@ class SNIPER_V48:
             return "FORTE", len(same_network), len(active_candidates)
         return "NORMALE", len(same_network), len(active_candidates)
 
+    def _spy_stats_targets(self, ckey, network, network_level, horizon):
+        """Restituisce i quattro contenitori statistici per un orizzonte."""
+        hkey = str(horizon)
+        self.spy_horizon_stats.setdefault(hkey, self.new_spy_lab_stats())
+        self.spy_candidate_horizon_stats.setdefault(ckey, {})
+        self.spy_candidate_horizon_stats[ckey].setdefault(hkey, self.new_spy_lab_stats())
+        self.spy_network_horizon_stats.setdefault(network, {})
+        self.spy_network_horizon_stats[network].setdefault(hkey, self.new_spy_lab_stats())
+        self.spy_network_level_horizon_stats.setdefault(network_level, {})
+        self.spy_network_level_horizon_stats[network_level].setdefault(hkey, self.new_spy_lab_stats())
+
+        # Mantieni gli alias legacy puntati a H1 per CSV/report compatibili.
+        if hkey == "1":
+            self.spy_lab_stats = self.spy_horizon_stats["1"]
+            self.spy_candidate_stats[ckey] = self.spy_candidate_horizon_stats[ckey]["1"]
+            self.spy_network_stats[network] = self.spy_network_horizon_stats[network]["1"]
+            self.spy_network_level_stats[network_level] = self.spy_network_level_horizon_stats[network_level]["1"]
+
+        return (
+            self.spy_horizon_stats[hkey],
+            self.spy_candidate_horizon_stats[ckey][hkey],
+            self.spy_network_horizon_stats[network][hkey],
+            self.spy_network_level_horizon_stats[network_level][hkey],
+        )
+
     async def maybe_open_spy_lab_sessions(self, app, e):
         """Apre i segnali spia candidati dal backtest.
 
-        Ogni segnale guarda solo la prossima estrazione. Il NETWORK SCORE
-        non modifica il segnale: classifica soltanto il contesto in cui nasce.
+        Ogni segnale viene valutato in parallelo a 1 / 2 / 3 colpi. Il
+        NETWORK SCORE non modifica il segnale: classifica soltanto il
+        contesto in cui nasce.
         """
         opened = []
         active_candidates = self.active_spy_candidates_now()
@@ -1975,11 +2073,16 @@ class SNIPER_V48:
             self.spy_lab_uid += 1
             signal_id = self.spy_lab_uid
             ckey = self.spy_candidate_key(candidate)
+            horizon_state = {
+                str(h): {"closed": False, "k1_hit": False, "k2_hit": False, "k3_hit": False}
+                for h in SPY_LAB_HORIZONS
+            }
             session = {
                 "signal_id": signal_id,
                 "open_e": e,
                 "colpi": 0,
                 "max_colpi": SPY_LAB_MAX_COLPI,
+                "horizons": horizon_state,
                 "spy": spy,
                 "condition": condition,
                 "followers": list(followers),
@@ -1991,23 +2094,20 @@ class SNIPER_V48:
                 "active_total": active_total,
             }
             self.spy_lab_sessions.append(session)
-            self.spy_lab_stats["sessions"] += 1
-            self.spy_candidate_stats.setdefault(ckey, self.new_spy_lab_stats())
-            self.spy_candidate_stats[ckey]["sessions"] += 1
-            self.spy_network_stats.setdefault(network, self.new_spy_lab_stats())
-            self.spy_network_stats[network]["sessions"] += 1
-            self.spy_network_level_stats.setdefault(network_level, self.new_spy_lab_stats())
-            self.spy_network_level_stats[network_level]["sessions"] += 1
+
+            for h in SPY_LAB_HORIZONS:
+                for stx in self._spy_stats_targets(ckey, network, network_level, h):
+                    stx["sessions"] += 1
             opened.append(session)
 
             self.append_csv_event(
                 "SPY_LAB_OPEN",
                 e=e,
                 colpo=0,
-                session_type="SPY_LAB_NEXT_DRAW",
+                session_type="SPY_LAB_H1_H2_H3",
                 strategy=f"SPY_{spy}_{condition}_{network}_{network_level}",
                 terni=[followers],
-                outcome="OPEN",
+                outcome="OPEN_H1_H2_H3",
                 spy_signal_id=signal_id,
                 spy_number=spy,
                 spy_condition=condition,
@@ -2030,7 +2130,7 @@ class SNIPER_V48:
                     f"  🧬 rete = {net_label} | livello = {session['network_level']} "
                     f"| attive rete/tot = {session['active_related']}/{session['active_total']}"
                 )
-            lines.append(f"• osservazione = prossimo {SPY_LAB_MAX_COLPI} colpo")
+            lines.append("• osservazione parallela = prossimi 1 / 2 / 3 colpi")
             lines.append("• target = K2 statistico / K3 terno 45x")
             await self.tg(app, "\n".join(lines))
 
@@ -2043,45 +2143,65 @@ class SNIPER_V48:
 
         for session in self.spy_lab_sessions:
             session["colpi"] = int(session.get("colpi", 0)) + 1
-            colpo = session["colpi"]
+            colpo = int(session["colpi"])
             followers = [int(n) for n in session.get("followers", [])]
             hit_numbers = [n for n in followers if n in draw_set]
             hit_count = len(hit_numbers)
             ckey = session.get("candidate_key")
-            cst = self.spy_candidate_stats.setdefault(ckey, self.new_spy_lab_stats())
             network = session.get("network", "ALTRO")
             network_level = session.get("network_level", "NORMALE")
-            nst = self.spy_network_stats.setdefault(network, self.new_spy_lab_stats())
-            lst = self.spy_network_level_stats.setdefault(network_level, self.new_spy_lab_stats())
+            horizons = session.setdefault("horizons", {})
 
-            # Una unita' sul terno TOP3, solo colpo successivo.
-            for stx in (self.spy_lab_stats, cst, nst, lst):
-                stx["k3_cost_units"] += 1.0
+            hit_horizons = []
+            close_events = []
 
-            if hit_count >= 1:
-                for stx in (self.spy_lab_stats, cst, nst, lst):
-                    stx["k1_hits"] += 1
-            if hit_count >= 2:
-                for stx in (self.spy_lab_stats, cst, nst, lst):
-                    stx["k2_hits"] += 1
-            if hit_count >= 3:
-                for stx in (self.spy_lab_stats, cst, nst, lst):
-                    stx["k3_hits"] += 1
-                    stx["k3_gross_units"] += SPY_LAB_PAYOUT
+            for horizon in SPY_LAB_HORIZONS:
+                hkey = str(horizon)
+                hstate = horizons.setdefault(
+                    hkey,
+                    {"closed": False, "k1_hit": False, "k2_hit": False, "k3_hit": False},
+                )
+                if hstate.get("closed", False):
+                    continue
 
-            for stx in (self.spy_lab_stats, cst, nst, lst):
-                stx["closed"] += 1
+                # Ogni orizzonte simula 1 unita' sul terno TOP3 per ogni colpo
+                # ancora aperto. Se arriva K3, quell'orizzonte si ferma.
+                for stx in self._spy_stats_targets(ckey, network, network_level, horizon):
+                    stx["k3_cost_units"] += 1.0
 
-            outcome = f"K{hit_count}" if hit_count else "MISS"
+                if hit_count >= 1 and not hstate.get("k1_hit", False):
+                    hstate["k1_hit"] = True
+                    for stx in self._spy_stats_targets(ckey, network, network_level, horizon):
+                        stx["k1_hits"] += 1
+                if hit_count >= 2 and not hstate.get("k2_hit", False):
+                    hstate["k2_hit"] = True
+                    for stx in self._spy_stats_targets(ckey, network, network_level, horizon):
+                        stx["k2_hits"] += 1
+                if hit_count >= 3 and not hstate.get("k3_hit", False):
+                    hstate["k3_hit"] = True
+                    hstate["closed"] = True
+                    hit_horizons.append(horizon)
+                    for stx in self._spy_stats_targets(ckey, network, network_level, horizon):
+                        stx["k3_hits"] += 1
+                        stx["k3_gross_units"] += SPY_LAB_PAYOUT
+                        stx["closed"] += 1
+                    close_events.append((horizon, f"K3_COLPO_{colpo}"))
+                elif colpo >= int(horizon):
+                    hstate["closed"] = True
+                    for stx in self._spy_stats_targets(ckey, network, network_level, horizon):
+                        stx["closed"] += 1
+                    close_events.append((horizon, f"K{hit_count}" if hit_count else "MISS"))
+
+            # CSV: una riga di avanzamento per colpo, più le chiusure orizzonte.
             self.append_csv_event(
-                "SPY_LAB_CLOSE",
+                "SPY_LAB_STEP",
                 e=e,
                 colpo=colpo,
-                session_type="SPY_LAB_NEXT_DRAW",
+                session_type="SPY_LAB_H1_H2_H3",
                 strategy=f"SPY_{session.get('spy')}_{session.get('condition')}",
                 terni=[followers],
                 hit_list=[tuple(hit_numbers)] if hit_numbers else [],
-                outcome=outcome,
+                outcome=f"K{hit_count}" if hit_count else "MISS",
                 spy_signal_id=session.get("signal_id"),
                 spy_number=session.get("spy"),
                 spy_condition=session.get("condition", ""),
@@ -2094,99 +2214,129 @@ class SNIPER_V48:
                 spy_k_hit=hit_count,
             )
 
+            for horizon, outcome in close_events:
+                self.append_csv_event(
+                    "SPY_LAB_CLOSE_HORIZON",
+                    e=e,
+                    colpo=colpo,
+                    session_type=f"SPY_LAB_H{horizon}",
+                    strategy=f"SPY_{session.get('spy')}_{session.get('condition')}_H{horizon}",
+                    terni=[followers],
+                    hit_list=[tuple(hit_numbers)] if hit_numbers else [],
+                    outcome=outcome,
+                    spy_signal_id=session.get("signal_id"),
+                    spy_number=session.get("spy"),
+                    spy_condition=session.get("condition", ""),
+                    spy_network=network,
+                    spy_network_level=network_level,
+                    spy_active_related=session.get("active_related"),
+                    spy_active_total=session.get("active_total"),
+                    spy_followers=followers,
+                    spy_hit_numbers=hit_numbers,
+                    spy_k_hit=hit_count,
+                )
+
             if SPY_LAB_NOTIFY and hit_count >= 2:
                 label = "TRIS 3/3" if hit_count == 3 else "ALMENO 2/3"
+                extra = ""
+                if hit_horizons:
+                    extra = f"\n• orizzonti K3 vinti = {fmt_nums(hit_horizons)}"
                 await self.tg(
                     app,
                     f"💥 NUMERI SPIA LAB — {label}\n"
                     f"• signal_id = {session.get('signal_id')}\n"
                     f"• spia = {session.get('spy')} | condizione = {session.get('condition')}\n"
+                    f"• rete = {network} | livello = {network_level}\n"
                     f"• TOP3 accompagnatori = {fmt_nums(followers)}\n"
                     f"• usciti = {fmt_nums(hit_numbers)}\n"
-                    f"• colpo = {colpo}"
+                    f"• colpo = {colpo}{extra}"
                 )
 
-            # max_colpi = 1: ogni sessione chiude qui.
-            if colpo < int(session.get("max_colpi", SPY_LAB_MAX_COLPI)):
+            if not all(horizons.get(str(h), {}).get("closed", False) for h in SPY_LAB_HORIZONS):
                 survivors.append(session)
 
         self.spy_lab_sessions = survivors
 
-    def spy_lab_stats_text(self):
-        st = self.spy_lab_stats
-        closed = int(st["closed"])
-        cost = float(st["k3_cost_units"])
-        gross = float(st["k3_gross_units"])
+    @staticmethod
+    def _pct_txt(num, den):
+        den = int(den or 0)
+        return f"{(float(num) / den * 100.0):.2f}%" if den else "0.00%"
+
+    def _spy_stat_line(self, prefix, st):
+        closed = int(st.get("closed", 0))
+        cost = float(st.get("k3_cost_units", 0.0))
+        gross = float(st.get("k3_gross_units", 0.0))
         net = gross - cost
         roi = (net / cost * 100.0) if cost else 0.0
+        return (
+            f"{prefix}: sess={st.get('sessions', 0)} chiuse={closed} "
+            f"K1={st.get('k1_hits', 0)} ({self._pct_txt(st.get('k1_hits', 0), closed)}) "
+            f"K2={st.get('k2_hits', 0)} ({self._pct_txt(st.get('k2_hits', 0), closed)}) "
+            f"K3={st.get('k3_hits', 0)} ({self._pct_txt(st.get('k3_hits', 0), closed)}) "
+            f"ROI={roi:+.1f}%"
+        )
+
+    def spy_lab_stats_text(self):
         lines = [
-            "📊 NUMERI SPIA LAB — CANDIDATI ROBUSTI / 1 COLPO",
+            "📊 NUMERI SPIA NETWORK LAB — CANDIDATI ROBUSTI / 1-2-3 COLPI",
             f"• candidati monitorati = {len(SPY_LAB_CANDIDATES)}",
-            f"• sessioni = {st['sessions']} | chiuse = {closed}",
-            f"• K1 = {st['k1_hits']} ({pct(st['k1_hits'], closed)})",
-            f"• K2 = {st['k2_hits']} ({pct(st['k2_hits'], closed)})",
-            f"• K3 = {st['k3_hits']} ({pct(st['k3_hits'], closed)})",
-            f"• K3 teorico {SPY_LAB_PAYOUT:.0f}x: costo = {cost:.2f}u | lordo = {gross:.2f}u",
-            f"• netto = {net:+.2f}u | ROI = {roi:+.2f}%",
+            f"• payout teorico K3 = {SPY_LAB_PAYOUT:.0f}x",
             f"• sessioni aperte ora = {len(self.spy_lab_sessions)}",
         ]
+
+        lines.append("\n⏱️ Orizzonti globali")
+        for horizon in SPY_LAB_HORIZONS:
+            hkey = str(horizon)
+            st = self.spy_horizon_stats.get(hkey, self.new_spy_lab_stats())
+            lines.append(self._spy_stat_line(f"• H{horizon}", st))
+            cost = float(st.get("k3_cost_units", 0.0))
+            gross = float(st.get("k3_gross_units", 0.0))
+            net = gross - cost
+            lines.append(f"  costo={cost:.2f}u lordo={gross:.2f}u netto={net:+.2f}u")
 
         rows = []
         for candidate in SPY_LAB_CANDIDATES:
             ckey = self.spy_candidate_key(candidate)
-            cst = self.spy_candidate_stats.get(ckey, self.new_spy_lab_stats())
-            cclosed = int(cst["closed"])
-            if cst["sessions"] == 0 and cclosed == 0:
+            hstats = self.spy_candidate_horizon_stats.get(ckey, {})
+            if not any(hstats.get(str(h), {}).get("sessions", 0) for h in SPY_LAB_HORIZONS):
                 continue
-            ccost = float(cst["k3_cost_units"])
-            cgross = float(cst["k3_gross_units"])
-            cnet = cgross - ccost
-            croi = (cnet / ccost * 100.0) if ccost else 0.0
-            rows.append(
-                f"• {candidate['label']}: sess={cst['sessions']} chiuse={cclosed} "
-                f"K2={cst['k2_hits']} ({pct(cst['k2_hits'], cclosed)}) "
-                f"K3={cst['k3_hits']} ({pct(cst['k3_hits'], cclosed)}) "
-                f"ROI={croi:+.1f}%"
-            )
+            parts = [f"• {candidate['label']}"]
+            for horizon in SPY_LAB_HORIZONS:
+                st = hstats.get(str(horizon), self.new_spy_lab_stats())
+                closed = int(st.get("closed", 0))
+                cost = float(st.get("k3_cost_units", 0.0))
+                gross = float(st.get("k3_gross_units", 0.0))
+                roi = ((gross - cost) / cost * 100.0) if cost else 0.0
+                parts.append(
+                    f"H{horizon}:K2={st.get('k2_hits', 0)}({self._pct_txt(st.get('k2_hits', 0), closed)}) "
+                    f"K3={st.get('k3_hits', 0)}({self._pct_txt(st.get('k3_hits', 0), closed)}) ROI={roi:+.0f}%"
+                )
+            rows.append(" | ".join(parts))
         if rows:
             lines.append("\n📌 Dettaglio candidati")
             lines.extend(rows[:12])
 
         network_rows = []
         for network in SPY_NETWORK_BUCKETS:
-            nst = self.spy_network_stats.get(network, self.new_spy_lab_stats())
-            nclosed = int(nst["closed"])
-            if nst["sessions"] == 0 and nclosed == 0:
+            hstats = self.spy_network_horizon_stats.get(network, {})
+            if not any(hstats.get(str(h), {}).get("sessions", 0) for h in SPY_LAB_HORIZONS):
                 continue
-            ncost = float(nst["k3_cost_units"])
-            ngross = float(nst["k3_gross_units"])
-            nroi = ((ngross - ncost) / ncost * 100.0) if ncost else 0.0
             label = SPY_NETWORK_DEFS.get(network, SPY_NETWORK_DEFS["ALTRO"])["label"]
-            network_rows.append(
-                f"• {label}: sess={nst['sessions']} chiuse={nclosed} "
-                f"K2={nst['k2_hits']} ({pct(nst['k2_hits'], nclosed)}) "
-                f"K3={nst['k3_hits']} ({pct(nst['k3_hits'], nclosed)}) "
-                f"ROI={nroi:+.1f}%"
-            )
+            network_rows.append(f"• {label}")
+            for horizon in SPY_LAB_HORIZONS:
+                network_rows.append("  " + self._spy_stat_line(f"H{horizon}", hstats.get(str(horizon), self.new_spy_lab_stats())))
         if network_rows:
             lines.append("\n🧬 Network score")
             lines.extend(network_rows)
 
         level_rows = []
         for level in SPY_NETWORK_LEVELS:
-            lst = self.spy_network_level_stats.get(level, self.new_spy_lab_stats())
-            lclosed = int(lst["closed"])
-            if lst["sessions"] == 0 and lclosed == 0:
+            hstats = self.spy_network_level_horizon_stats.get(level, {})
+            if not any(hstats.get(str(h), {}).get("sessions", 0) for h in SPY_LAB_HORIZONS):
                 continue
-            lcost = float(lst["k3_cost_units"])
-            lgross = float(lst["k3_gross_units"])
-            lroi = ((lgross - lcost) / lcost * 100.0) if lcost else 0.0
-            level_rows.append(
-                f"• {level}: sess={lst['sessions']} chiuse={lclosed} "
-                f"K2={lst['k2_hits']} ({pct(lst['k2_hits'], lclosed)}) "
-                f"K3={lst['k3_hits']} ({pct(lst['k3_hits'], lclosed)}) "
-                f"ROI={lroi:+.1f}%"
-            )
+            level_rows.append(f"• {level}")
+            for horizon in SPY_LAB_HORIZONS:
+                level_rows.append("  " + self._spy_stat_line(f"H{horizon}", hstats.get(str(horizon), self.new_spy_lab_stats())))
         if level_rows:
             lines.append("\n📶 Livello rete")
             lines.extend(level_rows)
@@ -2659,6 +2809,26 @@ class SNIPER_V48:
             "• stessa regola TOP3 / 2 colpi; solo statistiche separate",
         ]
 
+        # Campi cumulativi horizon-specific per NUMERI SPIA LAB.
+        for _h in SPY_LAB_HORIZONS:
+            _hkey = str(_h)
+            _st = self.spy_horizon_stats.get(_hkey, self.new_spy_lab_stats())
+            _cost = float(_st.get("k3_cost_units", 0.0))
+            _gross = float(_st.get("k3_gross_units", 0.0))
+            _net = _gross - _cost
+            _roi = (_net / _cost * 100.0) if _cost else 0.0
+            row.update({
+                f"spy_h{_h}_sessions": _st.get("sessions", 0),
+                f"spy_h{_h}_closed": _st.get("closed", 0),
+                f"spy_h{_h}_k1_hits": _st.get("k1_hits", 0),
+                f"spy_h{_h}_k2_hits": _st.get("k2_hits", 0),
+                f"spy_h{_h}_k3_hits": _st.get("k3_hits", 0),
+                f"spy_h{_h}_k3_cost_units": f"{_cost:.2f}",
+                f"spy_h{_h}_k3_gross_units": f"{_gross:.2f}",
+                f"spy_h{_h}_k3_net_units": f"{_net:.2f}",
+                f"spy_h{_h}_k3_roi_pct": f"{_roi:.4f}",
+            })
+
         for bucket in DECINA_HEAT_BUCKETS:
             st = self.decina_heat_stats[bucket]
             closed = st["closed"]
@@ -2796,7 +2966,7 @@ class SNIPER_V48:
         # e viene verificato SOLO sulle future 2 estrazioni successive.
         await self.maybe_open_decina_10_19_session(app, e)
 
-        # Numeri spia: condizioni sul colpo corrente, verifica sul prossimo colpo.
+        # Numeri spia: condizioni sul colpo corrente, verifica parallela sui prossimi 1/2/3 colpi.
         await self.maybe_open_spy_lab_sessions(app, e)
 
         # ====================================================
@@ -3170,10 +3340,11 @@ async def live():
             "✅ Decina Base 10-19 Heat5 TOP3 soglia>=8, 2 colpi\n✅ monitor separato Heat=8 / Heat=9 / Heat>=10 + economia K3 45x\n"
             "✅ Decina CORE TOP2 3 terni soglia>=9, 2 colpi\n"
             "✅ Decina PIVOT 6 terni soglia>=9, 2 colpi\n"
-            "✅ AMBO-JOLLY AJ1 = solo LAB, 1° ambo v48 + OP3, orizzonti 2/3/4/7\n✅ monitor rank ambo v48 vincente = 1/2/3\n"
+            "✅ AMBO-JOLLY AJ1 = solo LAB, 1° ambo v48 + OP3, orizzonti 2/3/4/7\n✅ monitor rank ambo v48 vincente = 1/2/3\n✅ Numeri Spia Network Lab = candidati robusti, orizzonti 1/2/3 colpi\n"
             f"✅ notifiche Decina Base = {'ON' if DECINA_LAB_NOTIFY else 'OFF'}\n"
             f"✅ notifiche Decina Multi = {'ON' if DECINA_MULTI_NOTIFY else 'OFF'}\n"
             f"✅ notifiche AMBO-JOLLY AJ1 = {'ON' if AMBO_JOLLY_NOTIFY else 'OFF'}\n"
+            f"✅ notifiche Numeri Spia = {'ON' if SPY_LAB_NOTIFY else 'OFF'}\n"
             "✅ storico iniziale marcato come processato\n"
             "✅ niente replay iniziale"
         )
