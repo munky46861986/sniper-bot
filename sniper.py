@@ -31,6 +31,9 @@
 #     ma censurato alla chiusura del PLAY v48 (HIT AMBO o STOP),
 #     esattamente come nel backtest di conversione ambo->terno
 #     bilancio teorico separato a payout 45x per unita' puntata
+#   - NUMERI SPIA LAB (solo ricerca): candidati robusti dal backtest
+#     storico, condizioni C2_exact/C3plus, TOP3 accompagnatori,
+#     osservazione sul solo colpo successivo, K1/K2/K3 + ROI K3 45x
 #
 # PATCH OPERATIVE:
 #   - lock globale anti doppia istanza
@@ -80,8 +83,8 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # File nuovi: non mischiano stato/statistiche delle versioni precedenti.
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_final_decina_heat9_monitor_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_final_decina_heat9_monitor_events.csv")
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_final_spy_lab_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_final_spy_lab_events.csv")
 
 # Stesso lock globale delle versioni Lab precedenti: impedisce di lasciare
 # accidentalmente attivo un vecchio bot insieme a questo.
@@ -145,6 +148,22 @@ AMBO_JOLLY_PAYOUT = 45.0
 DECINA_LAB_NOTIFY = True
 DECINA_MULTI_NOTIFY = True
 AMBO_JOLLY_NOTIFY = True
+
+# NUMERI SPIA LAB — candidati emersi dal test storico.
+# Osservazione: solo il colpo successivo alla condizione.
+# K3 economico: 1 unita' giocata sul terno TOP3, payout 45x.
+SPY_LAB_NOTIFY = True
+SPY_LAB_MAX_COLPI = 1
+SPY_LAB_PAYOUT = 45.0
+SPY_LAB_CANDIDATES = [
+    {"spy": 25, "condition": "C2_exact", "followers": (20, 15, 10), "label": "25 C2 → 20-15-10"},
+    {"spy": 30, "condition": "C3plus", "followers": (20, 25, 10), "label": "30 C3 → 20-25-10"},
+    {"spy": 20, "condition": "C2_exact", "followers": (15, 10, 5), "label": "20 C2 → 15-10-5"},
+    {"spy": 50, "condition": "C2_exact", "followers": (45, 40, 18), "label": "50 C2 → 45-40-18"},
+    {"spy": 15, "condition": "C3plus", "followers": (14, 28, 55), "label": "15 C3 → 14-28-55"},
+    {"spy": 23, "condition": "C3plus", "followers": (22, 42, 39), "label": "23 C3 → 22-42-39"},
+    {"spy": 5,  "condition": "C3plus", "followers": (4, 55, 56),  "label": "5 C3 → 4-55-56"},
+]
 
 # Strategie mantenute dopo il backtest storico.
 LAB_STRATEGIES = ("op3", "op9", "op6", "op7")
@@ -354,6 +373,21 @@ CSV_FIELDS = [
     "ambo_jolly_rank1_ambo",
     "ambo_jolly_op3",
     "ambo_jolly_horizon",
+    "spy_signal_id",
+    "spy_number",
+    "spy_condition",
+    "spy_followers",
+    "spy_hit_numbers",
+    "spy_k_hit",
+    "spy_sessions",
+    "spy_closed",
+    "spy_k1_hits",
+    "spy_k2_hits",
+    "spy_k3_hits",
+    "spy_k3_cost_units",
+    "spy_k3_gross_units",
+    "spy_k3_net_units",
+    "spy_k3_roi_pct",
 ]
 
 for _bucket in DECINA_HEAT_BUCKETS:
@@ -424,7 +458,7 @@ def ensure_csv():
 class SNIPER_V48:
 
     def __init__(self):
-        self.version = "v48_final_research_decina_heat9_monitor_aj1"
+        self.version = "v48_final_research_spy_lab"
 
         self.day = day_key()
 
@@ -516,6 +550,15 @@ class SNIPER_V48:
             for h in AMBO_JOLLY_HORIZONS
         }
 
+        # NUMERI SPIA LAB: sessioni indipendenti sul colpo successivo.
+        self.spy_lab_uid = 0
+        self.spy_lab_sessions = []
+        self.spy_lab_stats = self.new_spy_lab_stats()
+        self.spy_candidate_stats = {
+            self.spy_candidate_key(c): self.new_spy_lab_stats()
+            for c in SPY_LAB_CANDIDATES
+        }
+
         self.load_state()
         ensure_csv()
 
@@ -604,6 +647,22 @@ class SNIPER_V48:
             "hit_by_colpo": {str(i): 0 for i in range(1, int(horizon) + 1)},
         }
 
+    @staticmethod
+    def new_spy_lab_stats():
+        return {
+            "sessions": 0,
+            "closed": 0,
+            "k1_hits": 0,
+            "k2_hits": 0,
+            "k3_hits": 0,
+            "k3_cost_units": 0.0,
+            "k3_gross_units": 0.0,
+        }
+
+    @staticmethod
+    def spy_candidate_key(candidate):
+        return f"{int(candidate['spy'])}_{candidate['condition']}_{'-'.join(map(str, candidate['followers']))}"
+
     def save_state(self):
         data = {
             "version": self.version,
@@ -641,6 +700,10 @@ class SNIPER_V48:
             "decina_multi_stats": self.decina_multi_stats,
             "ambo_jolly_sessions": self.ambo_jolly_sessions,
             "ambo_jolly_stats": self.ambo_jolly_stats,
+            "spy_lab_uid": self.spy_lab_uid,
+            "spy_lab_sessions": self.spy_lab_sessions,
+            "spy_lab_stats": self.spy_lab_stats,
+            "spy_candidate_stats": self.spy_candidate_stats,
         }
 
         tmp = STATE_FILE + ".tmp"
@@ -749,6 +812,25 @@ class SNIPER_V48:
                 }
                 self.ambo_jolly_stats[hkey] = fresh
 
+            self.spy_lab_uid = int(data.get("spy_lab_uid", 0))
+            self.spy_lab_sessions = data.get("spy_lab_sessions", [])
+            loaded_spy = data.get("spy_lab_stats", {})
+            fresh_spy = self.new_spy_lab_stats()
+            for key, default in fresh_spy.items():
+                value = loaded_spy.get(key, default)
+                fresh_spy[key] = float(value) if key in {"k3_cost_units", "k3_gross_units"} else int(value)
+            self.spy_lab_stats = fresh_spy
+
+            loaded_spy_candidates = data.get("spy_candidate_stats", {})
+            for candidate in SPY_LAB_CANDIDATES:
+                ckey = self.spy_candidate_key(candidate)
+                src = loaded_spy_candidates.get(ckey, {})
+                fresh = self.new_spy_lab_stats()
+                for key, default in fresh.items():
+                    value = src.get(key, default)
+                    fresh[key] = float(value) if key in {"k3_cost_units", "k3_gross_units"} else int(value)
+                self.spy_candidate_stats[ckey] = fresh
+
         except Exception as ex:
             print(f"⚠️ Stato non caricato: {ex}")
 
@@ -782,6 +864,7 @@ class SNIPER_V48:
         self.decina_lab_sessions = []
         self.decina_multi_sessions = []
         self.ambo_jolly_sessions = []
+        self.spy_lab_sessions = []
 
         self.save_state()
 
@@ -816,6 +899,12 @@ class SNIPER_V48:
         ambo_jolly_rank1_ambo=None,
         ambo_jolly_op3=None,
         ambo_jolly_horizon=None,
+        spy_signal_id=None,
+        spy_number=None,
+        spy_condition="",
+        spy_followers=None,
+        spy_hit_numbers=None,
+        spy_k_hit=None,
     ):
         ensure_csv()
 
@@ -884,6 +973,21 @@ class SNIPER_V48:
             "ambo_jolly_rank1_ambo": fmt_nums(ambo_jolly_rank1_ambo),
             "ambo_jolly_op3": ambo_jolly_op3 if ambo_jolly_op3 is not None else "",
             "ambo_jolly_horizon": ambo_jolly_horizon if ambo_jolly_horizon is not None else "",
+            "spy_signal_id": spy_signal_id if spy_signal_id is not None else "",
+            "spy_number": spy_number if spy_number is not None else "",
+            "spy_condition": spy_condition,
+            "spy_followers": fmt_nums(spy_followers),
+            "spy_hit_numbers": fmt_nums(spy_hit_numbers),
+            "spy_k_hit": spy_k_hit if spy_k_hit is not None else "",
+            "spy_sessions": self.spy_lab_stats["sessions"],
+            "spy_closed": self.spy_lab_stats["closed"],
+            "spy_k1_hits": self.spy_lab_stats["k1_hits"],
+            "spy_k2_hits": self.spy_lab_stats["k2_hits"],
+            "spy_k3_hits": self.spy_lab_stats["k3_hits"],
+            "spy_k3_cost_units": f"{float(self.spy_lab_stats['k3_cost_units']):.2f}",
+            "spy_k3_gross_units": f"{float(self.spy_lab_stats['k3_gross_units']):.2f}",
+            "spy_k3_net_units": f"{float(self.spy_lab_stats['k3_gross_units']) - float(self.spy_lab_stats['k3_cost_units']):.2f}",
+            "spy_k3_roi_pct": f"{(((float(self.spy_lab_stats['k3_gross_units']) - float(self.spy_lab_stats['k3_cost_units'])) / float(self.spy_lab_stats['k3_cost_units']) * 100.0) if float(self.spy_lab_stats['k3_cost_units']) else 0.0):.4f}",
         }
 
         for bucket in DECINA_HEAT_BUCKETS:
@@ -1724,6 +1828,207 @@ class SNIPER_V48:
         self.decina_lab_sessions = survivors
 
     # ========================================================
+    # NUMERI SPIA LAB
+    # ========================================================
+
+    def spy_condition_met(self, spy, condition):
+        """Valuta la condizione sullo storico incluso il colpo corrente.
+
+        C2_exact: spy presente negli ultimi 2 colpi e assente nel terzo precedente.
+        C3plus: spy presente negli ultimi 3 colpi consecutivi.
+        C1_exact: spy presente solo nell'ultimo colpo, non nel precedente.
+        """
+        spy = int(spy)
+        if condition == "C1_exact":
+            if len(self.last_draws) < 2:
+                return False
+            return spy in self.last_draws[-1] and spy not in self.last_draws[-2]
+        if condition == "C2_exact":
+            if len(self.last_draws) < 3:
+                return False
+            return (
+                spy in self.last_draws[-1]
+                and spy in self.last_draws[-2]
+                and spy not in self.last_draws[-3]
+            )
+        if condition == "C3plus":
+            if len(self.last_draws) < 3:
+                return False
+            return all(spy in draw for draw in self.last_draws[-3:])
+        return False
+
+    async def maybe_open_spy_lab_sessions(self, app, e):
+        """Apre i segnali spia candidati dal backtest.
+
+        Ogni segnale guarda solo la prossima estrazione. Le sessioni possono
+        sovrapporsi se una condizione continua a presentarsi.
+        """
+        opened = []
+        for candidate in SPY_LAB_CANDIDATES:
+            spy = int(candidate["spy"])
+            condition = candidate["condition"]
+            followers = tuple(sorted(map(int, candidate["followers"])))
+            if not self.spy_condition_met(spy, condition):
+                continue
+
+            self.spy_lab_uid += 1
+            signal_id = self.spy_lab_uid
+            ckey = self.spy_candidate_key(candidate)
+            session = {
+                "signal_id": signal_id,
+                "open_e": e,
+                "colpi": 0,
+                "max_colpi": SPY_LAB_MAX_COLPI,
+                "spy": spy,
+                "condition": condition,
+                "followers": list(followers),
+                "candidate_key": ckey,
+                "label": candidate.get("label", f"{spy} {condition}"),
+            }
+            self.spy_lab_sessions.append(session)
+            self.spy_lab_stats["sessions"] += 1
+            self.spy_candidate_stats.setdefault(ckey, self.new_spy_lab_stats())
+            self.spy_candidate_stats[ckey]["sessions"] += 1
+            opened.append(session)
+
+            self.append_csv_event(
+                "SPY_LAB_OPEN",
+                e=e,
+                colpo=0,
+                session_type="SPY_LAB_NEXT_DRAW",
+                strategy=f"SPY_{spy}_{condition}",
+                terni=[followers],
+                outcome="OPEN",
+                spy_signal_id=signal_id,
+                spy_number=spy,
+                spy_condition=condition,
+                spy_followers=followers,
+            )
+
+        if SPY_LAB_NOTIFY and opened:
+            lines = ["🕵️ NUMERI SPIA LAB — SEGNALE"]
+            for session in opened:
+                lines.append(
+                    f"• id {session['signal_id']} | spia {session['spy']} | {session['condition']} "
+                    f"→ {fmt_nums(session['followers'])}"
+                )
+            lines.append(f"• osservazione = prossimo {SPY_LAB_MAX_COLPI} colpo")
+            lines.append("• target = K2 statistico / K3 terno 45x")
+            await self.tg(app, "\n".join(lines))
+
+    async def process_spy_lab_sessions(self, app, e, nums):
+        if not self.spy_lab_sessions:
+            return
+
+        draw_set = set(nums)
+        survivors = []
+
+        for session in self.spy_lab_sessions:
+            session["colpi"] = int(session.get("colpi", 0)) + 1
+            colpo = session["colpi"]
+            followers = [int(n) for n in session.get("followers", [])]
+            hit_numbers = [n for n in followers if n in draw_set]
+            hit_count = len(hit_numbers)
+            ckey = session.get("candidate_key")
+            cst = self.spy_candidate_stats.setdefault(ckey, self.new_spy_lab_stats())
+
+            # Una unita' sul terno TOP3, solo colpo successivo.
+            self.spy_lab_stats["k3_cost_units"] += 1.0
+            cst["k3_cost_units"] += 1.0
+
+            if hit_count >= 1:
+                self.spy_lab_stats["k1_hits"] += 1
+                cst["k1_hits"] += 1
+            if hit_count >= 2:
+                self.spy_lab_stats["k2_hits"] += 1
+                cst["k2_hits"] += 1
+            if hit_count >= 3:
+                self.spy_lab_stats["k3_hits"] += 1
+                self.spy_lab_stats["k3_gross_units"] += SPY_LAB_PAYOUT
+                cst["k3_hits"] += 1
+                cst["k3_gross_units"] += SPY_LAB_PAYOUT
+
+            self.spy_lab_stats["closed"] += 1
+            cst["closed"] += 1
+
+            outcome = f"K{hit_count}" if hit_count else "MISS"
+            self.append_csv_event(
+                "SPY_LAB_CLOSE",
+                e=e,
+                colpo=colpo,
+                session_type="SPY_LAB_NEXT_DRAW",
+                strategy=f"SPY_{session.get('spy')}_{session.get('condition')}",
+                terni=[followers],
+                hit_list=[tuple(hit_numbers)] if hit_numbers else [],
+                outcome=outcome,
+                spy_signal_id=session.get("signal_id"),
+                spy_number=session.get("spy"),
+                spy_condition=session.get("condition", ""),
+                spy_followers=followers,
+                spy_hit_numbers=hit_numbers,
+                spy_k_hit=hit_count,
+            )
+
+            if SPY_LAB_NOTIFY and hit_count >= 2:
+                label = "TRIS 3/3" if hit_count == 3 else "ALMENO 2/3"
+                await self.tg(
+                    app,
+                    f"💥 NUMERI SPIA LAB — {label}\n"
+                    f"• signal_id = {session.get('signal_id')}\n"
+                    f"• spia = {session.get('spy')} | condizione = {session.get('condition')}\n"
+                    f"• TOP3 accompagnatori = {fmt_nums(followers)}\n"
+                    f"• usciti = {fmt_nums(hit_numbers)}\n"
+                    f"• colpo = {colpo}"
+                )
+
+            # max_colpi = 1: ogni sessione chiude qui.
+            if colpo < int(session.get("max_colpi", SPY_LAB_MAX_COLPI)):
+                survivors.append(session)
+
+        self.spy_lab_sessions = survivors
+
+    def spy_lab_stats_text(self):
+        st = self.spy_lab_stats
+        closed = int(st["closed"])
+        cost = float(st["k3_cost_units"])
+        gross = float(st["k3_gross_units"])
+        net = gross - cost
+        roi = (net / cost * 100.0) if cost else 0.0
+        lines = [
+            "📊 NUMERI SPIA LAB — CANDIDATI ROBUSTI / 1 COLPO",
+            f"• candidati monitorati = {len(SPY_LAB_CANDIDATES)}",
+            f"• sessioni = {st['sessions']} | chiuse = {closed}",
+            f"• K1 = {st['k1_hits']} ({pct(st['k1_hits'], closed)})",
+            f"• K2 = {st['k2_hits']} ({pct(st['k2_hits'], closed)})",
+            f"• K3 = {st['k3_hits']} ({pct(st['k3_hits'], closed)})",
+            f"• K3 teorico {SPY_LAB_PAYOUT:.0f}x: costo = {cost:.2f}u | lordo = {gross:.2f}u",
+            f"• netto = {net:+.2f}u | ROI = {roi:+.2f}%",
+            f"• sessioni aperte ora = {len(self.spy_lab_sessions)}",
+        ]
+
+        rows = []
+        for candidate in SPY_LAB_CANDIDATES:
+            ckey = self.spy_candidate_key(candidate)
+            cst = self.spy_candidate_stats.get(ckey, self.new_spy_lab_stats())
+            cclosed = int(cst["closed"])
+            if cst["sessions"] == 0 and cclosed == 0:
+                continue
+            ccost = float(cst["k3_cost_units"])
+            cgross = float(cst["k3_gross_units"])
+            cnet = cgross - ccost
+            croi = (cnet / ccost * 100.0) if ccost else 0.0
+            rows.append(
+                f"• {candidate['label']}: sess={cst['sessions']} chiuse={cclosed} "
+                f"K2={cst['k2_hits']} ({pct(cst['k2_hits'], cclosed)}) "
+                f"K3={cst['k3_hits']} ({pct(cst['k3_hits'], cclosed)}) "
+                f"ROI={croi:+.1f}%"
+            )
+        if rows:
+            lines.append("\n📌 Dettaglio candidati")
+            lines.extend(rows[:12])
+        return "\n".join(lines)
+
+    # ========================================================
     # LAB SESSION CREATION
     # ========================================================
 
@@ -2321,10 +2626,14 @@ class SNIPER_V48:
         await self.process_decina_10_19_sessions(app, e, nums)
         await self.process_decina_multi_sessions(app, e, nums)
         await self.process_ambo_jolly_sessions(app, e, nums)
+        await self.process_spy_lab_sessions(app, e, nums)
 
         # Il nuovo segnale usa le ultime 5 estrazioni già note (inclusa questa)
         # e viene verificato SOLO sulle future 2 estrazioni successive.
         await self.maybe_open_decina_10_19_session(app, e)
+
+        # Numeri spia: condizioni sul colpo corrente, verifica sul prossimo colpo.
+        await self.maybe_open_spy_lab_sessions(app, e)
 
         # ====================================================
         # CORE v48 ATTIVO — LOGICA INVARIATA
@@ -2587,7 +2896,7 @@ class SNIPER_V48:
     async def send_report(self, app):
         await self.tg(
             app,
-            "📊 REPORT SNIPER v48 + FINAL RESEARCH + DECINA MULTI + AJ1\n"
+            "📊 REPORT SNIPER v48 + FINAL RESEARCH + DECINA MULTI + AJ1 + SPIA\n"
             f"• play v48 = {self.total_play}\n"
             f"• hit ambata eventi = {self.total_hit_ambata}\n"
             f"• hit ambo = {self.total_hit_ambo}\n"
@@ -2689,7 +2998,7 @@ async def live():
 
         await bot.tg(
             app,
-            "🚀 SNIPER v48 + DECINA HEAT MONITOR + MULTI + AJ1 LAB AVVIATO\n"
+            "🚀 SNIPER v48 + DECINA HEAT MONITOR + MULTI + AJ1 + SPIA LAB AVVIATO\n"
             "✅ core v48 invariato\n"
             "✅ OP3 primary + OP9/OP6/OP7 control\n"
             "✅ Terni Lab indipendente 7 colpi\n"
