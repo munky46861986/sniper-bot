@@ -1,50 +1,18 @@
 # ============================================================
-# 🚀 SNIPER v48 — FINAL RESEARCH
+# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB
 #
-# CORE v48: INVARIATO
-#   - Hot Confirmed
-#   - costruzione 3 ambi
-#   - ambata
-#   - score
-#   - cluster reuse
-#   - cooldown
-#   - massimo 7 colpi
-#   - chiusura al primo HIT AMBO
+# VERSIONE PULITA
+#   ✅ v48 base invariata: ambata + 3 ambi classici, max 7 colpi
+#   ✅ monitor rank ambo vincente 1/2/3
+#   ✅ economia teorica v48: ambo 14x, 1 unita' per ambo/colpo
+#   ✅ Numeri Spia Lab su modello storico multi-numero
+#   ✅ condizioni: C1_exact, C2_exact, C3plus, NC2_W3_gap, NC2_W5, NC3_W5_gap
+#   ✅ orizzonti paralleli H1/H2/H3
+#   ✅ K1/K2/K3 + economia terno 45x
+#   ✅ report Telegram cliccabili: /report /v48 /spie /spie_top /spie_network /menu
 #
-# LAB PARALLELO (non modifica il CORE v48):
-#   - OP3 PRIMARY: miglior score fuori cluster
-#   - OP9 CONTROL: mix score + ritardo + frequenza
-#   - OP6 CONTROL: stessa decina ambata
-#   - OP7 CONTROL: stessa decina dinamica per ambo
-#   - TERNI LAB indipendente per 7 colpi anche dopo HIT AMBO
-#   - AMBATA RAFFICA 2 indipendente per 2 colpi
-#   - DECINA LAB 10-19 BASE: TOP 3 Heat ultime 5, soglia totale >= 8
-#     sessione indipendente per 2 colpi, target statistici K1/K2/K3
-#   - MONITOR HEAT STRATA: Heat=8 / Heat=9 / Heat>=10
-#     statistiche K1/K2/K3 separate + simulazione economica K3 a 45x
-#   - DECINA CORE TOP2 LAB: Heat >= 9, 3 terni A-B-C/A-B-D/A-B-E
-#   - DECINA PIVOT LAB: Heat >= 9, 6 terni tutti contenenti il pivot A
-#     CORE/PIVOT indipendenti per 2 colpi, stop al primo colpo vincente
-#     bilancio teorico separato a payout 45x per unita' puntata
-#   - AMBO-JOLLY AJ1 LAB (solo ricerca): 1° ambo v48 + jolly OP3 globale
-#     un solo terno, osservato in parallelo a 2/3/4/7 colpi
-#     ma censurato alla chiusura del PLAY v48 (HIT AMBO o STOP),
-#     esattamente come nel backtest di conversione ambo->terno
-#     bilancio teorico separato a payout 45x per unita' puntata
-#   - NUMERI SPIA LAB (solo ricerca): candidati robusti dal backtest
-#     storico, condizioni C2_exact/C3plus, TOP3 accompagnatori,
-#     osservazione sul solo colpo successivo, K1/K2/K3 + ROI K3 45x
-#   - SPY NETWORK SCORE: classifica ogni segnale spia per rete numerica
-#     CATENA_5 / PONTE_55 / ZONA_40 / LATERALE_23 e livello
-#     NORMALE / FORTE / MULTIPLA quando piu' spie collegate sono attive
-#
-# PATCH OPERATIVE:
-#   - lock globale anti doppia istanza
-#   - startup senza replay
-#   - reset operativo cambio giorno
-#   - monitor rank degli ambi v48 vincenti (rank 1/2/3)
-#   - CSV eventi in formato lungo/pulito
-#   - stato persistente anche per sessioni LAB indipendenti
+# NOTA
+#   Questo bot non predice le estrazioni: registra e confronta segnali statistici.
 # ============================================================
 
 import asyncio
@@ -55,22 +23,19 @@ import json
 import os
 import re
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime
 from itertools import combinations
 
 import requests
 from bs4 import BeautifulSoup
-from telegram.ext import ApplicationBuilder
-
-import nest_asyncio
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
 
 try:
     import fcntl
 except ImportError:
     fcntl = None
-
-nest_asyncio.apply()
 
 
 # ============================================================
@@ -79,138 +44,96 @@ nest_asyncio.apply()
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID_RAW = os.getenv("CHAT_ID")
+CHAT_ID = None
 
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# File nuovi: non mischiano stato/statistiche delle versioni precedenti.
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_final_spy_network_h123_lab_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_final_spy_network_h123_lab_events.csv")
-
-# Stesso lock globale delle versioni Lab precedenti: impedisce di lasciare
-# accidentalmente attivo un vecchio bot insieme a questo.
-LOCK_FILE = "/tmp/sniper_v48_terni_lab.lock"
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_events.csv")
+LOCK_FILE = "/tmp/sniper_v48_base_full_spy.lock"
 
 LOOP_SEC = 60
+HISTORY_MAX = 320
+PROCESSED_MAX = 1200
 
-HISTORY_MAX = 240
-PROCESSED_MAX = 1000
-
+# v48 — core invariato
 TOP_RITARDATARI = 10
 PLAY_POSITIONS = [6, 7, 8, 9, 10]
-
 WATCH_WINDOW = 12
 HOT_TTL = 45
 MIN_HOT_ACTIVE = 3
-
 MAX_AMBI_PER_PLAY = 3
 MAX_COLPI = 7
 COOLDOWN_AFTER_PLAY = 5
 CLUSTER_REUSE_AFTER = 12
 
-# LAB indipendenti
-TERNI_LAB_MAX_COLPI = 7
-AMBATA_RAFFICA_MAX_COLPI = 2
+# Economia teorica
+AMBO_PAYOUT = 14.0
+TERNO_PAYOUT = 45.0
 
-# DECINA LAB 10-19 — regola congelata dal backtest storico.
-DECINA_LAB_NUMBERS = tuple(range(10, 20))
-DECINA_LAB_WINDOW = 5
-DECINA_LAB_TOP_N = 3
-DECINA_LAB_HEAT_THRESHOLD = 8
-DECINA_LAB_MAX_COLPI = 2
+# Numeri Spia Lab
+SPY_HORIZONS = (1, 2, 3)
+SPY_MAX_COLPI = max(SPY_HORIZONS)
+SPY_NOTIFY_OPEN = True
+SPY_NOTIFY_HIT_K2 = True
+SPY_NOTIFY_HIT_K3 = True
+SPY_OPEN_NOTIFY_MAX_LINES = 8
+SPY_MIN_MODEL_EVENTS = 80
+SPY_REPORT_EVERY_DRAWS = 30
 
-# Nuovi pacchetti multi-terno emersi dal backtest:
-# - CORE TOP2: A-B-C / A-B-D / A-B-E (3 terni)
-# - PIVOT: tutti i terni del TOP5 che contengono A (6 terni)
-# Si aprono solo con Heat totale TOP3 >= 9.
-DECINA_MULTI_HEAT_THRESHOLD = 9
-DECINA_MULTI_TOP_N = 5
-DECINA_MULTI_MAX_COLPI = 2
-DECINA_TERNO_PAYOUT = 45.0
+# Menu Telegram cliccabile
+MENU_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        ["/report", "/v48"],
+        ["/spie", "/spie_top"],
+        ["/spie_network", "/menu"],
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=False,
+    input_field_placeholder="Tocca un comando",
+)
 
-# Monitor economico del singolo terno TOP3 della Decina Base.
-# Simulazione: 1 unita' per colpo, massimo 2 colpi, stop economico sul K3.
-DECINA_BASE_K3_PAYOUT = 45.0
+# Pulsanti inline: utili anche quando non vuoi digitare nulla.
+# Su alcuni canali/gruppi Telegram la tastiera fissa puo' non comparire;
+# questi bottoni sotto al messaggio /menu restano cliccabili.
+INLINE_MENU = InlineKeyboardMarkup([
+    [InlineKeyboardButton("📊 Report", callback_data="report"), InlineKeyboardButton("🎯 v48", callback_data="v48")],
+    [InlineKeyboardButton("🕵️ Spie", callback_data="spie"), InlineKeyboardButton("🏆 Top spie", callback_data="spie_top")],
+    [InlineKeyboardButton("🧬 Network", callback_data="spie_network"), InlineKeyboardButton("🧭 Menu", callback_data="menu")],
+])
 
-# Fasce monitorate separatamente, senza cambiare la regola di ingresso.
-# H8 = Heat esattamente 8; H9 = Heat esattamente 9; H10P = Heat >= 10.
-DECINA_HEAT_BUCKETS = ("H8", "H9", "H10P")
-
-# AMBO-JOLLY AJ1 — candidato emerso dal backtest storico.
-# Un solo terno: 1° ambo v48 (rank 1 per score pair) + jolly OP3 globale.
-# Le quattro strategie 2/3/4/7 colpi vengono seguite in parallelo e
-# contabilizzate separatamente, senza scegliere a posteriori l'orizzonte.
-# Ogni orizzonte si ferma anche se il PLAY v48 chiude prima per un altro ambo.
-AMBO_JOLLY_HORIZONS = (2, 3, 4, 7)
-AMBO_JOLLY_PAYOUT = 45.0
-
-# L'utente ha scelto notifiche Telegram permanenti.
-# Per silenziarle in futuro basta impostare queste costanti a False.
-DECINA_LAB_NOTIFY = True
-DECINA_MULTI_NOTIFY = True
-AMBO_JOLLY_NOTIFY = True
-
-# NUMERI SPIA LAB — candidati emersi dal test storico.
-# Osservazione parallela: prossimo 1 / 2 / 3 colpi.
-# K3 economico: 1 unita' per colpo sul terno TOP3, payout 45x,
-# con stop economico sull'orizzonte appena arriva il 3/3.
-SPY_LAB_NOTIFY = True
-SPY_LAB_HORIZONS = (1, 2, 3)
-SPY_LAB_MAX_COLPI = max(SPY_LAB_HORIZONS)
-SPY_LAB_PAYOUT = 45.0
-SPY_LAB_CANDIDATES = [
-    # CATENA_5: rete 30 → 25 → 20 → 15 → 10 → 5
-    {"spy": 25, "condition": "C2_exact", "followers": (20, 15, 10), "label": "25 C2 → 20-15-10", "network": "CATENA_5"},
-    {"spy": 30, "condition": "C3plus",  "followers": (20, 25, 10), "label": "30 C3 → 20-25-10", "network": "CATENA_5"},
-    {"spy": 20, "condition": "C2_exact", "followers": (15, 10, 5),  "label": "20 C2 → 15-10-5",  "network": "CATENA_5"},
-
-    # ZONA_40: scala 50 → 45 → 40 con ponte verso 18.
-    {"spy": 50, "condition": "C2_exact", "followers": (45, 40, 18), "label": "50 C2 → 45-40-18", "network": "ZONA_40"},
-
-    # PONTE_55: 5/15 che scaricano verso 55 e area 4/14/28/56.
-    {"spy": 15, "condition": "C3plus", "followers": (14, 28, 55), "label": "15 C3 → 14-28-55", "network": "PONTE_55"},
-    {"spy": 5,  "condition": "C3plus", "followers": (4, 55, 56),  "label": "5 C3 → 4-55-56",  "network": "PONTE_55"},
-
-    # LATERALE_23: meno integrata, ma collegata alla zona 40 tramite 39/42.
-    {"spy": 23, "condition": "C3plus", "followers": (22, 42, 39), "label": "23 C3 → 22-42-39", "network": "LATERALE_23"},
-]
+# Modello storico spie incorporato.
+# Ogni riga: numero spia + condizione + TOP3 accompagnatori + benchmark storico 1-colpo.
+SPY_MODEL_EMBEDDED_JSON = r'[{"spy":1,"condition":"C1_exact","followers":[86,90,85],"events":8995,"k2_pct":0.032685,"base_k2_pct":0.030866,"k3_pct":0.002112,"base_k3_pct":0.00193,"k2_extra_pp":0.001819,"label":"1 C1_exact → 86-90-85"},{"spy":1,"condition":"NC2_W3_gap","followers":[90,85,73],"events":2295,"k2_pct":0.051416,"base_k2_pct":0.035273,"k3_pct":0.002179,"base_k3_pct":0.00156,"k2_extra_pp":0.016143,"label":"1 NC2_W3_gap → 90-85-73"},{"spy":1,"condition":"NC3_W5_gap","followers":[29,8,89],"events":2883,"k2_pct":0.08845,"base_k2_pct":0.073763,"k3_pct":0.001387,"base_k3_pct":0.001852,"k2_extra_pp":0.014687,"label":"1 NC3_W5_gap → 29-8-89"},{"spy":2,"condition":"NC2_W3_gap","followers":[90,89,87],"events":2219,"k2_pct":0.036503,"base_k2_pct":0.022638,"k3_pct":0.001803,"base_k3_pct":0.001755,"k2_extra_pp":0.013865,"label":"2 NC2_W3_gap → 90-89-87"},{"spy":3,"condition":"C1_exact","followers":[90,89,9],"events":8929,"k2_pct":0.026879,"base_k2_pct":0.02254,"k3_pct":0.002576,"base_k3_pct":0.00195,"k2_extra_pp":0.004338,"label":"3 C1_exact → 90-89-9"},{"spy":3,"condition":"C2_exact","followers":[2,30,45],"events":2133,"k2_pct":0.198781,"base_k2_pct":0.175311,"k3_pct":0.018284,"base_k3_pct":0.017802,"k2_extra_pp":0.02347,"label":"3 C2_exact → 2-30-45"},{"spy":3,"condition":"C3plus","followers":[2,56,63],"events":1745,"k2_pct":0.194269,"base_k2_pct":0.137211,"k3_pct":0.016619,"base_k3_pct":0.010724,"k2_extra_pp":0.057058,"label":"3 C3plus → 2-56-63"},{"spy":3,"condition":"NC2_W3_gap","followers":[90,89,88],"events":2178,"k2_pct":0.037649,"base_k2_pct":0.022501,"k3_pct":0.004132,"base_k3_pct":0.001774,"k2_extra_pp":0.015148,"label":"3 NC2_W3_gap → 90-89-88"},{"spy":4,"condition":"C1_exact","followers":[88,89,90],"events":9033,"k2_pct":0.027344,"base_k2_pct":0.022501,"k3_pct":0.002546,"base_k3_pct":0.001774,"k2_extra_pp":0.004843,"label":"4 C1_exact → 88-89-90"},{"spy":4,"condition":"C2_exact","followers":[60,40,66],"events":2172,"k2_pct":0.166667,"base_k2_pct":0.143821,"k3_pct":0.021639,"base_k3_pct":0.012928,"k2_extra_pp":0.022846,"label":"4 C2_exact → 60-40-66"},{"spy":4,"condition":"NC2_W3_gap","followers":[90,88,89],"events":2331,"k2_pct":0.032175,"base_k2_pct":0.022501,"k3_pct":0.003432,"base_k3_pct":0.001774,"k2_extra_pp":0.009674,"label":"4 NC2_W3_gap → 90-88-89"},{"spy":5,"condition":"C1_exact","followers":[88,87,89],"events":10466,"k2_pct":0.033537,"base_k2_pct":0.027376,"k3_pct":0.003535,"base_k3_pct":0.002184,"k2_extra_pp":0.006161,"label":"5 C1_exact → 88-87-89"},{"spy":5,"condition":"C2_exact","followers":[55,50,72],"events":2874,"k2_pct":0.20007,"base_k2_pct":0.163495,"k3_pct":0.019137,"base_k3_pct":0.014936,"k2_extra_pp":0.036575,"label":"5 C2_exact → 55-50-72"},{"spy":5,"condition":"C3plus","followers":[4,55,56],"events":2121,"k2_pct":0.219708,"base_k2_pct":0.15901,"k3_pct":0.03206,"base_k3_pct":0.016047,"k2_extra_pp":0.060697,"label":"5 C3plus → 4-55-56"},{"spy":5,"condition":"NC2_W3_gap","followers":[90,89,88],"events":3052,"k2_pct":0.033093,"base_k2_pct":0.022501,"k3_pct":0.001311,"base_k3_pct":0.001774,"k2_extra_pp":0.010592,"label":"5 NC2_W3_gap → 90-89-88"},{"spy":5,"condition":"NC3_W5_gap","followers":[88,86,87],"events":4004,"k2_pct":0.043207,"base_k2_pct":0.034317,"k3_pct":0.003247,"base_k3_pct":0.002437,"k2_extra_pp":0.008889,"label":"5 NC3_W5_gap → 88-86-87"},{"spy":6,"condition":"NC2_W3_gap","followers":[90,87,88],"events":2239,"k2_pct":0.042876,"base_k2_pct":0.025056,"k3_pct":0.00402,"base_k3_pct":0.001813,"k2_extra_pp":0.017821,"label":"6 NC2_W3_gap → 90-87-88"},{"spy":6,"condition":"NC3_W5_gap","followers":[90,9,36],"events":2713,"k2_pct":0.087357,"base_k2_pct":0.066958,"k3_pct":0.004423,"base_k3_pct":0.001989,"k2_extra_pp":0.020399,"label":"6 NC3_W5_gap → 90-9-36"},{"spy":7,"condition":"C1_exact","followers":[69,89,4],"events":8992,"k2_pct":0.077625,"base_k2_pct":0.068518,"k3_pct":0.002002,"base_k3_pct":0.001716,"k2_extra_pp":0.009107,"label":"7 C1_exact → 69-89-4"},{"spy":7,"condition":"NC2_W3_gap","followers":[88,90,85],"events":2252,"k2_pct":0.038188,"base_k2_pct":0.024373,"k3_pct":0.000888,"base_k3_pct":0.001501,"k2_extra_pp":0.013815,"label":"7 NC2_W3_gap → 88-90-85"},{"spy":7,"condition":"NC2_W5","followers":[8,15,25],"events":7283,"k2_pct":0.206371,"base_k2_pct":0.187712,"k3_pct":0.022793,"base_k3_pct":0.019167,"k2_extra_pp":0.018659,"label":"7 NC2_W5 → 8-15-25"},{"spy":7,"condition":"NC3_W5_gap","followers":[88,90,85],"events":2811,"k2_pct":0.03095,"base_k2_pct":0.024373,"k3_pct":0.000356,"base_k3_pct":0.001501,"k2_extra_pp":0.006577,"label":"7 NC3_W5_gap → 88-90-85"},{"spy":8,"condition":"C1_exact","followers":[87,90,89],"events":9169,"k2_pct":0.027593,"base_k2_pct":0.022638,"k3_pct":0.002181,"base_k3_pct":0.001755,"k2_extra_pp":0.004955,"label":"8 C1_exact → 87-90-89"},{"spy":8,"condition":"C2_exact","followers":[29,64,46],"events":2217,"k2_pct":0.156518,"base_k2_pct":0.128183,"k3_pct":0.016689,"base_k3_pct":0.010003,"k2_extra_pp":0.028335,"label":"8 C2_exact → 29-64-46"},{"spy":8,"condition":"NC2_W3_gap","followers":[90,89,83],"events":2298,"k2_pct":0.032202,"base_k2_pct":0.021624,"k3_pct":0.002176,"base_k3_pct":0.00156,"k2_extra_pp":0.010578,"label":"8 NC2_W3_gap → 90-89-83"},{"spy":9,"condition":"C1_exact","followers":[90,62,89],"events":8983,"k2_pct":0.025938,"base_k2_pct":0.023301,"k3_pct":0.001558,"base_k3_pct":0.001677,"k2_extra_pp":0.002637,"label":"9 C1_exact → 90-62-89"},{"spy":9,"condition":"C3plus","followers":[8,25,67],"events":1795,"k2_pct":0.222284,"base_k2_pct":0.159147,"k3_pct":0.028969,"base_k3_pct":0.014994,"k2_extra_pp":0.063137,"label":"9 C3plus → 8-25-67"},{"spy":9,"condition":"NC2_W3_gap","followers":[88,90,89],"events":2245,"k2_pct":0.035189,"base_k2_pct":0.022501,"k3_pct":0.002673,"base_k3_pct":0.001774,"k2_extra_pp":0.012688,"label":"9 NC2_W3_gap → 88-90-89"},{"spy":9,"condition":"NC3_W5_gap","followers":[28,35,8],"events":2869,"k2_pct":0.189265,"base_k2_pct":0.157801,"k3_pct":0.016731,"base_k3_pct":0.014487,"k2_extra_pp":0.031463,"label":"9 NC3_W5_gap → 28-35-8"},{"spy":10,"condition":"C1_exact","followers":[5,90,89],"events":10367,"k2_pct":0.028649,"base_k2_pct":0.022228,"k3_pct":0.002797,"base_k3_pct":0.001813,"k2_extra_pp":0.00642,"label":"10 C1_exact → 5-90-89"},{"spy":10,"condition":"C2_exact","followers":[5,87,77],"events":2912,"k2_pct":0.103022,"base_k2_pct":0.080724,"k3_pct":0.004808,"base_k3_pct":0.003315,"k2_extra_pp":0.022298,"label":"10 C2_exact → 5-87-77"},{"spy":10,"condition":"C3plus","followers":[9,5,55],"events":2086,"k2_pct":0.243528,"base_k2_pct":0.186094,"k3_pct":0.03164,"base_k3_pct":0.019245,"k2_extra_pp":0.057435,"label":"10 C3plus → 9-5-55"},{"spy":10,"condition":"NC2_W3_gap","followers":[90,89,50],"events":2946,"k2_pct":0.035302,"base_k2_pct":0.023164,"k3_pct":0.002037,"base_k3_pct":0.001833,"k2_extra_pp":0.012138,"label":"10 NC2_W3_gap → 90-89-50"},{"spy":10,"condition":"NC2_W5","followers":[5,1,23],"events":8968,"k2_pct":0.191793,"base_k2_pct":0.173244,"k3_pct":0.021521,"base_k3_pct":0.017256,"k2_extra_pp":0.018549,"label":"10 NC2_W5 → 5-1-23"},{"spy":10,"condition":"NC3_W5_gap","followers":[11,78,77],"events":4066,"k2_pct":0.132563,"base_k2_pct":0.11471,"k3_pct":0.012051,"base_k3_pct":0.009847,"k2_extra_pp":0.017853,"label":"10 NC3_W5_gap → 11-78-77"},{"spy":11,"condition":"C1_exact","followers":[90,88,86],"events":8954,"k2_pct":0.030601,"base_k2_pct":0.024763,"k3_pct":0.001899,"base_k3_pct":0.001599,"k2_extra_pp":0.005838,"label":"11 C1_exact → 90-88-86"},{"spy":11,"condition":"NC2_W3_gap","followers":[90,88,87],"events":2245,"k2_pct":0.035189,"base_k2_pct":0.025056,"k3_pct":0.003118,"base_k3_pct":0.001813,"k2_extra_pp":0.010134,"label":"11 NC2_W3_gap → 90-88-87"},{"spy":12,"condition":"C1_exact","followers":[89,86,90],"events":9030,"k2_pct":0.027353,"base_k2_pct":0.022521,"k3_pct":0.002658,"base_k3_pct":0.001911,"k2_extra_pp":0.004833,"label":"12 C1_exact → 89-86-90"},{"spy":12,"condition":"NC2_W3_gap","followers":[89,90,87],"events":2331,"k2_pct":0.031317,"base_k2_pct":0.022638,"k3_pct":0.002145,"base_k3_pct":0.001755,"k2_extra_pp":0.008679,"label":"12 NC2_W3_gap → 89-90-87"},{"spy":12,"condition":"NC2_W5","followers":[14,17,59],"events":7340,"k2_pct":0.16049,"base_k2_pct":0.147233,"k3_pct":0.013624,"base_k3_pct":0.012869,"k2_extra_pp":0.013257,"label":"12 NC2_W5 → 14-17-59"},{"spy":12,"condition":"NC3_W5_gap","followers":[89,90,86],"events":2897,"k2_pct":0.032447,"base_k2_pct":0.022521,"k3_pct":0.002761,"base_k3_pct":0.001911,"k2_extra_pp":0.009927,"label":"12 NC3_W5_gap → 89-90-86"},{"spy":13,"condition":"C1_exact","followers":[89,90,50],"events":9033,"k2_pct":0.027787,"base_k2_pct":0.023164,"k3_pct":0.00155,"base_k3_pct":0.001833,"k2_extra_pp":0.004623,"label":"13 C1_exact → 89-90-50"},{"spy":13,"condition":"C2_exact","followers":[43,61,70],"events":2104,"k2_pct":0.154468,"base_k2_pct":0.124537,"k3_pct":0.015684,"base_k3_pct":0.010295,"k2_extra_pp":0.029931,"label":"13 C2_exact → 43-61-70"},{"spy":13,"condition":"NC2_W3_gap","followers":[89,90,86],"events":2275,"k2_pct":0.037363,"base_k2_pct":0.022521,"k3_pct":0.005714,"base_k3_pct":0.001911,"k2_extra_pp":0.014842,"label":"13 NC2_W3_gap → 89-90-86"},{"spy":13,"condition":"NC3_W5_gap","followers":[89,86,82],"events":2748,"k2_pct":0.045488,"base_k2_pct":0.033693,"k3_pct":0.003639,"base_k3_pct":0.002008,"k2_extra_pp":0.011794,"label":"13 NC3_W5_gap → 89-86-82"},{"spy":14,"condition":"C1_exact","followers":[90,89,88],"events":9055,"k2_pct":0.024406,"base_k2_pct":0.022501,"k3_pct":0.001877,"base_k3_pct":0.001774,"k2_extra_pp":0.001905,"label":"14 C1_exact → 90-89-88"},{"spy":14,"condition":"C2_exact","followers":[2,40,76],"events":2201,"k2_pct":0.170831,"base_k2_pct":0.144952,"k3_pct":0.015902,"base_k3_pct":0.012538,"k2_extra_pp":0.02588,"label":"14 C2_exact → 2-40-76"},{"spy":14,"condition":"NC2_W3_gap","followers":[89,90,88],"events":2325,"k2_pct":0.034839,"base_k2_pct":0.022501,"k3_pct":0.003441,"base_k3_pct":0.001774,"k2_extra_pp":0.012337,"label":"14 NC2_W3_gap → 89-90-88"},{"spy":14,"condition":"NC3_W5_gap","followers":[89,90,76],"events":2996,"k2_pct":0.03271,"base_k2_pct":0.022638,"k3_pct":0.00267,"base_k3_pct":0.001794,"k2_extra_pp":0.010073,"label":"14 NC3_W5_gap → 89-90-76"},{"spy":15,"condition":"C1_exact","followers":[10,89,88],"events":10366,"k2_pct":0.035597,"base_k2_pct":0.02917,"k3_pct":0.004148,"base_k3_pct":0.002476,"k2_extra_pp":0.006427,"label":"15 C1_exact → 10-89-88"},{"spy":15,"condition":"C2_exact","followers":[10,5,52],"events":2961,"k2_pct":0.229314,"base_k2_pct":0.182233,"k3_pct":0.029044,"base_k3_pct":0.02059,"k2_extra_pp":0.047081,"label":"15 C2_exact → 10-5-52"},{"spy":15,"condition":"C3plus","followers":[14,28,55],"events":2092,"k2_pct":0.228489,"base_k2_pct":0.158152,"k3_pct":0.030593,"base_k3_pct":0.014273,"k2_extra_pp":0.070337,"label":"15 C3plus → 14-28-55"},{"spy":15,"condition":"NC2_W3_gap","followers":[89,10,90],"events":3041,"k2_pct":0.031897,"base_k2_pct":0.023398,"k3_pct":0.001644,"base_k3_pct":0.00156,"k2_extra_pp":0.008499,"label":"15 NC2_W3_gap → 89-10-90"},{"spy":15,"condition":"NC2_W5","followers":[10,16,82],"events":8903,"k2_pct":0.146018,"base_k2_pct":0.133779,"k3_pct":0.011681,"base_k3_pct":0.009769,"k2_extra_pp":0.012239,"label":"15 NC2_W5 → 10-16-82"},{"spy":15,"condition":"NC3_W5_gap","followers":[10,58,68],"events":4150,"k2_pct":0.173012,"base_k2_pct":0.154155,"k3_pct":0.020241,"base_k3_pct":0.014019,"k2_extra_pp":0.018857,"label":"15 NC3_W5_gap → 10-58-68"},{"spy":16,"condition":"C1_exact","followers":[88,90,59],"events":8991,"k2_pct":0.028362,"base_k2_pct":0.02451,"k3_pct":0.001891,"base_k3_pct":0.001638,"k2_extra_pp":0.003852,"label":"16 C1_exact → 88-90-59"},{"spy":16,"condition":"C3plus","followers":[15,10,54],"events":1905,"k2_pct":0.24252,"base_k2_pct":0.181473,"k3_pct":0.025197,"base_k3_pct":0.017646,"k2_extra_pp":0.061047,"label":"16 C3plus → 15-10-54"},{"spy":16,"condition":"NC2_W3_gap","followers":[89,90,88],"events":2264,"k2_pct":0.038869,"base_k2_pct":0.022501,"k3_pct":0.003092,"base_k3_pct":0.001774,"k2_extra_pp":0.016368,"label":"16 NC2_W3_gap → 89-90-88"},{"spy":16,"condition":"NC3_W5_gap","followers":[89,90,75],"events":2827,"k2_pct":0.034312,"base_k2_pct":0.022852,"k3_pct":0.003891,"base_k3_pct":0.002164,"k2_extra_pp":0.01146,"label":"16 NC3_W5_gap → 89-90-75"},{"spy":17,"condition":"C1_exact","followers":[90,86,88],"events":9072,"k2_pct":0.030093,"base_k2_pct":0.024763,"k3_pct":0.002315,"base_k3_pct":0.001599,"k2_extra_pp":0.005329,"label":"17 C1_exact → 90-86-88"},{"spy":17,"condition":"NC2_W3_gap","followers":[90,87,89],"events":2335,"k2_pct":0.035546,"base_k2_pct":0.022638,"k3_pct":0.003854,"base_k3_pct":0.001755,"k2_extra_pp":0.012908,"label":"17 NC2_W3_gap → 90-87-89"},{"spy":17,"condition":"NC3_W5_gap","followers":[87,76,89],"events":2823,"k2_pct":0.043216,"base_k2_pct":0.031178,"k3_pct":0.003188,"base_k3_pct":0.001969,"k2_extra_pp":0.012038,"label":"17 NC3_W5_gap → 87-76-89"},{"spy":18,"condition":"C1_exact","followers":[90,86,87],"events":8855,"k2_pct":0.033315,"base_k2_pct":0.027707,"k3_pct":0.001694,"base_k3_pct":0.001735,"k2_extra_pp":0.005607,"label":"18 C1_exact → 90-86-87"},{"spy":18,"condition":"NC2_W3_gap","followers":[90,88,89],"events":2203,"k2_pct":0.03586,"base_k2_pct":0.022501,"k3_pct":0.002724,"base_k3_pct":0.001774,"k2_extra_pp":0.013359,"label":"18 NC2_W3_gap → 90-88-89"},{"spy":18,"condition":"NC2_W5","followers":[16,11,44],"events":7007,"k2_pct":0.165121,"base_k2_pct":0.147955,"k3_pct":0.015413,"base_k3_pct":0.013395,"k2_extra_pp":0.017166,"label":"18 NC2_W5 → 16-11-44"},{"spy":18,"condition":"NC3_W5_gap","followers":[90,89,84],"events":2698,"k2_pct":0.032987,"base_k2_pct":0.022462,"k3_pct":0.002595,"base_k3_pct":0.00156,"k2_extra_pp":0.010525,"label":"18 NC3_W5_gap → 90-89-84"},{"spy":19,"condition":"C1_exact","followers":[89,85,90],"events":9037,"k2_pct":0.028771,"base_k2_pct":0.02215,"k3_pct":0.002434,"base_k3_pct":0.001618,"k2_extra_pp":0.00662,"label":"19 C1_exact → 89-85-90"},{"spy":19,"condition":"C2_exact","followers":[40,35,47],"events":2217,"k2_pct":0.198917,"base_k2_pct":0.165991,"k3_pct":0.023906,"base_k3_pct":0.01554,"k2_extra_pp":0.032927,"label":"19 C2_exact → 40-35-47"},{"spy":19,"condition":"NC2_W3_gap","followers":[89,90,86],"events":2243,"k2_pct":0.041016,"base_k2_pct":0.022521,"k3_pct":0.002675,"base_k3_pct":0.001911,"k2_extra_pp":0.018496,"label":"19 NC2_W3_gap → 89-90-86"},{"spy":19,"condition":"NC2_W5","followers":[2,17,23],"events":7202,"k2_pct":0.173007,"base_k2_pct":0.156163,"k3_pct":0.014996,"base_k3_pct":0.01439,"k2_extra_pp":0.016844,"label":"19 NC2_W5 → 2-17-23"},{"spy":19,"condition":"NC3_W5_gap","followers":[89,85,82],"events":2830,"k2_pct":0.044876,"base_k2_pct":0.036872,"k3_pct":0.004594,"base_k3_pct":0.001657,"k2_extra_pp":0.008005,"label":"19 NC3_W5_gap → 89-85-82"},{"spy":20,"condition":"C1_exact","followers":[15,90,87],"events":10384,"k2_pct":0.038424,"base_k2_pct":0.030028,"k3_pct":0.00183,"base_k3_pct":0.001618,"k2_extra_pp":0.008397,"label":"20 C1_exact → 15-90-87"},{"spy":20,"condition":"C2_exact","followers":[15,10,5],"events":3011,"k2_pct":0.272335,"base_k2_pct":0.212397,"k3_pct":0.034208,"base_k3_pct":0.024432,"k2_extra_pp":0.059938,"label":"20 C2_exact → 15-10-5"},{"spy":20,"condition":"C3plus","followers":[19,32,5],"events":2081,"k2_pct":0.219125,"base_k2_pct":0.166673,"k3_pct":0.027871,"base_k3_pct":0.016008,"k2_extra_pp":0.052452,"label":"20 C3plus → 19-32-5"},{"spy":20,"condition":"NC2_W3_gap","followers":[90,87,88],"events":3025,"k2_pct":0.035372,"base_k2_pct":0.025056,"k3_pct":0.004628,"base_k3_pct":0.001813,"k2_extra_pp":0.010316,"label":"20 NC2_W3_gap → 90-87-88"},{"spy":20,"condition":"NC3_W5_gap","followers":[10,5,15],"events":4194,"k2_pct":0.242012,"base_k2_pct":0.212397,"k3_pct":0.033143,"base_k3_pct":0.024432,"k2_extra_pp":0.029615,"label":"20 NC3_W5_gap → 10-5-15"},{"spy":21,"condition":"C1_exact","followers":[51,88,84],"events":8986,"k2_pct":0.051858,"base_k2_pct":0.04471,"k3_pct":0.003116,"base_k3_pct":0.002164,"k2_extra_pp":0.007148,"label":"21 C1_exact → 51-88-84"},{"spy":21,"condition":"C2_exact","followers":[40,12,25],"events":2145,"k2_pct":0.207925,"base_k2_pct":0.175428,"k3_pct":0.017249,"base_k3_pct":0.016593,"k2_extra_pp":0.032497,"label":"21 C2_exact → 40-12-25"},{"spy":21,"condition":"NC2_W3_gap","followers":[89,88,90],"events":2225,"k2_pct":0.034157,"base_k2_pct":0.022501,"k3_pct":0.003596,"base_k3_pct":0.001774,"k2_extra_pp":0.011656,"label":"21 NC2_W3_gap → 89-88-90"},{"spy":21,"condition":"NC3_W5_gap","followers":[89,87,90],"events":2761,"k2_pct":0.028613,"base_k2_pct":0.022638,"k3_pct":0.001449,"base_k3_pct":0.001755,"k2_extra_pp":0.005975,"label":"21 NC3_W5_gap → 89-87-90"},{"spy":22,"condition":"C2_exact","followers":[61,27,74],"events":2136,"k2_pct":0.13764,"base_k2_pct":0.120696,"k3_pct":0.010768,"base_k3_pct":0.008872,"k2_extra_pp":0.016945,"label":"22 C2_exact → 61-27-74"},{"spy":22,"condition":"C3plus","followers":[21,60,79],"events":1773,"k2_pct":0.168641,"base_k2_pct":0.122139,"k3_pct":0.01128,"base_k3_pct":0.00895,"k2_extra_pp":0.046502,"label":"22 C3plus → 21-60-79"},{"spy":22,"condition":"NC2_W3_gap","followers":[89,88,90],"events":2288,"k2_pct":0.034091,"base_k2_pct":0.022501,"k3_pct":0.002185,"base_k3_pct":0.001774,"k2_extra_pp":0.01159,"label":"22 NC2_W3_gap → 89-88-90"},{"spy":22,"condition":"NC3_W5_gap","followers":[88,83,89],"events":2760,"k2_pct":0.036957,"base_k2_pct":0.02642,"k3_pct":0.002536,"base_k3_pct":0.002067,"k2_extra_pp":0.010536,"label":"22 NC3_W5_gap → 88-83-89"},{"spy":23,"condition":"C1_exact","followers":[88,57,14],"events":9001,"k2_pct":0.083324,"base_k2_pct":0.075615,"k3_pct":0.003888,"base_k3_pct":0.002067,"k2_extra_pp":0.007709,"label":"23 C1_exact → 88-57-14"},{"spy":23,"condition":"C3plus","followers":[22,42,39],"events":1797,"k2_pct":0.194213,"base_k2_pct":0.136977,"k3_pct":0.025598,"base_k3_pct":0.011875,"k2_extra_pp":0.057236,"label":"23 C3plus → 22-42-39"},{"spy":23,"condition":"NC2_W3_gap","followers":[88,89,83],"events":2344,"k2_pct":0.037543,"base_k2_pct":0.02642,"k3_pct":0.001706,"base_k3_pct":0.002067,"k2_extra_pp":0.011122,"label":"23 NC2_W3_gap → 88-89-83"},{"spy":24,"condition":"C1_exact","followers":[88,69,87],"events":8991,"k2_pct":0.037482,"base_k2_pct":0.0342,"k3_pct":0.002781,"base_k3_pct":0.002769,"k2_extra_pp":0.003282,"label":"24 C1_exact → 88-69-87"},{"spy":24,"condition":"C3plus","followers":[9,60,8],"events":581,"k2_pct":0.203098,"base_k2_pct":0.148169,"k3_pct":0.018933,"base_k3_pct":0.012811,"k2_extra_pp":0.054929,"label":"24 C3plus → 9-60-8"},{"spy":24,"condition":"NC2_W3_gap","followers":[87,3,13],"events":2005,"k2_pct":0.099252,"base_k2_pct":0.08474,"k3_pct":0.00399,"base_k3_pct":0.003861,"k2_extra_pp":0.014511,"label":"24 NC2_W3_gap → 87-3-13"},{"spy":24,"condition":"NC3_W5_gap","followers":[16,57,45],"events":2370,"k2_pct":0.18481,"base_k2_pct":0.157567,"k3_pct":0.016034,"base_k3_pct":0.014468,"k2_extra_pp":0.027243,"label":"24 NC3_W5_gap → 16-57-45"},{"spy":25,"condition":"C1_exact","followers":[20,90,36],"events":10461,"k2_pct":0.096931,"base_k2_pct":0.079105,"k3_pct":0.002103,"base_k3_pct":0.001657,"k2_extra_pp":0.017826,"label":"25 C1_exact → 20-90-36"},{"spy":25,"condition":"C2_exact","followers":[20,15,10],"events":2816,"k2_pct":0.278409,"base_k2_pct":0.2123,"k3_pct":0.037642,"base_k3_pct":0.023476,"k2_extra_pp":0.066109,"label":"25 C2_exact → 20-15-10"},{"spy":25,"condition":"C3plus","followers":[20,10,80],"events":1014,"k2_pct":0.20217,"base_k2_pct":0.156709,"k3_pct":0.017751,"base_k3_pct":0.01361,"k2_extra_pp":0.04546,"label":"25 C3plus → 20-10-80"},{"spy":25,"condition":"NC2_W3_gap","followers":[20,90,24],"events":2795,"k2_pct":0.100894,"base_k2_pct":0.080314,"k3_pct":0.002862,"base_k3_pct":0.001911,"k2_extra_pp":0.02058,"label":"25 NC2_W3_gap → 20-90-24"},{"spy":25,"condition":"NC2_W5","followers":[20,46,6],"events":9189,"k2_pct":0.183371,"base_k2_pct":0.163963,"k3_pct":0.019262,"base_k3_pct":0.015501,"k2_extra_pp":0.019409,"label":"25 NC2_W5 → 20-46-6"},{"spy":25,"condition":"NC3_W5_gap","followers":[20,15,57],"events":3872,"k2_pct":0.217459,"base_k2_pct":0.183383,"k3_pct":0.019628,"base_k3_pct":0.017763,"k2_extra_pp":0.034075,"label":"25 NC3_W5_gap → 20-15-57"},{"spy":26,"condition":"NC2_W3_gap","followers":[19,27,14],"events":2006,"k2_pct":0.185942,"base_k2_pct":0.146122,"k3_pct":0.021436,"base_k3_pct":0.012245,"k2_extra_pp":0.03982,"label":"26 NC2_W3_gap → 19-27-14"},{"spy":27,"condition":"C1_exact","followers":[7,40,88],"events":8833,"k2_pct":0.098268,"base_k2_pct":0.088465,"k3_pct":0.003849,"base_k3_pct":0.00232,"k2_extra_pp":0.009803,"label":"27 C1_exact → 7-40-88"},{"spy":28,"condition":"C3plus","followers":[63,39,60],"events":588,"k2_pct":0.192177,"base_k2_pct":0.127189,"k3_pct":0.015306,"base_k3_pct":0.009691,"k2_extra_pp":0.064988,"label":"28 C3plus → 63-39-60"},{"spy":28,"condition":"NC2_W3_gap","followers":[63,52,27],"events":2003,"k2_pct":0.137294,"base_k2_pct":0.12479,"k3_pct":0.009985,"base_k3_pct":0.009203,"k2_extra_pp":0.012504,"label":"28 NC2_W3_gap → 63-52-27"},{"spy":29,"condition":"C1_exact","followers":[81,8,77],"events":9051,"k2_pct":0.115236,"base_k2_pct":0.10576,"k3_pct":0.008618,"base_k3_pct":0.008072,"k2_extra_pp":0.009476,"label":"29 C1_exact → 81-8-77"},{"spy":29,"condition":"C2_exact","followers":[84,59,54],"events":2059,"k2_pct":0.114133,"base_k2_pct":0.090493,"k3_pct":0.008742,"base_k3_pct":0.005128,"k2_extra_pp":0.023641,"label":"29 C2_exact → 84-59-54"},{"spy":29,"condition":"C3plus","followers":[65,67,78],"events":602,"k2_pct":0.156146,"base_k2_pct":0.113462,"k3_pct":0.016611,"base_k3_pct":0.008033,"k2_extra_pp":0.042684,"label":"29 C3plus → 65-67-78"},{"spy":29,"condition":"NC2_W3_gap","followers":[81,32,42],"events":2124,"k2_pct":0.134181,"base_k2_pct":0.103518,"k3_pct":0.012712,"base_k3_pct":0.007097,"k2_extra_pp":0.030663,"label":"29 NC2_W3_gap → 81-32-42"},{"spy":29,"condition":"NC2_W5","followers":[89,18,81],"events":7428,"k2_pct":0.058158,"base_k2_pct":0.053816,"k3_pct":0.002423,"base_k3_pct":0.002028,"k2_extra_pp":0.004342,"label":"29 NC2_W5 → 89-18-81"},{"spy":30,"condition":"C2_exact","followers":[25,20,1],"events":2772,"k2_pct":0.24531,"base_k2_pct":0.184729,"k3_pct":0.029582,"base_k3_pct":0.019187,"k2_extra_pp":0.060581,"label":"30 C2_exact → 25-20-1"},{"spy":30,"condition":"C3plus","followers":[20,25,10],"events":982,"k2_pct":0.271894,"base_k2_pct":0.200815,"k3_pct":0.026477,"base_k3_pct":0.021663,"k2_extra_pp":0.071079,"label":"30 C3plus → 20-25-10"},{"spy":30,"condition":"NC2_W3_gap","followers":[25,2,10],"events":2823,"k2_pct":0.211477,"base_k2_pct":0.181317,"k3_pct":0.024088,"base_k3_pct":0.018153,"k2_extra_pp":0.030161,"label":"30 NC2_W3_gap → 25-2-10"},{"spy":30,"condition":"NC3_W5_gap","followers":[10,25,15],"events":3866,"k2_pct":0.219607,"base_k2_pct":0.201069,"k3_pct":0.02328,"base_k3_pct":0.021019,"k2_extra_pp":0.018538,"label":"30 NC3_W5_gap → 10-25-15"},{"spy":31,"condition":"NC3_W5_gap","followers":[19,69,81],"events":2473,"k2_pct":0.130611,"base_k2_pct":0.112857,"k3_pct":0.009705,"base_k3_pct":0.007546,"k2_extra_pp":0.017753,"label":"31 NC3_W5_gap → 19-69-81"},{"spy":32,"condition":"C2_exact","followers":[35,33,13],"events":2012,"k2_pct":0.183897,"base_k2_pct":0.156202,"k3_pct":0.016899,"base_k3_pct":0.014721,"k2_extra_pp":0.027694,"label":"32 C2_exact → 35-33-13"},{"spy":32,"condition":"NC3_W5_gap","followers":[56,1,47],"events":2386,"k2_pct":0.162196,"base_k2_pct":0.135027,"k3_pct":0.021794,"base_k3_pct":0.012031,"k2_extra_pp":0.027169,"label":"32 NC3_W5_gap → 56-1-47"},{"spy":33,"condition":"C2_exact","followers":[26,29,87],"events":2043,"k2_pct":0.083211,"base_k2_pct":0.071579,"k3_pct":0.004895,"base_k3_pct":0.002925,"k2_extra_pp":0.011632,"label":"33 C2_exact → 26-29-87"},{"spy":33,"condition":"C3plus","followers":[39,67,18],"events":639,"k2_pct":0.173709,"base_k2_pct":0.135359,"k3_pct":0.017214,"base_k3_pct":0.011699,"k2_extra_pp":0.03835,"label":"33 C3plus → 39-67-18"},{"spy":34,"condition":"C1_exact","followers":[58,77,62],"events":8895,"k2_pct":0.1267,"base_k2_pct":0.115841,"k3_pct":0.009556,"base_k3_pct":0.008014,"k2_extra_pp":0.01086,"label":"34 C1_exact → 58-77-62"},{"spy":34,"condition":"C2_exact","followers":[13,30,18],"events":2008,"k2_pct":0.191733,"base_k2_pct":0.16406,"k3_pct":0.016932,"base_k3_pct":0.016203,"k2_extra_pp":0.027673,"label":"34 C2_exact → 13-30-18"},{"spy":35,"condition":"C1_exact","followers":[30,85,48],"events":10426,"k2_pct":0.123921,"base_k2_pct":0.098019,"k3_pct":0.007865,"base_k3_pct":0.005557,"k2_extra_pp":0.025902,"label":"35 C1_exact → 30-85-48"},{"spy":35,"condition":"C2_exact","followers":[30,25,4],"events":2823,"k2_pct":0.222813,"base_k2_pct":0.176286,"k3_pct":0.023025,"base_k3_pct":0.018777,"k2_extra_pp":0.046527,"label":"35 C2_exact → 30-25-4"},{"spy":35,"condition":"C3plus","followers":[30,15,29],"events":1050,"k2_pct":0.222857,"base_k2_pct":0.173615,"k3_pct":0.026667,"base_k3_pct":0.016574,"k2_extra_pp":0.049243,"label":"35 C3plus → 30-15-29"},{"spy":35,"condition":"NC2_W3_gap","followers":[30,8,85],"events":2848,"k2_pct":0.133427,"base_k2_pct":0.108295,"k3_pct":0.005969,"base_k3_pct":0.006123,"k2_extra_pp":0.025132,"label":"35 NC2_W3_gap → 30-8-85"},{"spy":35,"condition":"NC2_W5","followers":[30,25,12],"events":9029,"k2_pct":0.19094,"base_k2_pct":0.175175,"k3_pct":0.021043,"base_k3_pct":0.017705,"k2_extra_pp":0.015766,"label":"35 NC2_W5 → 30-25-12"},{"spy":35,"condition":"NC3_W5_gap","followers":[30,49,64],"events":3871,"k2_pct":0.16404,"base_k2_pct":0.143762,"k3_pct":0.016533,"base_k3_pct":0.012128,"k2_extra_pp":0.020278,"label":"35 NC3_W5_gap → 30-49-64"},{"spy":36,"condition":"C2_exact","followers":[31,33,25],"events":2029,"k2_pct":0.184327,"base_k2_pct":0.146902,"k3_pct":0.015278,"base_k3_pct":0.012811,"k2_extra_pp":0.037426,"label":"36 C2_exact → 31-33-25"},{"spy":37,"condition":"C3plus","followers":[54,32,24],"events":623,"k2_pct":0.168539,"base_k2_pct":0.126389,"k3_pct":0.014446,"base_k3_pct":0.010763,"k2_extra_pp":0.04215,"label":"37 C3plus → 54-32-24"},{"spy":37,"condition":"NC3_W5_gap","followers":[58,3,67],"events":2514,"k2_pct":0.153142,"base_k2_pct":0.133721,"k3_pct":0.016706,"base_k3_pct":0.010919,"k2_extra_pp":0.019422,"label":"37 NC3_W5_gap → 58-3-67"},{"spy":38,"condition":"C3plus","followers":[31,72,14],"events":661,"k2_pct":0.175492,"base_k2_pct":0.133292,"k3_pct":0.022693,"base_k3_pct":0.011836,"k2_extra_pp":0.0422,"label":"38 C3plus → 31-72-14"},{"spy":38,"condition":"NC3_W5_gap","followers":[48,42,69],"events":2454,"k2_pct":0.144254,"base_k2_pct":0.124244,"k3_pct":0.016707,"base_k3_pct":0.009691,"k2_extra_pp":0.02001,"label":"38 NC3_W5_gap → 48-42-69"},{"spy":39,"condition":"C3plus","followers":[88,63,10],"events":647,"k2_pct":0.120556,"base_k2_pct":0.087178,"k3_pct":0.004637,"base_k3_pct":0.002535,"k2_extra_pp":0.033379,"label":"39 C3plus → 88-63-10"},{"spy":39,"condition":"NC2_W5","followers":[81,25,79],"events":7274,"k2_pct":0.120291,"base_k2_pct":0.109192,"k3_pct":0.010311,"base_k3_pct":0.008579,"k2_extra_pp":0.0111,"label":"39 NC2_W5 → 81-25-79"},{"spy":40,"condition":"C2_exact","followers":[35,30,25],"events":2780,"k2_pct":0.228777,"base_k2_pct":0.180888,"k3_pct":0.02518,"base_k3_pct":0.018582,"k2_extra_pp":0.047889,"label":"40 C2_exact → 35-30-25"},{"spy":40,"condition":"NC2_W3_gap","followers":[35,32,43],"events":2866,"k2_pct":0.175157,"base_k2_pct":0.145537,"k3_pct":0.016399,"base_k3_pct":0.012577,"k2_extra_pp":0.02962,"label":"40 NC2_W3_gap → 35-32-43"},{"spy":40,"condition":"NC3_W5_gap","followers":[35,30,25],"events":3913,"k2_pct":0.198824,"base_k2_pct":0.180888,"k3_pct":0.020445,"base_k3_pct":0.018582,"k2_extra_pp":0.017937,"label":"40 NC3_W5_gap → 35-30-25"},{"spy":41,"condition":"C2_exact","followers":[78,6,13],"events":2034,"k2_pct":0.160275,"base_k2_pct":0.134267,"k3_pct":0.017207,"base_k3_pct":0.010217,"k2_extra_pp":0.026009,"label":"41 C2_exact → 78-6-13"},{"spy":41,"condition":"NC2_W3_gap","followers":[46,36,88],"events":2078,"k2_pct":0.085659,"base_k2_pct":0.06998,"k3_pct":0.004812,"base_k3_pct":0.002457,"k2_extra_pp":0.015679,"label":"41 NC2_W3_gap → 46-36-88"},{"spy":41,"condition":"NC3_W5_gap","followers":[73,6,42],"events":2515,"k2_pct":0.154672,"base_k2_pct":0.130776,"k3_pct":0.012326,"base_k3_pct":0.011621,"k2_extra_pp":0.023896,"label":"41 NC3_W5_gap → 73-6-42"},{"spy":42,"condition":"C3plus","followers":[27,47,56],"events":590,"k2_pct":0.159322,"base_k2_pct":0.12598,"k3_pct":0.023729,"base_k3_pct":0.009535,"k2_extra_pp":0.033342,"label":"42 C3plus → 27-47-56"},{"spy":42,"condition":"NC2_W3_gap","followers":[66,72,19],"events":2046,"k2_pct":0.154448,"base_k2_pct":0.134559,"k3_pct":0.012708,"base_k3_pct":0.0109,"k2_extra_pp":0.019889,"label":"42 NC2_W3_gap → 66-72-19"},{"spy":44,"condition":"C2_exact","followers":[67,77,43],"events":2023,"k2_pct":0.148295,"base_k2_pct":0.118531,"k3_pct":0.009886,"base_k3_pct":0.008813,"k2_extra_pp":0.029763,"label":"44 C2_exact → 67-77-43"},{"spy":44,"condition":"NC2_W3_gap","followers":[6,15,66],"events":2058,"k2_pct":0.192906,"base_k2_pct":0.16213,"k3_pct":0.01895,"base_k3_pct":0.015423,"k2_extra_pp":0.030776,"label":"44 NC2_W3_gap → 6-15-66"},{"spy":44,"condition":"NC3_W5_gap","followers":[15,73,66],"events":2619,"k2_pct":0.169912,"base_k2_pct":0.14854,"k3_pct":0.017946,"base_k3_pct":0.012284,"k2_extra_pp":0.021373,"label":"44 NC3_W5_gap → 15-73-66"},{"spy":45,"condition":"C1_exact","followers":[40,35,90],"events":10461,"k2_pct":0.105248,"base_k2_pct":0.087626,"k3_pct":0.002485,"base_k3_pct":0.00193,"k2_extra_pp":0.017622,"label":"45 C1_exact → 40-35-90"},{"spy":45,"condition":"C2_exact","followers":[40,35,30],"events":2859,"k2_pct":0.23015,"base_k2_pct":0.181999,"k3_pct":0.026583,"base_k3_pct":0.018524,"k2_extra_pp":0.048151,"label":"45 C2_exact → 40-35-30"},{"spy":45,"condition":"C3plus","followers":[40,15,54],"events":1021,"k2_pct":0.226249,"base_k2_pct":0.173849,"k3_pct":0.022527,"base_k3_pct":0.017295,"k2_extra_pp":0.0524,"label":"45 C3plus → 40-15-54"},{"spy":45,"condition":"NC2_W3_gap","followers":[40,30,73],"events":2880,"k2_pct":0.191319,"base_k2_pct":0.156846,"k3_pct":0.01875,"base_k3_pct":0.013044,"k2_extra_pp":0.034474,"label":"45 NC2_W3_gap → 40-30-73"},{"spy":45,"condition":"NC2_W5","followers":[35,40,42],"events":9192,"k2_pct":0.174826,"base_k2_pct":0.164431,"k3_pct":0.017624,"base_k3_pct":0.015228,"k2_extra_pp":0.010395,"label":"45 NC2_W5 → 35-40-42"},{"spy":45,"condition":"NC3_W5_gap","followers":[35,40,77],"events":3919,"k2_pct":0.170196,"base_k2_pct":0.152634,"k3_pct":0.016076,"base_k3_pct":0.013863,"k2_extra_pp":0.017562,"label":"45 NC3_W5_gap → 35-40-77"},{"spy":46,"condition":"C3plus","followers":[86,68,34],"events":622,"k2_pct":0.114148,"base_k2_pct":0.077409,"k3_pct":0.012862,"base_k3_pct":0.003841,"k2_extra_pp":0.036739,"label":"46 C3plus → 86-68-34"},{"spy":46,"condition":"NC2_W5","followers":[11,22,21],"events":7241,"k2_pct":0.170142,"base_k2_pct":0.153161,"k3_pct":0.018368,"base_k3_pct":0.014019,"k2_extra_pp":0.016982,"label":"46 NC2_W5 → 11-22-21"},{"spy":48,"condition":"NC2_W3_gap","followers":[86,84,88],"events":1987,"k2_pct":0.051334,"base_k2_pct":0.038315,"k3_pct":0.004529,"base_k3_pct":0.002379,"k2_extra_pp":0.013019,"label":"48 NC2_W3_gap → 86-84-88"},{"spy":48,"condition":"NC3_W5_gap","followers":[19,55,34],"events":2408,"k2_pct":0.190199,"base_k2_pct":0.15784,"k3_pct":0.013704,"base_k3_pct":0.014429,"k2_extra_pp":0.032359,"label":"48 NC3_W5_gap → 19-55-34"},{"spy":49,"condition":"NC2_W3_gap","followers":[15,81,42],"events":2062,"k2_pct":0.164403,"base_k2_pct":0.128008,"k3_pct":0.008244,"base_k3_pct":0.008774,"k2_extra_pp":0.036396,"label":"49 NC2_W3_gap → 15-81-42"},{"spy":49,"condition":"NC3_W5_gap","followers":[89,46,81],"events":2466,"k2_pct":0.064477,"base_k2_pct":0.050111,"k3_pct":0.002028,"base_k3_pct":0.001618,"k2_extra_pp":0.014366,"label":"49 NC3_W5_gap → 89-46-81"},{"spy":50,"condition":"C1_exact","followers":[45,39,81],"events":10459,"k2_pct":0.151544,"base_k2_pct":0.121573,"k3_pct":0.010995,"base_k3_pct":0.008131,"k2_extra_pp":0.029971,"label":"50 C1_exact → 45-39-81"},{"spy":50,"condition":"C2_exact","followers":[45,40,18],"events":2875,"k2_pct":0.241391,"base_k2_pct":0.174395,"k3_pct":0.027478,"base_k3_pct":0.018251,"k2_extra_pp":0.066997,"label":"50 C2_exact → 45-40-18"},{"spy":50,"condition":"C3plus","followers":[35,4,40],"events":1024,"k2_pct":0.222656,"base_k2_pct":0.177183,"k3_pct":0.022461,"base_k3_pct":0.018836,"k2_extra_pp":0.045473,"label":"50 C3plus → 35-4-40"},{"spy":50,"condition":"NC2_W3_gap","followers":[45,39,25],"events":2848,"k2_pct":0.202949,"base_k2_pct":0.166244,"k3_pct":0.019663,"base_k3_pct":0.01595,"k2_extra_pp":0.036705,"label":"50 NC2_W3_gap → 45-39-25"},{"spy":50,"condition":"NC2_W5","followers":[45,40,35],"events":9152,"k2_pct":0.200066,"base_k2_pct":0.184222,"k3_pct":0.019996,"base_k3_pct":0.019206,"k2_extra_pp":0.015844,"label":"50 NC2_W5 → 45-40-35"},{"spy":50,"condition":"NC3_W5_gap","followers":[45,40,20],"events":3920,"k2_pct":0.229082,"base_k2_pct":0.19518,"k3_pct":0.029082,"base_k3_pct":0.019109,"k2_extra_pp":0.033902,"label":"50 NC3_W5_gap → 45-40-20"},{"spy":51,"condition":"NC2_W5","followers":[63,45,66],"events":7369,"k2_pct":0.162437,"base_k2_pct":0.143899,"k3_pct":0.018727,"base_k3_pct":0.012908,"k2_extra_pp":0.018538,"label":"51 NC2_W5 → 63-45-66"},{"spy":52,"condition":"NC2_W3_gap","followers":[5,8,1],"events":2045,"k2_pct":0.213692,"base_k2_pct":0.17611,"k3_pct":0.019071,"base_k3_pct":0.017022,"k2_extra_pp":0.037581,"label":"52 NC2_W3_gap → 5-8-1"},{"spy":53,"condition":"C2_exact","followers":[82,3,83],"events":2032,"k2_pct":0.103839,"base_k2_pct":0.082459,"k3_pct":0.007382,"base_k3_pct":0.006259,"k2_extra_pp":0.021379,"label":"53 C2_exact → 82-3-83"},{"spy":54,"condition":"C2_exact","followers":[85,66,52],"events":2029,"k2_pct":0.101528,"base_k2_pct":0.083532,"k3_pct":0.007886,"base_k3_pct":0.004543,"k2_extra_pp":0.017996,"label":"54 C2_exact → 85-66-52"},{"spy":54,"condition":"NC2_W3_gap","followers":[84,70,71],"events":2025,"k2_pct":0.108642,"base_k2_pct":0.087451,"k3_pct":0.003951,"base_k3_pct":0.004387,"k2_extra_pp":0.021191,"label":"54 NC2_W3_gap → 84-70-71"},{"spy":54,"condition":"NC3_W5_gap","followers":[48,16,51],"events":2502,"k2_pct":0.156675,"base_k2_pct":0.1361,"k3_pct":0.013589,"base_k3_pct":0.012148,"k2_extra_pp":0.020575,"label":"54 NC3_W5_gap → 48-16-51"},{"spy":55,"condition":"C2_exact","followers":[50,45,42],"events":2906,"k2_pct":0.21989,"base_k2_pct":0.165737,"k3_pct":0.0234,"base_k3_pct":0.016086,"k2_extra_pp":0.054153,"label":"55 C2_exact → 50-45-42"},{"spy":55,"condition":"C3plus","followers":[45,50,40],"events":1109,"k2_pct":0.228133,"base_k2_pct":0.184534,"k3_pct":0.019838,"base_k3_pct":0.017978,"k2_extra_pp":0.0436,"label":"55 C3plus → 45-50-40"},{"spy":55,"condition":"NC3_W5_gap","followers":[50,78,45],"events":4126,"k2_pct":0.167232,"base_k2_pct":0.149982,"k3_pct":0.016723,"base_k3_pct":0.012811,"k2_extra_pp":0.01725,"label":"55 NC3_W5_gap → 50-78-45"},{"spy":56,"condition":"C2_exact","followers":[52,61,47],"events":2083,"k2_pct":0.151224,"base_k2_pct":0.125356,"k3_pct":0.010082,"base_k3_pct":0.009769,"k2_extra_pp":0.025868,"label":"56 C2_exact → 52-61-47"},{"spy":56,"condition":"NC3_W5_gap","followers":[55,21,4],"events":2522,"k2_pct":0.191118,"base_k2_pct":0.167824,"k3_pct":0.021015,"base_k3_pct":0.016379,"k2_extra_pp":0.023295,"label":"56 NC3_W5_gap → 55-21-4"},{"spy":57,"condition":"C2_exact","followers":[55,87,15],"events":2098,"k2_pct":0.133937,"base_k2_pct":0.108509,"k3_pct":0.003813,"base_k3_pct":0.004036,"k2_extra_pp":0.025428,"label":"57 C2_exact → 55-87-15"},{"spy":57,"condition":"NC2_W3_gap","followers":[77,64,81],"events":1992,"k2_pct":0.121988,"base_k2_pct":0.095777,"k3_pct":0.01004,"base_k3_pct":0.006649,"k2_extra_pp":0.026211,"label":"57 NC2_W3_gap → 77-64-81"},{"spy":57,"condition":"NC3_W5_gap","followers":[73,28,63],"events":2498,"k2_pct":0.13811,"base_k2_pct":0.121495,"k3_pct":0.008006,"base_k3_pct":0.009613,"k2_extra_pp":0.016615,"label":"57 NC3_W5_gap → 73-28-63"},{"spy":58,"condition":"C3plus","followers":[32,61,88],"events":645,"k2_pct":0.086822,"base_k2_pct":0.06805,"k3_pct":0.013953,"base_k3_pct":0.002554,"k2_extra_pp":0.018772,"label":"58 C3plus → 32-61-88"},{"spy":58,"condition":"NC3_W5_gap","followers":[35,10,13],"events":2577,"k2_pct":0.207606,"base_k2_pct":0.18352,"k3_pct":0.022507,"base_k3_pct":0.018426,"k2_extra_pp":0.024086,"label":"58 NC3_W5_gap → 35-10-13"},{"spy":61,"condition":"C1_exact","followers":[19,59,83],"events":9023,"k2_pct":0.116591,"base_k2_pct":0.103654,"k3_pct":0.007758,"base_k3_pct":0.006415,"k2_extra_pp":0.012937,"label":"61 C1_exact → 19-59-83"},{"spy":62,"condition":"NC2_W3_gap","followers":[83,9,90],"events":2013,"k2_pct":0.064083,"base_k2_pct":0.044866,"k3_pct":0.000994,"base_k3_pct":0.001501,"k2_extra_pp":0.019217,"label":"62 NC2_W3_gap → 83-9-90"},{"spy":63,"condition":"C2_exact","followers":[5,61,67],"events":2012,"k2_pct":0.184891,"base_k2_pct":0.1524,"k3_pct":0.01839,"base_k3_pct":0.013922,"k2_extra_pp":0.03249,"label":"63 C2_exact → 5-61-67"},{"spy":63,"condition":"C3plus","followers":[29,51,6],"events":579,"k2_pct":0.16753,"base_k2_pct":0.136314,"k3_pct":0.018998,"base_k3_pct":0.011894,"k2_extra_pp":0.031216,"label":"63 C3plus → 29-51-6"},{"spy":64,"condition":"NC3_W5_gap","followers":[69,44,83],"events":2454,"k2_pct":0.114099,"base_k2_pct":0.094334,"k3_pct":0.008557,"base_k3_pct":0.006025,"k2_extra_pp":0.019766,"label":"64 NC3_W5_gap → 69-44-83"},{"spy":65,"condition":"NC2_W3_gap","followers":[79,66,80],"events":2054,"k2_pct":0.123174,"base_k2_pct":0.099306,"k3_pct":0.009737,"base_k3_pct":0.007702,"k2_extra_pp":0.023868,"label":"65 NC2_W3_gap → 79-66-80"},{"spy":65,"condition":"NC3_W5_gap","followers":[21,9,47],"events":2445,"k2_pct":0.17137,"base_k2_pct":0.143645,"k3_pct":0.022495,"base_k3_pct":0.012811,"k2_extra_pp":0.027725,"label":"65 NC3_W5_gap → 21-9-47"},{"spy":66,"condition":"C2_exact","followers":[25,69,26],"events":1962,"k2_pct":0.175841,"base_k2_pct":0.143684,"k3_pct":0.013761,"base_k3_pct":0.011855,"k2_extra_pp":0.032157,"label":"66 C2_exact → 25-69-26"},{"spy":66,"condition":"C3plus","followers":[49,28,76],"events":594,"k2_pct":0.181818,"base_k2_pct":0.117771,"k3_pct":0.010101,"base_k3_pct":0.008579,"k2_extra_pp":0.064047,"label":"66 C3plus → 49-28-76"},{"spy":66,"condition":"NC2_W3_gap","followers":[72,25,70],"events":2032,"k2_pct":0.163878,"base_k2_pct":0.141423,"k3_pct":0.01624,"base_k3_pct":0.012323,"k2_extra_pp":0.022455,"label":"66 NC2_W3_gap → 72-25-70"},{"spy":66,"condition":"NC3_W5_gap","followers":[25,40,1],"events":2447,"k2_pct":0.203106,"base_k2_pct":0.17533,"k3_pct":0.028198,"base_k3_pct":0.017841,"k2_extra_pp":0.027775,"label":"66 NC3_W5_gap → 25-40-1"},{"spy":67,"condition":"C3plus","followers":[90,2,45],"events":637,"k2_pct":0.130298,"base_k2_pct":0.082303,"k3_pct":0.00314,"base_k3_pct":0.001345,"k2_extra_pp":0.047995,"label":"67 C3plus → 90-2-45"},{"spy":67,"condition":"NC2_W5","followers":[1,71,75],"events":7146,"k2_pct":0.139659,"base_k2_pct":0.127481,"k3_pct":0.011755,"base_k3_pct":0.009925,"k2_extra_pp":0.012177,"label":"67 NC2_W5 → 1-71-75"},{"spy":67,"condition":"NC3_W5_gap","followers":[57,83,42],"events":2414,"k2_pct":0.110605,"base_k2_pct":0.095465,"k3_pct":0.009942,"base_k3_pct":0.005752,"k2_extra_pp":0.01514,"label":"67 NC3_W5_gap → 57-83-42"},{"spy":68,"condition":"C3plus","followers":[55,65,13],"events":573,"k2_pct":0.21466,"base_k2_pct":0.157372,"k3_pct":0.022688,"base_k3_pct":0.014273,"k2_extra_pp":0.057287,"label":"68 C3plus → 55-65-13"},{"spy":69,"condition":"NC2_W5","followers":[51,39,21],"events":7185,"k2_pct":0.145999,"base_k2_pct":0.136684,"k3_pct":0.014057,"base_k3_pct":0.011426,"k2_extra_pp":0.009314,"label":"69 NC2_W5 → 51-39-21"},{"spy":70,"condition":"C3plus","followers":[37,76,43],"events":519,"k2_pct":0.175337,"base_k2_pct":0.119331,"k3_pct":0.009634,"base_k3_pct":0.009125,"k2_extra_pp":0.056006,"label":"70 C3plus → 37-76-43"},{"spy":70,"condition":"NC2_W3_gap","followers":[6,23,75],"events":1944,"k2_pct":0.165123,"base_k2_pct":0.137718,"k3_pct":0.016461,"base_k3_pct":0.01166,"k2_extra_pp":0.027406,"label":"70 NC2_W3_gap → 6-23-75"},{"spy":72,"condition":"C3plus","followers":[10,89,87],"events":505,"k2_pct":0.055446,"base_k2_pct":0.031861,"k3_pct":0.00198,"base_k3_pct":0.002067,"k2_extra_pp":0.023585,"label":"72 C3plus → 10-89-87"},{"spy":74,"condition":"C2_exact","followers":[89,86,40],"events":1753,"k2_pct":0.047918,"base_k2_pct":0.036248,"k3_pct":0.002852,"base_k3_pct":0.001969,"k2_extra_pp":0.01167,"label":"74 C2_exact → 89-86-40"},{"spy":74,"condition":"C3plus","followers":[76,16,11],"events":468,"k2_pct":0.188034,"base_k2_pct":0.136684,"k3_pct":0.025641,"base_k3_pct":0.010666,"k2_extra_pp":0.05135,"label":"74 C3plus → 76-16-11"},{"spy":75,"condition":"NC3_W5_gap","followers":[21,7,90],"events":2103,"k2_pct":0.096529,"base_k2_pct":0.075381,"k3_pct":0.001902,"base_k3_pct":0.001891,"k2_extra_pp":0.021148,"label":"75 NC3_W5_gap → 21-7-90"},{"spy":76,"condition":"C1_exact","followers":[45,55,16],"events":8397,"k2_pct":0.193045,"base_k2_pct":0.178938,"k3_pct":0.021793,"base_k3_pct":0.018329,"k2_extra_pp":0.014107,"label":"76 C1_exact → 45-55-16"},{"spy":76,"condition":"C2_exact","followers":[23,13,70],"events":1656,"k2_pct":0.174517,"base_k2_pct":0.142904,"k3_pct":0.014493,"base_k3_pct":0.011972,"k2_extra_pp":0.031612,"label":"76 C2_exact → 23-13-70"},{"spy":76,"condition":"NC2_W3_gap","followers":[41,49,48],"events":1751,"k2_pct":0.149629,"base_k2_pct":0.126955,"k3_pct":0.018275,"base_k3_pct":0.009691,"k2_extra_pp":0.022674,"label":"76 NC2_W3_gap → 41-49-48"},{"spy":76,"condition":"NC3_W5_gap","followers":[23,49,87],"events":1901,"k2_pct":0.101526,"base_k2_pct":0.078559,"k3_pct":0.00526,"base_k3_pct":0.002983,"k2_extra_pp":0.022966,"label":"76 NC3_W5_gap → 23-49-87"},{"spy":77,"condition":"NC3_W5_gap","followers":[29,50,5],"events":1865,"k2_pct":0.198391,"base_k2_pct":0.177222,"k3_pct":0.028418,"base_k3_pct":0.016808,"k2_extra_pp":0.02117,"label":"77 NC3_W5_gap → 29-50-5"},{"spy":79,"condition":"C2_exact","followers":[90,55,29],"events":1494,"k2_pct":0.084337,"base_k2_pct":0.07622,"k3_pct":0.002677,"base_k3_pct":0.001657,"k2_extra_pp":0.008118,"label":"79 C2_exact → 90-55-29"},{"spy":79,"condition":"NC2_W3_gap","followers":[32,31,49],"events":1455,"k2_pct":0.164948,"base_k2_pct":0.127462,"k3_pct":0.014433,"base_k3_pct":0.010159,"k2_extra_pp":0.037487,"label":"79 NC2_W3_gap → 32-31-49"},{"spy":80,"condition":"C1_exact","followers":[3,55,44],"events":7345,"k2_pct":0.171818,"base_k2_pct":0.156924,"k3_pct":0.017427,"base_k3_pct":0.015072,"k2_extra_pp":0.014894,"label":"80 C1_exact → 3-55-44"},{"spy":80,"condition":"NC2_W3_gap","followers":[55,3,22],"events":1325,"k2_pct":0.211321,"base_k2_pct":0.166907,"k3_pct":0.022642,"base_k3_pct":0.016847,"k2_extra_pp":0.044414,"label":"80 NC2_W3_gap → 55-3-22"},{"spy":80,"condition":"NC2_W5","followers":[22,88,86],"events":5149,"k2_pct":0.047776,"base_k2_pct":0.039406,"k3_pct":0.00369,"base_k3_pct":0.00232,"k2_extra_pp":0.00837,"label":"80 NC2_W5 → 22-88-86"},{"spy":81,"condition":"C1_exact","followers":[55,68,21],"events":6965,"k2_pct":0.174444,"base_k2_pct":0.157158,"k3_pct":0.017373,"base_k3_pct":0.01593,"k2_extra_pp":0.017286,"label":"81 C1_exact → 55-68-21"},{"spy":81,"condition":"NC2_W3_gap","followers":[55,68,34],"events":1139,"k2_pct":0.19403,"base_k2_pct":0.147857,"k3_pct":0.014925,"base_k3_pct":0.013512,"k2_extra_pp":0.046173,"label":"81 NC2_W3_gap → 55-68-34"},{"spy":81,"condition":"NC3_W5_gap","followers":[90,83,76],"events":1110,"k2_pct":0.063964,"base_k2_pct":0.042058,"k3_pct":0.0,"base_k3_pct":0.001384,"k2_extra_pp":0.021906,"label":"81 NC3_W5_gap → 90-83-76"},{"spy":82,"condition":"C2_exact","followers":[26,6,89],"events":989,"k2_pct":0.092012,"base_k2_pct":0.071248,"k3_pct":0.002022,"base_k3_pct":0.002145,"k2_extra_pp":0.020765,"label":"82 C2_exact → 26-6-89"},{"spy":82,"condition":"C3plus","followers":[89,5,54],"events":164,"k2_pct":0.195122,"base_k2_pct":0.081972,"k3_pct":0.006098,"base_k3_pct":0.001852,"k2_extra_pp":0.11315,"label":"82 C3plus → 89-5-54"},{"spy":82,"condition":"NC2_W3_gap","followers":[29,15,13],"events":1060,"k2_pct":0.20283,"base_k2_pct":0.164041,"k3_pct":0.017925,"base_k3_pct":0.015384,"k2_extra_pp":0.038789,"label":"82 NC2_W3_gap → 29-15-13"},{"spy":82,"condition":"NC2_W5","followers":[90,84,29],"events":4563,"k2_pct":0.042954,"base_k2_pct":0.038217,"k3_pct":0.001534,"base_k3_pct":0.001521,"k2_extra_pp":0.004737,"label":"82 NC2_W5 → 90-84-29"},{"spy":83,"condition":"C2_exact","followers":[87,89,88],"events":826,"k2_pct":0.039952,"base_k2_pct":0.027376,"k3_pct":0.007264,"base_k3_pct":0.002184,"k2_extra_pp":0.012576,"label":"83 C2_exact → 87-89-88"},{"spy":83,"condition":"NC2_W5","followers":[89,88,87],"events":3700,"k2_pct":0.038108,"base_k2_pct":0.027376,"k3_pct":0.001892,"base_k3_pct":0.002184,"k2_extra_pp":0.010732,"label":"83 NC2_W5 → 89-88-87"},{"spy":83,"condition":"NC3_W5_gap","followers":[89,34,82],"events":695,"k2_pct":0.067626,"base_k2_pct":0.047713,"k3_pct":0.002878,"base_k3_pct":0.001638,"k2_extra_pp":0.019913,"label":"83 NC3_W5_gap → 89-34-82"},{"spy":84,"condition":"C2_exact","followers":[87,89,86],"events":650,"k2_pct":0.06,"base_k2_pct":0.030125,"k3_pct":0.004615,"base_k3_pct":0.002047,"k2_extra_pp":0.029875,"label":"84 C2_exact → 87-89-86"},{"spy":84,"condition":"NC2_W5","followers":[90,87,88],"events":3203,"k2_pct":0.029035,"base_k2_pct":0.025056,"k3_pct":0.00281,"base_k3_pct":0.001813,"k2_extra_pp":0.00398,"label":"84 NC2_W5 → 90-87-88"},{"spy":84,"condition":"NC3_W5_gap","followers":[50,90,81],"events":563,"k2_pct":0.078153,"base_k2_pct":0.055044,"k3_pct":0.007105,"base_k3_pct":0.001599,"k2_extra_pp":0.023108,"label":"84 NC3_W5_gap → 50-90-81"},{"spy":85,"condition":"C1_exact","followers":[55,49,48],"events":4826,"k2_pct":0.167219,"base_k2_pct":0.146999,"k3_pct":0.015541,"base_k3_pct":0.012538,"k2_extra_pp":0.02022,"label":"85 C1_exact → 55-49-48"},{"spy":85,"condition":"C2_exact","followers":[88,82,87],"events":500,"k2_pct":0.056,"base_k2_pct":0.033869,"k3_pct":0.006,"base_k3_pct":0.002827,"k2_extra_pp":0.022131,"label":"85 C2_exact → 88-82-87"},{"spy":85,"condition":"NC2_W5","followers":[89,90,88],"events":2656,"k2_pct":0.034639,"base_k2_pct":0.022501,"k3_pct":0.001883,"base_k3_pct":0.001774,"k2_extra_pp":0.012137,"label":"85 NC2_W5 → 89-90-88"},{"spy":85,"condition":"NC3_W5_gap","followers":[88,41,90],"events":411,"k2_pct":0.043796,"base_k2_pct":0.025056,"k3_pct":0.007299,"base_k3_pct":0.001755,"k2_extra_pp":0.01874,"label":"85 NC3_W5_gap → 88-41-90"},{"spy":86,"condition":"C2_exact","followers":[89,90,88],"events":337,"k2_pct":0.059347,"base_k2_pct":0.022501,"k3_pct":0.002967,"base_k3_pct":0.001774,"k2_extra_pp":0.036846,"label":"86 C2_exact → 89-90-88"},{"spy":86,"condition":"NC2_W5","followers":[89,88,90],"events":2178,"k2_pct":0.039945,"base_k2_pct":0.022501,"k3_pct":0.002296,"base_k3_pct":0.001774,"k2_extra_pp":0.017444,"label":"86 NC2_W5 → 89-88-90"},{"spy":86,"condition":"NC3_W5_gap","followers":[16,90,74],"events":302,"k2_pct":0.099338,"base_k2_pct":0.065105,"k3_pct":0.0,"base_k3_pct":0.001794,"k2_extra_pp":0.034232,"label":"86 NC3_W5_gap → 16-90-74"},{"spy":87,"condition":"C1_exact","followers":[55,6,3],"events":3343,"k2_pct":0.20341,"base_k2_pct":0.167804,"k3_pct":0.021238,"base_k3_pct":0.016398,"k2_extra_pp":0.035606,"label":"87 C1_exact → 55-6-3"},{"spy":87,"condition":"C2_exact","followers":[90,89,85],"events":178,"k2_pct":0.067416,"base_k2_pct":0.02215,"k3_pct":0.005618,"base_k3_pct":0.001618,"k2_extra_pp":0.045265,"label":"87 C2_exact → 90-89-85"},{"spy":87,"condition":"NC2_W3_gap","followers":[25,33,6],"events":498,"k2_pct":0.204819,"base_k2_pct":0.159868,"k3_pct":0.028112,"base_k3_pct":0.014643,"k2_extra_pp":0.044951,"label":"87 NC2_W3_gap → 25-33-6"},{"spy":87,"condition":"NC2_W5","followers":[90,89,88],"events":1875,"k2_pct":0.0352,"base_k2_pct":0.022501,"k3_pct":0.0048,"base_k3_pct":0.001774,"k2_extra_pp":0.012699,"label":"87 NC2_W5 → 90-89-88"},{"spy":87,"condition":"NC3_W5_gap","followers":[6,62,37],"events":216,"k2_pct":0.189815,"base_k2_pct":0.137347,"k3_pct":0.027778,"base_k3_pct":0.011114,"k2_extra_pp":0.052467,"label":"87 NC3_W5_gap → 6-62-37"},{"spy":88,"condition":"NC2_W3_gap","followers":[67,6,55],"events":446,"k2_pct":0.210762,"base_k2_pct":0.158425,"k3_pct":0.026906,"base_k3_pct":0.014526,"k2_extra_pp":0.052337,"label":"88 NC2_W3_gap → 67-6-55"},{"spy":88,"condition":"NC2_W5","followers":[89,90,87],"events":1645,"k2_pct":0.037082,"base_k2_pct":0.022638,"k3_pct":0.007295,"base_k3_pct":0.001755,"k2_extra_pp":0.014444,"label":"88 NC2_W5 → 89-90-87"},{"spy":89,"condition":"C1_exact","followers":[55,70,33],"events":2260,"k2_pct":0.187611,"base_k2_pct":0.147175,"k3_pct":0.014602,"base_k3_pct":0.012362,"k2_extra_pp":0.040436,"label":"89 C1_exact → 55-70-33"},{"spy":89,"condition":"NC2_W3_gap","followers":[15,10,70],"events":420,"k2_pct":0.245238,"base_k2_pct":0.177183,"k3_pct":0.042857,"base_k3_pct":0.018465,"k2_extra_pp":0.068055,"label":"89 NC2_W3_gap → 15-10-70"},{"spy":89,"condition":"NC2_W5","followers":[88,90,84],"events":1473,"k2_pct":0.038018,"base_k2_pct":0.025114,"k3_pct":0.000679,"base_k3_pct":0.001657,"k2_extra_pp":0.012904,"label":"89 NC2_W5 → 88-90-84"},{"spy":90,"condition":"C1_exact","followers":[55,45,24],"events":1955,"k2_pct":0.207673,"base_k2_pct":0.167551,"k3_pct":0.019437,"base_k3_pct":0.01554,"k2_extra_pp":0.040122,"label":"90 C1_exact → 55-45-24"},{"spy":90,"condition":"NC2_W5","followers":[87,89,88],"events":1445,"k2_pct":0.044291,"base_k2_pct":0.027376,"k3_pct":0.002768,"base_k3_pct":0.002184,"k2_extra_pp":0.016915,"label":"90 NC2_W5 → 87-89-88"}]'
 
 SPY_NETWORK_DEFS = {
     "CATENA_5": {
         "label": "CATENA 5",
-        "nodes": (5, 10, 15, 20, 25, 30),
-        "note": "rete principale 30→25→20→15→10→5",
+        "nodes": {5, 10, 15, 20, 25, 30},
+        "note": "rete 30→25→20→15→10→5",
     },
     "PONTE_55": {
         "label": "PONTE 55",
-        "nodes": (4, 5, 14, 15, 28, 55, 56),
+        "nodes": {4, 5, 14, 15, 28, 55, 56},
         "note": "ponte 5/15 verso 55-56",
     },
     "ZONA_40": {
         "label": "ZONA 40/50",
-        "nodes": (18, 40, 45, 50),
+        "nodes": {18, 40, 45, 50},
         "note": "scala 50→45→40 con ponte 18",
     },
     "LATERALE_23": {
         "label": "LATERALE 23",
-        "nodes": (22, 23, 39, 42),
+        "nodes": {22, 23, 39, 42},
         "note": "laterale 23 verso 22-39-42",
     },
-    "ALTRO": {"label": "ALTRO", "nodes": (), "note": "fuori rete"},
+    "MOD5": {"label": "MOD 5", "nodes": set(), "note": "legame per resto modulo 5"},
+    "DECINA": {"label": "DECINA", "nodes": set(), "note": "concentrazione nella stessa decina"},
+    "ALTRO": {"label": "ALTRO", "nodes": set(), "note": "fuori dalle reti principali"},
 }
-SPY_NETWORK_BUCKETS = tuple(SPY_NETWORK_DEFS.keys())
-SPY_NETWORK_LEVELS = ("NORMALE", "FORTE", "MULTIPLA")
-
-# Strategie mantenute dopo il backtest storico.
-LAB_STRATEGIES = ("op3", "op9", "op6", "op7")
-LAB_LABELS = {
-    "op3": "OP3 PRIMARY — SCORE FUORI CLUSTER",
-    "op9": "OP9 CONTROL — MIX SCORE+RITARDO",
-    "op6": "OP6 CONTROL — STESSA DECINA AMBATA",
-    "op7": "OP7 CONTROL — STESSA DECINA DINAMICA",
-}
+SPY_LEVELS = ("NORMALE", "FORTE", "MULTIPLA")
 
 
 # ============================================================
@@ -220,10 +143,8 @@ LAB_LABELS = {
 def validate_env():
     if not TOKEN:
         raise RuntimeError("BOT_TOKEN non impostato nell'ambiente")
-
     if not CHAT_ID_RAW:
         raise RuntimeError("CHAT_ID non impostato nell'ambiente")
-
     try:
         return int(CHAT_ID_RAW)
     except ValueError as exc:
@@ -239,10 +160,8 @@ def parse_site():
 
     out = {}
     i = 0
-
     while i < len(lines):
         m = re.search(r"Estrazione\s+.*?\bn\.\s*(\d+)", lines[i], re.IGNORECASE)
-
         if not m:
             i += 1
             continue
@@ -250,18 +169,14 @@ def parse_site():
         e = int(m.group(1))
         nums = []
         i += 1
-
         while i < len(lines):
             row = lines[i]
-
             if re.search(r"Estrazione\s+.*?\bn\.\s*\d+", row, re.IGNORECASE):
                 break
-
             if re.fullmatch(r"\d{1,2}", row):
                 n = int(row)
                 if 1 <= n <= 90:
                     nums.append(n)
-
             i += 1
 
         if len(nums) >= 20:
@@ -273,9 +188,7 @@ def parse_site():
 
 
 def fingerprint(e, nums):
-    return hashlib.md5(
-        f"{e}-{'-'.join(map(str, nums))}".encode()
-    ).hexdigest()
+    return hashlib.md5(f"{e}-{'-'.join(map(str, nums))}".encode()).hexdigest()
 
 
 def day_key():
@@ -286,371 +199,197 @@ def now_txt():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def pct(part, total):
+    return (part / total * 100.0) if total else 0.0
+
+
+def roi_text(gross, cost):
+    net = gross - cost
+    roi = (net / cost * 100.0) if cost else 0.0
+    return net, roi
+
+
 def fmt_nums(nums):
     return "-".join(map(str, nums or []))
 
 
 def fmt_ambi(ambi):
-    parts = []
+    out = []
     for item in ambi or []:
         a, b = item["ambo"]
-        parts.append(f"{a}-{b}")
-    return ", ".join(parts)
+        out.append(f"{a}-{b}")
+    return ", ".join(out)
 
 
-def fmt_terni(terni):
-    return ", ".join("-".join(map(str, t)) for t in (terni or []))
+def condition_clean_label(cond):
+    return {
+        "C1_exact": "C1",
+        "C2_exact": "C2",
+        "C3plus": "C3+",
+        "NC2_W3_gap": "NC2/W3",
+        "NC2_W5": "NC2/W5",
+        "NC3_W5_gap": "NC3/W5",
+    }.get(cond, cond)
 
 
-def fmt_jolly(value):
-    if value is None:
-        return ""
-    if isinstance(value, (list, tuple, set)):
-        return "-".join(map(str, value))
-    return str(value)
+def expected_within_h(one_draw_prob, h):
+    p = max(0.0, min(1.0, float(one_draw_prob or 0.0)))
+    return 1.0 - ((1.0 - p) ** int(h))
 
 
-def normalize_terni(terni):
-    out = []
-    for t in terni or []:
-        if len(t) == 3:
-            out.append(tuple(sorted(map(int, t))))
-    return sorted(set(out))
+def chunks(text, max_len=3000):
+    return [text[i:i + max_len] for i in range(0, len(text), max_len)] or [""]
+
+
+def max_consecutive_presence(draws, n):
+    best = cur = 0
+    for draw in draws:
+        if n in draw:
+            cur += 1
+            best = max(best, cur)
+        else:
+            cur = 0
+    return best
 
 
 # ============================================================
-# CSV — FORMATO LUNGO/PULITO
+# CSV
 # ============================================================
 
 CSV_FIELDS = [
-    "time",
-    "day",
-    "event",
-    "play_id",
-    "estrazione",
-    "colpo",
-    "session_type",
-    "strategy",
-    "ambata",
-    "ambi",
-    "cluster",
-    "jolly",
-    "terni",
-    "hit_list",
-    "outcome",
-    "v48_total_play",
-    "v48_hit_ambata_events",
-    "v48_hit_ambo",
-    "v48_stop",
-    "v48_rank1_hit_events",
-    "v48_rank2_hit_events",
-    "v48_rank3_hit_events",
-    "v48_multi_ambo_hit_draws",
-    "op3_sessions",
-    "op3_hit_sessions",
-    "op9_sessions",
-    "op9_hit_sessions",
-    "op6_sessions",
-    "op6_hit_sessions",
-    "op7_sessions",
-    "op7_hit_sessions",
-    "ambata_r2_sessions",
-    "ambata_r2_hits",
-    "ambata_r2_misses",
-    "ambata_r2_hit_colpo1",
-    "ambata_r2_hit_colpo2",
-    "decina_signal_id",
-    "decina_top3",
-    "decina_heat_total",
-    "decina_hit_numbers",
-    "decina_sessions",
-    "decina_closed",
-    "decina_k1_hits",
-    "decina_k2_hits",
-    "decina_k3_hits",
-    "decina_k2_colpo1",
-    "decina_k2_colpo2",
-    "decina_k3_colpo1",
-    "decina_k3_colpo2",
-    "decina_k3_cost_units",
-    "decina_k3_gross_units",
-    "decina_k3_net_units",
-    "decina_k3_roi_pct",
-    "decina_multi_signal_id",
-    "decina_multi_package",
-    "decina_top5",
-    "decina_package_terni",
-    "decina_terni_hit_count",
-    "core_sessions",
-    "core_closed",
-    "core_winning_sessions",
-    "core_losing_sessions",
-    "core_hit_colpo1",
-    "core_hit_colpo2",
-    "core_winning_terni",
-    "core_multi_2plus_sessions",
-    "core_max_terni_same_draw",
-    "core_cost_units",
-    "core_gross_units",
-    "core_net_units",
-    "core_roi_pct",
-    "pivot_sessions",
-    "pivot_closed",
-    "pivot_winning_sessions",
-    "pivot_losing_sessions",
-    "pivot_hit_colpo1",
-    "pivot_hit_colpo2",
-    "pivot_winning_terni",
-    "pivot_multi_2plus_sessions",
-    "pivot_max_terni_same_draw",
-    "pivot_cost_units",
-    "pivot_gross_units",
-    "pivot_net_units",
-    "pivot_roi_pct",
-    "ambo_jolly_terno",
-    "ambo_jolly_rank1_ambo",
-    "ambo_jolly_op3",
-    "ambo_jolly_horizon",
-    "spy_signal_id",
-    "spy_number",
-    "spy_condition",
-    "spy_network",
-    "spy_network_level",
-    "spy_active_related",
-    "spy_active_total",
-    "spy_followers",
-    "spy_hit_numbers",
-    "spy_k_hit",
-    "spy_sessions",
-    "spy_closed",
-    "spy_k1_hits",
-    "spy_k2_hits",
-    "spy_k3_hits",
-    "spy_k3_cost_units",
-    "spy_k3_gross_units",
-    "spy_k3_net_units",
-    "spy_k3_roi_pct",
-    # Nuovi campi: statistiche Num. Spia separate per orizzonte H1/H2/H3.
-    "spy_h1_sessions", "spy_h1_closed", "spy_h1_k1_hits", "spy_h1_k2_hits", "spy_h1_k3_hits",
-    "spy_h1_k3_cost_units", "spy_h1_k3_gross_units", "spy_h1_k3_net_units", "spy_h1_k3_roi_pct",
-    "spy_h2_sessions", "spy_h2_closed", "spy_h2_k1_hits", "spy_h2_k2_hits", "spy_h2_k3_hits",
-    "spy_h2_k3_cost_units", "spy_h2_k3_gross_units", "spy_h2_k3_net_units", "spy_h2_k3_roi_pct",
-    "spy_h3_sessions", "spy_h3_closed", "spy_h3_k1_hits", "spy_h3_k2_hits", "spy_h3_k3_hits",
-    "spy_h3_k3_cost_units", "spy_h3_k3_gross_units", "spy_h3_k3_net_units", "spy_h3_k3_roi_pct",
+    "time", "day", "event", "estrazione", "play_id", "colpo",
+    "ambata", "ambi", "cluster", "outcome", "hit_ambi", "hit_ranks",
+    "v48_play", "v48_hit", "v48_stop", "v48_cost", "v48_gross", "v48_net", "v48_roi",
+    "spy_id", "spy", "spy_condition", "spy_followers", "spy_network", "spy_level",
+    "spy_horizon", "spy_k1", "spy_k2", "spy_k3", "spy_hit_nums",
+    "spy_cost", "spy_gross", "spy_net", "spy_roi",
 ]
-
-for _bucket in DECINA_HEAT_BUCKETS:
-    _p = _bucket.lower()
-    CSV_FIELDS.extend([
-        f"decina_{_p}_sessions",
-        f"decina_{_p}_closed",
-        f"decina_{_p}_k1_hits",
-        f"decina_{_p}_k2_hits",
-        f"decina_{_p}_k3_hits",
-        f"decina_{_p}_k2_colpo1",
-        f"decina_{_p}_k2_colpo2",
-        f"decina_{_p}_k3_colpo1",
-        f"decina_{_p}_k3_colpo2",
-        f"decina_{_p}_k3_cost_units",
-        f"decina_{_p}_k3_gross_units",
-        f"decina_{_p}_k3_net_units",
-        f"decina_{_p}_k3_roi_pct",
-    ])
-
-
-for _h in AMBO_JOLLY_HORIZONS:
-    CSV_FIELDS.extend([
-        f"aj{_h}_sessions",
-        f"aj{_h}_closed",
-        f"aj{_h}_hits",
-        f"aj{_h}_misses",
-        f"aj{_h}_cost_units",
-        f"aj{_h}_gross_units",
-        f"aj{_h}_net_units",
-        f"aj{_h}_roi_pct",
-    ])
 
 
 def ensure_csv():
     if os.path.exists(CSV_FILE):
-        try:
-            with open(CSV_FILE, "r", encoding="utf-8", newline="") as f:
-                header = next(csv.reader(f), [])
-
-            if header == CSV_FIELDS:
-                return
-
-            backup = CSV_FILE.replace(
-                ".csv",
-                f"_old_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            )
-            os.replace(CSV_FILE, backup)
-        except Exception:
-            backup = CSV_FILE.replace(
-                ".csv",
-                f"_old_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            )
-            try:
-                os.replace(CSV_FILE, backup)
-            except Exception:
-                pass
-
-    with open(CSV_FILE, "w", encoding="utf-8", newline="") as f:
+        return
+    with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         writer.writeheader()
 
 
 # ============================================================
-# BOT
+# MODELLO SPIE
 # ============================================================
 
-class SNIPER_V48:
+def load_spy_model():
+    rows = json.loads(SPY_MODEL_EMBEDDED_JSON)
+    model = {}
+    for r in rows:
+        if int(r.get("events", 0)) < SPY_MIN_MODEL_EVENTS:
+            continue
+        spy = int(r["spy"])
+        condition = str(r["condition"])
+        followers = tuple(int(x) for x in r["followers"])
+        if len(followers) != 3 or not all(1 <= x <= 90 for x in followers):
+            continue
+        key = f"{spy}_{condition}"
+        model[key] = {
+            "key": key,
+            "spy": spy,
+            "condition": condition,
+            "followers": followers,
+            "events": int(r.get("events", 0)),
+            "k2_pct": float(r.get("k2_pct", 0.0)),
+            "base_k2_pct": float(r.get("base_k2_pct", 0.0)),
+            "k3_pct": float(r.get("k3_pct", 0.0)),
+            "base_k3_pct": float(r.get("base_k3_pct", 0.0)),
+            "k2_extra_pp": float(r.get("k2_extra_pp", 0.0)),
+            "label": r.get("label", f"{spy} {condition} → {fmt_nums(followers)}"),
+        }
+    return model
 
+
+def number_decina(n):
+    return (int(n) - 1) // 10
+
+
+def classify_network(spy, followers):
+    spy = int(spy)
+    nums = {spy, *map(int, followers)}
+
+    for key in ("CATENA_5", "PONTE_55", "ZONA_40", "LATERALE_23"):
+        nodes = SPY_NETWORK_DEFS[key]["nodes"]
+        if spy in nodes and len(set(followers) & nodes) >= 2:
+            return key
+
+    mod_counts = Counter(n % 5 for n in nums)
+    if mod_counts and max(mod_counts.values()) >= 3:
+        return "MOD5"
+
+    dec_counts = Counter(number_decina(n) for n in nums)
+    if dec_counts and max(dec_counts.values()) >= 3:
+        return "DECINA"
+
+    return "ALTRO"
+
+
+# ============================================================
+# MOTORE
+# ============================================================
+
+class SniperV48BaseFullSpy:
     def __init__(self):
-        self.version = "v48_final_research_spy_network_h123_lab"
-
+        self.version = "v48_base_full_spy_clickable_1"
         self.day = day_key()
-
         self.max_e = 0
         self.last_fp = None
         self.last_draws = []
         self.processed_ids = []
         self.processed_fps = []
 
+        # v48 core
         self.watch = {}
         self.hot_confirmed = {}
-
-        # CORE v48
         self.active = False
         self.colpi = 0
         self.cooldown = 0
         self.active_snapshot = None
-
         self.last_cluster_numbers = []
         self.last_cluster_e = 0
-
+        self.play_uid = 0
         self.total_play = 0
-        self.total_hit_ambata = 0  # mantiene semantica v48: eventi di uscita durante play
+        self.total_hit_ambata = 0
         self.total_hit_ambo = 0
         self.total_stop = 0
-
-        # Monitor diagnostico: quale posizione dei 3 ambi v48 partecipa
-        # al colpo vincente. Non modifica in alcun modo il CORE.
-        self.v48_ambo_rank_hits = {"1": 0, "2": 0, "3": 0}
+        self.v48_rank_hits = {"1": 0, "2": 0, "3": 0}
         self.v48_multi_ambo_hit_draws = 0
+        self.v48_hit_colpi = {str(i): 0 for i in range(1, MAX_COLPI + 1)}
+        self.v48_cost_units = 0.0
+        self.v48_gross_units = 0.0
 
-        self.play_uid = 0
-
-        # TERNI LAB indipendente: lista per robustezza futura.
-        self.terni_sessions = []
-        self.terni_stats = {
-            key: {"sessions": 0, "hit_sessions": 0}
-            for key in LAB_STRATEGIES
-        }
-
-        # AMBATA RAFFICA 2 indipendente.
-        self.ambata_r2_sessions = []
-        self.ambata_r2_stats = {
-            "sessions": 0,
-            "hits": 0,
-            "misses": 0,
-            "hit_colpo1": 0,
-            "hit_colpo2": 0,
-        }
-
-        # DECINA LAB 10-19 indipendente. Le sessioni possono sovrapporsi:
-        # è intenzionale e replica il backtest cronologico per-ogni-segnale.
-        self.decina_lab_uid = 0
-        self.decina_lab_sessions = []
-        self.decina_lab_stats = {
-            "sessions": 0,
-            "closed": 0,
-            "k1_hits": 0,
-            "k2_hits": 0,
-            "k3_hits": 0,
-            "k2_colpo1": 0,
-            "k2_colpo2": 0,
-            "k3_colpo1": 0,
-            "k3_colpo2": 0,
-            "k3_cost_units": 0.0,
-            "k3_gross_units": 0.0,
-        }
-        self.decina_heat_stats = {
-            bucket: self.new_decina_heat_stats()
-            for bucket in DECINA_HEAT_BUCKETS
-        }
-
-        # DECINA MULTI-TERNO LAB indipendente.
-        # Le sessioni CORE/PIVOT possono sovrapporsi e si fermano al primo
-        # colpo vincente oppure al secondo colpo in caso di miss.
-        self.decina_multi_uid = 0
-        self.decina_multi_sessions = []
-        self.decina_multi_stats = {
-            "core": self.new_decina_multi_stats(),
-            "pivot": self.new_decina_multi_stats(),
-        }
-
-        # AMBO-JOLLY AJ1: un solo terno = 1° ambo v48 + OP3.
-        # Ogni orizzonte 2/3/4/7 ha contabilità autonoma ma viene
-        # censurato quando il relativo PLAY v48 chiude.
-        self.ambo_jolly_sessions = []
-        self.ambo_jolly_stats = {
-            str(h): self.new_ambo_jolly_stats(h)
-            for h in AMBO_JOLLY_HORIZONS
-        }
-
-        # NUMERI SPIA LAB: sessioni indipendenti su orizzonti 1/2/3 colpi.
-        self.spy_lab_uid = 0
-        self.spy_lab_sessions = []
-        self.spy_horizon_stats = {
-            str(h): self.new_spy_lab_stats()
-            for h in SPY_LAB_HORIZONS
-        }
-        self.spy_candidate_horizon_stats = {
-            self.spy_candidate_key(c): {str(h): self.new_spy_lab_stats() for h in SPY_LAB_HORIZONS}
-            for c in SPY_LAB_CANDIDATES
-        }
-        self.spy_network_horizon_stats = {
-            network: {str(h): self.new_spy_lab_stats() for h in SPY_LAB_HORIZONS}
-            for network in SPY_NETWORK_BUCKETS
-        }
-        self.spy_network_level_horizon_stats = {
-            level: {str(h): self.new_spy_lab_stats() for h in SPY_LAB_HORIZONS}
-            for level in SPY_NETWORK_LEVELS
-        }
-
-        # Alias legacy: i vecchi campi CSV mostrano l'orizzonte H1.
-        self.spy_lab_stats = self.spy_horizon_stats["1"]
-        self.spy_candidate_stats = {
-            ckey: hstats["1"] for ckey, hstats in self.spy_candidate_horizon_stats.items()
-        }
-        self.spy_network_stats = {
-            network: hstats["1"] for network, hstats in self.spy_network_horizon_stats.items()
-        }
-        self.spy_network_level_stats = {
-            level: hstats["1"] for level, hstats in self.spy_network_level_horizon_stats.items()
-        }
+        # spie
+        self.spy_model = load_spy_model()
+        self.spy_uid = 0
+        self.spy_sessions = []
+        self.spy_horizon_stats = {str(h): self.new_spy_stats() for h in SPY_HORIZONS}
+        self.spy_candidate_horizon_stats = {}
+        self.spy_network_horizon_stats = {}
+        self.spy_level_horizon_stats = {}
+        self.draws_since_spy_report = 0
 
         self.load_state()
         ensure_csv()
 
-    # ========================================================
-    # TELEGRAM
-    # ========================================================
-
-    async def tg(self, app, msg):
+    # --------------------------------------------------------
+    # Telegram
+    # --------------------------------------------------------
+    async def tg(self, app, msg, with_keyboard=True, inline_menu=False):
         if not msg:
             return
-
-        max_len = 3000
-        chunks = [msg[i:i + max_len] for i in range(0, len(msg), max_len)]
-
-        for chunk in chunks:
+        for part in chunks(str(msg), 3000):
             for attempt in range(3):
                 try:
                     await app.bot.send_message(
                         chat_id=CHAT_ID,
-                        text=chunk,
+                        text=part,
+                        reply_markup=(INLINE_MENU if inline_menu else (MENU_KEYBOARD if with_keyboard else None)),
                         read_timeout=30,
                         write_timeout=30,
                         connect_timeout=30,
@@ -659,68 +398,13 @@ class SNIPER_V48:
                     break
                 except Exception as ex:
                     print(f"Telegram send error attempt {attempt + 1}: {ex}")
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(4)
 
-    # ========================================================
-    # STATE
-    # ========================================================
-
+    # --------------------------------------------------------
+    # State / CSV
+    # --------------------------------------------------------
     @staticmethod
-    def decina_heat_bucket(heat_total):
-        heat_total = int(heat_total)
-        if heat_total == 8:
-            return "H8"
-        if heat_total == 9:
-            return "H9"
-        return "H10P"
-
-    @staticmethod
-    def new_decina_heat_stats():
-        return {
-            "sessions": 0,
-            "closed": 0,
-            "k1_hits": 0,
-            "k2_hits": 0,
-            "k3_hits": 0,
-            "k2_colpo1": 0,
-            "k2_colpo2": 0,
-            "k3_colpo1": 0,
-            "k3_colpo2": 0,
-            "k3_cost_units": 0.0,
-            "k3_gross_units": 0.0,
-        }
-
-    @staticmethod
-    def new_decina_multi_stats():
-        return {
-            "sessions": 0,
-            "closed": 0,
-            "winning_sessions": 0,
-            "losing_sessions": 0,
-            "hit_colpo1": 0,
-            "hit_colpo2": 0,
-            "winning_terni": 0,
-            "multi_2plus_sessions": 0,
-            "max_terni_same_draw": 0,
-            "cost_units": 0.0,
-            "gross_units": 0.0,
-        }
-
-    @staticmethod
-    def new_ambo_jolly_stats(horizon):
-        return {
-            "horizon": int(horizon),
-            "sessions": 0,
-            "closed": 0,
-            "hits": 0,
-            "misses": 0,
-            "cost_units": 0.0,
-            "gross_units": 0.0,
-            "hit_by_colpo": {str(i): 0 for i in range(1, int(horizon) + 1)},
-        }
-
-    @staticmethod
-    def new_spy_lab_stats():
+    def new_spy_stats():
         return {
             "sessions": 0,
             "closed": 0,
@@ -729,11 +413,18 @@ class SNIPER_V48:
             "k3_hits": 0,
             "k3_cost_units": 0.0,
             "k3_gross_units": 0.0,
+            "expected_k2_sum": 0.0,
+            "expected_k3_sum": 0.0,
         }
 
-    @staticmethod
-    def spy_candidate_key(candidate):
-        return f"{int(candidate['spy'])}_{candidate['condition']}_{'-'.join(map(str, candidate['followers']))}"
+    def get_nested_stat(self, container, key, h):
+        key = str(key)
+        h = str(h)
+        if key not in container:
+            container[key] = {}
+        if h not in container[key]:
+            container[key][h] = self.new_spy_stats()
+        return container[key][h]
 
     def save_state(self):
         data = {
@@ -752,38 +443,24 @@ class SNIPER_V48:
             "active_snapshot": self.active_snapshot,
             "last_cluster_numbers": self.last_cluster_numbers,
             "last_cluster_e": self.last_cluster_e,
+            "play_uid": self.play_uid,
             "total_play": self.total_play,
             "total_hit_ambata": self.total_hit_ambata,
             "total_hit_ambo": self.total_hit_ambo,
             "total_stop": self.total_stop,
-            "v48_ambo_rank_hits": self.v48_ambo_rank_hits,
+            "v48_rank_hits": self.v48_rank_hits,
             "v48_multi_ambo_hit_draws": self.v48_multi_ambo_hit_draws,
-            "play_uid": self.play_uid,
-            "terni_sessions": self.terni_sessions,
-            "terni_stats": self.terni_stats,
-            "ambata_r2_sessions": self.ambata_r2_sessions,
-            "ambata_r2_stats": self.ambata_r2_stats,
-            "decina_lab_uid": self.decina_lab_uid,
-            "decina_lab_sessions": self.decina_lab_sessions,
-            "decina_lab_stats": self.decina_lab_stats,
-            "decina_heat_stats": self.decina_heat_stats,
-            "decina_multi_uid": self.decina_multi_uid,
-            "decina_multi_sessions": self.decina_multi_sessions,
-            "decina_multi_stats": self.decina_multi_stats,
-            "ambo_jolly_sessions": self.ambo_jolly_sessions,
-            "ambo_jolly_stats": self.ambo_jolly_stats,
-            "spy_lab_uid": self.spy_lab_uid,
-            "spy_lab_sessions": self.spy_lab_sessions,
-            "spy_lab_stats": self.spy_lab_stats,
-            "spy_candidate_stats": self.spy_candidate_stats,
-            "spy_network_stats": self.spy_network_stats,
-            "spy_network_level_stats": self.spy_network_level_stats,
+            "v48_hit_colpi": self.v48_hit_colpi,
+            "v48_cost_units": self.v48_cost_units,
+            "v48_gross_units": self.v48_gross_units,
+            "spy_uid": self.spy_uid,
+            "spy_sessions": self.spy_sessions,
             "spy_horizon_stats": self.spy_horizon_stats,
             "spy_candidate_horizon_stats": self.spy_candidate_horizon_stats,
             "spy_network_horizon_stats": self.spy_network_horizon_stats,
-            "spy_network_level_horizon_stats": self.spy_network_level_horizon_stats,
+            "spy_level_horizon_stats": self.spy_level_horizon_stats,
+            "draws_since_spy_report": self.draws_since_spy_report,
         }
-
         tmp = STATE_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -792,11 +469,9 @@ class SNIPER_V48:
     def load_state(self):
         if not os.path.exists(STATE_FILE):
             return
-
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-
             self.day = data.get("day", day_key())
             self.max_e = int(data.get("max_e", 0))
             self.last_fp = data.get("last_fp")
@@ -805,588 +480,186 @@ class SNIPER_V48:
             self.processed_fps = data.get("processed_fps", [])[-PROCESSED_MAX:]
             self.watch = data.get("watch", {})
             self.hot_confirmed = data.get("hot_confirmed", {})
-
             self.active = bool(data.get("active", False))
             self.colpi = int(data.get("colpi", 0))
             self.cooldown = int(data.get("cooldown", 0))
             self.active_snapshot = data.get("active_snapshot")
-
             self.last_cluster_numbers = data.get("last_cluster_numbers", [])
             self.last_cluster_e = int(data.get("last_cluster_e", 0))
-
+            self.play_uid = int(data.get("play_uid", 0))
             self.total_play = int(data.get("total_play", 0))
             self.total_hit_ambata = int(data.get("total_hit_ambata", 0))
             self.total_hit_ambo = int(data.get("total_hit_ambo", 0))
             self.total_stop = int(data.get("total_stop", 0))
-            loaded_rank_hits = data.get("v48_ambo_rank_hits", {})
-            self.v48_ambo_rank_hits = {
-                str(i): int(loaded_rank_hits.get(str(i), 0))
-                for i in (1, 2, 3)
-            }
+            self.v48_rank_hits = {str(i): int(data.get("v48_rank_hits", {}).get(str(i), 0)) for i in (1, 2, 3)}
             self.v48_multi_ambo_hit_draws = int(data.get("v48_multi_ambo_hit_draws", 0))
-            self.play_uid = int(data.get("play_uid", self.total_play))
-
-            self.terni_sessions = data.get("terni_sessions", [])
-            loaded_terni_stats = data.get("terni_stats", {})
-            for key in LAB_STRATEGIES:
-                src = loaded_terni_stats.get(key, {})
-                self.terni_stats[key] = {
-                    "sessions": int(src.get("sessions", 0)),
-                    "hit_sessions": int(src.get("hit_sessions", 0)),
-                }
-
-            self.ambata_r2_sessions = data.get("ambata_r2_sessions", [])
-            loaded_r2 = data.get("ambata_r2_stats", {})
-            for key in self.ambata_r2_stats:
-                self.ambata_r2_stats[key] = int(loaded_r2.get(key, 0))
-
-            self.decina_lab_uid = int(data.get("decina_lab_uid", 0))
-            self.decina_lab_sessions = data.get("decina_lab_sessions", [])
-            loaded_decina = data.get("decina_lab_stats", {})
-            for key in self.decina_lab_stats:
-                value = loaded_decina.get(key, self.decina_lab_stats[key])
-                self.decina_lab_stats[key] = (
-                    float(value) if key in {"k3_cost_units", "k3_gross_units"}
-                    else int(value)
-                )
-
-            loaded_heat = data.get("decina_heat_stats", {})
-            for bucket in DECINA_HEAT_BUCKETS:
-                src = loaded_heat.get(bucket, {})
-                fresh = self.new_decina_heat_stats()
-                for key, default in fresh.items():
-                    value = src.get(key, default)
-                    fresh[key] = (
-                        float(value) if key in {"k3_cost_units", "k3_gross_units"}
-                        else int(value)
-                    )
-                self.decina_heat_stats[bucket] = fresh
-
-            self.decina_multi_uid = int(data.get("decina_multi_uid", 0))
-            self.decina_multi_sessions = data.get("decina_multi_sessions", [])
-            loaded_multi = data.get("decina_multi_stats", {})
-            for package in ("core", "pivot"):
-                src = loaded_multi.get(package, {})
-                fresh = self.new_decina_multi_stats()
-                for key, default in fresh.items():
-                    value = src.get(key, default)
-                    fresh[key] = float(value) if key in {"cost_units", "gross_units"} else int(value)
-                self.decina_multi_stats[package] = fresh
-
-            self.ambo_jolly_sessions = data.get("ambo_jolly_sessions", [])
-            loaded_aj = data.get("ambo_jolly_stats", {})
-            for horizon in AMBO_JOLLY_HORIZONS:
-                hkey = str(horizon)
-                src = loaded_aj.get(hkey, {})
-                fresh = self.new_ambo_jolly_stats(horizon)
-                for key in ("sessions", "closed", "hits", "misses"):
-                    fresh[key] = int(src.get(key, fresh[key]))
-                for key in ("cost_units", "gross_units"):
-                    fresh[key] = float(src.get(key, fresh[key]))
-                loaded_hits = src.get("hit_by_colpo", {})
-                fresh["hit_by_colpo"] = {
-                    str(i): int(loaded_hits.get(str(i), 0))
-                    for i in range(1, horizon + 1)
-                }
-                self.ambo_jolly_stats[hkey] = fresh
-
-            def _load_spy_stat(src):
-                fresh = self.new_spy_lab_stats()
-                src = src or {}
-                for key, default in fresh.items():
-                    value = src.get(key, default)
-                    fresh[key] = float(value) if key in {"k3_cost_units", "k3_gross_units"} else int(value)
-                return fresh
-
-            self.spy_lab_uid = int(data.get("spy_lab_uid", 0))
-            self.spy_lab_sessions = data.get("spy_lab_sessions", [])
-
-            loaded_horizons = data.get("spy_horizon_stats", {})
-            for h in SPY_LAB_HORIZONS:
-                hkey = str(h)
-                # compatibilita': se manca il nuovo formato, H1 prova dai vecchi campi.
-                fallback = data.get("spy_lab_stats", {}) if hkey == "1" else {}
-                self.spy_horizon_stats[hkey] = _load_spy_stat(loaded_horizons.get(hkey, fallback))
-            self.spy_lab_stats = self.spy_horizon_stats["1"]
-
-            loaded_candidate_h = data.get("spy_candidate_horizon_stats", {})
-            loaded_candidate_legacy = data.get("spy_candidate_stats", {})
-            for candidate in SPY_LAB_CANDIDATES:
-                ckey = self.spy_candidate_key(candidate)
-                self.spy_candidate_horizon_stats[ckey] = {}
-                for h in SPY_LAB_HORIZONS:
-                    hkey = str(h)
-                    fallback = loaded_candidate_legacy.get(ckey, {}) if hkey == "1" else {}
-                    self.spy_candidate_horizon_stats[ckey][hkey] = _load_spy_stat(
-                        loaded_candidate_h.get(ckey, {}).get(hkey, fallback)
-                    )
-            self.spy_candidate_stats = {
-                ckey: hstats["1"] for ckey, hstats in self.spy_candidate_horizon_stats.items()
-            }
-
-            loaded_network_h = data.get("spy_network_horizon_stats", {})
-            loaded_network_legacy = data.get("spy_network_stats", {})
-            for network in SPY_NETWORK_BUCKETS:
-                self.spy_network_horizon_stats[network] = {}
-                for h in SPY_LAB_HORIZONS:
-                    hkey = str(h)
-                    fallback = loaded_network_legacy.get(network, {}) if hkey == "1" else {}
-                    self.spy_network_horizon_stats[network][hkey] = _load_spy_stat(
-                        loaded_network_h.get(network, {}).get(hkey, fallback)
-                    )
-            self.spy_network_stats = {
-                network: hstats["1"] for network, hstats in self.spy_network_horizon_stats.items()
-            }
-
-            loaded_level_h = data.get("spy_network_level_horizon_stats", {})
-            loaded_level_legacy = data.get("spy_network_level_stats", {})
-            for level in SPY_NETWORK_LEVELS:
-                self.spy_network_level_horizon_stats[level] = {}
-                for h in SPY_LAB_HORIZONS:
-                    hkey = str(h)
-                    fallback = loaded_level_legacy.get(level, {}) if hkey == "1" else {}
-                    self.spy_network_level_horizon_stats[level][hkey] = _load_spy_stat(
-                        loaded_level_h.get(level, {}).get(hkey, fallback)
-                    )
-            self.spy_network_level_stats = {
-                level: hstats["1"] for level, hstats in self.spy_network_level_horizon_stats.items()
-            }
+            self.v48_hit_colpi = {str(i): int(data.get("v48_hit_colpi", {}).get(str(i), 0)) for i in range(1, MAX_COLPI + 1)}
+            self.v48_cost_units = float(data.get("v48_cost_units", 0.0))
+            self.v48_gross_units = float(data.get("v48_gross_units", 0.0))
+            self.spy_uid = int(data.get("spy_uid", 0))
+            self.spy_sessions = data.get("spy_sessions", [])
+            self.spy_horizon_stats = self._load_stat_map(data.get("spy_horizon_stats", {}), SPY_HORIZONS)
+            self.spy_candidate_horizon_stats = data.get("spy_candidate_horizon_stats", {})
+            self.spy_network_horizon_stats = data.get("spy_network_horizon_stats", {})
+            self.spy_level_horizon_stats = data.get("spy_level_horizon_stats", {})
+            self.draws_since_spy_report = int(data.get("draws_since_spy_report", 0))
         except Exception as ex:
             print(f"⚠️ Stato non caricato: {ex}")
 
-    def reset_for_new_day(self, new_day):
-        """
-        Stessa filosofia operativa della versione precedente:
-        reset dedup/watch/hot e play attivo; storico numerico conservato.
-        Le sessioni LAB del giorno precedente vengono chiuse operativamente.
-        """
-        self.day = new_day
+    def _load_stat_map(self, src, horizons):
+        out = {str(h): self.new_spy_stats() for h in horizons}
+        for h in horizons:
+            hkey = str(h)
+            old = src.get(hkey, {}) if isinstance(src, dict) else {}
+            for k, default in out[hkey].items():
+                value = old.get(k, default)
+                out[hkey][k] = float(value) if isinstance(default, float) else int(value)
+        return out
 
+    def reset_for_new_day(self, new_day):
+        self.day = new_day
         self.max_e = 0
         self.last_fp = None
         self.processed_ids = []
         self.processed_fps = []
-
         self.watch = {}
         self.hot_confirmed = {}
-
         self.active = False
         self.colpi = 0
         self.cooldown = 0
         self.active_snapshot = None
-
         self.last_cluster_numbers = []
         self.last_cluster_e = 0
-
-        # Non attraversiamo il cambio giorno con sessioni aperte.
-        self.terni_sessions = []
-        self.ambata_r2_sessions = []
-        self.decina_lab_sessions = []
-        self.decina_multi_sessions = []
-        self.ambo_jolly_sessions = []
-        self.spy_lab_sessions = []
-
+        self.spy_sessions = []
+        self.draws_since_spy_report = 0
         self.save_state()
 
-    # ========================================================
-    # CSV EVENTS
-    # ========================================================
-
-    def append_csv_event(
-        self,
-        event,
-        *,
-        play=None,
-        play_id=None,
-        e=None,
-        colpo=None,
-        session_type="",
-        strategy="",
-        jolly=None,
-        terni=None,
-        hit_list=None,
-        outcome="",
-        decina_signal_id=None,
-        decina_top3=None,
-        decina_heat_total=None,
-        decina_hit_numbers=None,
-        decina_multi_signal_id=None,
-        decina_multi_package="",
-        decina_top5=None,
-        decina_package_terni=None,
-        decina_terni_hit_count=None,
-        ambo_jolly_terno=None,
-        ambo_jolly_rank1_ambo=None,
-        ambo_jolly_op3=None,
-        ambo_jolly_horizon=None,
-        spy_signal_id=None,
-        spy_number=None,
-        spy_condition="",
-        spy_network="",
-        spy_network_level="",
-        spy_active_related=None,
-        spy_active_total=None,
-        spy_followers=None,
-        spy_hit_numbers=None,
-        spy_k_hit=None,
-    ):
+    def append_csv_event(self, event, **kwargs):
         ensure_csv()
-
-        snap = play or self.active_snapshot or {}
-
+        v48_net, v48_roi = roi_text(self.v48_gross_units, self.v48_cost_units)
         row = {
             "time": now_txt(),
             "day": self.day,
             "event": event,
-            "play_id": play_id if play_id is not None else snap.get("play_id", ""),
-            "estrazione": e if e is not None else "",
-            "colpo": colpo if colpo is not None else "",
-            "session_type": session_type,
-            "strategy": strategy,
-            "ambata": snap.get("ambata", ""),
-            "ambi": fmt_ambi(snap.get("ambi", [])),
-            "cluster": fmt_nums(snap.get("cluster_numbers", [])),
-            "jolly": fmt_jolly(jolly),
-            "terni": fmt_terni(terni),
-            "hit_list": fmt_terni(hit_list),
-            "outcome": outcome,
-            "v48_total_play": self.total_play,
-            "v48_hit_ambata_events": self.total_hit_ambata,
-            "v48_hit_ambo": self.total_hit_ambo,
+            "estrazione": kwargs.get("e", ""),
+            "play_id": kwargs.get("play_id", ""),
+            "colpo": kwargs.get("colpo", ""),
+            "ambata": kwargs.get("ambata", ""),
+            "ambi": kwargs.get("ambi", ""),
+            "cluster": kwargs.get("cluster", ""),
+            "outcome": kwargs.get("outcome", ""),
+            "hit_ambi": kwargs.get("hit_ambi", ""),
+            "hit_ranks": kwargs.get("hit_ranks", ""),
+            "v48_play": self.total_play,
+            "v48_hit": self.total_hit_ambo,
             "v48_stop": self.total_stop,
-            "v48_rank1_hit_events": self.v48_ambo_rank_hits["1"],
-            "v48_rank2_hit_events": self.v48_ambo_rank_hits["2"],
-            "v48_rank3_hit_events": self.v48_ambo_rank_hits["3"],
-            "v48_multi_ambo_hit_draws": self.v48_multi_ambo_hit_draws,
-            "op3_sessions": self.terni_stats["op3"]["sessions"],
-            "op3_hit_sessions": self.terni_stats["op3"]["hit_sessions"],
-            "op9_sessions": self.terni_stats["op9"]["sessions"],
-            "op9_hit_sessions": self.terni_stats["op9"]["hit_sessions"],
-            "op6_sessions": self.terni_stats["op6"]["sessions"],
-            "op6_hit_sessions": self.terni_stats["op6"]["hit_sessions"],
-            "op7_sessions": self.terni_stats["op7"]["sessions"],
-            "op7_hit_sessions": self.terni_stats["op7"]["hit_sessions"],
-            "ambata_r2_sessions": self.ambata_r2_stats["sessions"],
-            "ambata_r2_hits": self.ambata_r2_stats["hits"],
-            "ambata_r2_misses": self.ambata_r2_stats["misses"],
-            "ambata_r2_hit_colpo1": self.ambata_r2_stats["hit_colpo1"],
-            "ambata_r2_hit_colpo2": self.ambata_r2_stats["hit_colpo2"],
-            "decina_signal_id": decina_signal_id if decina_signal_id is not None else "",
-            "decina_top3": fmt_nums(decina_top3),
-            "decina_heat_total": decina_heat_total if decina_heat_total is not None else "",
-            "decina_hit_numbers": fmt_nums(decina_hit_numbers),
-            "decina_sessions": self.decina_lab_stats["sessions"],
-            "decina_closed": self.decina_lab_stats["closed"],
-            "decina_k1_hits": self.decina_lab_stats["k1_hits"],
-            "decina_k2_hits": self.decina_lab_stats["k2_hits"],
-            "decina_k3_hits": self.decina_lab_stats["k3_hits"],
-            "decina_k2_colpo1": self.decina_lab_stats["k2_colpo1"],
-            "decina_k2_colpo2": self.decina_lab_stats["k2_colpo2"],
-            "decina_k3_colpo1": self.decina_lab_stats["k3_colpo1"],
-            "decina_k3_colpo2": self.decina_lab_stats["k3_colpo2"],
-            "decina_k3_cost_units": f"{float(self.decina_lab_stats['k3_cost_units']):.2f}",
-            "decina_k3_gross_units": f"{float(self.decina_lab_stats['k3_gross_units']):.2f}",
-            "decina_k3_net_units": f"{float(self.decina_lab_stats['k3_gross_units']) - float(self.decina_lab_stats['k3_cost_units']):.2f}",
-            "decina_k3_roi_pct": f"{(((float(self.decina_lab_stats['k3_gross_units']) - float(self.decina_lab_stats['k3_cost_units'])) / float(self.decina_lab_stats['k3_cost_units']) * 100.0) if float(self.decina_lab_stats['k3_cost_units']) else 0.0):.4f}",
-            "decina_multi_signal_id": decina_multi_signal_id if decina_multi_signal_id is not None else "",
-            "decina_multi_package": decina_multi_package,
-            "decina_top5": fmt_nums(decina_top5),
-            "decina_package_terni": fmt_terni(decina_package_terni),
-            "decina_terni_hit_count": decina_terni_hit_count if decina_terni_hit_count is not None else "",
-            "ambo_jolly_terno": fmt_terni([ambo_jolly_terno]) if ambo_jolly_terno else "",
-            "ambo_jolly_rank1_ambo": fmt_nums(ambo_jolly_rank1_ambo),
-            "ambo_jolly_op3": ambo_jolly_op3 if ambo_jolly_op3 is not None else "",
-            "ambo_jolly_horizon": ambo_jolly_horizon if ambo_jolly_horizon is not None else "",
-            "spy_signal_id": spy_signal_id if spy_signal_id is not None else "",
-            "spy_number": spy_number if spy_number is not None else "",
-            "spy_condition": spy_condition,
-            "spy_network": spy_network,
-            "spy_network_level": spy_network_level,
-            "spy_active_related": spy_active_related if spy_active_related is not None else "",
-            "spy_active_total": spy_active_total if spy_active_total is not None else "",
-            "spy_followers": fmt_nums(spy_followers),
-            "spy_hit_numbers": fmt_nums(spy_hit_numbers),
-            "spy_k_hit": spy_k_hit if spy_k_hit is not None else "",
-            "spy_sessions": self.spy_lab_stats["sessions"],
-            "spy_closed": self.spy_lab_stats["closed"],
-            "spy_k1_hits": self.spy_lab_stats["k1_hits"],
-            "spy_k2_hits": self.spy_lab_stats["k2_hits"],
-            "spy_k3_hits": self.spy_lab_stats["k3_hits"],
-            "spy_k3_cost_units": f"{float(self.spy_lab_stats['k3_cost_units']):.2f}",
-            "spy_k3_gross_units": f"{float(self.spy_lab_stats['k3_gross_units']):.2f}",
-            "spy_k3_net_units": f"{float(self.spy_lab_stats['k3_gross_units']) - float(self.spy_lab_stats['k3_cost_units']):.2f}",
-            "spy_k3_roi_pct": f"{(((float(self.spy_lab_stats['k3_gross_units']) - float(self.spy_lab_stats['k3_cost_units'])) / float(self.spy_lab_stats['k3_cost_units']) * 100.0) if float(self.spy_lab_stats['k3_cost_units']) else 0.0):.4f}",
+            "v48_cost": f"{self.v48_cost_units:.2f}",
+            "v48_gross": f"{self.v48_gross_units:.2f}",
+            "v48_net": f"{v48_net:.2f}",
+            "v48_roi": f"{v48_roi:.4f}",
+            "spy_id": kwargs.get("spy_id", ""),
+            "spy": kwargs.get("spy", ""),
+            "spy_condition": kwargs.get("spy_condition", ""),
+            "spy_followers": kwargs.get("spy_followers", ""),
+            "spy_network": kwargs.get("spy_network", ""),
+            "spy_level": kwargs.get("spy_level", ""),
+            "spy_horizon": kwargs.get("spy_horizon", ""),
+            "spy_k1": kwargs.get("spy_k1", ""),
+            "spy_k2": kwargs.get("spy_k2", ""),
+            "spy_k3": kwargs.get("spy_k3", ""),
+            "spy_hit_nums": kwargs.get("spy_hit_nums", ""),
+            "spy_cost": kwargs.get("spy_cost", ""),
+            "spy_gross": kwargs.get("spy_gross", ""),
+            "spy_net": kwargs.get("spy_net", ""),
+            "spy_roi": kwargs.get("spy_roi", ""),
         }
-
-        # Campi cumulativi horizon-specific per NUMERI SPIA LAB.
-        for _h in SPY_LAB_HORIZONS:
-            _hkey = str(_h)
-            _st = self.spy_horizon_stats.get(_hkey, self.new_spy_lab_stats())
-            _cost = float(_st.get("k3_cost_units", 0.0))
-            _gross = float(_st.get("k3_gross_units", 0.0))
-            _net = _gross - _cost
-            _roi = (_net / _cost * 100.0) if _cost else 0.0
-            row.update({
-                f"spy_h{_h}_sessions": _st.get("sessions", 0),
-                f"spy_h{_h}_closed": _st.get("closed", 0),
-                f"spy_h{_h}_k1_hits": _st.get("k1_hits", 0),
-                f"spy_h{_h}_k2_hits": _st.get("k2_hits", 0),
-                f"spy_h{_h}_k3_hits": _st.get("k3_hits", 0),
-                f"spy_h{_h}_k3_cost_units": f"{_cost:.2f}",
-                f"spy_h{_h}_k3_gross_units": f"{_gross:.2f}",
-                f"spy_h{_h}_k3_net_units": f"{_net:.2f}",
-                f"spy_h{_h}_k3_roi_pct": f"{_roi:.4f}",
-            })
-
-        for bucket in DECINA_HEAT_BUCKETS:
-            st = self.decina_heat_stats[bucket]
-            p = bucket.lower()
-            cost = float(st["k3_cost_units"])
-            gross = float(st["k3_gross_units"])
-            net = gross - cost
-            roi = (net / cost * 100.0) if cost else 0.0
-            row.update({
-                f"decina_{p}_sessions": st["sessions"],
-                f"decina_{p}_closed": st["closed"],
-                f"decina_{p}_k1_hits": st["k1_hits"],
-                f"decina_{p}_k2_hits": st["k2_hits"],
-                f"decina_{p}_k3_hits": st["k3_hits"],
-                f"decina_{p}_k2_colpo1": st["k2_colpo1"],
-                f"decina_{p}_k2_colpo2": st["k2_colpo2"],
-                f"decina_{p}_k3_colpo1": st["k3_colpo1"],
-                f"decina_{p}_k3_colpo2": st["k3_colpo2"],
-                f"decina_{p}_k3_cost_units": f"{cost:.2f}",
-                f"decina_{p}_k3_gross_units": f"{gross:.2f}",
-                f"decina_{p}_k3_net_units": f"{net:.2f}",
-                f"decina_{p}_k3_roi_pct": f"{roi:.4f}",
-            })
-
-        for package in ("core", "pivot"):
-            st = self.decina_multi_stats[package]
-            cost = float(st["cost_units"])
-            gross = float(st["gross_units"])
-            net = gross - cost
-            roi = (net / cost * 100.0) if cost else 0.0
-            row.update({
-                f"{package}_sessions": st["sessions"],
-                f"{package}_closed": st["closed"],
-                f"{package}_winning_sessions": st["winning_sessions"],
-                f"{package}_losing_sessions": st["losing_sessions"],
-                f"{package}_hit_colpo1": st["hit_colpo1"],
-                f"{package}_hit_colpo2": st["hit_colpo2"],
-                f"{package}_winning_terni": st["winning_terni"],
-                f"{package}_multi_2plus_sessions": st["multi_2plus_sessions"],
-                f"{package}_max_terni_same_draw": st["max_terni_same_draw"],
-                f"{package}_cost_units": f"{cost:.2f}",
-                f"{package}_gross_units": f"{gross:.2f}",
-                f"{package}_net_units": f"{net:.2f}",
-                f"{package}_roi_pct": f"{roi:.4f}",
-            })
-
-        for horizon in AMBO_JOLLY_HORIZONS:
-            hkey = str(horizon)
-            st = self.ambo_jolly_stats[hkey]
-            cost = float(st["cost_units"])
-            gross = float(st["gross_units"])
-            net = gross - cost
-            roi = (net / cost * 100.0) if cost else 0.0
-            row.update({
-                f"aj{horizon}_sessions": st["sessions"],
-                f"aj{horizon}_closed": st["closed"],
-                f"aj{horizon}_hits": st["hits"],
-                f"aj{horizon}_misses": st["misses"],
-                f"aj{horizon}_cost_units": f"{cost:.2f}",
-                f"aj{horizon}_gross_units": f"{gross:.2f}",
-                f"aj{horizon}_net_units": f"{net:.2f}",
-                f"aj{horizon}_roi_pct": f"{roi:.4f}",
-            })
-
-        with open(CSV_FILE, "a", encoding="utf-8", newline="") as f:
+        with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
             writer.writerow(row)
 
-    # ========================================================
-    # DEDUP / STARTUP
-    # ========================================================
-
+    # --------------------------------------------------------
+    # Dedup/history
+    # --------------------------------------------------------
     def already_processed(self, e, nums):
         fp = fingerprint(e, nums)
-
-        if fp == self.last_fp:
-            return True
-        if fp in self.processed_fps:
-            return True
-        if e <= self.max_e and e in self.processed_ids:
-            return True
-
-        return False
+        return e in self.processed_ids or fp in self.processed_fps
 
     def remember_processed(self, e, nums):
         fp = fingerprint(e, nums)
-
-        self.max_e = max(self.max_e, e)
+        self.max_e = max(self.max_e, int(e))
         self.last_fp = fp
-
-        self.processed_ids.append(e)
+        self.processed_ids.append(int(e))
         self.processed_fps.append(fp)
-
         self.processed_ids = self.processed_ids[-PROCESSED_MAX:]
         self.processed_fps = self.processed_fps[-PROCESSED_MAX:]
 
     def preload_today_as_processed(self, es):
-        """Carica lo storico visibile e marca TUTTO come processato."""
         for e, nums in es:
             if len(set(nums)) != 20:
                 continue
-
             self.last_draws.append(nums)
             self.processed_ids.append(e)
             self.processed_fps.append(fingerprint(e, nums))
-
         self.last_draws = self.last_draws[-HISTORY_MAX:]
         self.processed_ids = self.processed_ids[-PROCESSED_MAX:]
         self.processed_fps = self.processed_fps[-PROCESSED_MAX:]
-
         if es:
             last_e, last_nums = es[-1]
             self.max_e = last_e
             self.last_fp = fingerprint(last_e, last_nums)
-
         self.save_state()
 
-    # ========================================================
-    # FEATURES — STESSE DEL CODICE v48/LAB PRECEDENTE
-    # ========================================================
-
+    # --------------------------------------------------------
+    # v48 core features
+    # --------------------------------------------------------
     def lag(self, n):
         lag = 0
-
         for d in reversed(self.last_draws[:-1]):
             lag += 1
             if n in d:
                 return lag
-
         return lag
 
     def heat(self, n):
         weights = [5, 4, 3, 2, 1]
-        return sum(
-            w for i, w in enumerate(weights)
-            if i < len(self.last_draws)
-            and n in self.last_draws[-(i + 1)]
-        )
+        return sum(w for i, w in enumerate(weights) if i < len(self.last_draws) and n in self.last_draws[-(i + 1)])
 
     def dominance(self, n, window=6):
         return sum(1 for d in self.last_draws[-window:] if n in d)
 
     def pressure(self, n):
         weights = [5, 4, 3, 2, 1]
-        return sum(
-            w for i, w in enumerate(weights)
-            if i < len(self.last_draws)
-            and n in self.last_draws[-(i + 1)]
-        )
-
-    def recent_frequency(self, n, window=20):
-        return sum(1 for d in self.last_draws[-window:] if n in d)
-
-    def decina_numbers(self, n):
-        start = ((int(n) - 1) // 10) * 10 + 1
-        end = min(start + 9, 90)
-        return list(range(start, end + 1))
-
-    def build_terni_single_jolly(self, ambi, jolly):
-        terni = []
-
-        if not jolly:
-            return terni
-
-        for item in ambi:
-            a, b = item["ambo"]
-            if jolly not in (a, b):
-                terni.append(tuple(sorted((a, b, int(jolly)))))
-
-        return sorted(set(terni))
-
-    def best_by_score(self, candidates, e):
-        clean = [int(n) for n in candidates if 1 <= int(n) <= 90]
-
-        if not clean:
-            return None
-
-        clean = sorted(set(clean))
-        clean.sort(
-            key=lambda n: (
-                -self.number_score(n, e),
-                -self.recent_frequency(n, 20),
-                self.lag(n),
-                n,
-            )
-        )
-        return clean[0]
-
-    # ========================================================
-    # TOP RITARDATARI — CORE v48
-    # ========================================================
+        return sum(w for i, w in enumerate(weights) if i < len(self.last_draws) and n in self.last_draws[-(i + 1)])
 
     def top_ritardatari(self):
-        data = []
-
-        for n in range(1, 91):
-            data.append({"number": n, "lag": self.lag(n)})
-
+        data = [{"number": n, "lag": self.lag(n)} for n in range(1, 91)]
         data.sort(key=lambda x: (-x["lag"], x["number"]))
         return data[:TOP_RITARDATARI]
 
     def selected_ritardatari(self):
         top10 = self.top_ritardatari()
         selected = []
-
         for pos in PLAY_POSITIONS:
             idx = pos - 1
             if idx < len(top10):
-                selected.append({
-                    "position": pos,
-                    "number": top10[idx]["number"],
-                    "lag": top10[idx]["lag"],
-                })
-
+                selected.append({"position": pos, "number": top10[idx]["number"], "lag": top10[idx]["lag"]})
         return top10, selected
 
-    # ========================================================
-    # CLEAN WATCH/HOT — CORE v48
-    # ========================================================
-
     def clean_old_watch(self, current_e):
-        remove = []
-
-        for key, data in self.watch.items():
-            if current_e - int(data["first_e"]) > WATCH_WINDOW:
-                remove.append(key)
-
-        for key in remove:
+        for key in [k for k, d in self.watch.items() if current_e - int(d["first_e"]) > WATCH_WINDOW]:
             self.watch.pop(key, None)
 
     def clean_old_hot(self, current_e):
-        remove = []
-
-        for key, data in self.hot_confirmed.items():
-            if current_e - int(data["confirmed_e"]) > HOT_TTL:
-                remove.append(key)
-
-        for key in remove:
+        for key in [k for k, d in self.hot_confirmed.items() if current_e - int(d["confirmed_e"]) > HOT_TTL]:
             self.hot_confirmed.pop(key, None)
 
     def update_watch_and_confirmed(self, e, nums, selected):
         s = set(nums)
-
         for item in selected:
             n = int(item["number"])
             key = str(n)
-
             if n not in s:
                 continue
-
             if key not in self.watch:
                 self.watch[key] = {
                     "number": n,
@@ -1399,25 +672,15 @@ class SNIPER_V48:
             else:
                 self.watch[key]["hits"] += 1
                 self.watch[key]["last_e"] = e
-
                 if self.watch[key]["hits"] >= 2:
-                    self.hot_confirmed[key] = {
-                        **self.watch[key],
-                        "confirmed_e": e,
-                    }
+                    self.hot_confirmed[key] = {**self.watch[key], "confirmed_e": e}
                     self.watch.pop(key, None)
-
         self.clean_old_watch(e)
         self.clean_old_hot(e)
-
-    # ========================================================
-    # SCORE — INVARIATO
-    # ========================================================
 
     def confirmed_score(self, item, e):
         n = int(item["number"])
         age = e - int(item["confirmed_e"])
-
         return (
             item["hits"] * 20
             - age * 2
@@ -1429,70 +692,35 @@ class SNIPER_V48:
 
     def number_score(self, n, e):
         hot = self.hot_confirmed.get(str(n))
-        hot_score = 0
-
-        if hot:
-            hot_score = self.confirmed_score(hot, e)
-
-        return (
-            hot_score
-            + self.heat(n) * 2
-            + self.dominance(n, 6) * 3
-            + self.pressure(n)
-            - self.lag(n)
-        )
-
-    # ========================================================
-    # DUPLICATE CLUSTER — CORE v48
-    # ========================================================
+        hot_score = self.confirmed_score(hot, e) if hot else 0
+        return hot_score + self.heat(n) * 2 + self.dominance(n, 6) * 3 + self.pressure(n) - self.lag(n)
 
     def duplicate_cluster(self, cluster_numbers, e):
         if not self.last_cluster_numbers:
             return False
-
-        if e - self.last_cluster_e >= CLUSTER_REUSE_AFTER:
+        if e - int(self.last_cluster_e) >= CLUSTER_REUSE_AFTER:
             return False
-
-        overlap = len(set(cluster_numbers) & set(self.last_cluster_numbers))
-        return overlap >= 2
-
-    # ========================================================
-    # BUILD PLAY
-    # ========================================================
+        return len(set(cluster_numbers) & set(self.last_cluster_numbers)) >= 2
 
     def build_play(self, e):
-        hot_items = [
-            x for x in self.hot_confirmed.values()
-            if 0 <= e - int(x["confirmed_e"]) <= HOT_TTL
-        ]
-
+        hot_items = [x for x in self.hot_confirmed.values() if 0 <= e - int(x["confirmed_e"]) <= HOT_TTL]
         if len(hot_items) < MIN_HOT_ACTIVE:
             return None
 
         pair_candidates = []
-
-        # ==================================================
-        # MOTORE v48 ORIGINALE: NON MODIFICARE
-        # ==================================================
         for a, b in combinations(hot_items, 2):
             pair = tuple(sorted((int(a["number"]), int(b["number"]))))
             score = self.confirmed_score(a, e) + self.confirmed_score(b, e)
-
-            pair_candidates.append({
-                "ambo": pair,
-                "score": round(score, 2),
-            })
+            pair_candidates.append({"ambo": pair, "score": round(score, 2)})
 
         pair_candidates.sort(key=lambda x: -x["score"])
         ambi = pair_candidates[:MAX_AMBI_PER_PLAY]
-
         if not ambi:
             return None
 
         all_numbers = []
         for item in ambi:
             all_numbers.extend(item["ambo"])
-
         cluster_numbers = sorted(set(all_numbers))
 
         if self.duplicate_cluster(cluster_numbers, e):
@@ -1500,1759 +728,668 @@ class SNIPER_V48:
 
         freq = Counter(all_numbers)
         ambata = freq.most_common(1)[0][0]
-
-        # ==================================================
-        # DA QUI IN POI: SOLO LAB PARALLELO
-        # ==================================================
-        outside_cluster = [n for n in range(1, 91) if n not in cluster_numbers]
-
-        # OP3 — miglior score assoluto fuori cluster (PRIMARY)
-        all_scores = [(n, self.number_score(n, e)) for n in outside_cluster]
-        all_scores.sort(key=lambda x: -x[1])
-        terno_num_3 = all_scores[0][0] if all_scores else None
-
-        # OP6 — miglior numero stessa decina ambata
-        decina_ambata = [
-            n for n in self.decina_numbers(ambata)
-            if n not in cluster_numbers
-        ]
-        terno_num_6 = self.best_by_score(decina_ambata, e)
-
-        # OP7 — stessa decina dinamica per singolo ambo
-        terni_op7 = []
-        terno_num_7 = []
-
-        for item in ambi:
-            a, b = item["ambo"]
-            decina_candidates = set(self.decina_numbers(a)) | set(self.decina_numbers(b))
-            decina_candidates = [
-                n for n in decina_candidates
-                if n not in cluster_numbers
-            ]
-
-            jolly = self.best_by_score(decina_candidates, e)
-            if jolly:
-                terno_num_7.append(jolly)
-                terni_op7.append(tuple(sorted((a, b, jolly))))
-
-        terno_num_7 = sorted(set(terno_num_7))
-        terni_op7 = sorted(set(terni_op7))
-
-        # OP9 — mix score + ritardo + frequenza recente (CONTROL)
-        mix_candidates = []
-
-        for n in outside_cluster:
-            mix = (
-                self.number_score(n, e)
-                + self.lag(n) * 0.60
-                + self.recent_frequency(n, 20) * 2.00
-                + self.recent_frequency(n, 60) * 0.50
-            )
-            mix_candidates.append((n, mix))
-
-        mix_candidates.sort(key=lambda x: (-x[1], x[0]))
-        terno_num_9 = mix_candidates[0][0] if mix_candidates else None
-
-        terni_op3 = self.build_terni_single_jolly(ambi, terno_num_3)
-        terni_op6 = self.build_terni_single_jolly(ambi, terno_num_6)
-        terni_op9 = self.build_terni_single_jolly(ambi, terno_num_9)
-
-        return {
-            "ambata": ambata,
-            "ambi": ambi,
-            "cluster_numbers": cluster_numbers,
-            "terno_num_3": terno_num_3,
-            "terni_op3": terni_op3,
-            "terno_num_9": terno_num_9,
-            "terni_op9": terni_op9,
-            "terno_num_6": terno_num_6,
-            "terni_op6": terni_op6,
-            "terno_num_7": terno_num_7,
-            "terni_op7": terni_op7,
-        }
-
-    # ========================================================
-    # CHECK CORE v48
-    # ========================================================
+        return {"ambata": ambata, "ambi": ambi, "cluster_numbers": cluster_numbers}
 
     def check_v48_hit(self, nums):
         s = set(nums)
-        snap = self.active_snapshot
-
-        ambata_hit = snap["ambata"] in s
+        snap = self.active_snapshot or {}
+        ambata_hit = snap.get("ambata") in s
         ambi_hit = []
-
-        for item in snap["ambi"]:
+        for item in snap.get("ambi", []):
             a, b = item["ambo"]
             if a in s and b in s:
                 ambi_hit.append(item)
+        return {"ambata_hit": ambata_hit, "ambi_hit": ambi_hit}
 
-        return {
-            "ambata_hit": ambata_hit,
-            "ambi_hit": ambi_hit,
-        }
+    # --------------------------------------------------------
+    # Spy conditions
+    # --------------------------------------------------------
+    def condition_active(self, n, condition):
+        n = int(n)
+        hist = self.last_draws
+        if not hist:
+            return False
 
-    # ========================================================
-    # DECINA LAB 10-19 — HEAT 5 / TOP 3 / SOGLIA >= 8
-    # ========================================================
+        def present(offset):
+            # offset 1 = ultimo colpo
+            return len(hist) >= offset and n in hist[-offset]
 
-    def build_decina_10_19_signal(self):
-        """Costruisce un segnale solo dal passato già noto.
-
-        Regola identica al backtest:
-        - ultime 5 estrazioni
-        - per 10..19 conta presenze
-        - tie-break: conteggio, poi recenza pesata 1..5, poi numero minore
-        - TOP 3
-        - segnale solo se somma conteggi TOP 3 >= 8
-
-        La sessione aperta DOPO l'estrazione corrente viene verificata
-        esclusivamente sulle 2 estrazioni future successive.
-        """
-        if len(self.last_draws) < DECINA_LAB_WINDOW:
-            return None
-
-        hist = self.last_draws[-DECINA_LAB_WINDOW:]
-        ranked = []
-
-        for n in DECINA_LAB_NUMBERS:
-            count = sum(1 for draw in hist if n in draw)
-            recency_weighted = sum(
-                weight
-                for weight, draw in enumerate(hist, start=1)
-                if n in draw
-            )
-            ranked.append((n, count, recency_weighted))
-
-        ranked.sort(key=lambda x: (-x[1], -x[2], x[0]))
-        top = ranked[:DECINA_LAB_TOP_N]
-        top5_rows = ranked[:DECINA_MULTI_TOP_N]
-        top3 = [int(x[0]) for x in top]
-        top5 = [int(x[0]) for x in top5_rows]
-        heat_counts = [int(x[1]) for x in top]
-        top5_heat_counts = [int(x[1]) for x in top5_rows]
-        heat_total = sum(heat_counts)
-
-        if heat_total < DECINA_LAB_HEAT_THRESHOLD:
-            return None
-
-        return {
-            "top3": top3,
-            "top5": top5,
-            "heat_counts": heat_counts,
-            "top5_heat_counts": top5_heat_counts,
-            "heat_total": int(heat_total),
-        }
-
-    async def maybe_open_decina_10_19_session(self, app, e):
-        signal = self.build_decina_10_19_signal()
-        if not signal:
-            return
-
-        self.decina_lab_uid += 1
-        session = {
-            "signal_id": self.decina_lab_uid,
-            "day": self.day,
-            "origin_e": e,
-            "colpi": 0,
-            "max_colpi": DECINA_LAB_MAX_COLPI,
-            "top3": signal["top3"],
-            "top5": signal.get("top5", signal["top3"]),
-            "heat_counts": signal["heat_counts"],
-            "heat_total": signal["heat_total"],
-            "heat_bucket": self.decina_heat_bucket(signal["heat_total"]),
-            "k3_bet_closed": False,
-            "k1_hit": False,
-            "k2_hit": False,
-            "k3_hit": False,
-            "k1_first_colpo": None,
-            "k2_first_colpo": None,
-            "k3_first_colpo": None,
-        }
-        self.decina_lab_sessions.append(session)
-        self.decina_lab_stats["sessions"] += 1
-        self.decina_heat_stats[session["heat_bucket"]]["sessions"] += 1
-
-        self.append_csv_event(
-            "DECINA_10_19_OPEN",
-            e=e,
-            colpo=0,
-            session_type="DECINA_10_19_H5_T2",
-            strategy="DECINA_10_19_TOP3_HEAT5",
-            outcome="OPEN",
-            decina_signal_id=session["signal_id"],
-            decina_top3=session["top3"],
-            decina_heat_total=session["heat_total"],
-        )
-
-        if DECINA_LAB_NOTIFY:
-            await self.tg(
-                app,
-                "🔥 DECINA LAB 10-19 — SEGNALE\n"
-                f"• signal_id = {session['signal_id']}\n"
-                f"• TOP 3 Heat 5 = {fmt_nums(session['top3'])}\n"
-                f"• conteggi = {fmt_nums(session['heat_counts'])}\n"
-                f"• Heat totale = {session['heat_total']}\n"
-                f"• fascia monitor = {session['heat_bucket']}" + (" ⭐ PRIORITARIA" if session["heat_bucket"] == "H9" else "") + "\n"
-                f"• soglia = {DECINA_LAB_HEAT_THRESHOLD}\n"
-                f"• osservazione = prossimi {DECINA_LAB_MAX_COLPI} colpi\n"
-                "• target principale = almeno 2 dei 3 insieme"
-            )
-
-        # CORE/PIVOT si aprono solo nella fascia Heat >= 9.
-        if signal["heat_total"] >= DECINA_MULTI_HEAT_THRESHOLD:
-            await self.open_decina_multi_sessions(app, e, signal)
-
-    @staticmethod
-    def build_decina_multi_packages(top5):
-        if len(top5) < 5:
-            return {}
-
-        a, b, c, d, e = map(int, top5[:5])
-        core = normalize_terni([
-            (a, b, c),
-            (a, b, d),
-            (a, b, e),
-        ])
-        pivot = normalize_terni(
-            (a, x, y)
-            for x, y in combinations((b, c, d, e), 2)
-        )
-        return {"core": core, "pivot": pivot}
-
-    async def open_decina_multi_sessions(self, app, e, signal):
-        top5 = [int(n) for n in signal.get("top5", [])]
-        packages = self.build_decina_multi_packages(top5)
-        if not packages:
-            return
-
-        self.decina_multi_uid += 1
-        multi_signal_id = self.decina_multi_uid
-
-        for package in ("core", "pivot"):
-            terni = packages[package]
-            session = {
-                "multi_signal_id": multi_signal_id,
-                "package": package,
-                "day": self.day,
-                "origin_e": e,
-                "colpi": 0,
-                "max_colpi": DECINA_MULTI_MAX_COLPI,
-                "top5": top5,
-                "heat_total": int(signal["heat_total"]),
-                "terni": [list(t) for t in terni],
-            }
-            self.decina_multi_sessions.append(session)
-            self.decina_multi_stats[package]["sessions"] += 1
-
-            self.append_csv_event(
-                f"DECINA_MULTI_{package.upper()}_OPEN",
-                e=e,
-                colpo=0,
-                session_type=f"DECINA_MULTI_{package.upper()}_H5_T2",
-                strategy=f"DECINA_{package.upper()}_HEAT5",
-                terni=terni,
-                outcome="OPEN",
-                decina_multi_signal_id=multi_signal_id,
-                decina_multi_package=package,
-                decina_top5=top5,
-                decina_package_terni=terni,
-                decina_heat_total=signal["heat_total"],
-            )
-
-        if DECINA_MULTI_NOTIFY:
-            core = packages["core"]
-            pivot = packages["pivot"]
-            await self.tg(
-                app,
-                "🧪 DECINA MULTI-TERNO 10-19 — SEGNALE\n"
-                f"• multi_signal_id = {multi_signal_id}\n"
-                f"• TOP 5 Heat = {fmt_nums(top5)}\n"
-                f"• Heat TOP3 = {signal['heat_total']} (soglia >= {DECINA_MULTI_HEAT_THRESHOLD})\n\n"
-                f"🔷 CORE TOP2 — {len(core)} terni\n"
-                f"{fmt_terni(core)}\n\n"
-                f"🔶 PIVOT — {len(pivot)} terni\n"
-                f"{fmt_terni(pivot)}\n\n"
-                f"• osservazione = prossimi {DECINA_MULTI_MAX_COLPI} colpi\n"
-                "• stop pacchetto = primo colpo vincente"
-            )
-
-    async def process_decina_multi_sessions(self, app, e, nums):
-        if not self.decina_multi_sessions:
-            return
-
-        draw_set = set(nums)
-        survivors = []
-
-        for session in self.decina_multi_sessions:
-            package = session["package"]
-            st = self.decina_multi_stats[package]
-            session["colpi"] = int(session.get("colpi", 0)) + 1
-            colpo = session["colpi"]
-            terni = normalize_terni(session.get("terni", []))
-
-            # Una unita' per ogni terno del pacchetto a ogni colpo giocato.
-            st["cost_units"] += float(len(terni))
-
-            hits = [t for t in terni if set(t).issubset(draw_set)]
-            hit_count = len(hits)
-
-            if hit_count > 0:
-                st["closed"] += 1
-                st["winning_sessions"] += 1
-                st["winning_terni"] += hit_count
-                st["max_terni_same_draw"] = max(st["max_terni_same_draw"], hit_count)
-                if hit_count >= 2:
-                    st["multi_2plus_sessions"] += 1
-                if colpo == 1:
-                    st["hit_colpo1"] += 1
-                elif colpo == 2:
-                    st["hit_colpo2"] += 1
-                st["gross_units"] += float(hit_count) * DECINA_TERNO_PAYOUT
-
-                self.append_csv_event(
-                    f"DECINA_MULTI_{package.upper()}_HIT",
-                    e=e,
-                    colpo=colpo,
-                    session_type=f"DECINA_MULTI_{package.upper()}_H5_T2",
-                    strategy=f"DECINA_{package.upper()}_HEAT5",
-                    terni=terni,
-                    hit_list=hits,
-                    outcome=f"HIT_{hit_count}_TERNI",
-                    decina_multi_signal_id=session["multi_signal_id"],
-                    decina_multi_package=package,
-                    decina_top5=session.get("top5", []),
-                    decina_package_terni=terni,
-                    decina_terni_hit_count=hit_count,
-                    decina_heat_total=session.get("heat_total"),
-                )
-
-                if DECINA_MULTI_NOTIFY:
-                    label = "CORE TOP2" if package == "core" else "PIVOT"
-                    await self.tg(
-                        app,
-                        f"💥 DECINA {label} — HIT TERNO\n"
-                        f"• multi_signal_id = {session['multi_signal_id']}\n"
-                        f"• colpo = {colpo}\n"
-                        f"• Heat origine = {session.get('heat_total')}\n"
-                        f"• terni presi insieme = {hit_count}\n"
-                        f"• hit = {fmt_terni(hits)}"
-                    )
-                # Stop al primo colpo vincente: non sopravvive.
-                continue
-
-            if colpo >= int(session.get("max_colpi", DECINA_MULTI_MAX_COLPI)):
-                st["closed"] += 1
-                st["losing_sessions"] += 1
-                self.append_csv_event(
-                    f"DECINA_MULTI_{package.upper()}_MISS",
-                    e=e,
-                    colpo=colpo,
-                    session_type=f"DECINA_MULTI_{package.upper()}_H5_T2",
-                    strategy=f"DECINA_{package.upper()}_HEAT5",
-                    terni=terni,
-                    outcome="MISS",
-                    decina_multi_signal_id=session["multi_signal_id"],
-                    decina_multi_package=package,
-                    decina_top5=session.get("top5", []),
-                    decina_package_terni=terni,
-                    decina_terni_hit_count=0,
-                    decina_heat_total=session.get("heat_total"),
-                )
-                continue
-
-            survivors.append(session)
-
-        self.decina_multi_sessions = survivors
-
-    async def process_decina_10_19_sessions(self, app, e, nums):
-        if not self.decina_lab_sessions:
-            return
-
-        draw_set = set(nums)
-        survivors = []
-
-        for session in self.decina_lab_sessions:
-            session["colpi"] = int(session.get("colpi", 0)) + 1
-            colpo = session["colpi"]
-            top3 = [int(n) for n in session.get("top3", [])]
-            hit_numbers = [n for n in top3 if n in draw_set]
-            count = len(hit_numbers)
-            bucket = session.get("heat_bucket") or self.decina_heat_bucket(session.get("heat_total", 8))
-            session["heat_bucket"] = bucket
-            bst = self.decina_heat_stats[bucket]
-
-            # Simulazione economica del singolo terno TOP3:
-            # 1 unita' per colpo, massimo 2, stop economico sul primo K3.
-            if not session.get("k3_bet_closed", False):
-                self.decina_lab_stats["k3_cost_units"] += 1.0
-                bst["k3_cost_units"] += 1.0
-
-            newly_hit = []
-            for k, flag_key, first_key, stat_key in (
-                (1, "k1_hit", "k1_first_colpo", "k1_hits"),
-                (2, "k2_hit", "k2_first_colpo", "k2_hits"),
-                (3, "k3_hit", "k3_first_colpo", "k3_hits"),
-            ):
-                if count >= k and not session.get(flag_key, False):
-                    session[flag_key] = True
-                    session[first_key] = colpo
-                    self.decina_lab_stats[stat_key] += 1
-                    bst[stat_key] += 1
-                    newly_hit.append(k)
-
-                    if k == 2:
-                        if colpo == 1:
-                            self.decina_lab_stats["k2_colpo1"] += 1
-                            bst["k2_colpo1"] += 1
-                        elif colpo == 2:
-                            self.decina_lab_stats["k2_colpo2"] += 1
-                            bst["k2_colpo2"] += 1
-
-                    if k == 3:
-                        if colpo == 1:
-                            self.decina_lab_stats["k3_colpo1"] += 1
-                            bst["k3_colpo1"] += 1
-                        elif colpo == 2:
-                            self.decina_lab_stats["k3_colpo2"] += 1
-                            bst["k3_colpo2"] += 1
-
-                        if not session.get("k3_bet_closed", False):
-                            self.decina_lab_stats["k3_gross_units"] += DECINA_BASE_K3_PAYOUT
-                            bst["k3_gross_units"] += DECINA_BASE_K3_PAYOUT
-                            session["k3_bet_closed"] = True
-
-                    self.append_csv_event(
-                        f"DECINA_10_19_FIRST_HIT_K{k}",
-                        e=e,
-                        colpo=colpo,
-                        session_type="DECINA_10_19_H5_T2",
-                        strategy=f"DECINA_K{k}_{bucket}",
-                        outcome="HIT",
-                        decina_signal_id=session["signal_id"],
-                        decina_top3=top3,
-                        decina_heat_total=session.get("heat_total"),
-                        decina_hit_numbers=hit_numbers,
-                    )
-
-            # Telegram: K2/K3; H9 viene marcata come fascia prioritaria.
-            if DECINA_LAB_NOTIFY and (2 in newly_hit or 3 in newly_hit):
-                label = "TRIS 3/3" if count == 3 else "ALMENO 2/3"
-                priority = " ⭐ HEAT 9" if bucket == "H9" else ""
-                await self.tg(
-                    app,
-                    f"💥 DECINA LAB 10-19 — {label}{priority}\n"
-                    f"• signal_id = {session['signal_id']}\n"
-                    f"• colpo = {colpo}\n"
-                    f"• TOP 3 = {fmt_nums(top3)}\n"
-                    f"• usciti insieme = {fmt_nums(hit_numbers)}\n"
-                    f"• Heat origine = {session.get('heat_total')} ({bucket})"
-                )
-
-            if colpo >= int(session.get("max_colpi", DECINA_LAB_MAX_COLPI)):
-                self.decina_lab_stats["closed"] += 1
-                bst["closed"] += 1
-                outcome = (
-                    f"K1={'HIT' if session.get('k1_hit') else 'MISS'};"
-                    f"K2={'HIT' if session.get('k2_hit') else 'MISS'};"
-                    f"K3={'HIT' if session.get('k3_hit') else 'MISS'};"
-                    f"BUCKET={bucket}"
-                )
-                self.append_csv_event(
-                    "DECINA_10_19_CLOSE",
-                    e=e,
-                    colpo=colpo,
-                    session_type="DECINA_10_19_H5_T2",
-                    strategy=f"DECINA_10_19_TOP3_HEAT5_{bucket}",
-                    outcome=outcome,
-                    decina_signal_id=session["signal_id"],
-                    decina_top3=top3,
-                    decina_heat_total=session.get("heat_total"),
-                    decina_hit_numbers=hit_numbers,
-                )
-            else:
-                survivors.append(session)
-
-        self.decina_lab_sessions = survivors
-
-    # ========================================================
-    # NUMERI SPIA LAB
-    # ========================================================
-
-    def spy_condition_met(self, spy, condition):
-        """Valuta la condizione sullo storico incluso il colpo corrente.
-
-        C2_exact: spy presente negli ultimi 2 colpi e assente nel terzo precedente.
-        C3plus: spy presente negli ultimi 3 colpi consecutivi.
-        C1_exact: spy presente solo nell'ultimo colpo, non nel precedente.
-        """
-        spy = int(spy)
         if condition == "C1_exact":
-            if len(self.last_draws) < 2:
-                return False
-            return spy in self.last_draws[-1] and spy not in self.last_draws[-2]
+            return present(1) and not present(2)
         if condition == "C2_exact":
-            if len(self.last_draws) < 3:
-                return False
-            return (
-                spy in self.last_draws[-1]
-                and spy in self.last_draws[-2]
-                and spy not in self.last_draws[-3]
-            )
+            return present(1) and present(2) and not present(3)
         if condition == "C3plus":
-            if len(self.last_draws) < 3:
+            return present(1) and present(2) and present(3)
+        if condition == "NC2_W3_gap":
+            return present(1) and (not present(2)) and present(3)
+        if condition == "NC2_W5":
+            if len(hist) < 5:
                 return False
-            return all(spy in draw for draw in self.last_draws[-3:])
+            w = hist[-5:]
+            count = sum(1 for d in w if n in d)
+            return count == 2 and max_consecutive_presence(w, n) < 2
+        if condition == "NC3_W5_gap":
+            if len(hist) < 5:
+                return False
+            w = hist[-5:]
+            count = sum(1 for d in w if n in d)
+            return count == 3 and max_consecutive_presence(w, n) < 3
         return False
 
-    def active_spy_candidates_now(self):
-        """Restituisce i candidati spia attivi sullo stesso colpo corrente."""
+    def detect_spy_rules(self):
         active = []
-        for candidate in SPY_LAB_CANDIDATES:
-            if self.spy_condition_met(int(candidate["spy"]), candidate["condition"]):
-                active.append(candidate)
+        for rule in self.spy_model.values():
+            if self.condition_active(rule["spy"], rule["condition"]):
+                r = dict(rule)
+                r["network"] = classify_network(r["spy"], r["followers"])
+                active.append(r)
+
+        network_counts = Counter(r["network"] for r in active)
+        for r in active:
+            related = network_counts[r["network"]]
+            if related >= 2:
+                level = "MULTIPLA"
+            elif r["network"] in {"CATENA_5", "PONTE_55", "ZONA_40"} or r["condition"] == "C3plus":
+                level = "FORTE"
+            else:
+                level = "NORMALE"
+            r["level"] = level
+            r["active_related"] = related
+            r["active_total"] = len(active)
+
+        # Ordine: segnali con rete multipla/extra storico piu' forte in alto.
+        active.sort(key=lambda r: (-(r["level"] == "MULTIPLA"), -r.get("k2_extra_pp", 0.0), -r.get("events", 0), r["spy"]))
         return active
 
-    def spy_network_level(self, candidate, active_candidates):
-        """Classifica il segnale come NORMALE/FORTE/MULTIPLA.
+    def add_session_to_stat_buckets(self, rule):
+        for h in SPY_HORIZONS:
+            hkey = str(h)
+            exp_k2 = expected_within_h(rule.get("base_k2_pct", 0.0), h)
+            exp_k3 = expected_within_h(rule.get("base_k3_pct", 0.0), h)
+            for st in (
+                self.spy_horizon_stats[hkey],
+                self.get_nested_stat(self.spy_candidate_horizon_stats, rule["key"], hkey),
+                self.get_nested_stat(self.spy_network_horizon_stats, rule["network"], hkey),
+                self.get_nested_stat(self.spy_level_horizon_stats, rule["level"], hkey),
+            ):
+                st["sessions"] += 1
+                st["expected_k2_sum"] += exp_k2
+                st["expected_k3_sum"] += exp_k3
 
-        MULTIPLA: almeno due spie della stessa rete attive nello stesso colpo.
-        FORTE: singola spia appartenente alla CATENA_5 o al PONTE_55.
-        NORMALE: resto dei casi.
-        """
-        network = candidate.get("network", "ALTRO")
-        same_network = [c for c in active_candidates if c.get("network", "ALTRO") == network]
-        if len(same_network) >= 2:
-            return "MULTIPLA", len(same_network), len(active_candidates)
-        if network in {"CATENA_5", "PONTE_55"}:
-            return "FORTE", len(same_network), len(active_candidates)
-        return "NORMALE", len(same_network), len(active_candidates)
+    def update_stat_on_close(self, st, horizon, max_k, k3_colpo):
+        horizon = int(horizon)
+        st["closed"] += 1
+        if max_k >= 1:
+            st["k1_hits"] += 1
+        if max_k >= 2:
+            st["k2_hits"] += 1
+        if max_k >= 3:
+            st["k3_hits"] += 1
+        cost = float(k3_colpo if k3_colpo else horizon)
+        gross = TERNO_PAYOUT if k3_colpo else 0.0
+        st["k3_cost_units"] += cost
+        st["k3_gross_units"] += gross
+        return cost, gross
 
-    def _spy_stats_targets(self, ckey, network, network_level, horizon):
-        """Restituisce i quattro contenitori statistici per un orizzonte."""
-        hkey = str(horizon)
-        self.spy_horizon_stats.setdefault(hkey, self.new_spy_lab_stats())
-        self.spy_candidate_horizon_stats.setdefault(ckey, {})
-        self.spy_candidate_horizon_stats[ckey].setdefault(hkey, self.new_spy_lab_stats())
-        self.spy_network_horizon_stats.setdefault(network, {})
-        self.spy_network_horizon_stats[network].setdefault(hkey, self.new_spy_lab_stats())
-        self.spy_network_level_horizon_stats.setdefault(network_level, {})
-        self.spy_network_level_horizon_stats[network_level].setdefault(hkey, self.new_spy_lab_stats())
+    async def maybe_open_spy_sessions(self, app, e):
+        rules = self.detect_spy_rules()
+        if not rules:
+            return
 
-        # Mantieni gli alias legacy puntati a H1 per CSV/report compatibili.
-        if hkey == "1":
-            self.spy_lab_stats = self.spy_horizon_stats["1"]
-            self.spy_candidate_stats[ckey] = self.spy_candidate_horizon_stats[ckey]["1"]
-            self.spy_network_stats[network] = self.spy_network_horizon_stats[network]["1"]
-            self.spy_network_level_stats[network_level] = self.spy_network_level_horizon_stats[network_level]["1"]
-
-        return (
-            self.spy_horizon_stats[hkey],
-            self.spy_candidate_horizon_stats[ckey][hkey],
-            self.spy_network_horizon_stats[network][hkey],
-            self.spy_network_level_horizon_stats[network_level][hkey],
-        )
-
-    async def maybe_open_spy_lab_sessions(self, app, e):
-        """Apre i segnali spia candidati dal backtest.
-
-        Ogni segnale viene valutato in parallelo a 1 / 2 / 3 colpi. Il
-        NETWORK SCORE non modifica il segnale: classifica soltanto il
-        contesto in cui nasce.
-        """
         opened = []
-        active_candidates = self.active_spy_candidates_now()
-
-        for candidate in active_candidates:
-            spy = int(candidate["spy"])
-            condition = candidate["condition"]
-            followers = tuple(sorted(map(int, candidate["followers"])))
-            network = candidate.get("network", "ALTRO")
-            network_level, active_related, active_total = self.spy_network_level(candidate, active_candidates)
-
-            self.spy_lab_uid += 1
-            signal_id = self.spy_lab_uid
-            ckey = self.spy_candidate_key(candidate)
-            horizon_state = {
-                str(h): {"closed": False, "k1_hit": False, "k2_hit": False, "k3_hit": False}
-                for h in SPY_LAB_HORIZONS
-            }
+        for r in rules:
+            self.spy_uid += 1
             session = {
-                "signal_id": signal_id,
-                "open_e": e,
+                "id": self.spy_uid,
+                "opened_e": e,
+                "spy": int(r["spy"]),
+                "condition": r["condition"],
+                "followers": list(r["followers"]),
+                "key": r["key"],
+                "label": r["label"],
+                "network": r["network"],
+                "level": r["level"],
+                "active_related": int(r["active_related"]),
+                "active_total": int(r["active_total"]),
                 "colpi": 0,
-                "max_colpi": SPY_LAB_MAX_COLPI,
-                "horizons": horizon_state,
-                "spy": spy,
-                "condition": condition,
-                "followers": list(followers),
-                "candidate_key": ckey,
-                "label": candidate.get("label", f"{spy} {condition}"),
-                "network": network,
-                "network_level": network_level,
-                "active_related": active_related,
-                "active_total": active_total,
+                "k_by_colpo": [],
+                "hit_nums_by_colpo": [],
+                "closed_horizons": [],
+                "notified_k2": False,
+                "notified_k3": False,
             }
-            self.spy_lab_sessions.append(session)
-
-            for h in SPY_LAB_HORIZONS:
-                for stx in self._spy_stats_targets(ckey, network, network_level, h):
-                    stx["sessions"] += 1
+            self.spy_sessions.append(session)
+            self.add_session_to_stat_buckets(r)
             opened.append(session)
-
             self.append_csv_event(
-                "SPY_LAB_OPEN",
+                "SPY_OPEN",
                 e=e,
-                colpo=0,
-                session_type="SPY_LAB_H1_H2_H3",
-                strategy=f"SPY_{spy}_{condition}_{network}_{network_level}",
-                terni=[followers],
-                outcome="OPEN_H1_H2_H3",
-                spy_signal_id=signal_id,
-                spy_number=spy,
-                spy_condition=condition,
-                spy_network=network,
-                spy_network_level=network_level,
-                spy_active_related=active_related,
-                spy_active_total=active_total,
-                spy_followers=followers,
+                spy_id=session["id"],
+                spy=session["spy"],
+                spy_condition=session["condition"],
+                spy_followers=fmt_nums(session["followers"]),
+                spy_network=session["network"],
+                spy_level=session["level"],
             )
 
-        if SPY_LAB_NOTIFY and opened:
-            lines = ["🕵️ NUMERI SPIA LAB — SEGNALE"]
-            for session in opened:
-                net_label = SPY_NETWORK_DEFS.get(session["network"], SPY_NETWORK_DEFS["ALTRO"])["label"]
+        if SPY_NOTIFY_OPEN:
+            lines = [
+                "🕵️ NUMERI SPIA LAB — SEGNALI APERTI",
+                f"• estrazione origine = {e}",
+                f"• segnali attivi = {len(opened)}",
+                "• osservazione parallela = H1 / H2 / H3",
+            ]
+            for s in opened[:SPY_OPEN_NOTIFY_MAX_LINES]:
+                label_net = SPY_NETWORK_DEFS.get(s["network"], {}).get("label", s["network"])
                 lines.append(
-                    f"• id {session['signal_id']} | spia {session['spy']} | {session['condition']} "
-                    f"→ {fmt_nums(session['followers'])}"
+                    f"• id {s['id']} | {s['spy']} {condition_clean_label(s['condition'])} → {fmt_nums(s['followers'])}\n"
+                    f"  🧬 {label_net} | {s['level']} | rete/tot = {s['active_related']}/{s['active_total']}"
                 )
-                lines.append(
-                    f"  🧬 rete = {net_label} | livello = {session['network_level']} "
-                    f"| attive rete/tot = {session['active_related']}/{session['active_total']}"
-                )
-            lines.append("• osservazione parallela = prossimi 1 / 2 / 3 colpi")
-            lines.append("• target = K2 statistico / K3 terno 45x")
+            if len(opened) > SPY_OPEN_NOTIFY_MAX_LINES:
+                lines.append(f"• altri segnali non mostrati = {len(opened) - SPY_OPEN_NOTIFY_MAX_LINES}")
+            lines.append("\nTocca /spie per il quadro completo.")
             await self.tg(app, "\n".join(lines))
 
-    async def process_spy_lab_sessions(self, app, e, nums):
-        if not self.spy_lab_sessions:
+    async def process_spy_sessions(self, app, e, nums):
+        if not self.spy_sessions:
             return
 
-        draw_set = set(nums)
-        survivors = []
+        still_open = []
+        nums_set = set(nums)
+        for s in self.spy_sessions:
+            s["colpi"] = int(s.get("colpi", 0)) + 1
+            followers = [int(x) for x in s.get("followers", [])]
+            hit_nums = sorted([n for n in followers if n in nums_set])
+            k = len(hit_nums)
+            s.setdefault("k_by_colpo", []).append(k)
+            s.setdefault("hit_nums_by_colpo", []).append(hit_nums)
 
-        for session in self.spy_lab_sessions:
-            session["colpi"] = int(session.get("colpi", 0)) + 1
-            colpo = int(session["colpi"])
-            followers = [int(n) for n in session.get("followers", [])]
-            hit_numbers = [n for n in followers if n in draw_set]
-            hit_count = len(hit_numbers)
-            ckey = session.get("candidate_key")
-            network = session.get("network", "ALTRO")
-            network_level = session.get("network_level", "NORMALE")
-            horizons = session.setdefault("horizons", {})
-
-            hit_horizons = []
-            close_events = []
-
-            for horizon in SPY_LAB_HORIZONS:
-                hkey = str(horizon)
-                hstate = horizons.setdefault(
-                    hkey,
-                    {"closed": False, "k1_hit": False, "k2_hit": False, "k3_hit": False},
-                )
-                if hstate.get("closed", False):
-                    continue
-
-                # Ogni orizzonte simula 1 unita' sul terno TOP3 per ogni colpo
-                # ancora aperto. Se arriva K3, quell'orizzonte si ferma.
-                for stx in self._spy_stats_targets(ckey, network, network_level, horizon):
-                    stx["k3_cost_units"] += 1.0
-
-                if hit_count >= 1 and not hstate.get("k1_hit", False):
-                    hstate["k1_hit"] = True
-                    for stx in self._spy_stats_targets(ckey, network, network_level, horizon):
-                        stx["k1_hits"] += 1
-                if hit_count >= 2 and not hstate.get("k2_hit", False):
-                    hstate["k2_hit"] = True
-                    for stx in self._spy_stats_targets(ckey, network, network_level, horizon):
-                        stx["k2_hits"] += 1
-                if hit_count >= 3 and not hstate.get("k3_hit", False):
-                    hstate["k3_hit"] = True
-                    hstate["closed"] = True
-                    hit_horizons.append(horizon)
-                    for stx in self._spy_stats_targets(ckey, network, network_level, horizon):
-                        stx["k3_hits"] += 1
-                        stx["k3_gross_units"] += SPY_LAB_PAYOUT
-                        stx["closed"] += 1
-                    close_events.append((horizon, f"K3_COLPO_{colpo}"))
-                elif colpo >= int(horizon):
-                    hstate["closed"] = True
-                    for stx in self._spy_stats_targets(ckey, network, network_level, horizon):
-                        stx["closed"] += 1
-                    close_events.append((horizon, f"K{hit_count}" if hit_count else "MISS"))
-
-            # CSV: una riga di avanzamento per colpo, più le chiusure orizzonte.
-            self.append_csv_event(
-                "SPY_LAB_STEP",
-                e=e,
-                colpo=colpo,
-                session_type="SPY_LAB_H1_H2_H3",
-                strategy=f"SPY_{session.get('spy')}_{session.get('condition')}",
-                terni=[followers],
-                hit_list=[tuple(hit_numbers)] if hit_numbers else [],
-                outcome=f"K{hit_count}" if hit_count else "MISS",
-                spy_signal_id=session.get("signal_id"),
-                spy_number=session.get("spy"),
-                spy_condition=session.get("condition", ""),
-                spy_network=network,
-                spy_network_level=network_level,
-                spy_active_related=session.get("active_related"),
-                spy_active_total=session.get("active_total"),
-                spy_followers=followers,
-                spy_hit_numbers=hit_numbers,
-                spy_k_hit=hit_count,
-            )
-
-            for horizon, outcome in close_events:
-                self.append_csv_event(
-                    "SPY_LAB_CLOSE_HORIZON",
-                    e=e,
-                    colpo=colpo,
-                    session_type=f"SPY_LAB_H{horizon}",
-                    strategy=f"SPY_{session.get('spy')}_{session.get('condition')}_H{horizon}",
-                    terni=[followers],
-                    hit_list=[tuple(hit_numbers)] if hit_numbers else [],
-                    outcome=outcome,
-                    spy_signal_id=session.get("signal_id"),
-                    spy_number=session.get("spy"),
-                    spy_condition=session.get("condition", ""),
-                    spy_network=network,
-                    spy_network_level=network_level,
-                    spy_active_related=session.get("active_related"),
-                    spy_active_total=session.get("active_total"),
-                    spy_followers=followers,
-                    spy_hit_numbers=hit_numbers,
-                    spy_k_hit=hit_count,
-                )
-
-            if SPY_LAB_NOTIFY and hit_count >= 2:
-                label = "TRIS 3/3" if hit_count == 3 else "ALMENO 2/3"
-                extra = ""
-                if hit_horizons:
-                    extra = f"\n• orizzonti K3 vinti = {fmt_nums(hit_horizons)}"
+            if k >= 2 and not s.get("notified_k2") and SPY_NOTIFY_HIT_K2:
+                s["notified_k2"] = True
                 await self.tg(
                     app,
-                    f"💥 NUMERI SPIA LAB — {label}\n"
-                    f"• signal_id = {session.get('signal_id')}\n"
-                    f"• spia = {session.get('spy')} | condizione = {session.get('condition')}\n"
-                    f"• rete = {network} | livello = {network_level}\n"
+                    "💥 NUMERI SPIA LAB — ALMENO 2/3\n"
+                    f"• signal_id = {s['id']}\n"
+                    f"• spia = {s['spy']} | condizione = {s['condition']}\n"
+                    f"• rete = {s['network']} | livello = {s['level']}\n"
                     f"• TOP3 accompagnatori = {fmt_nums(followers)}\n"
-                    f"• usciti = {fmt_nums(hit_numbers)}\n"
-                    f"• colpo = {colpo}{extra}"
+                    f"• usciti = {fmt_nums(hit_nums)}\n"
+                    f"• colpo = {s['colpi']}"
                 )
 
-            if not all(horizons.get(str(h), {}).get("closed", False) for h in SPY_LAB_HORIZONS):
-                survivors.append(session)
-
-        self.spy_lab_sessions = survivors
-
-    @staticmethod
-    def _pct_txt(num, den):
-        den = int(den or 0)
-        return f"{(float(num) / den * 100.0):.2f}%" if den else "0.00%"
-
-    def _spy_stat_line(self, prefix, st):
-        closed = int(st.get("closed", 0))
-        cost = float(st.get("k3_cost_units", 0.0))
-        gross = float(st.get("k3_gross_units", 0.0))
-        net = gross - cost
-        roi = (net / cost * 100.0) if cost else 0.0
-        return (
-            f"{prefix}: sess={st.get('sessions', 0)} chiuse={closed} "
-            f"K1={st.get('k1_hits', 0)} ({self._pct_txt(st.get('k1_hits', 0), closed)}) "
-            f"K2={st.get('k2_hits', 0)} ({self._pct_txt(st.get('k2_hits', 0), closed)}) "
-            f"K3={st.get('k3_hits', 0)} ({self._pct_txt(st.get('k3_hits', 0), closed)}) "
-            f"ROI={roi:+.1f}%"
-        )
-
-    def spy_lab_stats_text(self):
-        lines = [
-            "📊 NUMERI SPIA NETWORK LAB — CANDIDATI ROBUSTI / 1-2-3 COLPI",
-            f"• candidati monitorati = {len(SPY_LAB_CANDIDATES)}",
-            f"• payout teorico K3 = {SPY_LAB_PAYOUT:.0f}x",
-            f"• sessioni aperte ora = {len(self.spy_lab_sessions)}",
-        ]
-
-        lines.append("\n⏱️ Orizzonti globali")
-        for horizon in SPY_LAB_HORIZONS:
-            hkey = str(horizon)
-            st = self.spy_horizon_stats.get(hkey, self.new_spy_lab_stats())
-            lines.append(self._spy_stat_line(f"• H{horizon}", st))
-            cost = float(st.get("k3_cost_units", 0.0))
-            gross = float(st.get("k3_gross_units", 0.0))
-            net = gross - cost
-            lines.append(f"  costo={cost:.2f}u lordo={gross:.2f}u netto={net:+.2f}u")
-
-        rows = []
-        for candidate in SPY_LAB_CANDIDATES:
-            ckey = self.spy_candidate_key(candidate)
-            hstats = self.spy_candidate_horizon_stats.get(ckey, {})
-            if not any(hstats.get(str(h), {}).get("sessions", 0) for h in SPY_LAB_HORIZONS):
-                continue
-            parts = [f"• {candidate['label']}"]
-            for horizon in SPY_LAB_HORIZONS:
-                st = hstats.get(str(horizon), self.new_spy_lab_stats())
-                closed = int(st.get("closed", 0))
-                cost = float(st.get("k3_cost_units", 0.0))
-                gross = float(st.get("k3_gross_units", 0.0))
-                roi = ((gross - cost) / cost * 100.0) if cost else 0.0
-                parts.append(
-                    f"H{horizon}:K2={st.get('k2_hits', 0)}({self._pct_txt(st.get('k2_hits', 0), closed)}) "
-                    f"K3={st.get('k3_hits', 0)}({self._pct_txt(st.get('k3_hits', 0), closed)}) ROI={roi:+.0f}%"
+            if k >= 3 and not s.get("notified_k3") and SPY_NOTIFY_HIT_K3:
+                s["notified_k3"] = True
+                await self.tg(
+                    app,
+                    "💥 NUMERI SPIA LAB — TRIS 3/3\n"
+                    f"• signal_id = {s['id']}\n"
+                    f"• spia = {s['spy']} | condizione = {s['condition']}\n"
+                    f"• rete = {s['network']} | livello = {s['level']}\n"
+                    f"• TERNO = {fmt_nums(followers)}\n"
+                    f"• colpo = {s['colpi']}"
                 )
-            rows.append(" | ".join(parts))
-        if rows:
-            lines.append("\n📌 Dettaglio candidati")
-            lines.extend(rows[:12])
 
-        network_rows = []
-        for network in SPY_NETWORK_BUCKETS:
-            hstats = self.spy_network_horizon_stats.get(network, {})
-            if not any(hstats.get(str(h), {}).get("sessions", 0) for h in SPY_LAB_HORIZONS):
-                continue
-            label = SPY_NETWORK_DEFS.get(network, SPY_NETWORK_DEFS["ALTRO"])["label"]
-            network_rows.append(f"• {label}")
-            for horizon in SPY_LAB_HORIZONS:
-                network_rows.append("  " + self._spy_stat_line(f"H{horizon}", hstats.get(str(horizon), self.new_spy_lab_stats())))
-        if network_rows:
-            lines.append("\n🧬 Network score")
-            lines.extend(network_rows)
-
-        level_rows = []
-        for level in SPY_NETWORK_LEVELS:
-            hstats = self.spy_network_level_horizon_stats.get(level, {})
-            if not any(hstats.get(str(h), {}).get("sessions", 0) for h in SPY_LAB_HORIZONS):
-                continue
-            level_rows.append(f"• {level}")
-            for horizon in SPY_LAB_HORIZONS:
-                level_rows.append("  " + self._spy_stat_line(f"H{horizon}", hstats.get(str(horizon), self.new_spy_lab_stats())))
-        if level_rows:
-            lines.append("\n📶 Livello rete")
-            lines.extend(level_rows)
-        return "\n".join(lines)
-
-    # ========================================================
-    # LAB SESSION CREATION
-    # ========================================================
-
-    def create_terni_session(self, play, e):
-        strategies = {}
-
-        for key in LAB_STRATEGIES:
-            suffix = key.replace("op", "")
-            terni = normalize_terni(play.get(f"terni_op{suffix}", []))
-            jolly = play.get(f"terno_num_{suffix}")
-
-            strategies[key] = {
-                "jolly": jolly,
-                "terni": terni,
-                "hit": False,
-                "first_hit_colpo": None,
-                "first_hit_list": [],
-            }
-
-            if terni:
-                self.terni_stats[key]["sessions"] += 1
-
-        session = {
-            "play_id": play["play_id"],
-            "day": self.day,
-            "start_e": e,
-            "colpi": 0,
-            "max_colpi": TERNI_LAB_MAX_COLPI,
-            "ambata": play["ambata"],
-            "ambi": play["ambi"],
-            "cluster_numbers": play["cluster_numbers"],
-            "strategies": strategies,
-        }
-
-        self.terni_sessions.append(session)
-
-    def create_ambata_r2_session(self, play, e):
-        session = {
-            "play_id": play["play_id"],
-            "day": self.day,
-            "start_e": e,
-            "colpi": 0,
-            "max_colpi": AMBATA_RAFFICA_MAX_COLPI,
-            "ambata": play["ambata"],
-            "ambi": play["ambi"],
-            "cluster_numbers": play["cluster_numbers"],
-        }
-
-        self.ambata_r2_sessions.append(session)
-        self.ambata_r2_stats["sessions"] += 1
-
-    def create_ambo_jolly_session(self, play, e):
-        """Apre AJ1 usando solo dati congelati al momento del PLAY.
-
-        Terno = primo ambo v48 (rank 1 del pair score) + jolly OP3 globale.
-        La sessione vive nel ciclo del PLAY v48: ogni orizzonte 2/3/4/7
-        chiude al proprio limite oppure prima se il PLAY v48 termina.
-        """
-        ambi = play.get("ambi", [])
-        jolly = play.get("terno_num_3")
-        if not ambi or not jolly:
-            return None
-
-        a, b = map(int, ambi[0]["ambo"])
-        jolly = int(jolly)
-        if jolly in (a, b):
-            return None
-
-        terno = tuple(sorted((a, b, jolly)))
-        horizon_state = {str(h): {"closed": False} for h in AMBO_JOLLY_HORIZONS}
-
-        session = {
-            "play_id": play["play_id"],
-            "day": self.day,
-            "start_e": e,
-            "colpi": 0,
-            "max_colpi": max(AMBO_JOLLY_HORIZONS),
-            "rank1_ambo": [a, b],
-            "op3": jolly,
-            "terno": list(terno),
-            "horizons": horizon_state,
-        }
-        self.ambo_jolly_sessions.append(session)
-
-        for horizon in AMBO_JOLLY_HORIZONS:
-            self.ambo_jolly_stats[str(horizon)]["sessions"] += 1
-
-        return session
-
-    def close_ambo_jolly_for_play(self, play_id, e, colpo, reason):
-        """Chiude come MISS gli orizzonti AJ1 ancora aperti quando v48 termina.
-
-        Non aggiunge costo: il costo del colpo corrente è già stato contato da
-        process_ambo_jolly_sessions(), eseguito prima del controllo core v48.
-        """
-        survivors = []
-
-        for session in self.ambo_jolly_sessions:
-            if int(session.get("play_id", -1)) != int(play_id):
-                survivors.append(session)
-                continue
-
-            terno = tuple(sorted(map(int, session.get("terno", []))))
-            for horizon in AMBO_JOLLY_HORIZONS:
-                hkey = str(horizon)
-                hstate = session.setdefault("horizons", {}).setdefault(hkey, {"closed": False})
-                if hstate.get("closed", False):
+            closed_h = set(map(str, s.get("closed_horizons", [])))
+            for h in SPY_HORIZONS:
+                hkey = str(h)
+                if hkey in closed_h or s["colpi"] < h:
                     continue
 
-                hstate["closed"] = True
-                st = self.ambo_jolly_stats[hkey]
-                st["closed"] += 1
-                st["misses"] += 1
+                k_values = s.get("k_by_colpo", [])[:h]
+                max_k = max(k_values) if k_values else 0
+                k3_colpo = None
+                for idx, kval in enumerate(k_values, start=1):
+                    if kval >= 3:
+                        k3_colpo = idx
+                        break
+                best_idx = max(range(len(k_values)), key=lambda i: k_values[i]) if k_values else None
+                best_nums = s.get("hit_nums_by_colpo", [])[best_idx] if best_idx is not None else []
 
+                # aggiorna globale, candidato, rete, livello
+                for st in (
+                    self.spy_horizon_stats[hkey],
+                    self.get_nested_stat(self.spy_candidate_horizon_stats, s["key"], hkey),
+                    self.get_nested_stat(self.spy_network_horizon_stats, s["network"], hkey),
+                    self.get_nested_stat(self.spy_level_horizon_stats, s["level"], hkey),
+                ):
+                    cost, gross = self.update_stat_on_close(st, h, max_k, k3_colpo)
+
+                cost = float(k3_colpo if k3_colpo else h)
+                gross = TERNO_PAYOUT if k3_colpo else 0.0
+                net, roi = roi_text(gross, cost)
+                s.setdefault("closed_horizons", []).append(hkey)
                 self.append_csv_event(
-                    "AMBO_JOLLY_MISS_V48_CLOSE",
-                    play_id=session["play_id"],
+                    f"SPY_CLOSE_H{h}",
                     e=e,
-                    colpo=colpo,
-                    session_type=f"AMBO_JOLLY_AJ1_H{horizon}",
-                    strategy="AJ1_RANK1_AMBO_PLUS_OP3",
-                    terni=[terno],
-                    outcome=f"MISS_{reason}",
-                    ambo_jolly_terno=terno,
-                    ambo_jolly_rank1_ambo=session.get("rank1_ambo", []),
-                    ambo_jolly_op3=session.get("op3"),
-                    ambo_jolly_horizon=horizon,
+                    colpo=s["colpi"],
+                    spy_id=s["id"],
+                    spy=s["spy"],
+                    spy_condition=s["condition"],
+                    spy_followers=fmt_nums(followers),
+                    spy_network=s["network"],
+                    spy_level=s["level"],
+                    spy_horizon=h,
+                    spy_k1=int(max_k >= 1),
+                    spy_k2=int(max_k >= 2),
+                    spy_k3=int(max_k >= 3),
+                    spy_hit_nums=fmt_nums(best_nums),
+                    spy_cost=f"{cost:.2f}",
+                    spy_gross=f"{gross:.2f}",
+                    spy_net=f"{net:.2f}",
+                    spy_roi=f"{roi:.4f}",
                 )
 
-        self.ambo_jolly_sessions = survivors
+            if len(set(map(str, s.get("closed_horizons", [])))) < len(SPY_HORIZONS):
+                still_open.append(s)
 
-    async def process_ambo_jolly_sessions(self, app, e, nums):
-        if not self.ambo_jolly_sessions:
-            return
+        self.spy_sessions = still_open
 
-        draw_set = set(nums)
-        survivors = []
-
-        for session in self.ambo_jolly_sessions:
-            session["colpi"] = int(session.get("colpi", 0)) + 1
-            colpo = session["colpi"]
-            terno = tuple(sorted(map(int, session.get("terno", []))))
-            is_hit = len(terno) == 3 and set(terno).issubset(draw_set)
-
-            newly_hit = []
-            newly_missed = []
-
-            for horizon in AMBO_JOLLY_HORIZONS:
-                hkey = str(horizon)
-                hstate = session.setdefault("horizons", {}).setdefault(hkey, {"closed": False})
-                if hstate.get("closed", False):
-                    continue
-
-                st = self.ambo_jolly_stats[hkey]
-                st["cost_units"] += 1.0
-
-                if is_hit:
-                    hstate["closed"] = True
-                    st["closed"] += 1
-                    st["hits"] += 1
-                    st["gross_units"] += AMBO_JOLLY_PAYOUT
-                    st["hit_by_colpo"][str(colpo)] = st["hit_by_colpo"].get(str(colpo), 0) + 1
-                    newly_hit.append(horizon)
-
-                    self.append_csv_event(
-                        "AMBO_JOLLY_HIT",
-                        play_id=session["play_id"],
-                        e=e,
-                        colpo=colpo,
-                        session_type=f"AMBO_JOLLY_AJ1_H{horizon}",
-                        strategy="AJ1_RANK1_AMBO_PLUS_OP3",
-                        terni=[terno],
-                        hit_list=[terno],
-                        outcome="HIT",
-                        ambo_jolly_terno=terno,
-                        ambo_jolly_rank1_ambo=session.get("rank1_ambo", []),
-                        ambo_jolly_op3=session.get("op3"),
-                        ambo_jolly_horizon=horizon,
-                    )
-                elif colpo >= horizon:
-                    hstate["closed"] = True
-                    st["closed"] += 1
-                    st["misses"] += 1
-                    newly_missed.append(horizon)
-
-                    self.append_csv_event(
-                        "AMBO_JOLLY_MISS",
-                        play_id=session["play_id"],
-                        e=e,
-                        colpo=colpo,
-                        session_type=f"AMBO_JOLLY_AJ1_H{horizon}",
-                        strategy="AJ1_RANK1_AMBO_PLUS_OP3",
-                        terni=[terno],
-                        outcome="MISS",
-                        ambo_jolly_terno=terno,
-                        ambo_jolly_rank1_ambo=session.get("rank1_ambo", []),
-                        ambo_jolly_op3=session.get("op3"),
-                        ambo_jolly_horizon=horizon,
-                    )
-
-            if newly_hit and AMBO_JOLLY_NOTIFY:
-                await self.tg(
-                    app,
-                    "💥 AMBO-JOLLY AJ1 — HIT TERNO\n"
-                    f"• play_id = {session['play_id']}\n"
-                    f"• colpo = {colpo}\n"
-                    f"• 1° ambo v48 = {fmt_nums(session.get('rank1_ambo', []))}\n"
-                    f"• jolly OP3 = {session.get('op3')}\n"
-                    f"• TERNO = {fmt_nums(terno)}\n"
-                    f"• orizzonti vinti = {', '.join(map(str, newly_hit))} colpi\n\n"
-                    f"{self.ambo_jolly_stats_text()}"
-                )
-
-            any_open = any(
-                not session.get("horizons", {}).get(str(h), {}).get("closed", False)
-                for h in AMBO_JOLLY_HORIZONS
+    # --------------------------------------------------------
+    # Report
+    # --------------------------------------------------------
+    def v48_stats_text(self):
+        net, roi = roi_text(self.v48_gross_units, self.v48_cost_units)
+        hit_rate = pct(self.total_hit_ambo, self.total_play)
+        stop_rate = pct(self.total_stop, self.total_play)
+        active_txt = "SI" if self.active else "NO"
+        open_txt = ""
+        if self.active_snapshot:
+            open_txt = (
+                f"\n\n🎯 PLAY ATTIVO\n"
+                f"• play_id = {self.active_snapshot.get('play_id')}\n"
+                f"• colpo corrente = {self.colpi}/{MAX_COLPI}\n"
+                f"• ambata = {self.active_snapshot.get('ambata')}\n"
+                f"• ambi = {fmt_ambi(self.active_snapshot.get('ambi'))}"
             )
-            if any_open:
-                survivors.append(session)
-
-        self.ambo_jolly_sessions = survivors
-
-    # ========================================================
-    # LAB SESSION PROCESSING — INDIPENDENTE DAL CORE v48
-    # ========================================================
-
-    async def process_terni_sessions(self, app, e, nums):
-        if not self.terni_sessions:
-            return
-
-        s = set(nums)
-        survivors = []
-
-        for session in self.terni_sessions:
-            session["colpi"] = int(session.get("colpi", 0)) + 1
-            colpo = session["colpi"]
-
-            new_hit_lines = []
-
-            for key in LAB_STRATEGIES:
-                data = session["strategies"].get(key, {})
-                terni = normalize_terni(data.get("terni", []))
-                hits = [t for t in terni if all(x in s for x in t)]
-
-                # Contatore principale = sessioni vincenti, una volta sola per strategia.
-                if hits and not data.get("hit", False):
-                    data["hit"] = True
-                    data["first_hit_colpo"] = colpo
-                    data["first_hit_list"] = hits
-                    self.terni_stats[key]["hit_sessions"] += 1
-
-                    new_hit_lines.append(
-                        f"• {LAB_LABELS[key]} = {fmt_terni(hits)}"
-                    )
-
-                    play_stub = {
-                        "play_id": session["play_id"],
-                        "ambata": session["ambata"],
-                        "ambi": session["ambi"],
-                        "cluster_numbers": session["cluster_numbers"],
-                    }
-                    self.append_csv_event(
-                        "TERNI_FIRST_HIT",
-                        play=play_stub,
-                        play_id=session["play_id"],
-                        e=e,
-                        colpo=colpo,
-                        session_type="TERNI_7",
-                        strategy=key.upper(),
-                        jolly=data.get("jolly"),
-                        terni=terni,
-                        hit_list=hits,
-                        outcome="HIT",
-                    )
-
-            if new_hit_lines:
-                await self.tg(
-                    app,
-                    f"💥 TERNI LAB 7 COLPI | play_id {session['play_id']} | colpo {colpo}\n"
-                    + "\n".join(new_hit_lines)
-                    + "\n\n"
-                    + self.terni_lab_stats_text()
-                )
-
-            if colpo >= int(session.get("max_colpi", TERNI_LAB_MAX_COLPI)):
-                play_stub = {
-                    "play_id": session["play_id"],
-                    "ambata": session["ambata"],
-                    "ambi": session["ambi"],
-                    "cluster_numbers": session["cluster_numbers"],
-                }
-
-                outcomes = []
-                for key in LAB_STRATEGIES:
-                    d = session["strategies"].get(key, {})
-                    outcomes.append(f"{key.upper()}={'HIT' if d.get('hit') else 'MISS'}")
-
-                self.append_csv_event(
-                    "TERNI_SESSION_CLOSE",
-                    play=play_stub,
-                    play_id=session["play_id"],
-                    e=e,
-                    colpo=colpo,
-                    session_type="TERNI_7",
-                    outcome=";".join(outcomes),
-                )
-            else:
-                survivors.append(session)
-
-        self.terni_sessions = survivors
-
-    async def process_ambata_r2_sessions(self, app, e, nums):
-        if not self.ambata_r2_sessions:
-            return
-
-        s = set(nums)
-        survivors = []
-
-        for session in self.ambata_r2_sessions:
-            session["colpi"] = int(session.get("colpi", 0)) + 1
-            colpo = session["colpi"]
-            hit = int(session["ambata"]) in s
-
-            play_stub = {
-                "play_id": session["play_id"],
-                "ambata": session["ambata"],
-                "ambi": session["ambi"],
-                "cluster_numbers": session["cluster_numbers"],
-            }
-
-            if hit:
-                self.ambata_r2_stats["hits"] += 1
-                if colpo == 1:
-                    self.ambata_r2_stats["hit_colpo1"] += 1
-                elif colpo == 2:
-                    self.ambata_r2_stats["hit_colpo2"] += 1
-
-                self.append_csv_event(
-                    "AMBATA_R2_HIT",
-                    play=play_stub,
-                    play_id=session["play_id"],
-                    e=e,
-                    colpo=colpo,
-                    session_type="AMBATA_R2",
-                    strategy="AMBATA_R2",
-                    jolly=session["ambata"],
-                    outcome="HIT",
-                )
-
-                await self.tg(
-                    app,
-                    f"🎯 AMBATA RAFFICA 2 | HIT colpo {colpo}\n"
-                    f"• play_id = {session['play_id']}\n"
-                    f"• ambata = {session['ambata']}\n\n"
-                    f"{self.ambata_r2_stats_text()}\n\n"
-                    f"{self.decina_lab_stats_text()}\n\n"
-                    f"{self.decina_heat_stats_text()}\n\n"
-                    f"{self.decina_multi_stats_text()}\n\n"
-                    f"{self.ambo_jolly_stats_text()}"
-                )
-                continue
-
-            if colpo >= int(session.get("max_colpi", AMBATA_RAFFICA_MAX_COLPI)):
-                self.ambata_r2_stats["misses"] += 1
-
-                self.append_csv_event(
-                    "AMBATA_R2_MISS",
-                    play=play_stub,
-                    play_id=session["play_id"],
-                    e=e,
-                    colpo=colpo,
-                    session_type="AMBATA_R2",
-                    strategy="AMBATA_R2",
-                    jolly=session["ambata"],
-                    outcome="MISS",
-                )
-            else:
-                survivors.append(session)
-
-        self.ambata_r2_sessions = survivors
-
-    # ========================================================
-    # REPORT TEXT
-    # ========================================================
-
-    def v48_ambo_rank_stats_text(self):
-        total_rank_events = sum(self.v48_ambo_rank_hits.values())
+        by_colpo = ", ".join(f"C{i}:{self.v48_hit_colpi[str(i)]}" for i in range(1, MAX_COLPI + 1))
         return (
-            "📊 V48 — POSIZIONE AMBO VINCENTE\n"
-            f"• rank 1 = {self.v48_ambo_rank_hits['1']}\n"
-            f"• rank 2 = {self.v48_ambo_rank_hits['2']}\n"
-            f"• rank 3 = {self.v48_ambo_rank_hits['3']}\n"
-            f"• eventi rank totali = {total_rank_events}\n"
-            f"• colpi con 2+ ambi v48 insieme = {self.v48_multi_ambo_hit_draws}"
+            "🎯 QUADRO v48 BASE\n"
+            "• solo 3 ambi classici, core invariato\n"
+            f"• play = {self.total_play}\n"
+            f"• HIT AMBO = {self.total_hit_ambo} ({hit_rate:.2f}%)\n"
+            f"• STOP = {self.total_stop} ({stop_rate:.2f}%)\n"
+            f"• hit ambata eventi = {self.total_hit_ambata}\n"
+            f"• attivo ora = {active_txt}\n"
+            f"• hit per colpo = {by_colpo}\n\n"
+            "📌 RANK AMBO VINCENTE\n"
+            f"• rank 1 = {self.v48_rank_hits['1']}\n"
+            f"• rank 2 = {self.v48_rank_hits['2']}\n"
+            f"• rank 3 = {self.v48_rank_hits['3']}\n"
+            f"• colpi con 2+ ambi insieme = {self.v48_multi_ambo_hit_draws}\n\n"
+            f"💰 Economia teorica ambo {AMBO_PAYOUT:.0f}x\n"
+            f"• costo = {self.v48_cost_units:.2f}u\n"
+            f"• lordo = {self.v48_gross_units:.2f}u\n"
+            f"• netto = {net:+.2f}u\n"
+            f"• ROI = {roi:+.2f}%"
+            f"{open_txt}"
         )
 
-    def terni_lab_stats_text(self):
-        lines = ["📊 TERNI LAB — SESSIONI VINCENTI / SESSIONI"]
-
-        for key in LAB_STRATEGIES:
-            st = self.terni_stats[key]
-            sessions = st["sessions"]
-            hits = st["hit_sessions"]
-            pct = (hits / sessions * 100) if sessions else 0.0
-            prefix = "⭐" if key == "op3" else "•"
-            lines.append(
-                f"{prefix} {key.upper()} = {hits}/{sessions} ({pct:.2f}%)"
-            )
-
-        return "\n".join(lines)
-
-    def ambata_r2_stats_text(self):
-        st = self.ambata_r2_stats
-        sessions = st["sessions"]
-        hits = st["hits"]
-        closed = hits + st["misses"]
-        pct = (hits / closed * 100) if closed else 0.0
-
-        return (
-            "📊 AMBATA RAFFICA 2\n"
-            f"• sessioni create = {sessions}\n"
-            f"• sessioni chiuse = {closed}\n"
-            f"• hit = {hits}\n"
-            f"• miss = {st['misses']}\n"
-            f"• hit rate chiuse = {pct:.2f}%\n"
-            f"• hit colpo 1 = {st['hit_colpo1']}\n"
-            f"• hit colpo 2 = {st['hit_colpo2']}"
-        )
-
-    def decina_lab_stats_text(self):
-        st = self.decina_lab_stats
-        closed = st["closed"]
-        k1_pct = (st["k1_hits"] / closed * 100) if closed else 0.0
-        k2_pct = (st["k2_hits"] / closed * 100) if closed else 0.0
-        k3_pct = (st["k3_hits"] / closed * 100) if closed else 0.0
-        cost = float(st["k3_cost_units"])
-        gross = float(st["k3_gross_units"])
-        net = gross - cost
-        roi = (net / cost * 100.0) if cost else 0.0
-
-        return (
-            "📊 DECINA LAB 10-19 — HEAT 5 / TOP 3 / 2 COLPI\n"
-            f"• soglia Heat totale = {DECINA_LAB_HEAT_THRESHOLD}\n"
-            f"• sessioni create = {st['sessions']}\n"
-            f"• sessioni chiuse = {closed}\n"
-            f"• almeno 1/3 = {st['k1_hits']} ({k1_pct:.2f}%)\n"
-            f"• almeno 2/3 = {st['k2_hits']} ({k2_pct:.2f}%)\n"
-            f"• tutti 3/3 = {st['k3_hits']} ({k3_pct:.2f}%)\n"
-            f"• K2 colpo 1 = {st['k2_colpo1']} | colpo 2 = {st['k2_colpo2']}\n"
-            f"• K3 colpo 1 = {st['k3_colpo1']} | colpo 2 = {st['k3_colpo2']}\n"
-            f"• K3 teorico {DECINA_BASE_K3_PAYOUT:.0f}x: costo = {cost:.2f}u | lordo = {gross:.2f}u\n"
-            f"• K3 netto = {net:+.2f}u | ROI = {roi:+.2f}%\n"
-            f"• sessioni aperte ora = {len(self.decina_lab_sessions)}"
-        )
-
-    def decina_heat_stats_text(self):
-        labels = {
-            "H8": "HEAT = 8",
-            "H9": "HEAT = 9 ⭐ PRIORITARIA",
-            "H10P": "HEAT >= 10",
-        }
+    def spy_summary_text(self):
         lines = [
-            "📊 DECINA BASE — MONITOR FASCE HEAT",
-            "• stessa regola TOP3 / 2 colpi; solo statistiche separate",
+            "🕵️ QUADRO NUMERI SPIA — LIVE",
+            f"• modello storico caricato = {len(self.spy_model)} regole",
+            f"• sessioni aperte ora = {len(self.spy_sessions)}",
+            "• orizzonti = H1 / H2 / H3",
+            "",
+            "📍 RISULTATO GENERALE",
         ]
+        h3_k2 = 0.0
+        h3_extra = 0.0
+        h3_closed = 0
+        h3_k3 = 0
 
-        # Campi cumulativi horizon-specific per NUMERI SPIA LAB.
-        for _h in SPY_LAB_HORIZONS:
-            _hkey = str(_h)
-            _st = self.spy_horizon_stats.get(_hkey, self.new_spy_lab_stats())
-            _cost = float(_st.get("k3_cost_units", 0.0))
-            _gross = float(_st.get("k3_gross_units", 0.0))
-            _net = _gross - _cost
-            _roi = (_net / _cost * 100.0) if _cost else 0.0
-            row.update({
-                f"spy_h{_h}_sessions": _st.get("sessions", 0),
-                f"spy_h{_h}_closed": _st.get("closed", 0),
-                f"spy_h{_h}_k1_hits": _st.get("k1_hits", 0),
-                f"spy_h{_h}_k2_hits": _st.get("k2_hits", 0),
-                f"spy_h{_h}_k3_hits": _st.get("k3_hits", 0),
-                f"spy_h{_h}_k3_cost_units": f"{_cost:.2f}",
-                f"spy_h{_h}_k3_gross_units": f"{_gross:.2f}",
-                f"spy_h{_h}_k3_net_units": f"{_net:.2f}",
-                f"spy_h{_h}_k3_roi_pct": f"{_roi:.4f}",
-            })
-
-        for bucket in DECINA_HEAT_BUCKETS:
-            st = self.decina_heat_stats[bucket]
-            closed = st["closed"]
-            k2_pct = (st["k2_hits"] / closed * 100.0) if closed else 0.0
-            k3_pct = (st["k3_hits"] / closed * 100.0) if closed else 0.0
+        for h in SPY_HORIZONS:
+            hkey = str(h)
+            st = self.spy_horizon_stats[hkey]
+            closed = int(st["closed"])
+            k1 = int(st["k1_hits"])
+            k2 = int(st["k2_hits"])
+            k3 = int(st["k3_hits"])
             cost = float(st["k3_cost_units"])
             gross = float(st["k3_gross_units"])
-            net = gross - cost
-            roi = (net / cost * 100.0) if cost else 0.0
+            net, roi = roi_text(gross, cost)
+            exp_k2 = float(st.get("expected_k2_sum", 0.0))
+            exp_k3 = float(st.get("expected_k3_sum", 0.0))
+            exp_k2_pct = pct(exp_k2, closed)
+            exp_k3_pct = pct(exp_k3, closed)
+            extra_k2 = pct(k2, closed) - exp_k2_pct
+            if h == 3:
+                h3_k2 = pct(k2, closed)
+                h3_extra = extra_k2
+                h3_closed = closed
+                h3_k3 = k3
             lines.extend([
                 "",
-                f"{'⭐' if bucket == 'H9' else '•'} {labels[bucket]}",
-                f"• sessioni = {st['sessions']} | chiuse = {closed}",
-                f"• K1 = {st['k1_hits']} | K2 = {st['k2_hits']} ({k2_pct:.2f}%) | K3 = {st['k3_hits']} ({k3_pct:.2f}%)",
-                f"• K2 C1/C2 = {st['k2_colpo1']}/{st['k2_colpo2']}",
-                f"• K3 C1/C2 = {st['k3_colpo1']}/{st['k3_colpo2']}",
-                f"• K3 costo = {cost:.2f}u | lordo = {gross:.2f}u | netto = {net:+.2f}u | ROI = {roi:+.2f}%",
+                f"H{h} — entro {h} colpo{'i' if h > 1 else ''}",
+                f"• chiuse = {closed} / sessioni = {st['sessions']}",
+                f"• K1 = {k1}/{closed} = {pct(k1, closed):.2f}%",
+                f"• K2 = {k2}/{closed} = {pct(k2, closed):.2f}% | atteso≈{exp_k2_pct:.2f}% | extra={extra_k2:+.2f} pp",
+                f"• K3 = {k3}/{closed} = {pct(k3, closed):.2f}% | atteso≈{exp_k3_pct:.2f}%",
+                f"• terno 45x: costo={cost:.2f}u | lordo={gross:.2f}u | netto={net:+.2f}u | ROI={roi:+.2f}%",
             ])
 
+        if h3_closed < 50:
+            verdict = "🟡 campione piccolo: osservazione"
+        elif h3_extra >= 5 and h3_k3 > 0:
+            verdict = "🟢 K2 positivo e K3 presente: molto interessante"
+        elif h3_extra >= 5:
+            verdict = "🟡 K2 positivo, K3 non confermato"
+        elif h3_extra > 0:
+            verdict = "🟡 leggermente sopra atteso"
+        else:
+            verdict = "🔴 non confermato"
+        lines.extend([
+            "",
+            "🚦 VERDETTO SPIE",
+            f"• H3 K2 = {h3_k2:.2f}% | extra≈{h3_extra:+.2f} pp | chiuse={h3_closed}",
+            f"• H3 K3 = {h3_k3}",
+            f"• stato = {verdict}",
+        ])
         return "\n".join(lines)
 
-    def decina_multi_stats_text(self):
-        lines = [
-            "📊 DECINA MULTI-TERNO 10-19 — HEAT 5 / 2 COLPI",
-            f"• soglia apertura = Heat TOP3 >= {DECINA_MULTI_HEAT_THRESHOLD}",
-            f"• payout teorico = {DECINA_TERNO_PAYOUT:.0f}x per terno vincente",
-        ]
-
-        for package, label in (("core", "CORE TOP2 (3 terni)"), ("pivot", "PIVOT (6 terni)")):
-            st = self.decina_multi_stats[package]
-            closed = st["closed"]
-            win_rate = (st["winning_sessions"] / closed * 100.0) if closed else 0.0
-            cost = float(st["cost_units"])
-            gross = float(st["gross_units"])
-            net = gross - cost
-            roi = (net / cost * 100.0) if cost else 0.0
-            lines.extend([
-                "",
-                f"{'🔷' if package == 'core' else '🔶'} {label}",
-                f"• sessioni = {st['sessions']} | chiuse = {closed}",
-                f"• vincenti = {st['winning_sessions']} ({win_rate:.2f}%) | miss = {st['losing_sessions']}",
-                f"• hit colpo 1 = {st['hit_colpo1']} | colpo 2 = {st['hit_colpo2']}",
-                f"• terni vincenti totali = {st['winning_terni']}",
-                f"• sessioni con 2+ terni insieme = {st['multi_2plus_sessions']}",
-                f"• max terni nello stesso colpo = {st['max_terni_same_draw']}",
-                f"• costo teorico = {cost:.2f}u | lordo = {gross:.2f}u",
-                f"• netto = {net:+.2f}u | ROI = {roi:+.2f}%",
-            ])
-
-        lines.append(f"\n• sessioni multi aperte ora = {len(self.decina_multi_sessions)}")
-        return "\n".join(lines)
-
-    def ambo_jolly_stats_text(self):
-        lines = [
-            "📊 AMBO-JOLLY AJ1 — SOLO LAB / 1° AMBO v48 + OP3",
-            f"• payout teorico = {AMBO_JOLLY_PAYOUT:.0f}x",
-            "• un solo terno per PLAY",
-            "• stop anticipato se il PLAY v48 chiude",
-        ]
-
-        for horizon in AMBO_JOLLY_HORIZONS:
-            st = self.ambo_jolly_stats[str(horizon)]
-            closed = st["closed"]
-            hit_rate = (st["hits"] / closed * 100.0) if closed else 0.0
-            cost = float(st["cost_units"])
-            gross = float(st["gross_units"])
-            net = gross - cost
-            roi = (net / cost * 100.0) if cost else 0.0
-            by_colpo = ", ".join(
-                f"C{i}={st['hit_by_colpo'].get(str(i), 0)}"
-                for i in range(1, horizon + 1)
+    def spy_top_text(self, limit=12):
+        rows = []
+        for key, hstats in self.spy_candidate_horizon_stats.items():
+            st = hstats.get("3") or {}
+            closed = int(st.get("closed", 0))
+            if closed <= 0:
+                continue
+            rule = self.spy_model.get(key, {})
+            rows.append({
+                "key": key,
+                "label": rule.get("label", key),
+                "closed": closed,
+                "k2": int(st.get("k2_hits", 0)),
+                "k3": int(st.get("k3_hits", 0)),
+                "roi": roi_text(float(st.get("k3_gross_units", 0.0)), float(st.get("k3_cost_units", 0.0)))[1],
+                "extra": pct(int(st.get("k2_hits", 0)), closed) - pct(float(st.get("expected_k2_sum", 0.0)), closed),
+            })
+        rows.sort(key=lambda r: (-r["extra"], -r["k2"], -r["closed"]))
+        lines = ["🏆 MIGLIORI SPIE LIVE — H3", "ordinate per extra K2 sopra atteso", ""]
+        if not rows:
+            lines.append("Nessuna spia chiusa ancora.")
+            return "\n".join(lines)
+        for i, r in enumerate(rows[:limit], start=1):
+            lines.append(
+                f"{i}) {r['label']}\n"
+                f"• chiuse = {r['closed']} | K2 H3 = {r['k2']}/{r['closed']} ({pct(r['k2'], r['closed']):.2f}%) | extra≈{r['extra']:+.2f} pp\n"
+                f"• K3 H3 = {r['k3']} | ROI K3 = {r['roi']:+.2f}%"
             )
+        return "\n\n".join(lines)
+
+    def spy_network_text(self):
+        lines = ["🧬 NETWORK NUMERI SPIA — H3", ""]
+        networks = sorted(self.spy_network_horizon_stats.keys())
+        if not networks:
+            return "🧬 NETWORK NUMERI SPIA\nNessuna rete chiusa ancora."
+        for net in networks:
+            st = self.spy_network_horizon_stats.get(net, {}).get("3", self.new_spy_stats())
+            closed = int(st.get("closed", 0))
+            if closed <= 0:
+                continue
+            k2 = int(st.get("k2_hits", 0))
+            k3 = int(st.get("k3_hits", 0))
+            cost = float(st.get("k3_cost_units", 0.0))
+            gross = float(st.get("k3_gross_units", 0.0))
+            _, roi = roi_text(gross, cost)
+            exp_k2_pct = pct(float(st.get("expected_k2_sum", 0.0)), closed)
+            label = SPY_NETWORK_DEFS.get(net, {}).get("label", net)
             lines.extend([
+                f"{label}",
+                f"• chiuse = {closed}",
+                f"• K2 H3 = {k2}/{closed} = {pct(k2, closed):.2f}% | atteso≈{exp_k2_pct:.2f}% | extra={pct(k2, closed)-exp_k2_pct:+.2f} pp",
+                f"• K3 H3 = {k3} | ROI K3 = {roi:+.2f}%",
                 "",
-                f"⭐ AJ1 max {horizon} colpi",
-                f"• sessioni = {st['sessions']} | chiuse = {closed}",
-                f"• hit = {st['hits']} ({hit_rate:.2f}%) | miss = {st['misses']}",
-                f"• distribuzione hit = {by_colpo}",
-                f"• costo = {cost:.2f}u | lordo = {gross:.2f}u",
-                f"• netto = {net:+.2f}u | ROI = {roi:+.2f}%",
             ])
+        lines.append("📶 LIVELLI RETE — H3")
+        for level in SPY_LEVELS:
+            st = self.spy_level_horizon_stats.get(level, {}).get("3", self.new_spy_stats())
+            closed = int(st.get("closed", 0))
+            if closed <= 0:
+                continue
+            k2 = int(st.get("k2_hits", 0))
+            exp_k2_pct = pct(float(st.get("expected_k2_sum", 0.0)), closed)
+            lines.append(f"• {level}: K2 {k2}/{closed} = {pct(k2, closed):.2f}% | extra={pct(k2, closed)-exp_k2_pct:+.2f} pp")
+        return "\n".join(lines).strip()
 
-        lines.append(f"\n• sessioni AJ1 aperte ora = {len(self.ambo_jolly_sessions)}")
-        return "\n".join(lines)
+    def full_report_text(self):
+        return f"{self.v48_stats_text()}\n\n{self.spy_summary_text()}"
 
-    def play_lab_text(self, play):
-        blocks = []
+    def menu_text(self):
+        return (
+            "🧭 MENU RAPIDO\n"
+            "Tocca un pulsante sotto, senza digitare nulla.\n\n"
+            "/report — quadro completo\n"
+            "/v48 — solo v48 base\n"
+            "/spie — quadro numeri spia\n"
+            "/spie_top — migliori spie live\n"
+            "/spie_network — reti numeriche spia\n"
+            "/menu — mostra questo menu"
+        )
 
-        for key in LAB_STRATEGIES:
-            suffix = key.replace("op", "")
-            jolly = play.get(f"terno_num_{suffix}")
-            terni = play.get(f"terni_op{suffix}", [])
-            blocks.append(
-                f"{'⭐' if key == 'op3' else '🧪'} {LAB_LABELS[key]} | "
-                f"jolly = {fmt_jolly(jolly) or 'None'}\n"
-                f"{fmt_terni(terni) or 'nessuno'}"
-            )
-
-        return "\n\n".join(blocks)
-
-    # ========================================================
-    # MAIN
-    # ========================================================
-
+    # --------------------------------------------------------
+    # Main draw logic
+    # --------------------------------------------------------
     async def on_new(self, app, e, nums):
         if len(set(nums)) != 20:
             return
-
         if self.already_processed(e, nums):
             return
 
         self.remember_processed(e, nums)
-
         self.last_draws.append(nums)
         self.last_draws = self.last_draws[-HISTORY_MAX:]
+        self.draws_since_spy_report += 1
 
-        await self.tg(
-            app,
-            f"📌 Estrazione {e}\n"
-            f"🎱 {', '.join(map(str, nums))}"
-        )
+        await self.tg(app, f"📌 Estrazione {e}\n🎱 {', '.join(map(str, nums))}")
 
-        # ====================================================
-        # LAB INDIPENDENTI: vengono aggiornati SEMPRE,
-        # anche se il CORE v48 ha già chiuso l'ambo.
-        # ====================================================
-        await self.process_terni_sessions(app, e, nums)
-        await self.process_ambata_r2_sessions(app, e, nums)
-        await self.process_decina_10_19_sessions(app, e, nums)
-        await self.process_decina_multi_sessions(app, e, nums)
-        await self.process_ambo_jolly_sessions(app, e, nums)
-        await self.process_spy_lab_sessions(app, e, nums)
+        # 1) aggiorna sessioni spia aperte sui nuovi numeri
+        await self.process_spy_sessions(app, e, nums)
 
-        # Il nuovo segnale usa le ultime 5 estrazioni già note (inclusa questa)
-        # e viene verificato SOLO sulle future 2 estrazioni successive.
-        await self.maybe_open_decina_10_19_session(app, e)
+        # 2) apre nuove spie dalla condizione appena creata
+        await self.maybe_open_spy_sessions(app, e)
 
-        # Numeri spia: condizioni sul colpo corrente, verifica parallela sui prossimi 1/2/3 colpi.
-        await self.maybe_open_spy_lab_sessions(app, e)
-
-        # ====================================================
-        # CORE v48 ATTIVO — LOGICA INVARIATA
-        # ====================================================
+        # 3) processa v48 attivo
+        skip_new_play = False
         if self.active:
             self.colpi += 1
             hit_data = self.check_v48_hit(nums)
 
             if hit_data["ambata_hit"]:
                 self.total_hit_ambata += 1
-                self.append_csv_event(
-                    "V48_HIT_AMBATA",
-                    e=e,
-                    colpo=self.colpi,
-                    session_type="V48",
-                    outcome="HIT",
-                )
-
-                await self.tg(
-                    app,
-                    f"🎯 AMBATA PRESA v48 | colpo {self.colpi}\n"
-                    f"• ambata = {self.active_snapshot['ambata']}"
-                )
+                self.append_csv_event("V48_HIT_AMBATA", e=e, play_id=self.active_snapshot.get("play_id"), colpo=self.colpi, outcome="HIT_AMBATA")
+                await self.tg(app, f"🎯 AMBATA PRESA v48 | colpo {self.colpi}\n• ambata = {self.active_snapshot['ambata']}")
 
             if hit_data["ambi_hit"]:
                 self.total_hit_ambo += 1
-
-                # Diagnostica pura: conta quali posizioni dei 3 ambi v48
-                # hanno partecipato al colpo vincente. Il CORE resta invariato.
+                self.v48_hit_colpi[str(self.colpi)] += 1
                 hit_ranks = []
-                active_ambi = self.active_snapshot.get("ambi", [])
+                hit_pairs = []
                 for hit_item in hit_data["ambi_hit"]:
-                    hit_pair = tuple(map(int, hit_item["ambo"]))
-                    for idx, item in enumerate(active_ambi, start=1):
-                        if tuple(map(int, item["ambo"])) == hit_pair:
-                            rank_key = str(idx)
-                            if rank_key in self.v48_ambo_rank_hits:
-                                self.v48_ambo_rank_hits[rank_key] += 1
-                                hit_ranks.append(idx)
+                    hp = tuple(map(int, hit_item["ambo"]))
+                    hit_pairs.append(f"{hp[0]}-{hp[1]}")
+                    for idx, item in enumerate(self.active_snapshot.get("ambi", []), start=1):
+                        if tuple(map(int, item["ambo"])) == hp:
+                            self.v48_rank_hits[str(idx)] += 1
+                            hit_ranks.append(idx)
                             break
                 if len(set(hit_ranks)) >= 2:
                     self.v48_multi_ambo_hit_draws += 1
 
-                ambi_txt = ", ".join(
-                    f"{a}-{b}"
-                    for h in hit_data["ambi_hit"]
-                    for a, b in [h["ambo"]]
-                )
-
+                self.v48_cost_units += MAX_AMBI_PER_PLAY * self.colpi
+                self.v48_gross_units += AMBO_PAYOUT * max(1, len(hit_data["ambi_hit"]))
                 self.append_csv_event(
                     "V48_HIT_AMBO",
                     e=e,
+                    play_id=self.active_snapshot.get("play_id"),
                     colpo=self.colpi,
-                    session_type="V48",
-                    outcome="HIT",
-                    hit_list=[],
+                    ambata=self.active_snapshot.get("ambata"),
+                    ambi=fmt_ambi(self.active_snapshot.get("ambi")),
+                    cluster=fmt_nums(self.active_snapshot.get("cluster_numbers")),
+                    outcome="HIT_AMBO",
+                    hit_ambi=", ".join(hit_pairs),
+                    hit_ranks=", ".join(map(str, sorted(set(hit_ranks)))),
                 )
-
                 await self.tg(
                     app,
                     f"🔥 HIT AMBO v48 | colpo {self.colpi}\n"
-                    f"• ambi = {ambi_txt}\n"
+                    f"• ambi = {', '.join(hit_pairs)}\n"
                     f"• rank vincenti = {', '.join(map(str, sorted(set(hit_ranks)))) or 'n/d'}\n\n"
-                    f"📊 STATS v48\n"
-                    f"• play = {self.total_play}\n"
-                    f"• hit ambata eventi = {self.total_hit_ambata}\n"
-                    f"• hit ambo = {self.total_hit_ambo}\n"
-                    f"• stop = {self.total_stop}\n\n"
-                    f"{self.v48_ambo_rank_stats_text()}\n\n"
-                    f"{self.terni_lab_stats_text()}\n\n"
-                    f"{self.ambata_r2_stats_text()}\n\n"
-                    f"{self.decina_lab_stats_text()}\n\n"
-                    f"{self.decina_heat_stats_text()}\n\n"
-                    f"{self.decina_multi_stats_text()}\n\n"
-                    f"{self.ambo_jolly_stats_text()}"
+                    f"{self.v48_stats_text()}"
                 )
-
                 self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
                 self.last_cluster_e = e
-
-                # AJ1 replica il backtest: si ferma quando il PLAY v48 chiude.
-                self.close_ambo_jolly_for_play(
-                    self.active_snapshot["play_id"], e, self.colpi, "V48_HIT_AMBO"
-                )
-
                 self.active = False
                 self.colpi = 0
                 self.cooldown = COOLDOWN_AFTER_PLAY
                 self.active_snapshot = None
+                skip_new_play = True
 
-                self.save_state()
-                return
-
-            if self.colpi >= MAX_COLPI:
+            elif self.colpi >= MAX_COLPI:
                 self.total_stop += 1
-
+                self.v48_cost_units += MAX_AMBI_PER_PLAY * MAX_COLPI
                 self.append_csv_event(
                     "V48_STOP",
                     e=e,
+                    play_id=self.active_snapshot.get("play_id"),
                     colpo=self.colpi,
-                    session_type="V48",
+                    ambata=self.active_snapshot.get("ambata"),
+                    ambi=fmt_ambi(self.active_snapshot.get("ambi")),
+                    cluster=fmt_nums(self.active_snapshot.get("cluster_numbers")),
                     outcome="STOP",
                 )
-
-                await self.tg(
-                    app,
-                    f"🛑 STOP v48 | {MAX_COLPI} colpi\n\n"
-                    f"📊 STATS v48\n"
-                    f"• play = {self.total_play}\n"
-                    f"• hit ambata eventi = {self.total_hit_ambata}\n"
-                    f"• hit ambo = {self.total_hit_ambo}\n"
-                    f"• stop = {self.total_stop}\n\n"
-                    f"{self.v48_ambo_rank_stats_text()}\n\n"
-                    f"{self.terni_lab_stats_text()}\n\n"
-                    f"{self.ambata_r2_stats_text()}\n\n"
-                    f"{self.decina_lab_stats_text()}\n\n"
-                    f"{self.decina_heat_stats_text()}\n\n"
-                    f"{self.decina_multi_stats_text()}\n\n"
-                    f"{self.ambo_jolly_stats_text()}"
-                )
-
+                await self.tg(app, f"🛑 STOP v48 | {MAX_COLPI} colpi\n\n{self.v48_stats_text()}")
                 self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
                 self.last_cluster_e = e
-
-                # AJ1 replica il backtest: si ferma quando il PLAY v48 chiude.
-                self.close_ambo_jolly_for_play(
-                    self.active_snapshot["play_id"], e, self.colpi, "V48_STOP"
-                )
-
                 self.active = False
                 self.colpi = 0
                 self.cooldown = COOLDOWN_AFTER_PLAY
                 self.active_snapshot = None
-
+                skip_new_play = True
+            else:
                 self.save_state()
                 return
 
+        # 4) se v48 era attivo e ha chiuso, non apre un nuovo play nello stesso colpo
+        if skip_new_play:
             self.save_state()
             return
 
-        # ====================================================
-        # COOLDOWN — CORE v48
-        # ====================================================
+        # 5) cooldown/history/hot/build
         if self.cooldown > 0:
             self.cooldown -= 1
             self.save_state()
             return
 
-        # ====================================================
-        # HISTORY MINIMO
-        # ====================================================
-        if len(self.last_draws) < 30:
-            self.save_state()
-            return
-
-        # ====================================================
-        # HOT UPDATE — CORE v48
-        # ====================================================
-        _, selected = self.selected_ritardatari()
-        self.update_watch_and_confirmed(e, nums, selected)
-
-        # ====================================================
-        # BUILD PLAY — CORE v48 + LAB PARALLELO
-        # ====================================================
-        play = self.build_play(e)
-
-        if play and not self.active:
-            self.active = True
-            self.colpi = 0
-            self.play_uid += 1
-            play["play_id"] = self.play_uid
-            self.active_snapshot = play
-            self.total_play += 1
-
-            # Sessioni parallele indipendenti.
-            self.create_terni_session(play, e)
-            self.create_ambata_r2_session(play, e)
-            aj_session = self.create_ambo_jolly_session(play, e)
-
-            self.append_csv_event(
-                "PLAY",
-                play=play,
-                play_id=play["play_id"],
-                e=e,
-                colpo=0,
-                session_type="V48",
-                outcome="OPEN",
-            )
-
-            # Una riga CSV per strategia rende il file facile da analizzare.
-            for key in LAB_STRATEGIES:
-                suffix = key.replace("op", "")
+        if len(self.last_draws) >= 30:
+            _, selected = self.selected_ritardatari()
+            self.update_watch_and_confirmed(e, nums, selected)
+            play = self.build_play(e)
+            if play and not self.active:
+                self.active = True
+                self.colpi = 0
+                self.play_uid += 1
+                play["play_id"] = self.play_uid
+                self.active_snapshot = play
+                self.total_play += 1
                 self.append_csv_event(
-                    "TERNI_SESSION_OPEN",
-                    play=play,
-                    play_id=play["play_id"],
+                    "V48_PLAY",
                     e=e,
+                    play_id=play["play_id"],
                     colpo=0,
-                    session_type="TERNI_7",
-                    strategy=key.upper(),
-                    jolly=play.get(f"terno_num_{suffix}"),
-                    terni=play.get(f"terni_op{suffix}", []),
+                    ambata=play["ambata"],
+                    ambi=fmt_ambi(play["ambi"]),
+                    cluster=fmt_nums(play["cluster_numbers"]),
                     outcome="OPEN",
                 )
-
-            self.append_csv_event(
-                "AMBATA_R2_OPEN",
-                play=play,
-                play_id=play["play_id"],
-                e=e,
-                colpo=0,
-                session_type="AMBATA_R2",
-                strategy="AMBATA_R2",
-                jolly=play["ambata"],
-                outcome="OPEN",
-            )
-
-            if aj_session:
-                aj_terno = tuple(sorted(map(int, aj_session["terno"])))
-                self.append_csv_event(
-                    "AMBO_JOLLY_OPEN",
-                    play=play,
-                    play_id=play["play_id"],
-                    e=e,
-                    colpo=0,
-                    session_type="AMBO_JOLLY_AJ1",
-                    strategy="AJ1_RANK1_AMBO_PLUS_OP3",
-                    jolly=aj_session["op3"],
-                    terni=[aj_terno],
-                    outcome="OPEN",
-                    ambo_jolly_terno=aj_terno,
-                    ambo_jolly_rank1_ambo=aj_session["rank1_ambo"],
-                    ambo_jolly_op3=aj_session["op3"],
+                await self.tg(
+                    app,
+                    "🎯 PLAY v48 BASE\n"
+                    f"• play_id = {play['play_id']}\n"
+                    f"• ambata = {play['ambata']}\n"
+                    f"• ambi = {fmt_ambi(play['ambi'])}\n"
+                    f"• cluster = {fmt_nums(play['cluster_numbers'])}\n"
+                    f"• max colpi = {MAX_COLPI}\n"
+                    "• modulo attivo = solo 3 ambi classici"
                 )
 
-            await self.tg(
-                app,
-                "🎯 PLAY v48 + FINAL RESEARCH\n"
-                f"🔥 AMBATA = {play['ambata']}\n"
-                f"✅ AMBI = {fmt_ambi(play['ambi'])}\n"
-                f"• cluster = {', '.join(map(str, play['cluster_numbers']))}\n"
-                f"• max_colpi v48 = {MAX_COLPI}\n"
-                f"• terni lab indipendente = {TERNI_LAB_MAX_COLPI} colpi\n"
-                f"• ambata raffica = {AMBATA_RAFFICA_MAX_COLPI} colpi\n"
-                f"• play_id = {play['play_id']}\n\n"
-                + (
-                    "⭐ AMBO-JOLLY AJ1\n"
-                    f"• 1° ambo v48 = {fmt_nums(aj_session['rank1_ambo'])}\n"
-                    f"• jolly OP3 = {aj_session['op3']}\n"
-                    f"• TERNO = {fmt_nums(aj_session['terno'])}\n"
-                    f"• orizzonti paralleli = {', '.join(map(str, AMBO_JOLLY_HORIZONS))} colpi\n"
-                    "• stop anticipato = chiusura PLAY v48\n\n"
-                    if aj_session else ""
-                )
-                + f"{self.play_lab_text(play)}"
-            )
+        if self.draws_since_spy_report >= SPY_REPORT_EVERY_DRAWS:
+            self.draws_since_spy_report = 0
+            await self.tg(app, self.spy_summary_text())
 
         self.save_state()
 
-    async def send_report(self, app):
-        await self.tg(
-            app,
-            "📊 REPORT SNIPER v48 + FINAL RESEARCH + DECINA MULTI + AJ1 + SPIA\n"
-            f"• play v48 = {self.total_play}\n"
-            f"• hit ambata eventi = {self.total_hit_ambata}\n"
-            f"• hit ambo = {self.total_hit_ambo}\n"
-            f"• stop = {self.total_stop}\n"
-            f"• rank ambo hit = R1:{self.v48_ambo_rank_hits['1']} R2:{self.v48_ambo_rank_hits['2']} R3:{self.v48_ambo_rank_hits['3']}\n"
-            f"• sessioni terni aperte ora = {len(self.terni_sessions)}\n"
-            f"• sessioni ambata R2 aperte ora = {len(self.ambata_r2_sessions)}\n"
-            f"• sessioni decina base aperte ora = {len(self.decina_lab_sessions)}\n"
-            f"• sessioni decina multi aperte ora = {len(self.decina_multi_sessions)}\n"
-            f"• sessioni AJ1 aperte ora = {len(self.ambo_jolly_sessions)}\n\n"
-            f"{self.terni_lab_stats_text()}\n\n"
-            f"{self.ambata_r2_stats_text()}\n\n"
-            f"{self.decina_lab_stats_text()}\n\n"
-            f"{self.decina_heat_stats_text()}\n\n"
-            f"{self.decina_multi_stats_text()}\n\n"
-            f"{self.ambo_jolly_stats_text()}\n\n"
-            f"🧾 CSV = {CSV_FILE}"
-        )
+
+# ============================================================
+# TELEGRAM COMMAND HANDLERS
+# ============================================================
+
+async def reply(update: Update, text: str, inline_menu=False):
+    if update.message:
+        for part in chunks(text, 3000):
+            await update.message.reply_text(part, reply_markup=INLINE_MENU if inline_menu else MENU_KEYBOARD)
+
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.menu_text(), inline_menu=True)
+
+
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.menu_text(), inline_menu=True)
+
+
+async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.full_report_text())
+
+
+async def cmd_v48(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.v48_stats_text())
+
+
+async def cmd_spie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.spy_summary_text())
+
+
+async def cmd_spie_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.spy_top_text())
+
+
+async def cmd_spie_network(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.spy_network_text())
+
+
+async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    engine = context.application.bot_data["engine"]
+    data = query.data
+    if data == "report":
+        text = engine.full_report_text()
+    elif data == "v48":
+        text = engine.v48_stats_text()
+    elif data == "spie":
+        text = engine.spy_summary_text()
+    elif data == "spie_top":
+        text = engine.spy_top_text()
+    elif data == "spie_network":
+        text = engine.spy_network_text()
+    else:
+        text = engine.menu_text()
+    for part in chunks(text, 3000):
+        await query.message.reply_text(part, reply_markup=INLINE_MENU)
 
 
 # ============================================================
-# LOCK ANTI-DOPPIA ISTANZA
+# SINGLE INSTANCE LOCK
 # ============================================================
 
 _LOCK_HANDLE = None
@@ -3260,20 +1397,16 @@ _LOCK_HANDLE = None
 
 def acquire_single_instance_lock():
     global _LOCK_HANDLE
-
     _LOCK_HANDLE = open(LOCK_FILE, "a+", encoding="utf-8")
-
     if fcntl is not None:
         try:
             fcntl.flock(_LOCK_HANDLE, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            print("⚠️ Un'altra istanza SNIPER v48/LAB è già attiva. Avvio bloccato.")
+            print("⚠️ Un'altra istanza SNIPER v48 BASE + FULL SPY è già attiva. Avvio bloccato.")
             sys.exit(1)
     else:
-        # Fallback: PID best-effort per sistemi senza fcntl.
         _LOCK_HANDLE.seek(0)
         old = _LOCK_HANDLE.read().strip()
-
         if old.isdigit():
             try:
                 os.kill(int(old), 0)
@@ -3281,7 +1414,6 @@ def acquire_single_instance_lock():
                 sys.exit(1)
             except OSError:
                 pass
-
     _LOCK_HANDLE.seek(0)
     _LOCK_HANDLE.truncate()
     _LOCK_HANDLE.write(str(os.getpid()))
@@ -3299,99 +1431,111 @@ def acquire_single_instance_lock():
 
 
 # ============================================================
-# LOOP
+# LIVE LOOP + POLLING COMMANDS
 # ============================================================
 
-CHAT_ID = validate_env()
-acquire_single_instance_lock()
-bot = SNIPER_V48()
+async def setup_commands(app):
+    await app.bot.set_my_commands([
+        BotCommand("report", "Quadro completo"),
+        BotCommand("v48", "Statistiche v48 base"),
+        BotCommand("spie", "Quadro numeri spia"),
+        BotCommand("spie_top", "Migliori spie live"),
+        BotCommand("spie_network", "Reti numeriche spia"),
+        BotCommand("menu", "Mostra pulsanti"),
+    ])
 
 
-async def live():
-    app = ApplicationBuilder().token(TOKEN).build()
-
+async def startup(engine, app):
     current_day = day_key()
-
-    if bot.day != current_day:
-        bot.reset_for_new_day(current_day)
-        await bot.tg(
-            app,
-            "🗓️ Nuovo giorno rilevato: reset operativo dedup/watch/hot. "
-            "Storico numerico conservato; sessioni LAB precedenti chiuse."
-        )
+    if engine.day != current_day:
+        engine.reset_for_new_day(current_day)
+        await engine.tg(app, "🗓️ Nuovo giorno rilevato: reset operativo v48/spie. Storico numerico conservato.")
 
     es = parse_site()
-
     if not es:
-        await bot.tg(app, "⚠️ parser vuoto")
+        await engine.tg(app, "⚠️ parser vuoto")
         return
 
-    # Primo avvio pulito: storico sì, replay no.
-    if not bot.last_draws:
-        bot.preload_today_as_processed(es)
-
-        await bot.tg(
+    if not engine.last_draws:
+        engine.preload_today_as_processed(es)
+        await engine.tg(
             app,
-            "🚀 SNIPER v48 + DECINA HEAT MONITOR + MULTI + AJ1 + SPIA LAB AVVIATO\n"
-            "✅ core v48 invariato\n"
-            "✅ OP3 primary + OP9/OP6/OP7 control\n"
-            "✅ Terni Lab indipendente 7 colpi\n"
-            "✅ Ambata Raffica 2 indipendente\n"
-            "✅ Decina Base 10-19 Heat5 TOP3 soglia>=8, 2 colpi\n✅ monitor separato Heat=8 / Heat=9 / Heat>=10 + economia K3 45x\n"
-            "✅ Decina CORE TOP2 3 terni soglia>=9, 2 colpi\n"
-            "✅ Decina PIVOT 6 terni soglia>=9, 2 colpi\n"
-            "✅ AMBO-JOLLY AJ1 = solo LAB, 1° ambo v48 + OP3, orizzonti 2/3/4/7\n✅ monitor rank ambo v48 vincente = 1/2/3\n✅ Numeri Spia Network Lab = candidati robusti, orizzonti 1/2/3 colpi\n"
-            f"✅ notifiche Decina Base = {'ON' if DECINA_LAB_NOTIFY else 'OFF'}\n"
-            f"✅ notifiche Decina Multi = {'ON' if DECINA_MULTI_NOTIFY else 'OFF'}\n"
-            f"✅ notifiche AMBO-JOLLY AJ1 = {'ON' if AMBO_JOLLY_NOTIFY else 'OFF'}\n"
-            f"✅ notifiche Numeri Spia = {'ON' if SPY_LAB_NOTIFY else 'OFF'}\n"
+            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB AVVIATO\n"
+            "✅ v48 base invariata: ambata + 3 ambi classici\n"
+            "✅ max 7 colpi, cooldown e cluster reuse invariati\n"
+            "✅ monitor rank ambo vincente 1/2/3\n"
+            f"✅ economia v48: ambo {AMBO_PAYOUT:.0f}x\n"
+            f"✅ numeri spia caricati: {len(engine.spy_model)} regole storico-statistiche\n"
+            "✅ condizioni C1/C2/C3+/non consecutive\n"
+            "✅ orizzonti spia H1/H2/H3\n"
+            f"✅ economia terno spie: {TERNO_PAYOUT:.0f}x\n"
+            "✅ comandi Telegram cliccabili attivi\n"
             "✅ storico iniziale marcato come processato\n"
-            "✅ niente replay iniziale"
+            "✅ niente replay iniziale\n\n"
+            "Tocca /menu per vedere i pulsanti."
         )
+        await engine.tg(app, engine.menu_text(), inline_menu=True)
 
+
+async def live_loop(engine, app):
     while True:
         try:
             current_day = day_key()
-
-            if bot.day != current_day:
-                bot.reset_for_new_day(current_day)
-
-                await bot.tg(
-                    app,
-                    "🗓️ Nuovo giorno rilevato: reset operativo dedup/watch/hot. "
-                    "Storico numerico conservato; sessioni LAB precedenti chiuse."
-                )
-
+            if engine.day != current_day:
+                engine.reset_for_new_day(current_day)
+                await engine.tg(app, "🗓️ Nuovo giorno rilevato: reset operativo dedup/watch/hot/spie.")
                 es = parse_site()
                 if es:
-                    bot.preload_today_as_processed(es)
-                    await bot.tg(
-                        app,
-                        "🚀 SNIPER v48 + FINAL RESEARCH\n"
-                        "✅ nuovo giorno inizializzato\n"
-                        "✅ estrazioni già uscite oggi marcate come storico/processate"
-                    )
-
+                    engine.preload_today_as_processed(es)
+                    await engine.tg(app, "✅ nuovo giorno inizializzato: estrazioni già uscite oggi marcate come storico/processate")
                 await asyncio.sleep(LOOP_SEC)
                 continue
 
             es = parse_site()
-
             for e, nums in es:
-                if bot.already_processed(e, nums):
+                if engine.already_processed(e, nums):
                     continue
-
-                await bot.on_new(app, e, nums)
-
+                await engine.on_new(app, e, nums)
         except Exception as ex:
             print(f"Errore loop: {ex}")
             try:
-                await bot.tg(app, f"⚠️ errore v48 final research: {ex}")
+                await engine.tg(app, f"⚠️ errore SNIPER v48 BASE + FULL SPY: {ex}")
             except Exception:
                 pass
-
         await asyncio.sleep(LOOP_SEC)
 
 
+async def main():
+    global CHAT_ID
+    CHAT_ID = validate_env()
+    acquire_single_instance_lock()
+
+    engine = SniperV48BaseFullSpy()
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.bot_data["engine"] = engine
+
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("report", cmd_report))
+    app.add_handler(CommandHandler("v48", cmd_v48))
+    app.add_handler(CommandHandler("spie", cmd_spie))
+    app.add_handler(CommandHandler("spie_top", cmd_spie_top))
+    app.add_handler(CommandHandler("spie_network", cmd_spie_network))
+    app.add_handler(CallbackQueryHandler(on_button))
+
+    await app.initialize()
+    await setup_commands(app)
+    await app.start()
+    await app.updater.start_polling()
+
+    await startup(engine, app)
+    try:
+        await live_loop(engine, app)
+    finally:
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
+
+
 if __name__ == "__main__":
-    asyncio.run(live())
+    asyncio.run(main())
