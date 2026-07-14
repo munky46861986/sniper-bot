@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB
+# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — DAILY REPORTS
 #
 # VERSIONE PULITA
 #   ✅ v48 base invariata: ambata + 3 ambi classici, max 7 colpi
@@ -50,9 +50,9 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_events.csv")
-LOCK_FILE = "/tmp/sniper_v48_base_full_spy.lock"
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_daily_reports_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_daily_reports_events.csv")
+LOCK_FILE = "/tmp/sniper_v48_base_full_spy_daily_reports.lock"
 
 LOOP_SEC = 60
 HISTORY_MAX = 320
@@ -76,12 +76,21 @@ TERNO_PAYOUT = 45.0
 # Numeri Spia Lab
 SPY_HORIZONS = (1, 2, 3)
 SPY_MAX_COLPI = max(SPY_HORIZONS)
-SPY_NOTIFY_OPEN = True
-SPY_NOTIFY_HIT_K2 = True
+
+# Modalità pulita: il bot calcola tutto, ma non intasa Telegram.
+# Telegram mostra v48, eventuali TRIS spia e report automatici completi.
+DRAW_NOTIFY = False
+SPY_NOTIFY_OPEN = False
+SPY_NOTIFY_HIT_K2 = False
 SPY_NOTIFY_HIT_K3 = True
 SPY_OPEN_NOTIFY_MAX_LINES = 8
 SPY_MIN_MODEL_EVENTS = 80
-SPY_REPORT_EVERY_DRAWS = 30
+
+# Report automatici: due tranche giornaliere + fallback a cambio giorno.
+AUTO_REPORT_ENABLED = True
+AUTO_REPORT_TIMES = ("14:00", "23:50")
+AUTO_REPORT_WINDOW_MINUTES = 8
+SPY_REPORT_EVERY_DRAWS = 0
 
 # Menu Telegram cliccabile
 MENU_KEYBOARD = ReplyKeyboardMarkup(
@@ -336,7 +345,7 @@ def classify_network(spy, followers):
 
 class SniperV48BaseFullSpy:
     def __init__(self):
-        self.version = "v48_base_full_spy_clickable_1"
+        self.version = "v48_base_full_spy_daily_reports_1"
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
@@ -373,6 +382,7 @@ class SniperV48BaseFullSpy:
         self.spy_network_horizon_stats = {}
         self.spy_level_horizon_stats = {}
         self.draws_since_spy_report = 0
+        self.scheduled_reports_sent = {}
 
         self.load_state()
         ensure_csv()
@@ -460,6 +470,7 @@ class SniperV48BaseFullSpy:
             "spy_network_horizon_stats": self.spy_network_horizon_stats,
             "spy_level_horizon_stats": self.spy_level_horizon_stats,
             "draws_since_spy_report": self.draws_since_spy_report,
+            "scheduled_reports_sent": self.scheduled_reports_sent,
         }
         tmp = STATE_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -503,6 +514,7 @@ class SniperV48BaseFullSpy:
             self.spy_network_horizon_stats = data.get("spy_network_horizon_stats", {})
             self.spy_level_horizon_stats = data.get("spy_level_horizon_stats", {})
             self.draws_since_spy_report = int(data.get("draws_since_spy_report", 0))
+            self.scheduled_reports_sent = data.get("scheduled_reports_sent", {}) if isinstance(data.get("scheduled_reports_sent", {}), dict) else {}
         except Exception as ex:
             print(f"⚠️ Stato non caricato: {ex}")
 
@@ -1153,7 +1165,98 @@ class SniperV48BaseFullSpy:
         return "\n".join(lines).strip()
 
     def full_report_text(self):
-        return f"{self.v48_stats_text()}\n\n{self.spy_summary_text()}"
+        return "\n\n".join([
+            self.v48_stats_text(),
+            self.spy_summary_text(),
+            self.spy_top_text(limit=10),
+            self.spy_network_text(),
+            self.operational_verdict_text(),
+        ])
+
+    def operational_verdict_text(self):
+        st = self.spy_horizon_stats.get("3", self.new_spy_stats())
+        closed = int(st.get("closed", 0))
+        k2 = int(st.get("k2_hits", 0))
+        k3 = int(st.get("k3_hits", 0))
+        cost = float(st.get("k3_cost_units", 0.0))
+        gross = float(st.get("k3_gross_units", 0.0))
+        _, roi = roi_text(gross, cost)
+        exp_k2_pct = pct(float(st.get("expected_k2_sum", 0.0)), closed)
+        k2_pct = pct(k2, closed)
+        extra = k2_pct - exp_k2_pct
+        if closed < 50:
+            stato = "campione piccolo: raccogliere dati"
+        elif extra >= 5 and roi > -15:
+            stato = "spie interessanti: K2 forte, K3 da verificare"
+        elif extra >= 5:
+            stato = "K2 positivo, terno K3 non ancora profittevole"
+        elif extra > 0:
+            stato = "leggero vantaggio, non sufficiente"
+        else:
+            stato = "spie non confermate nel periodo"
+        return (
+            "🧾 LETTURA OPERATIVA\n"
+            f"• H3 K2 = {k2_pct:.2f}% | extra≈{extra:+.2f} pp\n"
+            f"• H3 K3 = {k3}/{closed} | ROI terno={roi:+.2f}%\n"
+            f"• v48: HIT={self.total_hit_ambo}, STOP={self.total_stop}, play={self.total_play}\n"
+            f"• verdetto = {stato}\n"
+            "• nota = uso statistico/laboratorio, non previsione certa"
+        )
+
+    def scheduled_report_header(self, slot, reason=None):
+        label = {
+            "14:00": "TRANCHE 1 — metà giornata",
+            "23:50": "TRANCHE 2 — fine giornata",
+            "DAY_CHANGE": "REPORT FINE GIORNATA — cambio giorno",
+        }.get(slot, f"REPORT {slot}")
+        txt = [
+            f"📊 REPORT AUTOMATICO — {label}",
+            f"• giorno statistiche = {self.day}",
+            f"• generato = {now_txt()}",
+            "• modalità = pulita: niente spam segnali aperti/K2",
+        ]
+        if reason:
+            txt.append(f"• motivo = {reason}")
+        return "\n".join(txt)
+
+    def scheduled_report_text(self, slot, reason=None):
+        return f"{self.scheduled_report_header(slot, reason)}\n\n{self.full_report_text()}"
+
+    @staticmethod
+    def _slot_to_minutes(slot):
+        hh, mm = str(slot).split(":", 1)
+        return int(hh) * 60 + int(mm)
+
+    async def maybe_send_scheduled_report(self, app):
+        if not AUTO_REPORT_ENABLED:
+            return
+        now = datetime.now()
+        current = now.hour * 60 + now.minute
+        today = day_key()
+        if len(self.scheduled_reports_sent) > 40:
+            self.scheduled_reports_sent = dict(list(self.scheduled_reports_sent.items())[-25:])
+        for slot in AUTO_REPORT_TIMES:
+            target = self._slot_to_minutes(slot)
+            key = f"{today}_{slot}"
+            if key in self.scheduled_reports_sent:
+                continue
+            if target <= current <= target + AUTO_REPORT_WINDOW_MINUTES:
+                self.scheduled_reports_sent[key] = now_txt()
+                self.save_state()
+                await self.tg(app, self.scheduled_report_text(slot), inline_menu=True)
+
+    async def send_day_change_report_if_needed(self, app):
+        # Fallback: se la tranche serale non è partita, prima del reset invia un report finale.
+        key = f"{self.day}_DAY_CHANGE"
+        if key in self.scheduled_reports_sent:
+            return
+        has_spy_data = any(int(v.get("closed", 0)) for v in self.spy_horizon_stats.values())
+        has_data = bool(self.total_play or self.total_hit_ambo or self.total_stop or has_spy_data)
+        if not has_data:
+            return
+        self.scheduled_reports_sent[key] = now_txt()
+        self.save_state()
+        await self.tg(app, self.scheduled_report_text("DAY_CHANGE", reason="reset nuovo giorno"), inline_menu=True)
 
     def menu_text(self):
         return (
@@ -1181,7 +1284,8 @@ class SniperV48BaseFullSpy:
         self.last_draws = self.last_draws[-HISTORY_MAX:]
         self.draws_since_spy_report += 1
 
-        await self.tg(app, f"📌 Estrazione {e}\n🎱 {', '.join(map(str, nums))}")
+        if DRAW_NOTIFY:
+            await self.tg(app, f"📌 Estrazione {e}\n🎱 {', '.join(map(str, nums))}")
 
         # 1) aggiorna sessioni spia aperte sui nuovi numeri
         await self.process_spy_sessions(app, e, nums)
@@ -1313,7 +1417,7 @@ class SniperV48BaseFullSpy:
                     "• modulo attivo = solo 3 ambi classici"
                 )
 
-        if self.draws_since_spy_report >= SPY_REPORT_EVERY_DRAWS:
+        if SPY_REPORT_EVERY_DRAWS and self.draws_since_spy_report >= SPY_REPORT_EVERY_DRAWS:
             self.draws_since_spy_report = 0
             await self.tg(app, self.spy_summary_text())
 
@@ -1448,6 +1552,7 @@ async def setup_commands(app):
 async def startup(engine, app):
     current_day = day_key()
     if engine.day != current_day:
+        await engine.send_day_change_report_if_needed(app)
         engine.reset_for_new_day(current_day)
         await engine.tg(app, "🗓️ Nuovo giorno rilevato: reset operativo v48/spie. Storico numerico conservato.")
 
@@ -1460,7 +1565,7 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB AVVIATO\n"
+            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — DAILY REPORTS AVVIATO\n"
             "✅ v48 base invariata: ambata + 3 ambi classici\n"
             "✅ max 7 colpi, cooldown e cluster reuse invariati\n"
             "✅ monitor rank ambo vincente 1/2/3\n"
@@ -1470,6 +1575,8 @@ async def startup(engine, app):
             "✅ orizzonti spia H1/H2/H3\n"
             f"✅ economia terno spie: {TERNO_PAYOUT:.0f}x\n"
             "✅ comandi Telegram cliccabili attivi\n"
+            "✅ modalità pulita: niente messaggi spie aperte/K2\n"
+            f"✅ report automatici: {', '.join(AUTO_REPORT_TIMES)} + cambio giorno\n"
             "✅ storico iniziale marcato come processato\n"
             "✅ niente replay iniziale\n\n"
             "Tocca /menu per vedere i pulsanti."
@@ -1482,6 +1589,7 @@ async def live_loop(engine, app):
         try:
             current_day = day_key()
             if engine.day != current_day:
+                await engine.send_day_change_report_if_needed(app)
                 engine.reset_for_new_day(current_day)
                 await engine.tg(app, "🗓️ Nuovo giorno rilevato: reset operativo dedup/watch/hot/spie.")
                 es = parse_site()
@@ -1496,6 +1604,7 @@ async def live_loop(engine, app):
                 if engine.already_processed(e, nums):
                     continue
                 await engine.on_new(app, e, nums)
+            await engine.maybe_send_scheduled_report(app)
         except Exception as ex:
             print(f"Errore loop: {ex}")
             try:
