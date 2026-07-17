@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — DAILY REPORTS
+# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY
 #
 # VERSIONE PULITA
 #   ✅ v48 base invariata: ambata + 3 ambi classici, max 7 colpi
@@ -50,9 +50,9 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_daily_reports_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_daily_reports_events.csv")
-LOCK_FILE = "/tmp/sniper_v48_base_full_spy_daily_reports.lock"
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_events.csv")
+LOCK_FILE = "/tmp/sniper_v48_base_full_spy_report_only.lock"
 
 LOOP_SEC = 60
 HISTORY_MAX = 320
@@ -78,13 +78,15 @@ SPY_HORIZONS = (1, 2, 3)
 SPY_MAX_COLPI = max(SPY_HORIZONS)
 
 # Modalità pulita: il bot calcola tutto, ma non intasa Telegram.
-# Telegram mostra v48, eventuali TRIS spia e report automatici completi.
+# Modalità REPORT ONLY: il bot calcola tutto, ma Telegram non riceve singoli segnali spia.
+# I TRIS 3/3 entrano solo nei report aggregati.
 DRAW_NOTIFY = False
 SPY_NOTIFY_OPEN = False
 SPY_NOTIFY_HIT_K2 = False
-SPY_NOTIFY_HIT_K3 = True
+SPY_NOTIFY_HIT_K3 = False
 SPY_OPEN_NOTIFY_MAX_LINES = 8
 SPY_MIN_MODEL_EVENTS = 80
+SPY_TOP_MIN_CLOSED = 20
 
 # Report automatici: due tranche giornaliere + fallback a cambio giorno.
 AUTO_REPORT_ENABLED = True
@@ -345,7 +347,7 @@ def classify_network(spy, followers):
 
 class SniperV48BaseFullSpy:
     def __init__(self):
-        self.version = "v48_base_full_spy_daily_reports_1"
+        self.version = "v48_base_full_spy_report_only_2"
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
@@ -1070,9 +1072,10 @@ class SniperV48BaseFullSpy:
                 h3_extra = extra_k2
                 h3_closed = closed
                 h3_k3 = k3
+            colpo_label = "colpi" if h > 1 else "colpo"
             lines.extend([
                 "",
-                f"H{h} — entro {h} colpo{'i' if h > 1 else ''}",
+                f"H{h} — entro {h} {colpo_label}",
                 f"• chiuse = {closed} / sessioni = {st['sessions']}",
                 f"• K1 = {k1}/{closed} = {pct(k1, closed):.2f}%",
                 f"• K2 = {k2}/{closed} = {pct(k2, closed):.2f}% | atteso≈{exp_k2_pct:.2f}% | extra={extra_k2:+.2f} pp",
@@ -1080,12 +1083,14 @@ class SniperV48BaseFullSpy:
                 f"• terno 45x: costo={cost:.2f}u | lordo={gross:.2f}u | netto={net:+.2f}u | ROI={roi:+.2f}%",
             ])
 
+        st3 = self.spy_horizon_stats.get("3", self.new_spy_stats())
+        _, h3_roi = roi_text(float(st3.get("k3_gross_units", 0.0)), float(st3.get("k3_cost_units", 0.0)))
         if h3_closed < 50:
             verdict = "🟡 campione piccolo: osservazione"
-        elif h3_extra >= 5 and h3_k3 > 0:
-            verdict = "🟢 K2 positivo e K3 presente: molto interessante"
+        elif h3_extra >= 5 and h3_roi >= 0:
+            verdict = "🟢 K2 positivo e K3 profittevole nel periodo"
         elif h3_extra >= 5:
-            verdict = "🟡 K2 positivo, K3 non confermato"
+            verdict = "🟡 K2 positivo, terno K3 non profittevole"
         elif h3_extra > 0:
             verdict = "🟡 leggermente sopra atteso"
         else:
@@ -1099,12 +1104,16 @@ class SniperV48BaseFullSpy:
         ])
         return "\n".join(lines)
 
-    def spy_top_text(self, limit=12):
+    def spy_top_text(self, limit=12, min_closed=SPY_TOP_MIN_CLOSED):
         rows = []
+        low_sample = 0
         for key, hstats in self.spy_candidate_horizon_stats.items():
             st = hstats.get("3") or {}
             closed = int(st.get("closed", 0))
             if closed <= 0:
+                continue
+            if closed < min_closed:
+                low_sample += 1
                 continue
             rule = self.spy_model.get(key, {})
             rows.append({
@@ -1117,10 +1126,20 @@ class SniperV48BaseFullSpy:
                 "extra": pct(int(st.get("k2_hits", 0)), closed) - pct(float(st.get("expected_k2_sum", 0.0)), closed),
             })
         rows.sort(key=lambda r: (-r["extra"], -r["k2"], -r["closed"]))
-        lines = ["🏆 MIGLIORI SPIE LIVE — H3", "ordinate per extra K2 sopra atteso", ""]
+        lines = [
+            "🏆 MIGLIORI SPIE LIVE — H3",
+            f"ordinate per extra K2 sopra atteso | minimo casi chiusi = {min_closed}",
+            "",
+        ]
         if not rows:
-            lines.append("Nessuna spia chiusa ancora.")
+            if low_sample:
+                lines.append(f"Nessuna spia con almeno {min_closed} casi chiusi. Regole con campione piccolo escluse = {low_sample}.")
+            else:
+                lines.append("Nessuna spia chiusa ancora.")
             return "\n".join(lines)
+        if low_sample:
+            lines.append(f"Regole escluse per campione piccolo (<{min_closed}) = {low_sample}")
+            lines.append("")
         for i, r in enumerate(rows[:limit], start=1):
             lines.append(
                 f"{i}) {r['label']}\n"
@@ -1164,9 +1183,38 @@ class SniperV48BaseFullSpy:
             lines.append(f"• {level}: K2 {k2}/{closed} = {pct(k2, closed):.2f}% | extra={pct(k2, closed)-exp_k2_pct:+.2f} pp")
         return "\n".join(lines).strip()
 
+    def focus_h3_text(self):
+        h3 = self.spy_horizon_stats.get("3", self.new_spy_stats())
+        closed = int(h3.get("closed", 0))
+        k2 = int(h3.get("k2_hits", 0))
+        k3 = int(h3.get("k3_hits", 0))
+        exp = pct(float(h3.get("expected_k2_sum", 0.0)), closed)
+        k2p = pct(k2, closed)
+        _, roi = roi_text(float(h3.get("k3_gross_units", 0.0)), float(h3.get("k3_cost_units", 0.0)))
+
+        dec = self.spy_network_horizon_stats.get("DECINA", {}).get("3", self.new_spy_stats())
+        dec_closed = int(dec.get("closed", 0))
+        dec_k2 = int(dec.get("k2_hits", 0))
+        dec_exp = pct(float(dec.get("expected_k2_sum", 0.0)), dec_closed)
+
+        mult = self.spy_level_horizon_stats.get("MULTIPLA", {}).get("3", self.new_spy_stats())
+        mult_closed = int(mult.get("closed", 0))
+        mult_k2 = int(mult.get("k2_hits", 0))
+        mult_exp = pct(float(mult.get("expected_k2_sum", 0.0)), mult_closed)
+
+        return (
+            "🔎 FOCUS LETTURA RAPIDA — H3\n"
+            f"• Spie globali: K2={k2}/{closed} = {k2p:.2f}% | extra={k2p-exp:+.2f} pp\n"
+            f"• K3 terno 45x: {k3}/{closed} | ROI={roi:+.2f}%\n"
+            f"• Rete DECINA: K2={dec_k2}/{dec_closed} = {pct(dec_k2, dec_closed):.2f}% | extra={pct(dec_k2, dec_closed)-dec_exp:+.2f} pp\n"
+            f"• Livello MULTIPLA: K2={mult_k2}/{mult_closed} = {pct(mult_k2, mult_closed):.2f}% | extra={pct(mult_k2, mult_closed)-mult_exp:+.2f} pp\n"
+            "• lettura: K2 misura la forza statistica; K3/ROI decide se il terno è sostenibile"
+        )
+
     def full_report_text(self):
         return "\n\n".join([
             self.v48_stats_text(),
+            self.focus_h3_text(),
             self.spy_summary_text(),
             self.spy_top_text(limit=10),
             self.spy_network_text(),
@@ -1213,7 +1261,7 @@ class SniperV48BaseFullSpy:
             f"📊 REPORT AUTOMATICO — {label}",
             f"• giorno statistiche = {self.day}",
             f"• generato = {now_txt()}",
-            "• modalità = pulita: niente spam segnali aperti/K2",
+            "• modalità = report-only: niente messaggi spie aperte/K2/K3",
         ]
         if reason:
             txt.append(f"• motivo = {reason}")
@@ -1227,8 +1275,23 @@ class SniperV48BaseFullSpy:
         hh, mm = str(slot).split(":", 1)
         return int(hh) * 60 + int(mm)
 
+    def has_reportable_data(self):
+        has_spy_data = any(
+            int(v.get("sessions", 0)) or int(v.get("closed", 0))
+            for v in self.spy_horizon_stats.values()
+        )
+        return bool(
+            self.total_play
+            or self.total_hit_ambo
+            or self.total_stop
+            or self.spy_sessions
+            or has_spy_data
+        )
+
     async def maybe_send_scheduled_report(self, app):
         if not AUTO_REPORT_ENABLED:
+            return
+        if not self.has_reportable_data():
             return
         now = datetime.now()
         current = now.hour * 60 + now.minute
@@ -1250,9 +1313,7 @@ class SniperV48BaseFullSpy:
         key = f"{self.day}_DAY_CHANGE"
         if key in self.scheduled_reports_sent:
             return
-        has_spy_data = any(int(v.get("closed", 0)) for v in self.spy_horizon_stats.values())
-        has_data = bool(self.total_play or self.total_hit_ambo or self.total_stop or has_spy_data)
-        if not has_data:
+        if not self.has_reportable_data():
             return
         self.scheduled_reports_sent[key] = now_txt()
         self.save_state()
@@ -1334,19 +1395,21 @@ class SniperV48BaseFullSpy:
                     hit_ambi=", ".join(hit_pairs),
                     hit_ranks=", ".join(map(str, sorted(set(hit_ranks)))),
                 )
-                await self.tg(
-                    app,
-                    f"🔥 HIT AMBO v48 | colpo {self.colpi}\n"
-                    f"• ambi = {', '.join(hit_pairs)}\n"
-                    f"• rank vincenti = {', '.join(map(str, sorted(set(hit_ranks)))) or 'n/d'}\n\n"
-                    f"{self.v48_stats_text()}"
-                )
-                self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
+                hit_colpo = self.colpi
+                closed_snapshot = self.active_snapshot
+                self.last_cluster_numbers = closed_snapshot["cluster_numbers"]
                 self.last_cluster_e = e
                 self.active = False
                 self.colpi = 0
                 self.cooldown = COOLDOWN_AFTER_PLAY
                 self.active_snapshot = None
+                await self.tg(
+                    app,
+                    f"🔥 HIT AMBO v48 | colpo {hit_colpo}\n"
+                    f"• ambi = {', '.join(hit_pairs)}\n"
+                    f"• rank vincenti = {', '.join(map(str, sorted(set(hit_ranks)))) or 'n/d'}\n\n"
+                    f"{self.v48_stats_text()}"
+                )
                 skip_new_play = True
 
             elif self.colpi >= MAX_COLPI:
@@ -1362,13 +1425,14 @@ class SniperV48BaseFullSpy:
                     cluster=fmt_nums(self.active_snapshot.get("cluster_numbers")),
                     outcome="STOP",
                 )
-                await self.tg(app, f"🛑 STOP v48 | {MAX_COLPI} colpi\n\n{self.v48_stats_text()}")
-                self.last_cluster_numbers = self.active_snapshot["cluster_numbers"]
+                closed_snapshot = self.active_snapshot
+                self.last_cluster_numbers = closed_snapshot["cluster_numbers"]
                 self.last_cluster_e = e
                 self.active = False
                 self.colpi = 0
                 self.cooldown = COOLDOWN_AFTER_PLAY
                 self.active_snapshot = None
+                await self.tg(app, f"🛑 STOP v48 | {MAX_COLPI} colpi\n\n{self.v48_stats_text()}")
                 skip_new_play = True
             else:
                 self.save_state()
@@ -1565,7 +1629,7 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — DAILY REPORTS AVVIATO\n"
+            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY AVVIATO\n"
             "✅ v48 base invariata: ambata + 3 ambi classici\n"
             "✅ max 7 colpi, cooldown e cluster reuse invariati\n"
             "✅ monitor rank ambo vincente 1/2/3\n"
@@ -1575,7 +1639,7 @@ async def startup(engine, app):
             "✅ orizzonti spia H1/H2/H3\n"
             f"✅ economia terno spie: {TERNO_PAYOUT:.0f}x\n"
             "✅ comandi Telegram cliccabili attivi\n"
-            "✅ modalità pulita: niente messaggi spie aperte/K2\n"
+            "✅ modalità report-only: niente messaggi spie aperte/K2/K3\n"
             f"✅ report automatici: {', '.join(AUTO_REPORT_TIMES)} + cambio giorno\n"
             "✅ storico iniziale marcato come processato\n"
             "✅ niente replay iniziale\n\n"
