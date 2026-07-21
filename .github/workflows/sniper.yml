@@ -1,5 +1,9 @@
 name: Sniper Bot
 
+concurrency:
+  group: sniper-v48-bot
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
   schedule:
