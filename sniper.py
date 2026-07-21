@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY v3
+# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY v4 ELITE
 #
 # VERSIONE PULITA
 #   ✅ v48 base invariata: ambata + 3 ambi classici, max 7 colpi
@@ -9,7 +9,8 @@
 #   ✅ condizioni: C1_exact, C2_exact, C3plus, NC2_W3_gap, NC2_W5, NC3_W5_gap
 #   ✅ orizzonti paralleli H1/H2/H3
 #   ✅ K1/K2/K3 + economia terno 45x
-#   ✅ report Telegram cliccabili: /report /v48 /spie /spie_top /spie_network /menu
+#   ✅ report Telegram cliccabili: /report /v48 /spie /spie_elite /spie_top /spie_network /menu
+#   ✅ sezione SPIE ELITE STORICHE — LIVE per confrontare storico vs live
 #
 # NOTA
 #   Questo bot non predice le estrazioni: registra e confronta segnali statistici.
@@ -50,9 +51,9 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_v3_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_v3_events.csv")
-LOCK_FILE = "/tmp/sniper_v48_base_full_spy_report_only_v3.lock"
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_v4_elite_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_v4_elite_events.csv")
+LOCK_FILE = "/tmp/sniper_v48_base_full_spy_report_only_v4_elite.lock"
 
 LOOP_SEC = 60
 HISTORY_MAX = 320
@@ -88,6 +89,50 @@ SPY_OPEN_NOTIFY_MAX_LINES = 8
 SPY_MIN_MODEL_EVENTS = 80
 SPY_TOP_MIN_CLOSED = 20
 
+
+# Spie Elite Storiche — selezionate dal backtest H3 sullo storico gennaio-settembre.
+# TOP3 = nucleo più pulito qualità/quantità; WATCH = estensione utile per confronto live.
+SPY_ELITE_HISTORIC = {
+    "5_C3plus": {
+        "tier": "TOP3", "rank": 1,
+        "label": "5 C3plus → 4-55-56", "network": "PONTE_55",
+        "hist_closed": 2121, "hist_k2_pct": 52.90, "hist_k3_pct": 10.23, "hist_roi_pct": 58.75,
+    },
+    "10_C3plus": {
+        "tier": "TOP3", "rank": 2,
+        "label": "10 C3plus → 9-5-55", "network": "MOD5",
+        "hist_closed": 2086, "hist_k2_pct": 58.10, "hist_k3_pct": 9.88, "hist_roi_pct": 52.97,
+    },
+    "20_C2_exact": {
+        "tier": "TOP3", "rank": 3,
+        "label": "20 C2_exact → 15-10-5", "network": "CATENA_5",
+        "hist_closed": 3010, "hist_k2_pct": 54.39, "hist_k3_pct": 9.27, "hist_roi_pct": 43.72,
+    },
+    "15_C3plus": {
+        "tier": "WATCH", "rank": 4,
+        "label": "15 C3plus → 14-28-55", "network": "PONTE_55",
+        "hist_closed": 2092, "hist_k2_pct": 55.02, "hist_k3_pct": 9.03, "hist_roi_pct": 39.70,
+    },
+    "9_C3plus": {
+        "tier": "WATCH", "rank": 5,
+        "label": "9 C3plus → 8-25-67", "network": "ALTRO",
+        "hist_closed": 1795, "hist_k2_pct": 55.21, "hist_k3_pct": 8.91, "hist_roi_pct": 37.72,
+    },
+    "25_C2_exact": {
+        "tier": "WATCH", "rank": 6,
+        "label": "25 C2_exact → 20-15-10", "network": "CATENA_5",
+        "hist_closed": 2816, "hist_k2_pct": 54.83, "hist_k3_pct": 8.31, "hist_roi_pct": 29.00,
+    },
+    "23_C3plus": {
+        "tier": "WATCH", "rank": 7,
+        "label": "23 C3plus → 22-42-39", "network": "LATERALE_23",
+        "hist_closed": 1797, "hist_k2_pct": 51.75, "hist_k3_pct": 7.57, "hist_roi_pct": 16.50,
+    },
+}
+SPY_ELITE_TOP3_KEYS = tuple(k for k, v in sorted(SPY_ELITE_HISTORIC.items(), key=lambda kv: kv[1]["rank"]) if v["tier"] == "TOP3")
+SPY_ELITE_ALL_KEYS = tuple(k for k, v in sorted(SPY_ELITE_HISTORIC.items(), key=lambda kv: kv[1]["rank"]))
+SPY_ELITE_MIN_CLOSED = 20
+
 # Report automatici: due tranche giornaliere + fallback a cambio giorno.
 AUTO_REPORT_ENABLED = True
 AUTO_REPORT_TIMES = ("14:00", "23:50")
@@ -104,8 +149,9 @@ AUTO_REPORT_ALLOW_ACTIVE_V48_AFTER_COLPO = 1
 MENU_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
         ["/report", "/v48"],
-        ["/spie", "/spie_top"],
-        ["/spie_network", "/menu"],
+        ["/spie", "/spie_elite"],
+        ["/spie_top", "/spie_network"],
+        ["/menu"],
     ],
     resize_keyboard=True,
     one_time_keyboard=False,
@@ -117,8 +163,9 @@ MENU_KEYBOARD = ReplyKeyboardMarkup(
 # questi bottoni sotto al messaggio /menu restano cliccabili.
 INLINE_MENU = InlineKeyboardMarkup([
     [InlineKeyboardButton("📊 Report", callback_data="report"), InlineKeyboardButton("🎯 v48", callback_data="v48")],
-    [InlineKeyboardButton("🕵️ Spie", callback_data="spie"), InlineKeyboardButton("🏆 Top spie", callback_data="spie_top")],
-    [InlineKeyboardButton("🧬 Network", callback_data="spie_network"), InlineKeyboardButton("🧭 Menu", callback_data="menu")],
+    [InlineKeyboardButton("🕵️ Spie", callback_data="spie"), InlineKeyboardButton("⭐ Elite", callback_data="spie_elite")],
+    [InlineKeyboardButton("🏆 Top spie", callback_data="spie_top"), InlineKeyboardButton("🧬 Network", callback_data="spie_network")],
+    [InlineKeyboardButton("🧭 Menu", callback_data="menu")],
 ])
 
 # Modello storico spie incorporato.
@@ -367,7 +414,7 @@ def classify_network(spy, followers):
 
 class SniperV48BaseFullSpy:
     def __init__(self):
-        self.version = "v48_base_full_spy_report_only_3"
+        self.version = "v48_base_full_spy_report_only_4_elite"
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
@@ -1132,6 +1179,86 @@ class SniperV48BaseFullSpy:
         ])
         return "\n".join(lines)
 
+    def spy_elite_text(self):
+        def read_stats(key):
+            st = self.spy_candidate_horizon_stats.get(key, {}).get("3", self.new_spy_stats())
+            closed = int(st.get("closed", 0))
+            k2 = int(st.get("k2_hits", 0))
+            k3 = int(st.get("k3_hits", 0))
+            cost = float(st.get("k3_cost_units", 0.0))
+            gross = float(st.get("k3_gross_units", 0.0))
+            _, roi = roi_text(gross, cost)
+            active_now = sum(1 for s in self.spy_sessions if s.get("key") == key)
+            return st, closed, k2, k3, roi, active_now
+
+        def aggregate(keys):
+            out = self.new_spy_stats()
+            active_now = 0
+            for key in keys:
+                st, _, _, _, _, open_count = read_stats(key)
+                active_now += open_count
+                for field in out:
+                    out[field] += st.get(field, 0)
+            return out, active_now
+
+        lines = [
+            "⭐ SPIE ELITE STORICHE — LIVE H3",
+            f"• elite monitorate = {len(SPY_ELITE_ALL_KEYS)} | TOP3 = {len(SPY_ELITE_TOP3_KEYS)}",
+            "• confronto = storico H3 vs live del giorno/versione corrente",
+            "• uso = filtro laboratorio, non giocata automatica",
+            "",
+        ]
+
+        for title, keys in (("NUCLEO TOP3", SPY_ELITE_TOP3_KEYS), ("ELITE COMPLETE", SPY_ELITE_ALL_KEYS)):
+            agg, active_now = aggregate(keys)
+            closed = int(agg.get("closed", 0))
+            k2 = int(agg.get("k2_hits", 0))
+            k3 = int(agg.get("k3_hits", 0))
+            _, roi = roi_text(float(agg.get("k3_gross_units", 0.0)), float(agg.get("k3_cost_units", 0.0)))
+            exp = expected_pct_from_sum(agg.get("expected_k2_sum", 0.0), closed)
+            if closed < SPY_ELITE_MIN_CLOSED:
+                stato = "campione piccolo"
+            elif roi >= 0:
+                stato = "K3 positivo nel live"
+            elif pct(k2, closed) - exp >= 5:
+                stato = "K2 positivo, K3 negativo"
+            else:
+                stato = "non confermato"
+            lines.extend([
+                f"📌 {title}",
+                f"• live chiuse = {closed} | aperte ora = {active_now}",
+                f"• K2 H3 = {k2}/{closed} = {pct(k2, closed):.2f}% | atteso≈{exp:.2f}% | extra={pct(k2, closed)-exp:+.2f} pp",
+                f"• K3 H3 = {k3}/{closed} | ROI={roi:+.2f}%",
+                f"• stato = {stato}",
+                "",
+            ])
+
+        lines.append("📋 DETTAGLIO ELITE")
+        for key in SPY_ELITE_ALL_KEYS:
+            meta = SPY_ELITE_HISTORIC[key]
+            st, closed, k2, k3, roi, active_now = read_stats(key)
+            k2_live = pct(k2, closed)
+            exp = expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed)
+            sample = "OK" if closed >= SPY_ELITE_MIN_CLOSED else "piccolo"
+            if closed <= 0:
+                live_line = "live: nessun caso chiuso"
+            else:
+                live_line = (
+                    f"live: chiuse={closed} | K2={k2_live:.2f}% | extra={k2_live-exp:+.2f} pp | "
+                    f"K3={k3} | ROI={roi:+.2f}% | sample={sample}"
+                )
+            lines.append(
+                f"{meta['rank']}) [{meta['tier']}] {meta['label']}\n"
+                f"• storico H3: K2={meta['hist_k2_pct']:.2f}% | K3={meta['hist_k3_pct']:.2f}% | ROI={meta['hist_roi_pct']:+.2f}% | rete={meta['network']}\n"
+                f"• {live_line} | aperte ora={active_now}"
+            )
+
+        lines.append("")
+        lines.append("🔎 LETTURA")
+        lines.append("• Coincide quando le elite storiche fanno almeno 20 chiuse e restano sopra atteso nel live.")
+        lines.append("• Se DECINA/MULTIPLA vola ma le elite storiche no, il periodo live è caldo su altra zona.")
+        return "\n\n".join(lines)
+
     def spy_top_text(self, limit=12, min_closed=SPY_TOP_MIN_CLOSED):
         rows = []
         low_sample = 0
@@ -1243,6 +1370,7 @@ class SniperV48BaseFullSpy:
         return "\n\n".join([
             self.v48_stats_text(),
             self.focus_h3_text(),
+            self.spy_elite_text(),
             self.spy_summary_text(),
             self.spy_top_text(limit=10),
             self.spy_network_text(),
@@ -1366,6 +1494,7 @@ class SniperV48BaseFullSpy:
             "/report — quadro completo\n"
             "/v48 — solo v48 base\n"
             "/spie — quadro numeri spia\n"
+            "/spie_elite — spie elite storiche live\n"
             "/spie_top — migliori spie live\n"
             "/spie_network — reti numeriche spia\n"
             "/menu — mostra questo menu"
@@ -1563,6 +1692,11 @@ async def cmd_spie(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, engine.spy_summary_text())
 
 
+async def cmd_spie_elite(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.spy_elite_text())
+
+
 async def cmd_spie_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine = context.application.bot_data["engine"]
     await reply(update, engine.spy_top_text())
@@ -1586,6 +1720,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = engine.v48_stats_text()
     elif data == "spie":
         text = engine.spy_summary_text()
+    elif data == "spie_elite":
+        text = engine.spy_elite_text()
     elif data == "spie_top":
         text = engine.spy_top_text()
     elif data == "spie_network":
@@ -1647,6 +1783,7 @@ async def setup_commands(app):
         BotCommand("report", "Quadro completo"),
         BotCommand("v48", "Statistiche v48 base"),
         BotCommand("spie", "Quadro numeri spia"),
+        BotCommand("spie_elite", "Spie elite storiche live"),
         BotCommand("spie_top", "Migliori spie live"),
         BotCommand("spie_network", "Reti numeriche spia"),
         BotCommand("menu", "Mostra pulsanti"),
@@ -1669,7 +1806,7 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY v3 AVVIATO\n"
+            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY v4 ELITE AVVIATO\n"
             "✅ v48 base invariata: ambata + 3 ambi classici\n"
             "✅ max 7 colpi, cooldown e cluster reuse invariati\n"
             "✅ monitor rank ambo vincente 1/2/3\n"
@@ -1681,6 +1818,7 @@ async def startup(engine, app):
             "✅ comandi Telegram cliccabili attivi\n"
             "✅ modalità report-only: niente messaggi spie aperte/K2/K3\n"
             "✅ atteso K2/K3 corretto solo sulle sessioni chiuse\n"
+            "✅ sezione ⭐ SPIE ELITE STORICHE — LIVE\n"
             "✅ report automatici severi anti-report-vuoto\n"
             f"✅ report automatici: {', '.join(AUTO_REPORT_TIMES)} + cambio giorno\n"
             "✅ storico iniziale marcato come processato\n"
@@ -1734,6 +1872,7 @@ async def main():
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("v48", cmd_v48))
     app.add_handler(CommandHandler("spie", cmd_spie))
+    app.add_handler(CommandHandler("spie_elite", cmd_spie_elite))
     app.add_handler(CommandHandler("spie_top", cmd_spie_top))
     app.add_handler(CommandHandler("spie_network", cmd_spie_network))
     app.add_handler(CallbackQueryHandler(on_button))
