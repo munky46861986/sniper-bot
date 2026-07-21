@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY
+# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY v3
 #
 # VERSIONE PULITA
 #   ✅ v48 base invariata: ambata + 3 ambi classici, max 7 colpi
@@ -50,9 +50,9 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_events.csv")
-LOCK_FILE = "/tmp/sniper_v48_base_full_spy_report_only.lock"
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_v3_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_v3_events.csv")
+LOCK_FILE = "/tmp/sniper_v48_base_full_spy_report_only_v3.lock"
 
 LOOP_SEC = 60
 HISTORY_MAX = 320
@@ -93,6 +93,12 @@ AUTO_REPORT_ENABLED = True
 AUTO_REPORT_TIMES = ("14:00", "23:50")
 AUTO_REPORT_WINDOW_MINUTES = 8
 SPY_REPORT_EVERY_DRAWS = 0
+
+# Report automatici severi:
+# evita report vuoti/giovani prodotti da istanze appena avviate o stati separati.
+# I comandi manuali /report /spie restano sempre disponibili.
+AUTO_REPORT_MIN_H3_CLOSED = 50
+AUTO_REPORT_ALLOW_ACTIVE_V48_AFTER_COLPO = 1
 
 # Menu Telegram cliccabile
 MENU_KEYBOARD = ReplyKeyboardMarkup(
@@ -248,6 +254,20 @@ def expected_within_h(one_draw_prob, h):
     return 1.0 - ((1.0 - p) ** int(h))
 
 
+def expected_pct_from_sum(expected_sum, closed):
+    """Percentuale attesa media sulle sole sessioni chiuse.
+
+    Protezione importante: una probabilita' non puo' superare 100%.
+    Nelle versioni precedenti l'atteso veniva sommato all'apertura delle sessioni
+    e poi diviso per le sole chiuse: con molte sessioni ancora aperte poteva uscire
+    un atteso impossibile tipo 118%, 130%, 187%.
+    """
+    if not closed:
+        return 0.0
+    value = pct(float(expected_sum or 0.0), int(closed))
+    return max(0.0, min(100.0, value))
+
+
 def chunks(text, max_len=3000):
     return [text[i:i + max_len] for i in range(0, len(text), max_len)] or [""]
 
@@ -347,7 +367,7 @@ def classify_network(spy, followers):
 
 class SniperV48BaseFullSpy:
     def __init__(self):
-        self.version = "v48_base_full_spy_report_only_2"
+        self.version = "v48_base_full_spy_report_only_3"
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
@@ -816,10 +836,11 @@ class SniperV48BaseFullSpy:
         return active
 
     def add_session_to_stat_buckets(self, rule):
+        # Conta le sessioni aperte.
+        # L'atteso K2/K3 viene aggiunto SOLO quando l'orizzonte chiude,
+        # cosi' il confronto atteso/reale e' calcolato sulle stesse sessioni chiuse.
         for h in SPY_HORIZONS:
             hkey = str(h)
-            exp_k2 = expected_within_h(rule.get("base_k2_pct", 0.0), h)
-            exp_k3 = expected_within_h(rule.get("base_k3_pct", 0.0), h)
             for st in (
                 self.spy_horizon_stats[hkey],
                 self.get_nested_stat(self.spy_candidate_horizon_stats, rule["key"], hkey),
@@ -827,10 +848,8 @@ class SniperV48BaseFullSpy:
                 self.get_nested_stat(self.spy_level_horizon_stats, rule["level"], hkey),
             ):
                 st["sessions"] += 1
-                st["expected_k2_sum"] += exp_k2
-                st["expected_k3_sum"] += exp_k3
 
-    def update_stat_on_close(self, st, horizon, max_k, k3_colpo):
+    def update_stat_on_close(self, st, horizon, max_k, k3_colpo, exp_k2=None, exp_k3=None):
         horizon = int(horizon)
         st["closed"] += 1
         if max_k >= 1:
@@ -843,6 +862,8 @@ class SniperV48BaseFullSpy:
         gross = TERNO_PAYOUT if k3_colpo else 0.0
         st["k3_cost_units"] += cost
         st["k3_gross_units"] += gross
+        st["expected_k2_sum"] += max(0.0, min(1.0, float(exp_k2 or 0.0)))
+        st["expected_k3_sum"] += max(0.0, min(1.0, float(exp_k3 or 0.0)))
         return cost, gross
 
     async def maybe_open_spy_sessions(self, app, e):
@@ -863,6 +884,8 @@ class SniperV48BaseFullSpy:
                 "label": r["label"],
                 "network": r["network"],
                 "level": r["level"],
+                "base_k2_pct": float(r.get("base_k2_pct", 0.0)),
+                "base_k3_pct": float(r.get("base_k3_pct", 0.0)),
                 "active_related": int(r["active_related"]),
                 "active_total": int(r["active_total"]),
                 "colpi": 0,
@@ -959,6 +982,13 @@ class SniperV48BaseFullSpy:
                 best_idx = max(range(len(k_values)), key=lambda i: k_values[i]) if k_values else None
                 best_nums = s.get("hit_nums_by_colpo", [])[best_idx] if best_idx is not None else []
 
+                # atteso storico relativo SOLO a questa sessione chiusa e a questo orizzonte
+                rule_info = self.spy_model.get(s.get("key"), {})
+                base_k2 = float(s.get("base_k2_pct", rule_info.get("base_k2_pct", 0.0)) or 0.0)
+                base_k3 = float(s.get("base_k3_pct", rule_info.get("base_k3_pct", 0.0)) or 0.0)
+                exp_k2 = expected_within_h(base_k2, h)
+                exp_k3 = expected_within_h(base_k3, h)
+
                 # aggiorna globale, candidato, rete, livello
                 for st in (
                     self.spy_horizon_stats[hkey],
@@ -966,7 +996,7 @@ class SniperV48BaseFullSpy:
                     self.get_nested_stat(self.spy_network_horizon_stats, s["network"], hkey),
                     self.get_nested_stat(self.spy_level_horizon_stats, s["level"], hkey),
                 ):
-                    cost, gross = self.update_stat_on_close(st, h, max_k, k3_colpo)
+                    cost, gross = self.update_stat_on_close(st, h, max_k, k3_colpo, exp_k2, exp_k3)
 
                 cost = float(k3_colpo if k3_colpo else h)
                 gross = TERNO_PAYOUT if k3_colpo else 0.0
@@ -1062,10 +1092,8 @@ class SniperV48BaseFullSpy:
             cost = float(st["k3_cost_units"])
             gross = float(st["k3_gross_units"])
             net, roi = roi_text(gross, cost)
-            exp_k2 = float(st.get("expected_k2_sum", 0.0))
-            exp_k3 = float(st.get("expected_k3_sum", 0.0))
-            exp_k2_pct = pct(exp_k2, closed)
-            exp_k3_pct = pct(exp_k3, closed)
+            exp_k2_pct = expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed)
+            exp_k3_pct = expected_pct_from_sum(st.get("expected_k3_sum", 0.0), closed)
             extra_k2 = pct(k2, closed) - exp_k2_pct
             if h == 3:
                 h3_k2 = pct(k2, closed)
@@ -1123,7 +1151,7 @@ class SniperV48BaseFullSpy:
                 "k2": int(st.get("k2_hits", 0)),
                 "k3": int(st.get("k3_hits", 0)),
                 "roi": roi_text(float(st.get("k3_gross_units", 0.0)), float(st.get("k3_cost_units", 0.0)))[1],
-                "extra": pct(int(st.get("k2_hits", 0)), closed) - pct(float(st.get("expected_k2_sum", 0.0)), closed),
+                "extra": pct(int(st.get("k2_hits", 0)), closed) - expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed),
             })
         rows.sort(key=lambda r: (-r["extra"], -r["k2"], -r["closed"]))
         lines = [
@@ -1163,7 +1191,7 @@ class SniperV48BaseFullSpy:
             cost = float(st.get("k3_cost_units", 0.0))
             gross = float(st.get("k3_gross_units", 0.0))
             _, roi = roi_text(gross, cost)
-            exp_k2_pct = pct(float(st.get("expected_k2_sum", 0.0)), closed)
+            exp_k2_pct = expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed)
             label = SPY_NETWORK_DEFS.get(net, {}).get("label", net)
             lines.extend([
                 f"{label}",
@@ -1179,7 +1207,7 @@ class SniperV48BaseFullSpy:
             if closed <= 0:
                 continue
             k2 = int(st.get("k2_hits", 0))
-            exp_k2_pct = pct(float(st.get("expected_k2_sum", 0.0)), closed)
+            exp_k2_pct = expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed)
             lines.append(f"• {level}: K2 {k2}/{closed} = {pct(k2, closed):.2f}% | extra={pct(k2, closed)-exp_k2_pct:+.2f} pp")
         return "\n".join(lines).strip()
 
@@ -1188,19 +1216,19 @@ class SniperV48BaseFullSpy:
         closed = int(h3.get("closed", 0))
         k2 = int(h3.get("k2_hits", 0))
         k3 = int(h3.get("k3_hits", 0))
-        exp = pct(float(h3.get("expected_k2_sum", 0.0)), closed)
+        exp = expected_pct_from_sum(h3.get("expected_k2_sum", 0.0), closed)
         k2p = pct(k2, closed)
         _, roi = roi_text(float(h3.get("k3_gross_units", 0.0)), float(h3.get("k3_cost_units", 0.0)))
 
         dec = self.spy_network_horizon_stats.get("DECINA", {}).get("3", self.new_spy_stats())
         dec_closed = int(dec.get("closed", 0))
         dec_k2 = int(dec.get("k2_hits", 0))
-        dec_exp = pct(float(dec.get("expected_k2_sum", 0.0)), dec_closed)
+        dec_exp = expected_pct_from_sum(dec.get("expected_k2_sum", 0.0), dec_closed)
 
         mult = self.spy_level_horizon_stats.get("MULTIPLA", {}).get("3", self.new_spy_stats())
         mult_closed = int(mult.get("closed", 0))
         mult_k2 = int(mult.get("k2_hits", 0))
-        mult_exp = pct(float(mult.get("expected_k2_sum", 0.0)), mult_closed)
+        mult_exp = expected_pct_from_sum(mult.get("expected_k2_sum", 0.0), mult_closed)
 
         return (
             "🔎 FOCUS LETTURA RAPIDA — H3\n"
@@ -1229,7 +1257,7 @@ class SniperV48BaseFullSpy:
         cost = float(st.get("k3_cost_units", 0.0))
         gross = float(st.get("k3_gross_units", 0.0))
         _, roi = roi_text(gross, cost)
-        exp_k2_pct = pct(float(st.get("expected_k2_sum", 0.0)), closed)
+        exp_k2_pct = expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed)
         k2_pct = pct(k2, closed)
         extra = k2_pct - exp_k2_pct
         if closed < 50:
@@ -1276,6 +1304,7 @@ class SniperV48BaseFullSpy:
         return int(hh) * 60 + int(mm)
 
     def has_reportable_data(self):
+        # Per i comandi manuali: mostra sempre cio' che esiste, anche se poco.
         has_spy_data = any(
             int(v.get("sessions", 0)) or int(v.get("closed", 0))
             for v in self.spy_horizon_stats.values()
@@ -1288,10 +1317,21 @@ class SniperV48BaseFullSpy:
             or has_spy_data
         )
 
+    def has_scheduled_reportable_data(self):
+        # Per i report automatici: evita report vuoti/giovani da istanze appena avviate.
+        h3_closed = int(self.spy_horizon_stats.get("3", {}).get("closed", 0))
+        meaningful_v48 = bool(
+            self.total_play
+            or self.total_hit_ambo
+            or self.total_stop
+            or (self.active and self.colpi >= AUTO_REPORT_ALLOW_ACTIVE_V48_AFTER_COLPO)
+        )
+        return meaningful_v48 or h3_closed >= AUTO_REPORT_MIN_H3_CLOSED
+
     async def maybe_send_scheduled_report(self, app):
         if not AUTO_REPORT_ENABLED:
             return
-        if not self.has_reportable_data():
+        if not self.has_scheduled_reportable_data():
             return
         now = datetime.now()
         current = now.hour * 60 + now.minute
@@ -1313,7 +1353,7 @@ class SniperV48BaseFullSpy:
         key = f"{self.day}_DAY_CHANGE"
         if key in self.scheduled_reports_sent:
             return
-        if not self.has_reportable_data():
+        if not self.has_scheduled_reportable_data():
             return
         self.scheduled_reports_sent[key] = now_txt()
         self.save_state()
@@ -1629,7 +1669,7 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY AVVIATO\n"
+            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY v3 AVVIATO\n"
             "✅ v48 base invariata: ambata + 3 ambi classici\n"
             "✅ max 7 colpi, cooldown e cluster reuse invariati\n"
             "✅ monitor rank ambo vincente 1/2/3\n"
@@ -1640,6 +1680,8 @@ async def startup(engine, app):
             f"✅ economia terno spie: {TERNO_PAYOUT:.0f}x\n"
             "✅ comandi Telegram cliccabili attivi\n"
             "✅ modalità report-only: niente messaggi spie aperte/K2/K3\n"
+            "✅ atteso K2/K3 corretto solo sulle sessioni chiuse\n"
+            "✅ report automatici severi anti-report-vuoto\n"
             f"✅ report automatici: {', '.join(AUTO_REPORT_TIMES)} + cambio giorno\n"
             "✅ storico iniziale marcato come processato\n"
             "✅ niente replay iniziale\n\n"
