@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY v4 ELITE
+# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY v5 PLAYABLE
 #
 # VERSIONE PULITA
 #   ✅ v48 base invariata: ambata + 3 ambi classici, max 7 colpi
@@ -9,7 +9,7 @@
 #   ✅ condizioni: C1_exact, C2_exact, C3plus, NC2_W3_gap, NC2_W5, NC3_W5_gap
 #   ✅ orizzonti paralleli H1/H2/H3
 #   ✅ K1/K2/K3 + economia terno 45x
-#   ✅ report Telegram cliccabili: /report /v48 /spie /spie_elite /spie_top /spie_network /menu
+#   ✅ report Telegram cliccabili: /report /v48 /spie /spie_elite /spie_play /spie_top /spie_network /menu
 #   ✅ sezione SPIE ELITE STORICHE — LIVE per confrontare storico vs live
 #
 # NOTA
@@ -24,8 +24,11 @@ import json
 import os
 import re
 import sys
+import subprocess
+import time
 from collections import Counter, defaultdict
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from itertools import combinations
 
 import requests
@@ -51,9 +54,19 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_v4_elite_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_v4_elite_events.csv")
-LOCK_FILE = "/tmp/sniper_v48_base_full_spy_report_only_v4_elite.lock"
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_v5_playable_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_v5_playable_events.csv")
+LOCK_FILE = "/tmp/sniper_v48_base_full_spy_report_only_v5_playable.lock"
+
+# Orario bot/report: GitHub gira spesso in UTC, qui forziamo Italia.
+BOT_TZ_NAME = os.getenv("BOT_TZ", "Europe/Rome")
+BOT_TZ = ZoneInfo(BOT_TZ_NAME)
+
+# Persistenza GitHub Actions: salva state/csv nel repository per non spezzare la giornata
+# tra una run programmata e la successiva. Richiede permissions: contents: write.
+PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
+GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
+_LAST_GIT_COMMIT_TS = 0.0
 
 LOOP_SEC = 60
 HISTORY_MAX = 320
@@ -88,6 +101,15 @@ SPY_NOTIFY_HIT_K3 = False
 SPY_OPEN_NOTIFY_MAX_LINES = 8
 SPY_MIN_MODEL_EVENTS = 80
 SPY_TOP_MIN_CLOSED = 20
+
+# Filtro giocabilita' DECINA/MULTIPLA: non apre giocate automatiche,
+# ma mostra in report/comando i numeri e gli ambi piu' supportati dai segnali aperti.
+PLAYABLE_NETWORK = "DECINA"
+PLAYABLE_LEVEL = "MULTIPLA"
+PLAYABLE_MIN_PAIR_SUPPORT = 2
+PLAYABLE_MAX_SIGNALS = 8
+PLAYABLE_MAX_PAIRS = 6
+PLAYABLE_MAX_NUMBERS = 7
 
 
 # Spie Elite Storiche — selezionate dal backtest H3 sullo storico gennaio-settembre.
@@ -150,7 +172,8 @@ MENU_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
         ["/report", "/v48"],
         ["/spie", "/spie_elite"],
-        ["/spie_top", "/spie_network"],
+        ["/spie_play", "/spie_top"],
+        ["/spie_network"],
         ["/menu"],
     ],
     resize_keyboard=True,
@@ -164,7 +187,8 @@ MENU_KEYBOARD = ReplyKeyboardMarkup(
 INLINE_MENU = InlineKeyboardMarkup([
     [InlineKeyboardButton("📊 Report", callback_data="report"), InlineKeyboardButton("🎯 v48", callback_data="v48")],
     [InlineKeyboardButton("🕵️ Spie", callback_data="spie"), InlineKeyboardButton("⭐ Elite", callback_data="spie_elite")],
-    [InlineKeyboardButton("🏆 Top spie", callback_data="spie_top"), InlineKeyboardButton("🧬 Network", callback_data="spie_network")],
+    [InlineKeyboardButton("🎲 Giocabilità", callback_data="spie_play"), InlineKeyboardButton("🏆 Top spie", callback_data="spie_top")],
+    [InlineKeyboardButton("🧬 Network", callback_data="spie_network")],
     [InlineKeyboardButton("🧭 Menu", callback_data="menu")],
 ])
 
@@ -255,12 +279,16 @@ def fingerprint(e, nums):
     return hashlib.md5(f"{e}-{'-'.join(map(str, nums))}".encode()).hexdigest()
 
 
+def now_dt():
+    return datetime.now(BOT_TZ)
+
+
 def day_key():
-    return datetime.now().strftime("%Y-%m-%d")
+    return now_dt().strftime("%Y-%m-%d")
 
 
 def now_txt():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return now_dt().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def pct(part, total):
@@ -271,6 +299,60 @@ def roi_text(gross, cost):
     net = gross - cost
     roi = (net / cost * 100.0) if cost else 0.0
     return net, roi
+
+
+def maybe_git_commit_state(reason="state", force=False):
+    """Persist state/csv on GitHub Actions by committing them back to the repo.
+
+    Se il codice gira fuori da un repository git, o se PERSIST_GIT_STATE=0, non fa nulla.
+    Il throttling evita un commit a ogni estrazione.
+    """
+    global _LAST_GIT_COMMIT_TS
+    if not PERSIST_GIT_STATE:
+        return
+
+    now_ts = time.time()
+    if not force and _LAST_GIT_COMMIT_TS and (now_ts - _LAST_GIT_COMMIT_TS) < GIT_COMMIT_MIN_SECONDS:
+        return
+
+    try:
+        inside = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        if inside.returncode != 0:
+            return
+
+        subprocess.run(["git", "config", "user.name", "sniper-bot"], cwd=BASE_DIR, check=False)
+        subprocess.run(["git", "config", "user.email", "sniper-bot@users.noreply.github.com"], cwd=BASE_DIR, check=False)
+
+        # Evita conflitti quando la run nuova cancella una precedente.
+        subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=BASE_DIR, check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        paths = []
+        if os.path.exists(STATE_FILE):
+            paths.append(os.path.basename(STATE_FILE))
+        if os.path.exists(CSV_FILE):
+            paths.append(os.path.basename(CSV_FILE))
+        if not paths:
+            return
+
+        subprocess.run(["git", "add", *paths], cwd=BASE_DIR, check=False)
+        diff = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=BASE_DIR)
+        if diff.returncode == 0:
+            _LAST_GIT_COMMIT_TS = now_ts
+            return
+
+        msg = f"SNIPER state update {now_txt()} [{reason}]"
+        committed = subprocess.run(["git", "commit", "-m", msg], cwd=BASE_DIR, check=False,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if committed.returncode == 0:
+            subprocess.run(["git", "push"], cwd=BASE_DIR, check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _LAST_GIT_COMMIT_TS = now_ts
+    except Exception as ex:
+        print(f"Persistenza git saltata: {ex}")
 
 
 def fmt_nums(nums):
@@ -414,7 +496,7 @@ def classify_network(spy, followers):
 
 class SniperV48BaseFullSpy:
     def __init__(self):
-        self.version = "v48_base_full_spy_report_only_4_elite"
+        self.version = "v48_base_full_spy_report_only_5_playable"
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
@@ -545,6 +627,7 @@ class SniperV48BaseFullSpy:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp, STATE_FILE)
+        maybe_git_commit_state("state", force=False)
 
     def load_state(self):
         if not os.path.exists(STATE_FILE):
@@ -1179,6 +1262,80 @@ class SniperV48BaseFullSpy:
         ])
         return "\n".join(lines)
 
+    def decina_multipla_playability_text(self):
+        """Lettura operativa dei segnali aperti DECINA/MULTIPLA.
+
+        Non e' una giocata automatica: trasforma il dato K2 H3 in numeri/ambi da osservare.
+        K2 H3 significa cercare almeno 2 numeri del trio entro 3 colpi.
+        """
+        signals = [
+            s for s in self.spy_sessions
+            if s.get("network") == PLAYABLE_NETWORK and s.get("level") == PLAYABLE_LEVEL
+        ]
+        signals.sort(key=lambda s: (int(s.get("colpi", 0)), -int(s.get("active_related", 0)), s.get("label", "")))
+
+        lines = [
+            "🎲 GIOCABILITÀ DECINA/MULTIPLA — H3",
+            "• cosa significa: non terno secco, ma ricerca di almeno 2/3 numeri entro 3 colpi",
+            "• filtro usato: rete DECINA + livello MULTIPLA",
+            "• nota: laboratorio statistico, non giocata automatica",
+        ]
+
+        if not signals:
+            lines.extend([
+                "",
+                "• segnali aperti ora = 0",
+                "• lettura = nessuna giocabilità DECINA/MULTIPLA attiva adesso",
+                "• operativamente = si aspetta un nuovo segnale aperto",
+            ])
+            return "\n".join(lines)
+
+        num_counter = Counter()
+        pair_counter = Counter()
+        trio_counter = Counter()
+        for s in signals:
+            followers = tuple(sorted(map(int, s.get("followers", []))))
+            trio_counter[followers] += 1
+            num_counter.update(followers)
+            for pair in combinations(followers, 2):
+                pair_counter[tuple(sorted(pair))] += 1
+
+        top_nums = num_counter.most_common(PLAYABLE_MAX_NUMBERS)
+        top_pairs = pair_counter.most_common(PLAYABLE_MAX_PAIRS)
+        supported_pairs = [(p, c) for p, c in top_pairs if c >= PLAYABLE_MIN_PAIR_SUPPORT]
+
+        if supported_pairs:
+            ambi_line = ", ".join(f"{a}-{b}({c})" for (a, b), c in supported_pairs[:PLAYABLE_MAX_PAIRS])
+            verdict = "ambate/ambi concentrati: osservare gli ambi piu' ripetuti"
+        else:
+            (a, b), c = top_pairs[0] if top_pairs else ((0, 0), 0)
+            ambi_line = f"{a}-{b}({c})" if a and b else "n/d"
+            verdict = "supporto ancora sottile: al massimo 1 ambo simbolico, meglio osservare"
+
+        lines.extend([
+            "",
+            f"• segnali aperti ora = {len(signals)}",
+            f"• numeri piu' ripetuti = {', '.join(f'{n}({c})' for n, c in top_nums) if top_nums else 'n/d'}",
+            f"• ambi piu' supportati = {ambi_line}",
+            f"• lettura = {verdict}",
+            "• schema prudente = massimo H3 / 3 colpi; il terno resta solo osservazione",
+        ])
+
+        lines.append("")
+        lines.append("📌 SEGNALI DECINA/MULTIPLA APERTI")
+        for idx, s in enumerate(signals[:PLAYABLE_MAX_SIGNALS], start=1):
+            age = int(s.get("colpi", 0))
+            left = max(0, SPY_MAX_COLPI - age)
+            lines.append(
+                f"{idx}) {s.get('label')} | aperto da {age}/{SPY_MAX_COLPI} colpi | restano {left} colpi | "
+                f"supporto rete={s.get('active_related', 0)}/{s.get('active_total', 0)}"
+            )
+        if len(signals) > PLAYABLE_MAX_SIGNALS:
+            lines.append(f"• altri segnali aperti non mostrati = {len(signals) - PLAYABLE_MAX_SIGNALS}")
+
+        return "\n".join(lines)
+
+
     def spy_elite_text(self):
         def read_stats(key):
             st = self.spy_candidate_horizon_stats.get(key, {}).get("3", self.new_spy_stats())
@@ -1370,6 +1527,7 @@ class SniperV48BaseFullSpy:
         return "\n\n".join([
             self.v48_stats_text(),
             self.focus_h3_text(),
+            self.decina_multipla_playability_text(),
             self.spy_elite_text(),
             self.spy_summary_text(),
             self.spy_top_text(limit=10),
@@ -1461,7 +1619,7 @@ class SniperV48BaseFullSpy:
             return
         if not self.has_scheduled_reportable_data():
             return
-        now = datetime.now()
+        now = now_dt()
         current = now.hour * 60 + now.minute
         today = day_key()
         if len(self.scheduled_reports_sent) > 40:
@@ -1495,6 +1653,7 @@ class SniperV48BaseFullSpy:
             "/v48 — solo v48 base\n"
             "/spie — quadro numeri spia\n"
             "/spie_elite — spie elite storiche live\n"
+            "/spie_play — giocabilità DECINA/MULTIPLA live\n"
             "/spie_top — migliori spie live\n"
             "/spie_network — reti numeriche spia\n"
             "/menu — mostra questo menu"
@@ -1697,6 +1856,11 @@ async def cmd_spie_elite(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, engine.spy_elite_text())
 
 
+async def cmd_spie_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.decina_multipla_playability_text())
+
+
 async def cmd_spie_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine = context.application.bot_data["engine"]
     await reply(update, engine.spy_top_text())
@@ -1722,6 +1886,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = engine.spy_summary_text()
     elif data == "spie_elite":
         text = engine.spy_elite_text()
+    elif data == "spie_play":
+        text = engine.decina_multipla_playability_text()
     elif data == "spie_top":
         text = engine.spy_top_text()
     elif data == "spie_network":
@@ -1784,6 +1950,7 @@ async def setup_commands(app):
         BotCommand("v48", "Statistiche v48 base"),
         BotCommand("spie", "Quadro numeri spia"),
         BotCommand("spie_elite", "Spie elite storiche live"),
+        BotCommand("spie_play", "Giocabilità DECINA/MULTIPLA"),
         BotCommand("spie_top", "Migliori spie live"),
         BotCommand("spie_network", "Reti numeriche spia"),
         BotCommand("menu", "Mostra pulsanti"),
@@ -1806,7 +1973,7 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY v4 ELITE AVVIATO\n"
+            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY v5 PLAYABLE AVVIATO\n"
             "✅ v48 base invariata: ambata + 3 ambi classici\n"
             "✅ max 7 colpi, cooldown e cluster reuse invariati\n"
             "✅ monitor rank ambo vincente 1/2/3\n"
@@ -1819,6 +1986,9 @@ async def startup(engine, app):
             "✅ modalità report-only: niente messaggi spie aperte/K2/K3\n"
             "✅ atteso K2/K3 corretto solo sulle sessioni chiuse\n"
             "✅ sezione ⭐ SPIE ELITE STORICHE — LIVE\n"
+            "✅ sezione 🎲 GIOCABILITÀ DECINA/MULTIPLA — H3\n"
+            f"✅ orario bot = {BOT_TZ_NAME}\n"
+            f"✅ persistenza GitHub state/csv = {'ON' if PERSIST_GIT_STATE else 'OFF'}\n"
             "✅ report automatici severi anti-report-vuoto\n"
             f"✅ report automatici: {', '.join(AUTO_REPORT_TIMES)} + cambio giorno\n"
             "✅ storico iniziale marcato come processato\n"
@@ -1873,6 +2043,7 @@ async def main():
     app.add_handler(CommandHandler("v48", cmd_v48))
     app.add_handler(CommandHandler("spie", cmd_spie))
     app.add_handler(CommandHandler("spie_elite", cmd_spie_elite))
+    app.add_handler(CommandHandler("spie_play", cmd_spie_play))
     app.add_handler(CommandHandler("spie_top", cmd_spie_top))
     app.add_handler(CommandHandler("spie_network", cmd_spie_network))
     app.add_handler(CallbackQueryHandler(on_button))
@@ -1886,6 +2057,11 @@ async def main():
     try:
         await live_loop(engine, app)
     finally:
+        try:
+            engine.save_state()
+            maybe_git_commit_state("shutdown", force=True)
+        except Exception as ex:
+            print(f"Salvataggio finale saltato: {ex}")
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
