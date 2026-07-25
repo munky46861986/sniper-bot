@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY v5 PLAYABLE
+# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v6 PLAY AMBATA/AMBI
 #
 # VERSIONE PULITA
 #   ✅ v48 base invariata: ambata + 3 ambi classici, max 7 colpi
@@ -9,7 +9,7 @@
 #   ✅ condizioni: C1_exact, C2_exact, C3plus, NC2_W3_gap, NC2_W5, NC3_W5_gap
 #   ✅ orizzonti paralleli H1/H2/H3
 #   ✅ K1/K2/K3 + economia terno 45x
-#   ✅ report Telegram cliccabili: /report /v48 /spie /spie_elite /spie_play /spie_top /spie_network /menu
+#   ✅ report Telegram cliccabili: /report /play /v48 /spie /spie_elite /spie_play /spie_top /spie_network /menu
 #   ✅ sezione SPIE ELITE STORICHE — LIVE per confrontare storico vs live
 #
 # NOTA
@@ -54,9 +54,9 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_v5_playable_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_base_full_spy_report_only_v5_playable_events.csv")
-LOCK_FILE = "/tmp/sniper_v48_base_full_spy_report_only_v5_playable.lock"
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v6_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v6_events.csv")
+LOCK_FILE = "/tmp/sniper_v48_playable_ambata_ambi_v6.lock"
 
 # Orario bot/report: GitHub gira spesso in UTC, qui forziamo Italia.
 BOT_TZ_NAME = os.getenv("BOT_TZ", "Europe/Rome")
@@ -106,10 +106,25 @@ SPY_TOP_MIN_CLOSED = 20
 # ma mostra in report/comando i numeri e gli ambi piu' supportati dai segnali aperti.
 PLAYABLE_NETWORK = "DECINA"
 PLAYABLE_LEVEL = "MULTIPLA"
-PLAYABLE_MIN_PAIR_SUPPORT = 2
+PLAYABLE_MIN_PAIR_SUPPORT = 4
 PLAYABLE_MAX_SIGNALS = 8
 PLAYABLE_MAX_PAIRS = 6
 PLAYABLE_MAX_NUMBERS = 7
+
+# Giocata automatica/pratica: solo ambata + max 2 ambi, massimo 3 colpi.
+# v48 resta come struttura/conferma, ma non apre piu' da sola la giocata operativa.
+V48_NOTIFY_EVENTS = False
+PLAYABLE_AUTO_ENABLED = True
+PLAYABLE_NOTIFY_OPEN = True
+PLAYABLE_NOTIFY_HIT = True
+PLAYABLE_NOTIFY_STOP = True
+PLAYABLE_MAX_COLPI = 3
+PLAYABLE_MAX_AMBI = 2
+PLAYABLE_MIN_SIGNALS = 6
+PLAYABLE_MIN_DECINA_EXTRA = 15.0
+PLAYABLE_MIN_MULTIPLA_EXTRA = 5.0
+PLAYABLE_TOP_NUMBERS_FOR_CONFIRM = 5
+PLAYABLE_REQUIRE_V48_CONFIRM = True
 
 
 # Spie Elite Storiche — selezionate dal backtest H3 sullo storico gennaio-settembre.
@@ -170,10 +185,10 @@ AUTO_REPORT_ALLOW_ACTIVE_V48_AFTER_COLPO = 1
 # Menu Telegram cliccabile
 MENU_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
-        ["/report", "/v48"],
-        ["/spie", "/spie_elite"],
-        ["/spie_play", "/spie_top"],
-        ["/spie_network"],
+        ["/report", "/play"],
+        ["/v48", "/spie"],
+        ["/spie_elite", "/spie_play"],
+        ["/spie_top", "/spie_network"],
         ["/menu"],
     ],
     resize_keyboard=True,
@@ -185,10 +200,10 @@ MENU_KEYBOARD = ReplyKeyboardMarkup(
 # Su alcuni canali/gruppi Telegram la tastiera fissa puo' non comparire;
 # questi bottoni sotto al messaggio /menu restano cliccabili.
 INLINE_MENU = InlineKeyboardMarkup([
-    [InlineKeyboardButton("📊 Report", callback_data="report"), InlineKeyboardButton("🎯 v48", callback_data="v48")],
-    [InlineKeyboardButton("🕵️ Spie", callback_data="spie"), InlineKeyboardButton("⭐ Elite", callback_data="spie_elite")],
-    [InlineKeyboardButton("🎲 Giocabilità", callback_data="spie_play"), InlineKeyboardButton("🏆 Top spie", callback_data="spie_top")],
-    [InlineKeyboardButton("🧬 Network", callback_data="spie_network")],
+    [InlineKeyboardButton("📊 Report", callback_data="report"), InlineKeyboardButton("🎲 Play", callback_data="play")],
+    [InlineKeyboardButton("🎯 v48", callback_data="v48"), InlineKeyboardButton("🕵️ Spie", callback_data="spie")],
+    [InlineKeyboardButton("⭐ Elite", callback_data="spie_elite"), InlineKeyboardButton("🎲 Giocabilità", callback_data="spie_play")],
+    [InlineKeyboardButton("🏆 Top spie", callback_data="spie_top"), InlineKeyboardButton("🧬 Network", callback_data="spie_network")],
     [InlineKeyboardButton("🧭 Menu", callback_data="menu")],
 ])
 
@@ -423,6 +438,8 @@ CSV_FIELDS = [
     "spy_id", "spy", "spy_condition", "spy_followers", "spy_network", "spy_level",
     "spy_horizon", "spy_k1", "spy_k2", "spy_k3", "spy_hit_nums",
     "spy_cost", "spy_gross", "spy_net", "spy_roi",
+    "playable_id", "playable_colpo", "playable_ambata", "playable_ambi",
+    "playable_outcome", "playable_hit_ambata", "playable_hit_ambi", "playable_support",
 ]
 
 
@@ -496,7 +513,7 @@ def classify_network(spy, followers):
 
 class SniperV48BaseFullSpy:
     def __init__(self):
-        self.version = "v48_base_full_spy_report_only_5_playable"
+        self.version = "v48_playable_ambata_ambi_6"
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
@@ -534,6 +551,19 @@ class SniperV48BaseFullSpy:
         self.spy_level_horizon_stats = {}
         self.draws_since_spy_report = 0
         self.scheduled_reports_sent = {}
+
+        # giocata operativa ambata/ambi
+        self.playable_active = False
+        self.playable_snapshot = None
+        self.playable_colpi = 0
+        self.playable_uid = 0
+        self.playable_total = 0
+        self.playable_hit_ambata = 0
+        self.playable_hit_ambo = 0
+        self.playable_stop = 0
+        self.playable_hit_colpi = {str(i): 0 for i in range(1, PLAYABLE_MAX_COLPI + 1)}
+        self.playable_cost_units = 0.0
+        self.playable_gross_units = 0.0
 
         self.load_state()
         ensure_csv()
@@ -621,6 +651,17 @@ class SniperV48BaseFullSpy:
             "spy_network_horizon_stats": self.spy_network_horizon_stats,
             "spy_level_horizon_stats": self.spy_level_horizon_stats,
             "draws_since_spy_report": self.draws_since_spy_report,
+            "playable_active": self.playable_active,
+            "playable_snapshot": self.playable_snapshot,
+            "playable_colpi": self.playable_colpi,
+            "playable_uid": self.playable_uid,
+            "playable_total": self.playable_total,
+            "playable_hit_ambata": self.playable_hit_ambata,
+            "playable_hit_ambo": self.playable_hit_ambo,
+            "playable_stop": self.playable_stop,
+            "playable_hit_colpi": self.playable_hit_colpi,
+            "playable_cost_units": self.playable_cost_units,
+            "playable_gross_units": self.playable_gross_units,
             "scheduled_reports_sent": self.scheduled_reports_sent,
         }
         tmp = STATE_FILE + ".tmp"
@@ -666,6 +707,17 @@ class SniperV48BaseFullSpy:
             self.spy_network_horizon_stats = data.get("spy_network_horizon_stats", {})
             self.spy_level_horizon_stats = data.get("spy_level_horizon_stats", {})
             self.draws_since_spy_report = int(data.get("draws_since_spy_report", 0))
+            self.playable_active = bool(data.get("playable_active", False))
+            self.playable_snapshot = data.get("playable_snapshot")
+            self.playable_colpi = int(data.get("playable_colpi", 0))
+            self.playable_uid = int(data.get("playable_uid", 0))
+            self.playable_total = int(data.get("playable_total", 0))
+            self.playable_hit_ambata = int(data.get("playable_hit_ambata", 0))
+            self.playable_hit_ambo = int(data.get("playable_hit_ambo", 0))
+            self.playable_stop = int(data.get("playable_stop", 0))
+            self.playable_hit_colpi = {str(i): int(data.get("playable_hit_colpi", {}).get(str(i), 0)) for i in range(1, PLAYABLE_MAX_COLPI + 1)}
+            self.playable_cost_units = float(data.get("playable_cost_units", 0.0))
+            self.playable_gross_units = float(data.get("playable_gross_units", 0.0))
             self.scheduled_reports_sent = data.get("scheduled_reports_sent", {}) if isinstance(data.get("scheduled_reports_sent", {}), dict) else {}
         except Exception as ex:
             print(f"⚠️ Stato non caricato: {ex}")
@@ -695,6 +747,9 @@ class SniperV48BaseFullSpy:
         self.last_cluster_numbers = []
         self.last_cluster_e = 0
         self.spy_sessions = []
+        self.playable_active = False
+        self.playable_snapshot = None
+        self.playable_colpi = 0
         self.draws_since_spy_report = 0
         self.save_state()
 
@@ -736,6 +791,14 @@ class SniperV48BaseFullSpy:
             "spy_gross": kwargs.get("spy_gross", ""),
             "spy_net": kwargs.get("spy_net", ""),
             "spy_roi": kwargs.get("spy_roi", ""),
+            "playable_id": kwargs.get("playable_id", ""),
+            "playable_colpo": kwargs.get("playable_colpo", ""),
+            "playable_ambata": kwargs.get("playable_ambata", ""),
+            "playable_ambi": kwargs.get("playable_ambi", ""),
+            "playable_outcome": kwargs.get("playable_outcome", ""),
+            "playable_hit_ambata": kwargs.get("playable_hit_ambata", ""),
+            "playable_hit_ambi": kwargs.get("playable_hit_ambi", ""),
+            "playable_support": kwargs.get("playable_support", ""),
         }
         with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
@@ -1262,67 +1325,419 @@ class SniperV48BaseFullSpy:
         ])
         return "\n".join(lines)
 
-    def decina_multipla_playability_text(self):
-        """Lettura operativa dei segnali aperti DECINA/MULTIPLA.
+    def _h3_extra_for_network(self, network):
+        st = self.spy_network_horizon_stats.get(network, {}).get("3", self.new_spy_stats())
+        closed = int(st.get("closed", 0))
+        k2 = int(st.get("k2_hits", 0))
+        exp = expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed)
+        return pct(k2, closed) - exp, closed, k2, exp
 
-        Non e' una giocata automatica: trasforma il dato K2 H3 in numeri/ambi da osservare.
-        K2 H3 significa cercare almeno 2 numeri del trio entro 3 colpi.
+    def _h3_extra_for_level(self, level):
+        st = self.spy_level_horizon_stats.get(level, {}).get("3", self.new_spy_stats())
+        closed = int(st.get("closed", 0))
+        k2 = int(st.get("k2_hits", 0))
+        exp = expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed)
+        return pct(k2, closed) - exp, closed, k2, exp
+
+    def playable_signal_snapshot(self):
+        """Rende giocabili i segnali DECINA/MULTIPLA aperti.
+
+        La logica e' volutamente stretta:
+        - considera solo rete DECINA + livello MULTIPLA;
+        - ricava top numeri e top ambi dai target aperti;
+        - scarta i segnali fuori dal cuore live;
+        - il terno resta solo osservazione.
         """
-        signals = [
+        raw_signals = [
             s for s in self.spy_sessions
             if s.get("network") == PLAYABLE_NETWORK and s.get("level") == PLAYABLE_LEVEL
         ]
-        signals.sort(key=lambda s: (int(s.get("colpi", 0)), -int(s.get("active_related", 0)), s.get("label", "")))
-
-        lines = [
-            "🎲 GIOCABILITÀ DECINA/MULTIPLA — H3",
-            "• cosa significa: non terno secco, ma ricerca di almeno 2/3 numeri entro 3 colpi",
-            "• filtro usato: rete DECINA + livello MULTIPLA",
-            "• nota: laboratorio statistico, non giocata automatica",
-        ]
-
-        if not signals:
-            lines.extend([
-                "",
-                "• segnali aperti ora = 0",
-                "• lettura = nessuna giocabilità DECINA/MULTIPLA attiva adesso",
-                "• operativamente = si aspetta un nuovo segnale aperto",
-            ])
-            return "\n".join(lines)
 
         num_counter = Counter()
         pair_counter = Counter()
         trio_counter = Counter()
-        for s in signals:
+        for s in raw_signals:
             followers = tuple(sorted(map(int, s.get("followers", []))))
+            if len(followers) != 3:
+                continue
             trio_counter[followers] += 1
             num_counter.update(followers)
             for pair in combinations(followers, 2):
                 pair_counter[tuple(sorted(pair))] += 1
 
         top_nums = num_counter.most_common(PLAYABLE_MAX_NUMBERS)
+        top_num_set = {n for n, _ in top_nums[:PLAYABLE_TOP_NUMBERS_FOR_CONFIRM]}
         top_pairs = pair_counter.most_common(PLAYABLE_MAX_PAIRS)
-        supported_pairs = [(p, c) for p, c in top_pairs if c >= PLAYABLE_MIN_PAIR_SUPPORT]
 
+        supported_pairs = []
+        for pair, support in top_pairs:
+            a, b = pair
+            if support < PLAYABLE_MIN_PAIR_SUPPORT:
+                continue
+            if a not in top_num_set or b not in top_num_set:
+                continue
+            supported_pairs.append((pair, support))
+
+        supported_pair_set = {tuple(pair) for pair, _ in supported_pairs}
+        focused_signals = []
+        for s in raw_signals:
+            followers = tuple(sorted(map(int, s.get("followers", []))))
+            follower_pairs = {tuple(sorted(p)) for p in combinations(followers, 2)}
+            in_core = len(set(followers) & top_num_set)
+            if follower_pairs & supported_pair_set or in_core >= 2:
+                focused_signals.append(s)
+
+        focused_signals.sort(key=lambda s: (int(s.get("colpi", 0)), -int(s.get("active_related", 0)), s.get("label", "")))
+        dec_extra, dec_closed, dec_k2, dec_exp = self._h3_extra_for_network(PLAYABLE_NETWORK)
+        mult_extra, mult_closed, mult_k2, mult_exp = self._h3_extra_for_level(PLAYABLE_LEVEL)
+
+        return {
+            "raw_signals": raw_signals,
+            "signals": focused_signals,
+            "num_counter": num_counter,
+            "pair_counter": pair_counter,
+            "trio_counter": trio_counter,
+            "top_nums": top_nums,
+            "top_num_set": top_num_set,
+            "top_pairs": top_pairs,
+            "supported_pairs": supported_pairs,
+            "dec_extra": dec_extra,
+            "dec_closed": dec_closed,
+            "dec_k2": dec_k2,
+            "dec_exp": dec_exp,
+            "mult_extra": mult_extra,
+            "mult_closed": mult_closed,
+            "mult_k2": mult_k2,
+            "mult_exp": mult_exp,
+        }
+
+    def build_playable_candidate(self, e):
+        if not PLAYABLE_AUTO_ENABLED or self.playable_active:
+            return None, "play gia' attivo o auto off"
+        if not self.active_snapshot:
+            return None, "manca conferma v48 attiva"
+
+        snap = self.playable_signal_snapshot()
+        signals = snap["signals"]
+        supported_pairs = snap["supported_pairs"]
+        if len(signals) < PLAYABLE_MIN_SIGNALS:
+            return None, f"pochi segnali focus ({len(signals)}/{PLAYABLE_MIN_SIGNALS})"
+        if not supported_pairs:
+            return None, f"nessun ambo con supporto >= {PLAYABLE_MIN_PAIR_SUPPORT}"
+        if snap["dec_extra"] < PLAYABLE_MIN_DECINA_EXTRA:
+            return None, f"DECINA extra basso ({snap['dec_extra']:+.2f} pp)"
+        if snap["mult_extra"] < PLAYABLE_MIN_MULTIPLA_EXTRA:
+            return None, f"MULTIPLA extra basso ({snap['mult_extra']:+.2f} pp)"
+
+        v48 = self.active_snapshot or {}
+        v48_cluster = set(map(int, v48.get("cluster_numbers", [])))
+        v48_ambata = v48.get("ambata")
+        try:
+            v48_ambata = int(v48_ambata)
+        except Exception:
+            v48_ambata = None
+
+        eligible = []
+        for pair, support in supported_pairs:
+            pair_set = set(pair)
+            overlap = len(pair_set & v48_cluster)
+            if PLAYABLE_REQUIRE_V48_CONFIRM and overlap <= 0:
+                continue
+            eligible.append((pair, support, overlap))
+
+        if not eligible:
+            return None, "nessun ambo top incrocia il cluster v48"
+
+        eligible.sort(key=lambda x: (-x[1], -x[2], x[0]))
+        selected = eligible[:PLAYABLE_MAX_AMBI]
+        selected_pairs = [pair for pair, _, _ in selected]
+        selected_union = set()
+        for pair in selected_pairs:
+            selected_union.update(pair)
+
+        num_counter = snap["num_counter"]
+        top_num_set = snap["top_num_set"]
+        ambata_candidates = []
+        if v48_ambata in selected_union or v48_ambata in top_num_set:
+            ambata_candidates.append(v48_ambata)
+        ambata_candidates.extend(sorted((v48_cluster & top_num_set) | (selected_union & top_num_set)))
+        if not ambata_candidates:
+            ambata_candidates.extend(sorted(selected_union))
+        # dedup preservando ordine
+        seen = set()
+        ambata_candidates = [x for x in ambata_candidates if x and not (x in seen or seen.add(x))]
+        ambata = max(ambata_candidates, key=lambda n: (num_counter.get(n, 0), n)) if ambata_candidates else None
+        if not ambata:
+            return None, "ambata non determinabile"
+
+        ambi = [{"ambo": tuple(pair), "support": support, "overlap_v48": overlap} for pair, support, overlap in selected]
+        top_nums = snap["top_nums"][:PLAYABLE_MAX_NUMBERS]
+        top_pairs = snap["supported_pairs"][:PLAYABLE_MAX_PAIRS]
+        support_text = "; ".join(f"{a}-{b}:{support}" for (a, b), support, _ in selected)
+
+        return {
+            "origin_e": e,
+            "opened_at": now_txt(),
+            "ambata": int(ambata),
+            "ambi": ambi,
+            "top_nums": top_nums,
+            "top_pairs": top_pairs,
+            "signals_count": len(signals),
+            "raw_signals_count": len(snap["raw_signals"]),
+            "dec_extra": snap["dec_extra"],
+            "mult_extra": snap["mult_extra"],
+            "v48_play_id": v48.get("play_id"),
+            "v48_ambata": v48.get("ambata"),
+            "v48_cluster": list(v48.get("cluster_numbers", [])),
+            "ambata_hit": False,
+            "ambata_hit_colpo": None,
+            "support_text": support_text,
+        }, "ok"
+
+    def _playable_ambi_text(self, snapshot=None):
+        snapshot = snapshot or self.playable_snapshot or {}
+        return ", ".join(
+            f"{a}-{b}({item.get('support', 0)})"
+            for item in snapshot.get("ambi", [])
+            for a, b in [tuple(item.get("ambo", []))]
+        ) or "n/d"
+
+    def _close_playable(self):
+        self.playable_active = False
+        self.playable_snapshot = None
+        self.playable_colpi = 0
+
+    async def maybe_open_playable_play(self, app, e):
+        candidate, reason = self.build_playable_candidate(e)
+        if not candidate:
+            return False
+        self.playable_uid += 1
+        candidate["playable_id"] = self.playable_uid
+        self.playable_snapshot = candidate
+        self.playable_active = True
+        self.playable_colpi = 0
+        self.playable_total += 1
+        self.append_csv_event(
+            "PLAYABLE_OPEN",
+            e=e,
+            playable_id=self.playable_uid,
+            playable_colpo=0,
+            playable_ambata=candidate["ambata"],
+            playable_ambi=self._playable_ambi_text(candidate),
+            playable_outcome="OPEN",
+            playable_support=candidate.get("support_text", ""),
+        )
+        if PLAYABLE_NOTIFY_OPEN:
+            top_nums_txt = ", ".join(f"{n}({c})" for n, c in candidate.get("top_nums", [])[:5]) or "n/d"
+            await self.tg(
+                app,
+                "🎯 PLAY GIOCABILE — AMBATA/AMBI\n"
+                "• logica = v48 + DECINA/MULTIPLA + top ambi live\n"
+                f"• play_id = {candidate['playable_id']}\n"
+                f"• ambata = {candidate['ambata']}\n"
+                f"• ambi = {self._playable_ambi_text(candidate)}\n"
+                f"• durata = max {PLAYABLE_MAX_COLPI} colpi\n"
+                f"• v48 conferma = play {candidate.get('v48_play_id')} | cluster {fmt_nums(candidate.get('v48_cluster'))}\n"
+                f"• top numeri live = {top_nums_txt}\n"
+                f"• supporto ambi = {candidate.get('support_text', '')}\n"
+                f"• DECINA extra = {candidate.get('dec_extra', 0):+.2f} pp | MULTIPLA extra = {candidate.get('mult_extra', 0):+.2f} pp\n"
+                "• nota = terno escluso; segnalo ambata presa, ambo preso oppure stop"
+            )
+        return True
+
+    async def process_playable_play(self, app, e, nums):
+        if not self.playable_active or not self.playable_snapshot:
+            return False
+        self.playable_colpi += 1
+        snap = self.playable_snapshot
+        nums_set = set(nums)
+        hit_ambata_now = int(snap.get("ambata")) in nums_set
+        hit_pairs = []
+        for item in snap.get("ambi", []):
+            a, b = tuple(map(int, item.get("ambo", [])))
+            if a in nums_set and b in nums_set:
+                hit_pairs.append((a, b))
+
+        if hit_ambata_now and not snap.get("ambata_hit"):
+            snap["ambata_hit"] = True
+            snap["ambata_hit_colpo"] = self.playable_colpi
+            self.playable_hit_ambata += 1
+            self.append_csv_event(
+                "PLAYABLE_HIT_AMBATA",
+                e=e,
+                playable_id=snap.get("playable_id"),
+                playable_colpo=self.playable_colpi,
+                playable_ambata=snap.get("ambata"),
+                playable_ambi=self._playable_ambi_text(snap),
+                playable_outcome="HIT_AMBATA",
+                playable_hit_ambata=1,
+                playable_support=snap.get("support_text", ""),
+            )
+            if PLAYABLE_NOTIFY_HIT:
+                await self.tg(app, f"🎯 AMBATA PRESA PLAY GIOCABILE | colpo {self.playable_colpi}\n• ambata = {snap.get('ambata')}\n• play_id = {snap.get('playable_id')}")
+
+        if hit_pairs:
+            self.playable_hit_ambo += 1
+            self.playable_hit_colpi[str(self.playable_colpi)] += 1
+            cost = len(snap.get("ambi", [])) * self.playable_colpi
+            gross = AMBO_PAYOUT * len(hit_pairs)
+            self.playable_cost_units += cost
+            self.playable_gross_units += gross
+            hit_txt = ", ".join(f"{a}-{b}" for a, b in hit_pairs)
+            self.append_csv_event(
+                "PLAYABLE_HIT_AMBO",
+                e=e,
+                playable_id=snap.get("playable_id"),
+                playable_colpo=self.playable_colpi,
+                playable_ambata=snap.get("ambata"),
+                playable_ambi=self._playable_ambi_text(snap),
+                playable_outcome="HIT_AMBO",
+                playable_hit_ambata=int(bool(snap.get("ambata_hit"))),
+                playable_hit_ambi=hit_txt,
+                playable_support=snap.get("support_text", ""),
+            )
+            play_id = snap.get("playable_id")
+            hit_colpo = self.playable_colpi
+            ambata_status = f"presa al colpo {snap.get('ambata_hit_colpo')}" if snap.get("ambata_hit") else "non presa prima dell'ambo"
+            self._close_playable()
+            if PLAYABLE_NOTIFY_HIT:
+                await self.tg(
+                    app,
+                    f"🔥 HIT AMBO PLAY GIOCABILE | colpo {hit_colpo}\n"
+                    f"• play_id = {play_id}\n"
+                    f"• ambi presi = {hit_txt}\n"
+                    f"• ambata = {snap.get('ambata')} ({ambata_status})\n\n"
+                    f"{self.playable_stats_text()}"
+                )
+            return True
+
+        if self.playable_colpi >= PLAYABLE_MAX_COLPI:
+            self.playable_stop += 1
+            cost = len(snap.get("ambi", [])) * PLAYABLE_MAX_COLPI
+            self.playable_cost_units += cost
+            self.append_csv_event(
+                "PLAYABLE_STOP",
+                e=e,
+                playable_id=snap.get("playable_id"),
+                playable_colpo=self.playable_colpi,
+                playable_ambata=snap.get("ambata"),
+                playable_ambi=self._playable_ambi_text(snap),
+                playable_outcome="STOP",
+                playable_hit_ambata=int(bool(snap.get("ambata_hit"))),
+                playable_support=snap.get("support_text", ""),
+            )
+            play_id = snap.get("playable_id")
+            ambata_msg = f"PRESA al colpo {snap.get('ambata_hit_colpo')}" if snap.get("ambata_hit") else "NON PRESA"
+            ambi_txt = self._playable_ambi_text(snap)
+            self._close_playable()
+            if PLAYABLE_NOTIFY_STOP:
+                await self.tg(
+                    app,
+                    f"🛑 STOP PLAY GIOCABILE | {PLAYABLE_MAX_COLPI} colpi\n"
+                    f"• play_id = {play_id}\n"
+                    f"• ambata = {ambata_msg}\n"
+                    f"• ambi non presi = {ambi_txt}\n\n"
+                    f"{self.playable_stats_text()}"
+                )
+            return True
+
+        self.save_state()
+        return False
+
+    def playable_stats_text(self):
+        net, roi = roi_text(self.playable_gross_units, self.playable_cost_units)
+        active = "SI" if self.playable_active else "NO"
+        active_txt = ""
+        if self.playable_snapshot:
+            active_txt = (
+                "\n\n🎲 PLAY GIOCABILE ATTIVO\n"
+                f"• play_id = {self.playable_snapshot.get('playable_id')}\n"
+                f"• colpo corrente = {self.playable_colpi}/{PLAYABLE_MAX_COLPI}\n"
+                f"• ambata = {self.playable_snapshot.get('ambata')}\n"
+                f"• ambi = {self._playable_ambi_text(self.playable_snapshot)}\n"
+                f"• v48 cluster = {fmt_nums(self.playable_snapshot.get('v48_cluster'))}"
+            )
+        return (
+            "🎲 QUADRO PLAY GIOCABILE — AMBATA/AMBI\n"
+            "• logica = DECINA/MULTIPLA H3 + conferma v48\n"
+            f"• play = {self.playable_total}\n"
+            f"• HIT AMBATA = {self.playable_hit_ambata} ({pct(self.playable_hit_ambata, self.playable_total):.2f}%)\n"
+            f"• HIT AMBO = {self.playable_hit_ambo} ({pct(self.playable_hit_ambo, self.playable_total):.2f}%)\n"
+            f"• STOP AMBO = {self.playable_stop} ({pct(self.playable_stop, self.playable_total):.2f}%)\n"
+            f"• attivo ora = {active}\n"
+            f"• hit ambo per colpo = {', '.join(f'C{i}:{self.playable_hit_colpi.get(str(i), 0)}' for i in range(1, PLAYABLE_MAX_COLPI + 1))}\n"
+            f"• economia ambo {AMBO_PAYOUT:.0f}x: costo={self.playable_cost_units:.2f}u | lordo={self.playable_gross_units:.2f}u | netto={net:+.2f}u | ROI={roi:+.2f}%\n"
+            "• nota = ambata conteggiata come presa/non presa; ROI calcolato solo sugli ambi"
+            f"{active_txt}"
+        )
+
+    def decina_multipla_playability_text(self):
+        """Lettura operativa dei segnali aperti DECINA/MULTIPLA.
+
+        La sezione mostra sia i dati grezzi, sia il filtro stretto usato dalla giocata automatica.
+        """
+        snap = self.playable_signal_snapshot()
+        raw_signals = snap["raw_signals"]
+        signals = snap["signals"]
+        top_nums = snap["top_nums"]
+        supported_pairs = snap["supported_pairs"]
+
+        lines = [
+            "🎲 GIOCABILITÀ DECINA/MULTIPLA — H3",
+            "• cosa significa: non terno secco, ma ricerca di almeno 2/3 numeri entro 3 colpi",
+            "• filtro usato: rete DECINA + livello MULTIPLA + cuore top numeri/ambi",
+            "• giocata auto = ambata + max 2 ambi solo se c'e' conferma v48",
+            "• nota: laboratorio statistico, non previsione certa",
+        ]
+
+        if not raw_signals:
+            lines.extend(["", "• segnali aperti ora = 0", "• lettura = nessuna giocabilità DECINA/MULTIPLA attiva adesso"])
+            return "\n".join(lines)
+
+        top_nums_txt = ", ".join(f"{n}({c})" for n, c in top_nums[:PLAYABLE_MAX_NUMBERS]) or "n/d"
         if supported_pairs:
             ambi_line = ", ".join(f"{a}-{b}({c})" for (a, b), c in supported_pairs[:PLAYABLE_MAX_PAIRS])
-            verdict = "ambate/ambi concentrati: osservare gli ambi piu' ripetuti"
+            verdict = "ambi concentrati: giocabili solo se incrociano v48"
         else:
-            (a, b), c = top_pairs[0] if top_pairs else ((0, 0), 0)
-            ambi_line = f"{a}-{b}({c})" if a and b else "n/d"
-            verdict = "supporto ancora sottile: al massimo 1 ambo simbolico, meglio osservare"
+            top_pairs = snap["top_pairs"]
+            ambi_line = ", ".join(f"{a}-{b}({c})" for (a, b), c in top_pairs[:PLAYABLE_MAX_PAIRS]) if top_pairs else "n/d"
+            verdict = "supporto insufficiente: osservare, non giocare"
 
         lines.extend([
             "",
-            f"• segnali aperti ora = {len(signals)}",
-            f"• numeri piu' ripetuti = {', '.join(f'{n}({c})' for n, c in top_nums) if top_nums else 'n/d'}",
+            f"• segnali DECINA/MULTIPLA grezzi = {len(raw_signals)}",
+            f"• segnali focus giocabili = {len(signals)}",
+            f"• DECINA extra = {snap['dec_extra']:+.2f} pp | MULTIPLA extra = {snap['mult_extra']:+.2f} pp",
+            f"• numeri piu' ripetuti = {top_nums_txt}",
             f"• ambi piu' supportati = {ambi_line}",
             f"• lettura = {verdict}",
-            "• schema prudente = massimo H3 / 3 colpi; il terno resta solo osservazione",
+            f"• schema auto = max {PLAYABLE_MAX_COLPI} colpi; terno escluso",
         ])
 
+        if self.active_snapshot:
+            lines.extend([
+                "",
+                "📎 CONFERMA v48 ATTUALE",
+                f"• play v48 = {self.active_snapshot.get('play_id')}",
+                f"• ambata v48 = {self.active_snapshot.get('ambata')}",
+                f"• cluster v48 = {fmt_nums(self.active_snapshot.get('cluster_numbers'))}",
+            ])
+        else:
+            lines.extend(["", "📎 CONFERMA v48 ATTUALE", "• nessun play v48 attivo: il play automatico non parte"])
+
+        candidate, reason = self.build_playable_candidate(0)
+        lines.extend(["", "🎯 STATO PLAY AUTO"])
+        if self.playable_active:
+            lines.append("• play giocabile già attivo")
+            lines.append(f"• ambata = {self.playable_snapshot.get('ambata')} | ambi = {self._playable_ambi_text(self.playable_snapshot)}")
+        elif candidate:
+            lines.append("• pronto: condizioni giocabili presenti")
+            lines.append(f"• ambata proposta = {candidate.get('ambata')} | ambi = {self._playable_ambi_text(candidate)}")
+        else:
+            lines.append(f"• non parte: {reason}")
+
         lines.append("")
-        lines.append("📌 SEGNALI DECINA/MULTIPLA APERTI")
+        lines.append("📌 SEGNALI FOCUS MOSTRATI")
         for idx, s in enumerate(signals[:PLAYABLE_MAX_SIGNALS], start=1):
             age = int(s.get("colpi", 0))
             left = max(0, SPY_MAX_COLPI - age)
@@ -1331,7 +1746,7 @@ class SniperV48BaseFullSpy:
                 f"supporto rete={s.get('active_related', 0)}/{s.get('active_total', 0)}"
             )
         if len(signals) > PLAYABLE_MAX_SIGNALS:
-            lines.append(f"• altri segnali aperti non mostrati = {len(signals) - PLAYABLE_MAX_SIGNALS}")
+            lines.append(f"• altri segnali focus non mostrati = {len(signals) - PLAYABLE_MAX_SIGNALS}")
 
         return "\n".join(lines)
 
@@ -1526,6 +1941,7 @@ class SniperV48BaseFullSpy:
     def full_report_text(self):
         return "\n\n".join([
             self.v48_stats_text(),
+            self.playable_stats_text(),
             self.focus_h3_text(),
             self.decina_multipla_playability_text(),
             self.spy_elite_text(),
@@ -1599,6 +2015,8 @@ class SniperV48BaseFullSpy:
             self.total_play
             or self.total_hit_ambo
             or self.total_stop
+            or self.playable_total
+            or self.playable_active
             or self.spy_sessions
             or has_spy_data
         )
@@ -1610,6 +2028,8 @@ class SniperV48BaseFullSpy:
             self.total_play
             or self.total_hit_ambo
             or self.total_stop
+            or self.playable_total
+            or self.playable_active
             or (self.active and self.colpi >= AUTO_REPORT_ALLOW_ACTIVE_V48_AFTER_COLPO)
         )
         return meaningful_v48 or h3_closed >= AUTO_REPORT_MIN_H3_CLOSED
@@ -1650,6 +2070,7 @@ class SniperV48BaseFullSpy:
             "🧭 MENU RAPIDO\n"
             "Tocca un pulsante sotto, senza digitare nulla.\n\n"
             "/report — quadro completo\n"
+            "/play — solo play giocabile ambata/ambi\n"
             "/v48 — solo v48 base\n"
             "/spie — quadro numeri spia\n"
             "/spie_elite — spie elite storiche live\n"
@@ -1676,13 +2097,14 @@ class SniperV48BaseFullSpy:
         if DRAW_NOTIFY:
             await self.tg(app, f"📌 Estrazione {e}\n🎱 {', '.join(map(str, nums))}")
 
-        # 1) aggiorna sessioni spia aperte sui nuovi numeri
+        # 1) aggiorna sessioni spia e play operativo già aperti sui nuovi numeri.
         await self.process_spy_sessions(app, e, nums)
+        await self.process_playable_play(app, e, nums)
 
-        # 2) apre nuove spie dalla condizione appena creata
+        # 2) apre nuove spie dalla condizione appena creata.
         await self.maybe_open_spy_sessions(app, e)
 
-        # 3) processa v48 attivo
+        # 3) processa v48 attivo. v48 resta core/struttura; le notifiche singole sono opzionali.
         skip_new_play = False
         if self.active:
             self.colpi += 1
@@ -1691,7 +2113,8 @@ class SniperV48BaseFullSpy:
             if hit_data["ambata_hit"]:
                 self.total_hit_ambata += 1
                 self.append_csv_event("V48_HIT_AMBATA", e=e, play_id=self.active_snapshot.get("play_id"), colpo=self.colpi, outcome="HIT_AMBATA")
-                await self.tg(app, f"🎯 AMBATA PRESA v48 | colpo {self.colpi}\n• ambata = {self.active_snapshot['ambata']}")
+                if V48_NOTIFY_EVENTS:
+                    await self.tg(app, f"🎯 AMBATA PRESA v48 | colpo {self.colpi}\n• ambata = {self.active_snapshot['ambata']}")
 
             if hit_data["ambi_hit"]:
                 self.total_hit_ambo += 1
@@ -1731,13 +2154,14 @@ class SniperV48BaseFullSpy:
                 self.colpi = 0
                 self.cooldown = COOLDOWN_AFTER_PLAY
                 self.active_snapshot = None
-                await self.tg(
-                    app,
-                    f"🔥 HIT AMBO v48 | colpo {hit_colpo}\n"
-                    f"• ambi = {', '.join(hit_pairs)}\n"
-                    f"• rank vincenti = {', '.join(map(str, sorted(set(hit_ranks)))) or 'n/d'}\n\n"
-                    f"{self.v48_stats_text()}"
-                )
+                if V48_NOTIFY_EVENTS:
+                    await self.tg(
+                        app,
+                        f"🔥 HIT AMBO v48 | colpo {hit_colpo}\n"
+                        f"• ambi = {', '.join(hit_pairs)}\n"
+                        f"• rank vincenti = {', '.join(map(str, sorted(set(hit_ranks)))) or 'n/d'}\n\n"
+                        f"{self.v48_stats_text()}"
+                    )
                 skip_new_play = True
 
             elif self.colpi >= MAX_COLPI:
@@ -1760,18 +2184,21 @@ class SniperV48BaseFullSpy:
                 self.colpi = 0
                 self.cooldown = COOLDOWN_AFTER_PLAY
                 self.active_snapshot = None
-                await self.tg(app, f"🛑 STOP v48 | {MAX_COLPI} colpi\n\n{self.v48_stats_text()}")
+                if V48_NOTIFY_EVENTS:
+                    await self.tg(app, f"🛑 STOP v48 | {MAX_COLPI} colpi\n\n{self.v48_stats_text()}")
                 skip_new_play = True
             else:
+                # v48 resta attivo: se ora DECINA/MULTIPLA convergono, apri il play pratico.
+                await self.maybe_open_playable_play(app, e)
                 self.save_state()
                 return
 
-        # 4) se v48 era attivo e ha chiuso, non apre un nuovo play nello stesso colpo
+        # 4) se v48 era attivo e ha chiuso, non apre un nuovo play nello stesso colpo.
         if skip_new_play:
             self.save_state()
             return
 
-        # 5) cooldown/history/hot/build
+        # 5) cooldown/history/hot/build v48.
         if self.cooldown > 0:
             self.cooldown -= 1
             self.save_state()
@@ -1798,16 +2225,19 @@ class SniperV48BaseFullSpy:
                     cluster=fmt_nums(play["cluster_numbers"]),
                     outcome="OPEN",
                 )
-                await self.tg(
-                    app,
-                    "🎯 PLAY v48 BASE\n"
-                    f"• play_id = {play['play_id']}\n"
-                    f"• ambata = {play['ambata']}\n"
-                    f"• ambi = {fmt_ambi(play['ambi'])}\n"
-                    f"• cluster = {fmt_nums(play['cluster_numbers'])}\n"
-                    f"• max colpi = {MAX_COLPI}\n"
-                    "• modulo attivo = solo 3 ambi classici"
-                )
+                if V48_NOTIFY_EVENTS:
+                    await self.tg(
+                        app,
+                        "🎯 PLAY v48 BASE\n"
+                        f"• play_id = {play['play_id']}\n"
+                        f"• ambata = {play['ambata']}\n"
+                        f"• ambi = {fmt_ambi(play['ambi'])}\n"
+                        f"• cluster = {fmt_nums(play['cluster_numbers'])}\n"
+                        f"• max colpi = {MAX_COLPI}\n"
+                        "• modulo attivo = solo 3 ambi classici"
+                    )
+                # Prova subito a trasformare la struttura v48 in play operativo giocabile.
+                await self.maybe_open_playable_play(app, e)
 
         if SPY_REPORT_EVERY_DRAWS and self.draws_since_spy_report >= SPY_REPORT_EVERY_DRAWS:
             self.draws_since_spy_report = 0
@@ -1839,6 +2269,11 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine = context.application.bot_data["engine"]
     await reply(update, engine.full_report_text())
+
+
+async def cmd_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.playable_stats_text() + "\n\n" + engine.decina_multipla_playability_text())
 
 
 async def cmd_v48(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1880,6 +2315,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     if data == "report":
         text = engine.full_report_text()
+    elif data == "play":
+        text = engine.playable_stats_text() + "\n\n" + engine.decina_multipla_playability_text()
     elif data == "v48":
         text = engine.v48_stats_text()
     elif data == "spie":
@@ -1947,6 +2384,7 @@ def acquire_single_instance_lock():
 async def setup_commands(app):
     await app.bot.set_my_commands([
         BotCommand("report", "Quadro completo"),
+        BotCommand("play", "Play giocabile ambata/ambi"),
         BotCommand("v48", "Statistiche v48 base"),
         BotCommand("spie", "Quadro numeri spia"),
         BotCommand("spie_elite", "Spie elite storiche live"),
@@ -1973,7 +2411,7 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — REPORT ONLY v5 PLAYABLE AVVIATO\n"
+            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v6 PLAY AMBATA/AMBI AVVIATO\n"
             "✅ v48 base invariata: ambata + 3 ambi classici\n"
             "✅ max 7 colpi, cooldown e cluster reuse invariati\n"
             "✅ monitor rank ambo vincente 1/2/3\n"
@@ -1987,6 +2425,9 @@ async def startup(engine, app):
             "✅ atteso K2/K3 corretto solo sulle sessioni chiuse\n"
             "✅ sezione ⭐ SPIE ELITE STORICHE — LIVE\n"
             "✅ sezione 🎲 GIOCABILITÀ DECINA/MULTIPLA — H3\n"
+            f"✅ play operativo = ambata + max {PLAYABLE_MAX_AMBI} ambi, max {PLAYABLE_MAX_COLPI} colpi\n"
+            "✅ notifiche PLAY = apertura, ambata presa, ambo preso, stop/non preso\n"
+            f"✅ notifiche v48 singole = {'ON' if V48_NOTIFY_EVENTS else 'OFF'}\n"
             f"✅ orario bot = {BOT_TZ_NAME}\n"
             f"✅ persistenza GitHub state/csv = {'ON' if PERSIST_GIT_STATE else 'OFF'}\n"
             "✅ report automatici severi anti-report-vuoto\n"
@@ -2040,6 +2481,7 @@ async def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("report", cmd_report))
+    app.add_handler(CommandHandler("play", cmd_play))
     app.add_handler(CommandHandler("v48", cmd_v48))
     app.add_handler(CommandHandler("spie", cmd_spie))
     app.add_handler(CommandHandler("spie_elite", cmd_spie_elite))
