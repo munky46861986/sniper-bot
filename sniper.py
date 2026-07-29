@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v9 PLAY AMBATA/AMBI — CORE MULTI
+# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v10 PLAY AMBATA/AMBI — CORE FULL + TERNO
 #
 # VERSIONE PULITA
 #   ✅ v48 base invariata: ambata + 3 ambi classici, max 7 colpi
@@ -54,9 +54,9 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v9_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v9_events.csv")
-LOCK_FILE = "/tmp/sniper_v48_playable_ambata_ambi_v9.lock"
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v10_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v10_events.csv")
+LOCK_FILE = "/tmp/sniper_v48_playable_ambata_ambi_v10.lock"
 
 # Orario bot/report: GitHub gira spesso in UTC, qui forziamo Italia.
 BOT_TZ_NAME = os.getenv("BOT_TZ", "Europe/Rome")
@@ -106,7 +106,7 @@ SPY_TOP_MIN_CLOSED = 20
 # ma mostra in report/comando i numeri e gli ambi piu' supportati dai segnali aperti.
 PLAYABLE_NETWORK = "DECINA"
 PLAYABLE_LEVEL = "MULTIPLA"
-# v9: ambi ammessi. CORE = cuore principale, SATELLITE = alternativi più severi.
+# v10: ambi ammessi. CORE = cuore principale, SATELLITE = alternativi più severi.
 PLAYABLE_CORE_PAIRS = {tuple(sorted(p)) for p in [(88, 90), (89, 90), (88, 89)]}
 PLAYABLE_SATELLITE_PAIRS = {tuple(sorted(p)) for p in [(87, 88), (87, 89), (87, 90), (86, 90)]}
 PLAYABLE_SATELLITE_MIN_PAIR_SUPPORT = int(os.getenv("PLAYABLE_SATELLITE_MIN_PAIR_SUPPORT", "10"))
@@ -128,7 +128,7 @@ def playable_pair_group(pair):
         return "SATELLITE"
     return "OUT"
 
-# Soglie del play automatico v9: aumenta la copertura CORE quando il triangolo è forte.
+# Soglie del play automatico v10: aumenta la copertura CORE quando il triangolo è forte.
 # CORE: può giocare 2 ambi se almeno 2 CORE sono sopra supporto minimo.
 # CORE singolo: parte solo se il supporto è molto alto.
 # SATELLITE: resta max 1 ambo e più severo.
@@ -147,7 +147,21 @@ PLAYABLE_NOTIFY_OPEN = True
 PLAYABLE_NOTIFY_HIT = True
 PLAYABLE_NOTIFY_STOP = True
 PLAYABLE_MAX_COLPI = 3
-PLAYABLE_MAX_AMBI = 2  # v9: CORE può coprire 2 ambi del triangolo caldo
+PLAYABLE_MAX_AMBI = 2  # v10 NORMAL: CORE copre 2 ambi del triangolo caldo
+
+# v10 CORE FULL: solo quando il triangolo 88-89-90 e' fortissimo.
+# In questa modalita' il bot puo' giocare 3 ambi CORE + 1 terno secco 88-89-90.
+PLAYABLE_CORE_FULL_ENABLED = os.getenv("PLAYABLE_CORE_FULL_ENABLED", "1") != "0"
+PLAYABLE_CORE_FULL_TERNO_ENABLED = os.getenv("PLAYABLE_CORE_FULL_TERNO_ENABLED", "1") != "0"
+PLAYABLE_CORE_FULL_NUMS = tuple(sorted(map(int, os.getenv("PLAYABLE_CORE_FULL_NUMS", "88,89,90").split(","))))
+PLAYABLE_CORE_FULL_PAIRS = {tuple(sorted(p)) for p in combinations(PLAYABLE_CORE_FULL_NUMS, 2)}
+PLAYABLE_CORE_FULL_MAX_AMBI = int(os.getenv("PLAYABLE_CORE_FULL_MAX_AMBI", "3"))
+PLAYABLE_CORE_FULL_MIN_PAIR_SUPPORT = int(os.getenv("PLAYABLE_CORE_FULL_MIN_PAIR_SUPPORT", "8"))
+PLAYABLE_CORE_FULL_MIN_SIGNALS = int(os.getenv("PLAYABLE_CORE_FULL_MIN_SIGNALS", "15"))
+PLAYABLE_CORE_FULL_MIN_DECINA_EXTRA = float(os.getenv("PLAYABLE_CORE_FULL_MIN_DECINA_EXTRA", "35.0"))
+PLAYABLE_CORE_FULL_MIN_MULTIPLA_EXTRA = float(os.getenv("PLAYABLE_CORE_FULL_MIN_MULTIPLA_EXTRA", "14.0"))
+PLAYABLE_CORE_FULL_REQUIRE_ALL_TOP = os.getenv("PLAYABLE_CORE_FULL_REQUIRE_ALL_TOP", "1") != "0"
+
 PLAYABLE_SAT_MAX_AMBI = int(os.getenv("PLAYABLE_SAT_MAX_AMBI", "1"))
 PLAYABLE_MIN_SIGNALS = int(os.getenv("PLAYABLE_MIN_SIGNALS", "12"))
 PLAYABLE_MIN_DECINA_EXTRA = float(os.getenv("PLAYABLE_MIN_DECINA_EXTRA", "20.0"))
@@ -471,6 +485,7 @@ CSV_FIELDS = [
     "spy_cost", "spy_gross", "spy_net", "spy_roi",
     "playable_id", "playable_colpo", "playable_ambata", "playable_ambi",
     "playable_outcome", "playable_hit_ambata", "playable_hit_ambi", "playable_support",
+    "playable_terno", "playable_hit_terno", "playable_terno_cost", "playable_terno_gross",
 ]
 
 
@@ -544,7 +559,7 @@ def classify_network(spy, followers):
 
 class SniperV48BaseFullSpy:
     def __init__(self):
-        self.version = "v48_playable_ambata_ambi_9_core_multi"
+        self.version = "v48_playable_ambata_ambi_10_core_full_terno"
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
@@ -595,6 +610,11 @@ class SniperV48BaseFullSpy:
         self.playable_hit_colpi = {str(i): 0 for i in range(1, PLAYABLE_MAX_COLPI + 1)}
         self.playable_cost_units = 0.0
         self.playable_gross_units = 0.0
+        self.playable_terno_total = 0
+        self.playable_hit_terno = 0
+        self.playable_hit_terno_colpi = {str(i): 0 for i in range(1, PLAYABLE_MAX_COLPI + 1)}
+        self.playable_terno_cost_units = 0.0
+        self.playable_terno_gross_units = 0.0
         self.playable_cooldown = 0
 
         self.load_state()
@@ -694,6 +714,11 @@ class SniperV48BaseFullSpy:
             "playable_hit_colpi": self.playable_hit_colpi,
             "playable_cost_units": self.playable_cost_units,
             "playable_gross_units": self.playable_gross_units,
+            "playable_terno_total": self.playable_terno_total,
+            "playable_hit_terno": self.playable_hit_terno,
+            "playable_hit_terno_colpi": self.playable_hit_terno_colpi,
+            "playable_terno_cost_units": self.playable_terno_cost_units,
+            "playable_terno_gross_units": self.playable_terno_gross_units,
             "playable_cooldown": self.playable_cooldown,
             "scheduled_reports_sent": self.scheduled_reports_sent,
         }
@@ -751,6 +776,11 @@ class SniperV48BaseFullSpy:
             self.playable_hit_colpi = {str(i): int(data.get("playable_hit_colpi", {}).get(str(i), 0)) for i in range(1, PLAYABLE_MAX_COLPI + 1)}
             self.playable_cost_units = float(data.get("playable_cost_units", 0.0))
             self.playable_gross_units = float(data.get("playable_gross_units", 0.0))
+            self.playable_terno_total = int(data.get("playable_terno_total", 0))
+            self.playable_hit_terno = int(data.get("playable_hit_terno", 0))
+            self.playable_hit_terno_colpi = {str(i): int(data.get("playable_hit_terno_colpi", {}).get(str(i), 0)) for i in range(1, PLAYABLE_MAX_COLPI + 1)}
+            self.playable_terno_cost_units = float(data.get("playable_terno_cost_units", 0.0))
+            self.playable_terno_gross_units = float(data.get("playable_terno_gross_units", 0.0))
             self.playable_cooldown = int(data.get("playable_cooldown", 0))
             self.scheduled_reports_sent = data.get("scheduled_reports_sent", {}) if isinstance(data.get("scheduled_reports_sent", {}), dict) else {}
         except Exception as ex:
@@ -834,6 +864,10 @@ class SniperV48BaseFullSpy:
             "playable_hit_ambata": kwargs.get("playable_hit_ambata", ""),
             "playable_hit_ambi": kwargs.get("playable_hit_ambi", ""),
             "playable_support": kwargs.get("playable_support", ""),
+            "playable_terno": kwargs.get("playable_terno", ""),
+            "playable_hit_terno": kwargs.get("playable_hit_terno", ""),
+            "playable_terno_cost": kwargs.get("playable_terno_cost", ""),
+            "playable_terno_gross": kwargs.get("playable_terno_gross", ""),
         }
         with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
@@ -1402,7 +1436,7 @@ class SniperV48BaseFullSpy:
 
         top_nums = num_counter.most_common(PLAYABLE_MAX_NUMBERS)
         top_num_set = {n for n, _ in top_nums[:PLAYABLE_TOP_NUMBERS_FOR_CONFIRM]}
-        # v9: guarda più ambi internamente, ma mostra solo i migliori.
+        # v10: guarda più ambi internamente, ma mostra solo i migliori.
         top_pairs = pair_counter.most_common(30)
 
         supported_pairs = []
@@ -1460,6 +1494,7 @@ class SniperV48BaseFullSpy:
         snap = self.playable_signal_snapshot()
         signals = snap["signals"]
         supported_pairs = snap["supported_pairs"]
+        top_num_set = snap["top_num_set"]
         if len(signals) < PLAYABLE_MIN_SIGNALS:
             return None, f"pochi segnali focus ({len(signals)}/{PLAYABLE_MIN_SIGNALS})"
         if not supported_pairs:
@@ -1507,7 +1542,34 @@ class SniperV48BaseFullSpy:
 
         selected = []
         play_mode = ""
-        if len(core_eligible) >= PLAYABLE_CORE_MIN_PAIRS_FOR_MULTI:
+        terno_active = False
+        terno_nums = ()
+
+        # CORE FULL: se il triangolo 88-89-90 e' completo e fortissimo,
+        # copre tutti e 3 gli ambi CORE e aggiunge 1 terno secco mirato.
+        core_full_rows = []
+        if PLAYABLE_CORE_FULL_ENABLED:
+            core_map = {tuple(pair): (pair, support, overlap, group) for pair, support, overlap, group in core_eligible}
+            all_core_pairs_present = PLAYABLE_CORE_FULL_PAIRS.issubset(set(core_map))
+            all_nums_top = set(PLAYABLE_CORE_FULL_NUMS).issubset(top_num_set)
+            if (
+                all_core_pairs_present
+                and len(signals) >= PLAYABLE_CORE_FULL_MIN_SIGNALS
+                and snap["dec_extra"] >= PLAYABLE_CORE_FULL_MIN_DECINA_EXTRA
+                and snap["mult_extra"] >= PLAYABLE_CORE_FULL_MIN_MULTIPLA_EXTRA
+                and (all_nums_top or not PLAYABLE_CORE_FULL_REQUIRE_ALL_TOP)
+            ):
+                rows = [core_map[p] for p in sorted(PLAYABLE_CORE_FULL_PAIRS)]
+                if all(int(r[1]) >= PLAYABLE_CORE_FULL_MIN_PAIR_SUPPORT for r in rows):
+                    core_full_rows = sorted(rows, key=lambda x: (-x[1], -x[2], x[0]))
+
+        if core_full_rows:
+            selected = core_full_rows[:PLAYABLE_CORE_FULL_MAX_AMBI]
+            play_mode = "CORE_FULL_TERNO" if PLAYABLE_CORE_FULL_TERNO_ENABLED else "CORE_FULL"
+            if PLAYABLE_CORE_FULL_TERNO_ENABLED:
+                terno_active = True
+                terno_nums = tuple(PLAYABLE_CORE_FULL_NUMS)
+        elif len(core_eligible) >= PLAYABLE_CORE_MIN_PAIRS_FOR_MULTI:
             selected = core_eligible[:PLAYABLE_MAX_AMBI]
             play_mode = "CORE_MULTI"
         elif len(core_eligible) == 1 and core_eligible[0][1] >= PLAYABLE_CORE_SINGLE_MIN_SUPPORT:
@@ -1573,6 +1635,10 @@ class SniperV48BaseFullSpy:
             "ambata_hit_colpo": None,
             "support_text": support_text,
             "play_group": play_mode or selected[0][3],
+            "terno_active": bool(terno_active),
+            "terno": list(terno_nums),
+            "terno_hit": False,
+            "terno_hit_colpo": None,
         }, "ok"
 
     def _playable_ambi_text(self, snapshot=None):
@@ -1582,6 +1648,13 @@ class SniperV48BaseFullSpy:
             for item in snapshot.get("ambi", [])
             for a, b in [tuple(item.get("ambo", []))]
         ) or "n/d"
+
+    def _playable_terno_text(self, snapshot=None):
+        snapshot = snapshot or self.playable_snapshot or {}
+        nums = snapshot.get("terno") or []
+        if not snapshot.get("terno_active") or len(nums) != 3:
+            return "NO"
+        return "-".join(map(str, sorted(map(int, nums))))
 
     def _close_playable(self):
         self.playable_active = False
@@ -1598,6 +1671,8 @@ class SniperV48BaseFullSpy:
         self.playable_active = True
         self.playable_colpi = 0
         self.playable_total += 1
+        if candidate.get("terno_active"):
+            self.playable_terno_total += 1
         self.append_csv_event(
             "PLAYABLE_OPEN",
             e=e,
@@ -1607,22 +1682,26 @@ class SniperV48BaseFullSpy:
             playable_ambi=self._playable_ambi_text(candidate),
             playable_outcome="OPEN",
             playable_support=candidate.get("support_text", ""),
+            playable_terno=self._playable_terno_text(candidate),
         )
         if PLAYABLE_NOTIFY_OPEN:
             top_nums_txt = ", ".join(f"{n}({c})" for n, c in candidate.get("top_nums", [])[:5]) or "n/d"
+            title = "🎯 PLAY CORE FULL — AMBATA/AMBI + TERNO\n" if candidate.get("terno_active") else "🎯 PLAY GIOCABILE — AMBATA/AMBI\n"
+            nota = "• nota = terno CORE attivo solo in CORE_FULL; segnalo ambata, ambo, terno oppure stop" if candidate.get("terno_active") else "• nota = terno escluso; segnalo ambata presa, ambo preso oppure stop"
             await self.tg(
                 app,
-                "🎯 PLAY GIOCABILE — AMBATA/AMBI\n"
-                f"• logica = DECINA/MULTIPLA forte + {candidate.get('play_group', 'CORE/SATELLITE')}; v48 = bonus\n"
-                f"• play_id = {candidate['playable_id']}\n"
-                f"• ambata = {candidate['ambata']}\n"
-                f"• ambi = {self._playable_ambi_text(candidate)}\n"
-                f"• durata = max {PLAYABLE_MAX_COLPI} colpi\n"
-                f"• v48 = {'CONFERMA' if candidate.get('v48_confirmed') else 'non attiva/non necessaria'} | play {candidate.get('v48_play_id') or '-'} | cluster {fmt_nums(candidate.get('v48_cluster'))}\n"
-                f"• top numeri live = {top_nums_txt}\n"
-                f"• supporto ambi = {candidate.get('support_text', '')}\n"
-                f"• DECINA extra = {candidate.get('dec_extra', 0):+.2f} pp | MULTIPLA extra = {candidate.get('mult_extra', 0):+.2f} pp\n"
-                "• nota = terno escluso; segnalo ambata presa, ambo preso oppure stop"
+                title
+                + f"• logica = DECINA/MULTIPLA forte + {candidate.get('play_group', 'CORE/SATELLITE')}; v48 = bonus\n"
+                + f"• play_id = {candidate['playable_id']}\n"
+                + f"• ambata = {candidate['ambata']}\n"
+                + f"• ambi = {self._playable_ambi_text(candidate)}\n"
+                + f"• terno = {self._playable_terno_text(candidate)}\n"
+                + f"• durata = max {PLAYABLE_MAX_COLPI} colpi\n"
+                + f"• v48 = {'CONFERMA' if candidate.get('v48_confirmed') else 'non attiva/non necessaria'} | play {candidate.get('v48_play_id') or '-'} | cluster {fmt_nums(candidate.get('v48_cluster'))}\n"
+                + f"• top numeri live = {top_nums_txt}\n"
+                + f"• supporto ambi = {candidate.get('support_text', '')}\n"
+                + f"• DECINA extra = {candidate.get('dec_extra', 0):+.2f} pp | MULTIPLA extra = {candidate.get('mult_extra', 0):+.2f} pp\n"
+                + nota
             )
         return True
 
@@ -1638,6 +1717,10 @@ class SniperV48BaseFullSpy:
             a, b = tuple(map(int, item.get("ambo", [])))
             if a in nums_set and b in nums_set:
                 hit_pairs.append((a, b))
+
+        terno_active = bool(snap.get("terno_active") and snap.get("terno"))
+        terno_nums = tuple(sorted(map(int, snap.get("terno", [])))) if terno_active else ()
+        hit_terno_now = bool(terno_active and set(terno_nums).issubset(nums_set))
 
         if hit_ambata_now and not snap.get("ambata_hit"):
             snap["ambata_hit"] = True
@@ -1664,6 +1747,22 @@ class SniperV48BaseFullSpy:
             gross = AMBO_PAYOUT * len(hit_pairs)
             self.playable_cost_units += cost
             self.playable_gross_units += gross
+            terno_cost = 0.0
+            terno_gross = 0.0
+            terno_status = "NO"
+            if terno_active:
+                terno_cost = float(self.playable_colpi)
+                self.playable_terno_cost_units += terno_cost
+                if hit_terno_now and not snap.get("terno_hit"):
+                    snap["terno_hit"] = True
+                    snap["terno_hit_colpo"] = self.playable_colpi
+                    self.playable_hit_terno += 1
+                    self.playable_hit_terno_colpi[str(self.playable_colpi)] += 1
+                    terno_gross = TERNO_PAYOUT
+                    self.playable_terno_gross_units += terno_gross
+                    terno_status = f"PRESO {fmt_nums(terno_nums)}"
+                else:
+                    terno_status = f"NON preso ({fmt_nums(terno_nums)})"
             hit_txt = ", ".join(f"{a}-{b}" for a, b in hit_pairs)
             self.append_csv_event(
                 "PLAYABLE_HIT_AMBO",
@@ -1676,6 +1775,10 @@ class SniperV48BaseFullSpy:
                 playable_hit_ambata=int(bool(snap.get("ambata_hit"))),
                 playable_hit_ambi=hit_txt,
                 playable_support=snap.get("support_text", ""),
+                playable_terno=self._playable_terno_text(snap),
+                playable_hit_terno=int(bool(hit_terno_now)),
+                playable_terno_cost=f"{terno_cost:.2f}",
+                playable_terno_gross=f"{terno_gross:.2f}",
             )
             play_id = snap.get("playable_id")
             hit_colpo = self.playable_colpi
@@ -1688,7 +1791,8 @@ class SniperV48BaseFullSpy:
                     f"🔥 HIT AMBO PLAY GIOCABILE | colpo {hit_colpo}\n"
                     f"• play_id = {play_id}\n"
                     f"• ambi presi = {hit_txt}\n"
-                    f"• ambata = {snap.get('ambata')} ({ambata_status})\n\n"
+                    f"• ambata = {snap.get('ambata')} ({ambata_status})\n"
+                    f"• terno = {terno_status}\n\n"
                     f"{self.playable_stats_text()}"
                 )
             return True
@@ -1697,6 +1801,10 @@ class SniperV48BaseFullSpy:
             self.playable_stop += 1
             cost = len(snap.get("ambi", [])) * PLAYABLE_MAX_COLPI
             self.playable_cost_units += cost
+            terno_cost = 0.0
+            if terno_active:
+                terno_cost = float(PLAYABLE_MAX_COLPI)
+                self.playable_terno_cost_units += terno_cost
             self.append_csv_event(
                 "PLAYABLE_STOP",
                 e=e,
@@ -1707,10 +1815,15 @@ class SniperV48BaseFullSpy:
                 playable_outcome="STOP",
                 playable_hit_ambata=int(bool(snap.get("ambata_hit"))),
                 playable_support=snap.get("support_text", ""),
+                playable_terno=self._playable_terno_text(snap),
+                playable_hit_terno=0,
+                playable_terno_cost=f"{terno_cost:.2f}",
+                playable_terno_gross="0.00",
             )
             play_id = snap.get("playable_id")
             ambata_msg = f"PRESA al colpo {snap.get('ambata_hit_colpo')}" if snap.get("ambata_hit") else "NON PRESA"
             ambi_txt = self._playable_ambi_text(snap)
+            terno_stop_msg = f"NON preso ({self._playable_terno_text(snap)})" if terno_active else "NO"
             self.playable_cooldown = PLAYABLE_COOLDOWN_AFTER_PLAY
             self._close_playable()
             if PLAYABLE_NOTIFY_STOP:
@@ -1719,7 +1832,8 @@ class SniperV48BaseFullSpy:
                     f"🛑 STOP PLAY GIOCABILE | {PLAYABLE_MAX_COLPI} colpi\n"
                     f"• play_id = {play_id}\n"
                     f"• ambata = {ambata_msg}\n"
-                    f"• ambi non presi = {ambi_txt}\n\n"
+                    f"• ambi non presi = {ambi_txt}\n"
+                    f"• terno = {terno_stop_msg}\n\n"
                     f"{self.playable_stats_text()}"
                 )
             return True
@@ -1738,6 +1852,7 @@ class SniperV48BaseFullSpy:
                 f"• colpo corrente = {self.playable_colpi}/{PLAYABLE_MAX_COLPI}\n"
                 f"• ambata = {self.playable_snapshot.get('ambata')}\n"
                 f"• ambi = {self._playable_ambi_text(self.playable_snapshot)}\n"
+                f"• terno = {self._playable_terno_text(self.playable_snapshot)}\n"
                 f"• v48 = {'CONFERMA' if self.playable_snapshot.get('v48_confirmed') else 'non attiva/non necessaria'} | cluster = {fmt_nums(self.playable_snapshot.get('v48_cluster'))}"
             )
         return (
@@ -1750,7 +1865,10 @@ class SniperV48BaseFullSpy:
             f"• attivo ora = {active}\n"
             f"• hit ambo per colpo = {', '.join(f'C{i}:{self.playable_hit_colpi.get(str(i), 0)}' for i in range(1, PLAYABLE_MAX_COLPI + 1))}\n"
             f"• economia ambo {AMBO_PAYOUT:.0f}x: costo={self.playable_cost_units:.2f}u | lordo={self.playable_gross_units:.2f}u | netto={net:+.2f}u | ROI={roi:+.2f}%\n"
-            "• nota = ambata conteggiata come presa/non presa; ROI calcolato solo sugli ambi"
+            f"• PLAY TERNO CORE = {self.playable_terno_total} | HIT TERNO = {self.playable_hit_terno} ({pct(self.playable_hit_terno, self.playable_terno_total):.2f}%)\n"
+            f"• hit terno per colpo = {', '.join(f'C{i}:{self.playable_hit_terno_colpi.get(str(i), 0)}' for i in range(1, PLAYABLE_MAX_COLPI + 1))}\n"
+            f"• economia terno {TERNO_PAYOUT:.0f}x: costo={self.playable_terno_cost_units:.2f}u | lordo={self.playable_terno_gross_units:.2f}u | netto={roi_text(self.playable_terno_gross_units, self.playable_terno_cost_units)[0]:+.2f}u | ROI={roi_text(self.playable_terno_gross_units, self.playable_terno_cost_units)[1]:+.2f}%\n"
+            "• nota = ambata conteggiata come presa/non presa; ROI ambo e terno separati"
             f"{active_txt}"
         )
 
@@ -1769,7 +1887,7 @@ class SniperV48BaseFullSpy:
             "🎲 GIOCABILITÀ DECINA/MULTIPLA — H3",
             "• cosa significa: non terno secco, ma ricerca di almeno 2/3 numeri entro 3 colpi",
             "• filtro usato: rete DECINA + livello MULTIPLA + CORE/SATELLITE",
-            "• giocata auto = ambata + max 2 ambi; v48 opzionale/bonus; filtro CORE/SATELLITE",
+            "• giocata auto = ambata + max 2 ambi; CORE_FULL può aggiungere 3° ambo + terno; v48 opzionale/bonus",
             "• nota: laboratorio statistico, non previsione certa",
         ]
 
@@ -1780,7 +1898,7 @@ class SniperV48BaseFullSpy:
         top_nums_txt = ", ".join(f"{n}({c})" for n, c in top_nums[:PLAYABLE_MAX_NUMBERS]) or "n/d"
         if supported_pairs:
             ambi_line = ", ".join(f"{a}-{b}({c}|{g})" for (a, b), c, g in supported_pairs[:PLAYABLE_MAX_PAIRS])
-            verdict = "ambi CORE/SATELLITE concentrati: giocabili solo sopra soglia v9"
+            verdict = "ambi CORE/SATELLITE concentrati: giocabili solo sopra soglia v10"
         else:
             top_pairs = snap["top_pairs"]
             ambi_line = ", ".join(f"{a}-{b}({c}|{playable_pair_group((a, b))})" for (a, b), c in top_pairs[:PLAYABLE_MAX_PAIRS]) if top_pairs else "n/d"
@@ -1795,7 +1913,7 @@ class SniperV48BaseFullSpy:
             f"• numeri piu' ripetuti = {top_nums_txt}",
             f"• ambi piu' supportati = {ambi_line}",
             f"• lettura = {verdict}",
-            f"• schema auto = max {PLAYABLE_MAX_COLPI} colpi; terno escluso",
+            f"• schema auto = max {PLAYABLE_MAX_COLPI} colpi; terno solo CORE_FULL",
         ])
 
         if self.active_snapshot:
@@ -1807,7 +1925,7 @@ class SniperV48BaseFullSpy:
                 f"• cluster v48 = {fmt_nums(self.active_snapshot.get('cluster_numbers'))}",
             ])
         else:
-            lines.extend(["", "📎 CONFERMA v48 ATTUALE", "• nessun play v48 attivo: v9 può partire solo con CORE/SATELLITE sopra soglia"])
+            lines.extend(["", "📎 CONFERMA v48 ATTUALE", "• nessun play v48 attivo: v10 può partire solo con CORE/SATELLITE sopra soglia"])
 
         candidate, reason = self.build_playable_candidate(0)
         lines.extend(["", "🎯 STATO PLAY AUTO"])
@@ -2190,7 +2308,7 @@ class SniperV48BaseFullSpy:
         # 2) apre nuove spie dalla condizione appena creata.
         await self.maybe_open_spy_sessions(app, e)
 
-        # v9: se NON c'e' un v48 attivo, il play operativo può partire solo su CORE/SATELLITE sopra soglia.
+        # v10: se NON c'e' un v48 attivo, il play operativo può partire solo su CORE/SATELLITE sopra soglia.
         # Se v48 e' attivo, lo valutiamo dopo averlo processato.
         if not self.active:
             await self.maybe_open_playable_play(app, e)
@@ -2502,7 +2620,7 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v9 PLAY AMBATA/AMBI — CORE MULTI AVVIATO\n"
+            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v10 PLAY AMBATA/AMBI — CORE FULL + TERNO AVVIATO\n"
             "✅ v48 base invariata: ambata + 3 ambi classici\n"
             "✅ max 7 colpi, cooldown e cluster reuse invariati\n"
             "✅ monitor rank ambo vincente 1/2/3\n"
@@ -2516,11 +2634,12 @@ async def startup(engine, app):
             "✅ atteso K2/K3 corretto solo sulle sessioni chiuse\n"
             "✅ sezione ⭐ SPIE ELITE STORICHE — LIVE\n"
             "✅ sezione 🎲 GIOCABILITÀ DECINA/MULTIPLA — H3\n"
-            f"✅ play operativo = ambata + max {PLAYABLE_MAX_AMBI} ambi CORE / max {PLAYABLE_SAT_MAX_AMBI} SAT, max {PLAYABLE_MAX_COLPI} colpi\n"
+            f"✅ play operativo = ambata + max {PLAYABLE_MAX_AMBI} ambi CORE; CORE_FULL = 3 ambi + terno; max {PLAYABLE_MAX_COLPI} colpi\n"
             "✅ v48 opzionale: conferma forte, ma non blocca il play\n"
             "✅ ambi ammessi: CORE 88-90/89-90/88-89 | SAT 87-88/87-89/87-90/86-90\n"
             f"✅ soglie CORE: DECINA>={PLAYABLE_MIN_DECINA_EXTRA:+.1f} pp | MULTIPLA>={PLAYABLE_MIN_MULTIPLA_EXTRA:+.1f} pp | supporto multi>={PLAYABLE_MIN_PAIR_SUPPORT} | singolo>={PLAYABLE_CORE_SINGLE_MIN_SUPPORT} | segnali>={PLAYABLE_MIN_SIGNALS}\n"
             f"✅ soglie SAT: DECINA>={PLAYABLE_SAT_MIN_DECINA_EXTRA:+.1f} pp | MULTIPLA>={PLAYABLE_SAT_MIN_MULTIPLA_EXTRA:+.1f} pp | supporto>={PLAYABLE_SATELLITE_MIN_PAIR_SUPPORT} | segnali>={PLAYABLE_SAT_MIN_SIGNALS}\n"
+            f"✅ CORE_FULL TERNO: DECINA>={PLAYABLE_CORE_FULL_MIN_DECINA_EXTRA:+.1f} pp | MULTIPLA>={PLAYABLE_CORE_FULL_MIN_MULTIPLA_EXTRA:+.1f} pp | tutti e 3 gli ambi CORE sup>={PLAYABLE_CORE_FULL_MIN_PAIR_SUPPORT} | segnali>={PLAYABLE_CORE_FULL_MIN_SIGNALS} | terno={fmt_nums(PLAYABLE_CORE_FULL_NUMS)}\n"
             "✅ notifiche PLAY = apertura, ambata presa, ambo preso, stop/non preso\n"
             f"✅ notifiche v48 singole = {'ON' if V48_NOTIFY_EVENTS else 'OFF'}\n"
             f"✅ orario bot = {BOT_TZ_NAME}\n"
