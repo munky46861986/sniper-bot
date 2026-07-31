@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v12 PLAY AMBATA/AMBI — SOFT + v48 + TERNO OPZIONALE
+# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v13 PLAY AMBATA/AMBI — SMART CORE + LOCK
 #
 # VERSIONE PULITA
 #   ✅ v48 base invariata: ambata + 3 ambi classici, max 7 colpi
@@ -11,7 +11,7 @@
 #   ✅ K1/K2/K3 + economia terno 45x
 #   ✅ report Telegram cliccabili: /report /play /v48 /spie /spie_elite /spie_play /spie_top /spie_network /menu
 #   ✅ sezione SPIE ELITE STORICHE — LIVE per confrontare storico vs live
-#   ✅ v12: CORE_MULTI piu' morbido; v48 accelera; terno solo extra opzionale
+#   ✅ v13: CORE piu selettivo; v48 accelera solo se conferma 88/89/90; anti-raffica zona CORE
 #
 # NOTA
 #   Questo bot non predice le estrazioni: registra e confronta segnali statistici.
@@ -55,9 +55,9 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v12_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v12_events.csv")
-LOCK_FILE = "/tmp/sniper_v48_playable_ambata_ambi_v12.lock"
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v13_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v13_events.csv")
+LOCK_FILE = "/tmp/sniper_v48_playable_ambata_ambi_v13.lock"
 
 # Orario bot/report: GitHub gira spesso in UTC, qui forziamo Italia.
 BOT_TZ_NAME = os.getenv("BOT_TZ", "Europe/Rome")
@@ -107,7 +107,7 @@ SPY_TOP_MIN_CLOSED = 20
 # ma mostra in report/comando i numeri e gli ambi piu' supportati dai segnali aperti.
 PLAYABLE_NETWORK = "DECINA"
 PLAYABLE_LEVEL = "MULTIPLA"
-# v12: CORE_MULTI piu morbido + acceleratore v48 + modulo CORE_FULL/TERNO opzionale.
+# v13: SMART CORE. Core piu selettivo, v48 acceleratore solo se conferma il triangolo, anti-raffica zona CORE.
 PLAYABLE_CORE_PAIRS = {tuple(sorted(p)) for p in [(88, 90), (89, 90), (88, 89)]}
 PLAYABLE_SATELLITE_PAIRS = {tuple(sorted(p)) for p in [(87, 88), (87, 89), (87, 90), (86, 90)]}
 PLAYABLE_SATELLITE_MIN_PAIR_SUPPORT = int(os.getenv("PLAYABLE_SATELLITE_MIN_PAIR_SUPPORT", "10"))
@@ -129,21 +129,20 @@ def playable_pair_group(pair):
         return "SATELLITE"
     return "OUT"
 
-# Soglie del play automatico v12: CORE_MULTI piu morbido; CORE_FULL/TERNO e v48 sono moduli extra.
+# Soglie del play automatico v13: torna selettivo come v9, ma con v48 usato solo se conferma il triangolo CORE.
 # CORE: può giocare 2 ambi se almeno 2 CORE sono sopra supporto minimo.
 # CORE singolo: parte solo se il supporto è molto alto.
 # SATELLITE: resta max 1 ambo e più severo.
-PLAYABLE_MIN_PAIR_SUPPORT = int(os.getenv("PLAYABLE_MIN_PAIR_SUPPORT", "7"))  # v12 discovery: include anche CORE a supporto 7
+PLAYABLE_MIN_PAIR_SUPPORT = int(os.getenv("PLAYABLE_MIN_PAIR_SUPPORT", "8"))  # v13: niente CORE a supporto 7, evita play borderline
 PLAYABLE_CORE_SINGLE_MIN_SUPPORT = int(os.getenv("PLAYABLE_CORE_SINGLE_MIN_SUPPORT", "14"))
 PLAYABLE_CORE_MIN_PAIRS_FOR_MULTI = int(os.getenv("PLAYABLE_CORE_MIN_PAIRS_FOR_MULTI", "2"))
-PLAYABLE_CORE_MULTI_MIN_SUPPORT = int(os.getenv("PLAYABLE_CORE_MULTI_MIN_SUPPORT", "8"))
+PLAYABLE_CORE_MULTI_MIN_SUPPORT = int(os.getenv("PLAYABLE_CORE_MULTI_MIN_SUPPORT", "9"))
 PLAYABLE_V48_ACCEL_ENABLED = os.getenv("PLAYABLE_V48_ACCEL_ENABLED", "1") != "0"
-PLAYABLE_V48_MIN_SIGNALS = int(os.getenv("PLAYABLE_V48_MIN_SIGNALS", "10"))
-PLAYABLE_V48_MIN_DECINA_EXTRA = float(os.getenv("PLAYABLE_V48_MIN_DECINA_EXTRA", "12.0"))
-PLAYABLE_V48_MIN_MULTIPLA_EXTRA = float(os.getenv("PLAYABLE_V48_MIN_MULTIPLA_EXTRA", "5.0"))
-PLAYABLE_V48_MIN_PAIR_SUPPORT = int(os.getenv("PLAYABLE_V48_MIN_PAIR_SUPPORT", "7"))
-PLAYABLE_V48_DAY_MIN_PLAY = int(os.getenv("PLAYABLE_V48_DAY_MIN_PLAY", "3"))
-PLAYABLE_V48_DAY_MIN_HIT_RATE = float(os.getenv("PLAYABLE_V48_DAY_MIN_HIT_RATE", "50.0"))
+PLAYABLE_V48_MIN_SIGNALS = int(os.getenv("PLAYABLE_V48_MIN_SIGNALS", "12"))
+PLAYABLE_V48_MIN_DECINA_EXTRA = float(os.getenv("PLAYABLE_V48_MIN_DECINA_EXTRA", "16.0"))
+PLAYABLE_V48_MIN_MULTIPLA_EXTRA = float(os.getenv("PLAYABLE_V48_MIN_MULTIPLA_EXTRA", "7.0"))
+PLAYABLE_V48_MIN_PAIR_SUPPORT = int(os.getenv("PLAYABLE_V48_MIN_PAIR_SUPPORT", "8"))
+PLAYABLE_V48_CORE_OVERLAP_MIN = int(os.getenv("PLAYABLE_V48_CORE_OVERLAP_MIN", "2"))  # cluster v48 deve contenere almeno 2 numeri tra 88/89/90
 PLAYABLE_MAX_SIGNALS = 8
 PLAYABLE_MAX_PAIRS = 8
 PLAYABLE_MAX_NUMBERS = 7
@@ -175,12 +174,14 @@ PLAYABLE_CORE_FULL_STRONG_PAIR_SUPPORT = int(os.getenv("PLAYABLE_CORE_FULL_STRON
 
 PLAYABLE_SAT_MAX_AMBI = int(os.getenv("PLAYABLE_SAT_MAX_AMBI", "1"))
 PLAYABLE_MIN_SIGNALS = int(os.getenv("PLAYABLE_MIN_SIGNALS", "12"))
-PLAYABLE_MIN_DECINA_EXTRA = float(os.getenv("PLAYABLE_MIN_DECINA_EXTRA", "16.0"))
-PLAYABLE_MIN_MULTIPLA_EXTRA = float(os.getenv("PLAYABLE_MIN_MULTIPLA_EXTRA", "6.0"))
+PLAYABLE_MIN_DECINA_EXTRA = float(os.getenv("PLAYABLE_MIN_DECINA_EXTRA", "20.0"))
+PLAYABLE_MIN_MULTIPLA_EXTRA = float(os.getenv("PLAYABLE_MIN_MULTIPLA_EXTRA", "8.0"))
 PLAYABLE_TOP_NUMBERS_FOR_CONFIRM = int(os.getenv("PLAYABLE_TOP_NUMBERS_FOR_CONFIRM", "5"))
-# v12: v48 resta opzionale ma accelera le soglie quando e' attivo o il giorno v48 e' forte.
+# v13: v48 resta opzionale, ma accelera solo se il cluster v48 conferma 88/89/90.
 PLAYABLE_REQUIRE_V48_CONFIRM = os.getenv("PLAYABLE_REQUIRE_V48_CONFIRM", "0") == "1"
 PLAYABLE_COOLDOWN_AFTER_PLAY = int(os.getenv("PLAYABLE_COOLDOWN_AFTER_PLAY", "3"))
+PLAYABLE_CORE_ZONE_LOCK_AFTER_STOPS = int(os.getenv("PLAYABLE_CORE_ZONE_LOCK_AFTER_STOPS", "2"))
+PLAYABLE_CORE_ZONE_LOCK_DRAWS = int(os.getenv("PLAYABLE_CORE_ZONE_LOCK_DRAWS", "9"))
 
 
 # Spie Elite Storiche — selezionate dal backtest H3 sullo storico gennaio-settembre.
@@ -570,7 +571,7 @@ def classify_network(spy, followers):
 
 class SniperV48BaseFullSpy:
     def __init__(self):
-        self.version = "v48_playable_ambata_ambi_12_soft_v48_terno"
+        self.version = "v48_playable_ambata_ambi_13_smart_core_lock"
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
@@ -627,6 +628,8 @@ class SniperV48BaseFullSpy:
         self.playable_terno_cost_units = 0.0
         self.playable_terno_gross_units = 0.0
         self.playable_cooldown = 0
+        self.playable_core_stop_streak = 0
+        self.playable_core_zone_lock = 0
 
         self.load_state()
         ensure_csv()
@@ -731,6 +734,8 @@ class SniperV48BaseFullSpy:
             "playable_terno_cost_units": self.playable_terno_cost_units,
             "playable_terno_gross_units": self.playable_terno_gross_units,
             "playable_cooldown": self.playable_cooldown,
+            "playable_core_stop_streak": self.playable_core_stop_streak,
+            "playable_core_zone_lock": self.playable_core_zone_lock,
             "scheduled_reports_sent": self.scheduled_reports_sent,
         }
         tmp = STATE_FILE + ".tmp"
@@ -793,6 +798,8 @@ class SniperV48BaseFullSpy:
             self.playable_terno_cost_units = float(data.get("playable_terno_cost_units", 0.0))
             self.playable_terno_gross_units = float(data.get("playable_terno_gross_units", 0.0))
             self.playable_cooldown = int(data.get("playable_cooldown", 0))
+            self.playable_core_stop_streak = int(data.get("playable_core_stop_streak", 0))
+            self.playable_core_zone_lock = int(data.get("playable_core_zone_lock", 0))
             self.scheduled_reports_sent = data.get("scheduled_reports_sent", {}) if isinstance(data.get("scheduled_reports_sent", {}), dict) else {}
         except Exception as ex:
             print(f"⚠️ Stato non caricato: {ex}")
@@ -826,6 +833,8 @@ class SniperV48BaseFullSpy:
         self.playable_snapshot = None
         self.playable_colpi = 0
         self.playable_cooldown = 0
+        self.playable_core_stop_streak = 0
+        self.playable_core_zone_lock = 0
         self.draws_since_spy_report = 0
         self.save_state()
 
@@ -1497,22 +1506,23 @@ class SniperV48BaseFullSpy:
         }
 
     def _v48_accel_active(self):
-        """v12: v48 non obbliga, ma accelera se ha un play attivo o se la giornata v48 e' forte."""
-        if not PLAYABLE_V48_ACCEL_ENABLED:
+        """v13: v48 accelera SOLO se il cluster attivo conferma davvero il triangolo CORE 88/89/90.
+        Non basta che v48 sia attiva o che la giornata v48 sia buona: il cluster deve contenere
+        almeno PLAYABLE_V48_CORE_OVERLAP_MIN numeri tra 88, 89, 90.
+        """
+        if not PLAYABLE_V48_ACCEL_ENABLED or not self.active_snapshot:
             return False
-        if self.active_snapshot:
-            return True
-        if self.total_play >= PLAYABLE_V48_DAY_MIN_PLAY:
-            hit_rate = pct(self.total_hit_ambo, self.total_play)
-            if hit_rate >= PLAYABLE_V48_DAY_MIN_HIT_RATE and self.total_hit_ambo > self.total_stop:
-                return True
-        return False
+        cluster = set(map(int, self.active_snapshot.get("cluster_numbers", []) or []))
+        core_nums = set(PLAYABLE_CORE_FULL_NUMS)
+        return len(cluster & core_nums) >= PLAYABLE_V48_CORE_OVERLAP_MIN
 
     def build_playable_candidate(self, e):
         if not PLAYABLE_AUTO_ENABLED or self.playable_active:
             return None, "play gia' attivo o auto off"
         if self.playable_cooldown > 0:
             return None, f"cooldown anti-raffica attivo ({self.playable_cooldown} estrazioni)"
+        if self.playable_core_zone_lock > 0:
+            return None, f"zona CORE 88/89/90 in pausa dopo stop consecutivi ({self.playable_core_zone_lock} estrazioni)"
 
         snap = self.playable_signal_snapshot()
         signals = snap["signals"]
@@ -1545,8 +1555,8 @@ class SniperV48BaseFullSpy:
             return None, f"MULTIPLA extra basso{suffix} ({snap['mult_extra']:+.2f}/{req_mult:+.2f} pp)"
 
         # Costruisce candidati ambo. CORE e SATELLITE restano separati:
-        # - CORE_MULTI normale: 2 ambi con supporto >= 8;
-        # - con v48 acceleratore: 2 ambi possono partire da supporto >= 7;
+        # - CORE_MULTI normale: 2 ambi con supporto >= 9;
+        # - con v48 acceleratore reale: 2 ambi possono partire da supporto >= 8;
         # - CORE singolo parte solo se e' molto forte;
         # - SATELLITE resta max 1 e con soglie piu' severe.
         core_all = []
@@ -1582,7 +1592,7 @@ class SniperV48BaseFullSpy:
         terno_active = False
         terno_nums = ()
 
-        # CORE_FULL v12: piu' realistico. Serve triangolo completo, DEC/MULT forti,
+        # CORE_FULL v13: piu' realistico. Serve triangolo completo, DEC/MULT forti,
         # tutti e 3 gli ambi almeno visibili e almeno 2 lati forti. Non blocca mai il play normale.
         core_full_rows = []
         if PLAYABLE_CORE_FULL_ENABLED:
@@ -1610,8 +1620,8 @@ class SniperV48BaseFullSpy:
                 terno_nums = tuple(PLAYABLE_CORE_FULL_NUMS)
         elif len(core_eligible) >= PLAYABLE_CORE_MIN_PAIRS_FOR_MULTI:
             selected = core_eligible[:PLAYABLE_MAX_AMBI]
-            play_mode = "CORE_MULTI_V48" if v48_accel else "CORE_MULTI_SOFT"
-        elif len(core_all) == 1 and core_all[0][1] >= PLAYABLE_CORE_SINGLE_MIN_SUPPORT:
+            play_mode = "CORE_MULTI_V48_REAL" if v48_accel else "CORE_MULTI_SMART"
+        elif core_all and core_all[0][1] >= PLAYABLE_CORE_SINGLE_MIN_SUPPORT:
             selected = core_all[:1]
             play_mode = "CORE_SINGLE_FORTE"
         elif sat_eligible:
@@ -1676,6 +1686,7 @@ class SniperV48BaseFullSpy:
             "ambata_hit_colpo": None,
             "support_text": support_text,
             "play_group": play_mode or selected[0][3],
+            "is_core_play": all(item[3] == "CORE" for item in selected),
             "terno_active": bool(terno_active),
             "terno": list(terno_nums),
             "terno_hit": False,
@@ -1824,6 +1835,9 @@ class SniperV48BaseFullSpy:
             play_id = snap.get("playable_id")
             hit_colpo = self.playable_colpi
             ambata_status = f"presa al colpo {snap.get('ambata_hit_colpo')}" if snap.get("ambata_hit") else "non presa prima dell'ambo"
+            if snap.get("is_core_play") or str(snap.get("play_group", "")).startswith("CORE"):
+                self.playable_core_stop_streak = 0
+                self.playable_core_zone_lock = 0
             self.playable_cooldown = PLAYABLE_COOLDOWN_AFTER_PLAY
             self._close_playable()
             if PLAYABLE_NOTIFY_HIT:
@@ -1865,6 +1879,13 @@ class SniperV48BaseFullSpy:
             ambata_msg = f"PRESA al colpo {snap.get('ambata_hit_colpo')}" if snap.get("ambata_hit") else "NON PRESA"
             ambi_txt = self._playable_ambi_text(snap)
             terno_stop_msg = f"NON preso ({self._playable_terno_text(snap)})" if terno_active else "NO"
+            if snap.get("is_core_play") or str(snap.get("play_group", "")).startswith("CORE"):
+                self.playable_core_stop_streak += 1
+                if self.playable_core_stop_streak >= PLAYABLE_CORE_ZONE_LOCK_AFTER_STOPS:
+                    self.playable_core_zone_lock = PLAYABLE_CORE_ZONE_LOCK_DRAWS
+                    self.playable_core_stop_streak = 0
+            else:
+                self.playable_core_stop_streak = 0
             self.playable_cooldown = PLAYABLE_COOLDOWN_AFTER_PLAY
             self._close_playable()
             if PLAYABLE_NOTIFY_STOP:
@@ -1928,7 +1949,7 @@ class SniperV48BaseFullSpy:
             "🎲 GIOCABILITÀ DECINA/MULTIPLA — H3",
             "• cosa significa: non terno secco, ma ricerca di almeno 2/3 numeri entro 3 colpi",
             "• filtro usato: rete DECINA + livello MULTIPLA + CORE/SATELLITE",
-            "• giocata auto = v12 SOFT: ambata + max 2 ambi; v48 accelera; CORE_FULL può aggiungere 3° ambo + terno",
+            "• giocata auto = v13 SMART: ambata + max 2 ambi; v48 accelera solo se conferma 88/89/90; CORE_FULL può aggiungere 3° ambo + terno",
             "• nota: laboratorio statistico, non previsione certa",
         ]
 
@@ -1939,7 +1960,7 @@ class SniperV48BaseFullSpy:
         top_nums_txt = ", ".join(f"{n}({c})" for n, c in top_nums[:PLAYABLE_MAX_NUMBERS]) or "n/d"
         if supported_pairs:
             ambi_line = ", ".join(f"{a}-{b}({c}|{g})" for (a, b), c, g in supported_pairs[:PLAYABLE_MAX_PAIRS])
-            verdict = "ambi CORE/SATELLITE concentrati: giocabili solo sopra soglia v12"
+            verdict = "ambi CORE/SATELLITE concentrati: giocabili solo sopra soglia v13"
         else:
             top_pairs = snap["top_pairs"]
             ambi_line = ", ".join(f"{a}-{b}({c}|{playable_pair_group((a, b))})" for (a, b), c in top_pairs[:PLAYABLE_MAX_PAIRS]) if top_pairs else "n/d"
@@ -1950,11 +1971,11 @@ class SniperV48BaseFullSpy:
             f"• segnali DECINA/MULTIPLA grezzi = {len(raw_signals)}",
             f"• segnali focus giocabili = {len(signals)}",
             f"• DECINA extra = {snap['dec_extra']:+.2f} pp | MULTIPLA extra = {snap['mult_extra']:+.2f} pp",
-            f"• soglie = CORE multi sup>={PLAYABLE_CORE_MULTI_MIN_SUPPORT}, singolo>={PLAYABLE_CORE_SINGLE_MIN_SUPPORT}, segn>={PLAYABLE_MIN_SIGNALS}, DEC>={PLAYABLE_MIN_DECINA_EXTRA:+.0f}; SAT sup>={PLAYABLE_SATELLITE_MIN_PAIR_SUPPORT}, segn>={PLAYABLE_SAT_MIN_SIGNALS}, DEC>={PLAYABLE_SAT_MIN_DECINA_EXTRA:+.0f}",
+            f"• soglie = CORE multi sup>={PLAYABLE_CORE_MULTI_MIN_SUPPORT}, singolo>={PLAYABLE_CORE_SINGLE_MIN_SUPPORT}, segn>={PLAYABLE_MIN_SIGNALS}, DEC>={PLAYABLE_MIN_DECINA_EXTRA:+.0f}, MULT>={PLAYABLE_MIN_MULTIPLA_EXTRA:+.0f}; v48 REAL sup>={PLAYABLE_V48_MIN_PAIR_SUPPORT}; SAT sup>={PLAYABLE_SATELLITE_MIN_PAIR_SUPPORT}",
             f"• numeri piu' ripetuti = {top_nums_txt}",
             f"• ambi piu' supportati = {ambi_line}",
             f"• lettura = {verdict}",
-            f"• schema auto = max {PLAYABLE_MAX_COLPI} colpi; terno solo CORE_FULL; v48 accelera le soglie",
+            f"• schema auto = max {PLAYABLE_MAX_COLPI} colpi; terno solo CORE_FULL; v48 accelera solo con cluster CORE; lock CORE {self.playable_core_zone_lock} estr.",
         ])
 
         if self.active_snapshot:
@@ -1966,7 +1987,7 @@ class SniperV48BaseFullSpy:
                 f"• cluster v48 = {fmt_nums(self.active_snapshot.get('cluster_numbers'))}",
             ])
         else:
-            lines.extend(["", "📎 CONFERMA v48 ATTUALE", "• nessun play v48 attivo: v12 può partire con soglie SOFT su CORE/SATELLITE"])
+            lines.extend(["", "📎 CONFERMA v48 ATTUALE", "• nessun play v48 attivo: v13 può partire con soglie SMART su CORE/SATELLITE"])
 
         candidate, reason = self.build_playable_candidate(0)
         lines.extend(["", "🎯 STATO PLAY AUTO"])
@@ -2326,7 +2347,7 @@ class SniperV48BaseFullSpy:
     # --------------------------------------------------------
     # Main draw logic
     # --------------------------------------------------------
-    async def on_new(self, app, e, nums):
+    async def on_new(self, app, e, nums, allow_open_playable=True):
         if len(set(nums)) != 20:
             return
         if self.already_processed(e, nums):
@@ -2338,6 +2359,8 @@ class SniperV48BaseFullSpy:
         self.draws_since_spy_report += 1
         if self.playable_cooldown > 0:
             self.playable_cooldown = max(0, self.playable_cooldown - 1)
+        if self.playable_core_zone_lock > 0:
+            self.playable_core_zone_lock = max(0, self.playable_core_zone_lock - 1)
 
         if DRAW_NOTIFY:
             await self.tg(app, f"📌 Estrazione {e}\n🎱 {', '.join(map(str, nums))}")
@@ -2349,9 +2372,9 @@ class SniperV48BaseFullSpy:
         # 2) apre nuove spie dalla condizione appena creata.
         await self.maybe_open_spy_sessions(app, e)
 
-        # v11: se NON c'e' un v48 attivo, il play operativo può partire su CORE/SATELLITE sopra soglia; CORE_FULL/TERNO resta opzionale.
+        # v13: se NON c'e' un v48 attivo, il play operativo può partire su CORE/SATELLITE sopra soglia; CORE_FULL/TERNO resta opzionale.
         # Se v48 e' attivo, lo valutiamo dopo averlo processato.
-        if not self.active:
+        if allow_open_playable and not self.active:
             await self.maybe_open_playable_play(app, e)
 
         # 3) processa v48 attivo. v48 resta core/struttura; le notifiche singole sono opzionali.
@@ -2439,7 +2462,8 @@ class SniperV48BaseFullSpy:
                 skip_new_play = True
             else:
                 # v48 resta attivo: se ora DECINA/MULTIPLA convergono, apri il play pratico.
-                await self.maybe_open_playable_play(app, e)
+                if allow_open_playable:
+                    await self.maybe_open_playable_play(app, e)
                 self.save_state()
                 return
 
@@ -2487,7 +2511,8 @@ class SniperV48BaseFullSpy:
                         "• modulo attivo = solo 3 ambi classici"
                     )
                 # Prova subito a trasformare la struttura v48 in play operativo giocabile.
-                await self.maybe_open_playable_play(app, e)
+                if allow_open_playable:
+                    await self.maybe_open_playable_play(app, e)
 
         if SPY_REPORT_EVERY_DRAWS and self.draws_since_spy_report >= SPY_REPORT_EVERY_DRAWS:
             self.draws_since_spy_report = 0
@@ -2661,7 +2686,7 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v12 PLAY AMBATA/AMBI — SOFT + v48 + TERNO OPZIONALE AVVIATO\n"
+            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v13 PLAY AMBATA/AMBI — SMART CORE + LOCK AVVIATO\n"
             "✅ v48 base invariata: ambata + 3 ambi classici\n"
             "✅ max 7 colpi, cooldown e cluster reuse invariati\n"
             "✅ monitor rank ambo vincente 1/2/3\n"
@@ -2675,13 +2700,14 @@ async def startup(engine, app):
             "✅ atteso K2/K3 corretto solo sulle sessioni chiuse\n"
             "✅ sezione ⭐ SPIE ELITE STORICHE — LIVE\n"
             "✅ sezione 🎲 GIOCABILITÀ DECINA/MULTIPLA — H3\n"
-            f"✅ play operativo = v12 SOFT: ambata + max {PLAYABLE_MAX_AMBI} ambi CORE; v48 accelera; CORE_FULL opzionale = 3 ambi + terno; max {PLAYABLE_MAX_COLPI} colpi\n"
+            f"✅ play operativo = v13 SMART CORE: ambata + max {PLAYABLE_MAX_AMBI} ambi CORE; v48 accelera solo se conferma 88/89/90; CORE_FULL opzionale = 3 ambi + terno; max {PLAYABLE_MAX_COLPI} colpi\n"
             "✅ v48 opzionale: conferma forte, ma non blocca il play\n"
             "✅ ambi ammessi: CORE 88-90/89-90/88-89 | SAT 87-88/87-89/87-90/86-90\n"
-            f"✅ soglie CORE SOFT: DECINA>={PLAYABLE_MIN_DECINA_EXTRA:+.1f} pp | MULTIPLA>={PLAYABLE_MIN_MULTIPLA_EXTRA:+.1f} pp | supporto multi>={PLAYABLE_CORE_MULTI_MIN_SUPPORT} | singolo>={PLAYABLE_CORE_SINGLE_MIN_SUPPORT} | segnali>={PLAYABLE_MIN_SIGNALS}\n"
-            f"✅ acceleratore v48: DECINA>={PLAYABLE_V48_MIN_DECINA_EXTRA:+.1f} pp | MULTIPLA>={PLAYABLE_V48_MIN_MULTIPLA_EXTRA:+.1f} pp | supporto>={PLAYABLE_V48_MIN_PAIR_SUPPORT} | segnali>={PLAYABLE_V48_MIN_SIGNALS}\n"
+            f"✅ soglie CORE SMART: DECINA>={PLAYABLE_MIN_DECINA_EXTRA:+.1f} pp | MULTIPLA>={PLAYABLE_MIN_MULTIPLA_EXTRA:+.1f} pp | supporto multi>={PLAYABLE_CORE_MULTI_MIN_SUPPORT} | singolo>={PLAYABLE_CORE_SINGLE_MIN_SUPPORT} | segnali>={PLAYABLE_MIN_SIGNALS}\n"
+            f"✅ acceleratore v48 reale: cluster v48 con almeno {PLAYABLE_V48_CORE_OVERLAP_MIN} numeri tra 88/89/90 | DECINA>={PLAYABLE_V48_MIN_DECINA_EXTRA:+.1f} | MULTIPLA>={PLAYABLE_V48_MIN_MULTIPLA_EXTRA:+.1f} | supporto>={PLAYABLE_V48_MIN_PAIR_SUPPORT} | segnali>={PLAYABLE_V48_MIN_SIGNALS}\n"
             f"✅ soglie SAT: DECINA>={PLAYABLE_SAT_MIN_DECINA_EXTRA:+.1f} pp | MULTIPLA>={PLAYABLE_SAT_MIN_MULTIPLA_EXTRA:+.1f} pp | supporto>={PLAYABLE_SATELLITE_MIN_PAIR_SUPPORT} | segnali>={PLAYABLE_SAT_MIN_SIGNALS}\n"
             f"✅ CORE_FULL TERNO opzionale: DECINA>={PLAYABLE_CORE_FULL_MIN_DECINA_EXTRA:+.1f} pp | MULTIPLA>={PLAYABLE_CORE_FULL_MIN_MULTIPLA_EXTRA:+.1f} pp | 3 ambi CORE sup>={PLAYABLE_CORE_FULL_MIN_PAIR_SUPPORT} e almeno {PLAYABLE_CORE_FULL_MIN_STRONG_PAIRS} sup>={PLAYABLE_CORE_FULL_STRONG_PAIR_SUPPORT} | segnali>={PLAYABLE_CORE_FULL_MIN_SIGNALS} | terno={fmt_nums(PLAYABLE_CORE_FULL_NUMS)}\n"
+            f"✅ anti-raffica CORE: dopo {PLAYABLE_CORE_ZONE_LOCK_AFTER_STOPS} STOP consecutivi, pausa {PLAYABLE_CORE_ZONE_LOCK_DRAWS} estrazioni sulla zona 88/89/90\n"
             "✅ notifiche PLAY = apertura, ambata presa, ambo preso, stop/non preso\n"
             f"✅ notifiche v48 singole = {'ON' if V48_NOTIFY_EVENTS else 'OFF'}\n"
             f"✅ orario bot = {BOT_TZ_NAME}\n"
@@ -2711,10 +2737,12 @@ async def live_loop(engine, app):
                 continue
 
             es = parse_site()
-            for e, nums in es:
-                if engine.already_processed(e, nums):
-                    continue
-                await engine.on_new(app, e, nums)
+            new_items = [(e, nums) for e, nums in es if not engine.already_processed(e, nums)]
+            for idx, (e, nums) in enumerate(new_items):
+                # Protezione catch-up: se GitHub/hosting recupera piu' estrazioni insieme,
+                # aggiorna statistiche e v48 su tutte, ma consenti l'apertura del PLAY operativo
+                # solo sull'ultima estrazione realmente nuova del polling.
+                await engine.on_new(app, e, nums, allow_open_playable=(idx == len(new_items) - 1))
             await engine.maybe_send_scheduled_report(app)
         except Exception as ex:
             print(f"Errore loop: {ex}")
