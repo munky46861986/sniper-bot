@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v15 PLAY AMBATA/AMBI — V9 CORE + LOCK + SPALLE 1-19
+# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v16 PLAY AMBATA/AMBI — V9 CORE + LOCK + LAB METODI
 #
 # VERSIONE PULITA
 #   ✅ v48 base invariata: ambata + 3 ambi classici, max 7 colpi
@@ -11,7 +11,7 @@
 #   ✅ K1/K2/K3 + economia terno 45x
 #   ✅ report Telegram cliccabili: /report /play /v48 /spie /spie_elite /spie_play /spie_top /spie_network /menu
 #   ✅ sezione SPIE ELITE STORICHE — LIVE per confrontare storico vs live
-#   ✅ v15: base v9, solo CORE multi; lock; modulo SPALLE 1-19 in report/lab
+#   ✅ v16: base v9 invariata + LAB: fissi/T1, +5, conteggio +4, somma 90/91
 #
 # NOTA
 #   Questo bot non predice le estrazioni: registra e confronta segnali statistici.
@@ -55,9 +55,9 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v15_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v15_events.csv")
-LOCK_FILE = "/tmp/sniper_v48_playable_ambata_ambi_v15.lock"
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v16_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v16_events.csv")
+LOCK_FILE = "/tmp/sniper_v48_playable_ambata_ambi_v16.lock"
 
 # Orario bot/report: GitHub gira spesso in UTC, qui forziamo Italia.
 BOT_TZ_NAME = os.getenv("BOT_TZ", "Europe/Rome")
@@ -192,6 +192,34 @@ CORE_SPALLE_HISTORIC_PAIR = {
 }
 CORE_SPALLE_HISTORIC_TRIANGLE = [(17, 26, 28.57), (7, 23, 25.27), (9, 21, 23.08), (18, 21, 23.08), (19, 21, 23.08)]
 
+# ============================================================
+# v16 — LAB METODI NUMERISTITANUS/COTTONE/STRUTTURALI
+# ============================================================
+# Tutto questo NON apre giocate automatiche: viene mostrato in report/comandi.
+LAB_METHODS_ENABLED = os.getenv("LAB_METHODS_ENABLED", "1") != "0"
+LAB_COTTONE_VISIBLE_ROWS = (90,) + tuple(range(1, 20))  # righe visibili nelle tabelle trovate: 90 + 1..19
+LAB_COTTONE_TOP_FISSI_ROWS = (19, 7, 8, 11, 9)
+LAB_COTTONE_T1_WATCH_ROWS = (3, 8, 10, 11, 19)
+LAB_PLUS5_TOP_PAIRS = {
+    (15, 20): {"h3": 27.57, "roi": 44.05, "tag": "TOP"},
+    (10, 15): {"h3": 26.95, "roi": 40.47, "tag": "TOP"},
+    (5, 10): {"h3": 26.72, "roi": 38.87, "tag": "TOP"},
+    (11, 16): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
+    (7, 12): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
+    (9, 14): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
+    (18, 23): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
+    (6, 11): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
+    (12, 17): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
+    (8, 13): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
+    (16, 21): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
+}
+LAB_CONTEGGIO_PLUS4_TOP = {
+    2: {"pair": (2, 6), "h1": 30.81, "h3": 61.97, "extra": 2.84, "tag": "TOP"},
+    3: {"pair": (3, 7), "h1": 26.86, "h3": 59.11, "extra": 1.10, "tag": "BUONA"},
+    4: {"pair": (4, 8), "h1": 25.99, "h3": 57.22, "extra": 0.43, "tag": "WATCH"},
+    9: {"pair": (9, 13), "h1": 23.73, "h3": 55.48, "extra": 0.84, "tag": "WATCH"},
+}
+
 PLAYABLE_SAT_AUTO_ENABLED = os.getenv("PLAYABLE_SAT_AUTO_ENABLED", "0") == "1"
 PLAYABLE_SAT_MAX_AMBI = int(os.getenv("PLAYABLE_SAT_MAX_AMBI", "1"))
 PLAYABLE_MIN_SIGNALS = int(os.getenv("PLAYABLE_MIN_SIGNALS", "12"))
@@ -266,8 +294,8 @@ MENU_KEYBOARD = ReplyKeyboardMarkup(
         ["/report", "/play"],
         ["/v48", "/spie"],
         ["/spie_elite", "/spie_play"],
-        ["/spalle_core", "/spie_top"],
-        ["/spie_network"],
+        ["/spalle_core", "/lab_metodi"],
+        ["/spie_top", "/spie_network"],
         ["/menu"],
     ],
     resize_keyboard=True,
@@ -282,8 +310,8 @@ INLINE_MENU = InlineKeyboardMarkup([
     [InlineKeyboardButton("📊 Report", callback_data="report"), InlineKeyboardButton("🎲 Play", callback_data="play")],
     [InlineKeyboardButton("🎯 v48", callback_data="v48"), InlineKeyboardButton("🕵️ Spie", callback_data="spie")],
     [InlineKeyboardButton("⭐ Elite", callback_data="spie_elite"), InlineKeyboardButton("🎲 Giocabilità", callback_data="spie_play")],
-    [InlineKeyboardButton("🧩 Spalle 1-19", callback_data="spalle_core"), InlineKeyboardButton("🏆 Top spie", callback_data="spie_top")],
-    [InlineKeyboardButton("🧬 Network", callback_data="spie_network")],
+    [InlineKeyboardButton("🧩 Spalle 1-19", callback_data="spalle_core"), InlineKeyboardButton("🧪 Lab metodi", callback_data="lab_metodi")],
+    [InlineKeyboardButton("🏆 Top spie", callback_data="spie_top"), InlineKeyboardButton("🧬 Network", callback_data="spie_network")],
     [InlineKeyboardButton("🧭 Menu", callback_data="menu")],
 ])
 
@@ -453,6 +481,21 @@ def maybe_git_commit_state(reason="state", force=False):
 def fmt_nums(nums):
     return "-".join(map(str, nums or []))
 
+def num90(n):
+    """Normalizza un numero nel range 1..90."""
+    return ((int(n) - 1) % 90) + 1
+
+
+def cottone_fissi_for_row(r):
+    """Fissi in uscita Cottone: r, r+12, ..., r+84 fuori 90."""
+    return [num90(int(r) + 12 * k) for k in range(8)]
+
+
+def cottone_t1_for_row(r):
+    """T1 visibile nella tabella: r+22, r+52, r+32 fuori 90."""
+    r = int(r)
+    return [num90(r + 22), num90(r + 52), num90(r + 32)]
+
 
 def fmt_ambi(ambi):
     out = []
@@ -594,7 +637,7 @@ def classify_network(spy, followers):
 
 class SniperV48BaseFullSpy:
     def __init__(self):
-        self.version = "v48_playable_ambata_ambi_15_core_spalle_1_19"
+        self.version = "v48_playable_ambata_ambi_16_lab_cottone_plus5_somma"
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
@@ -1652,6 +1695,226 @@ class SniperV48BaseFullSpy:
         ]
         return "\n".join(lines)
 
+    # --------------------------------------------------------
+    # v16 LAB: Cottone/fissi/T1, distanza +5, conteggio +4, somma 90/91
+    # --------------------------------------------------------
+    def _latest_draw(self):
+        return list(map(int, self.last_draws[-1])) if self.last_draws else []
+
+    def _previous_draw(self):
+        return list(map(int, self.last_draws[-2])) if len(self.last_draws) >= 2 else []
+
+    def cottone_fissi_t1_snapshot(self):
+        """Metodo Cottone su estratto ripetuto: fissi in uscita + T1.
+
+        Trigger live: un numero della riga 90/1..19 e' presente sia nell'ultima
+        estrazione sia nella precedente. Il modulo mostra gli 8 fissi e la T1.
+        """
+        cur = self._latest_draw()
+        prev = self._previous_draw()
+        cur_set, prev_set = set(cur), set(prev)
+        repeated = [r for r in LAB_COTTONE_VISIBLE_ROWS if r in cur_set and r in prev_set]
+        rows = []
+        for r in repeated:
+            fissi = cottone_fissi_for_row(r)
+            t1 = cottone_t1_for_row(r)
+            rows.append({
+                "row": r,
+                "fissi": fissi,
+                "t1": t1,
+                "fissi_in_ultima": sorted(cur_set & set(fissi)),
+                "t1_in_ultima": sorted(cur_set & set(t1)),
+                "is_top_fissi": r in LAB_COTTONE_TOP_FISSI_ROWS,
+                "is_t1_watch": r in LAB_COTTONE_T1_WATCH_ROWS,
+            })
+        return {"latest": cur, "previous": prev, "rows": rows}
+
+    def plus5_distance_snapshot(self):
+        """Distanza +5 nella stessa estrazione.
+
+        Non fa conteggio: guarda le coppie N/N+5 presenti nell'ultimo concorso.
+        Evidenzia le coppie basse che nel backtest hanno mostrato replay H3 migliore.
+        """
+        cur = self._latest_draw()
+        s = set(cur)
+        pairs = []
+        for a in range(1, 86):
+            b = a + 5
+            if a in s and b in s:
+                meta = LAB_PLUS5_TOP_PAIRS.get((a, b))
+                pairs.append({
+                    "pair": (a, b),
+                    "decina": number_decina(a),
+                    "watch": bool(meta),
+                    "tag": meta.get("tag") if meta else "",
+                    "h3": meta.get("h3", 0.0) if meta else 0.0,
+                    "roi": meta.get("roi", 0.0) if meta else 0.0,
+                })
+        pairs.sort(key=lambda x: (not x["watch"], -x["roi"], x["pair"][0]))
+        return {"pairs": pairs}
+
+    def conteggio_plus4_snapshot(self):
+        """Metodo conteggio +4 corretto.
+
+        Se N e N+4 sono presenti, conta N+4 posizioni da N compreso
+        dentro i 20 numeri ordinati. Il numero raggiunto e' l'ambata LAB.
+        """
+        cur = sorted(self._latest_draw())
+        s = set(cur)
+        out = []
+        for n in range(1, 87):
+            conf = n + 4
+            if n not in s or conf not in s:
+                continue
+            tail = [x for x in cur if x >= n]
+            count_to = conf
+            if len(tail) < count_to:
+                continue
+            target = tail[count_to - 1]
+            triad = [num90(target - 1), target, num90(target + 1)]
+            meta = LAB_CONTEGGIO_PLUS4_TOP.get(n)
+            out.append({
+                "base": n,
+                "confirm": conf,
+                "count_to": count_to,
+                "target": target,
+                "triad": triad,
+                "watch": bool(meta),
+                "tag": meta.get("tag") if meta else "",
+                "h1": meta.get("h1", 0.0) if meta else 0.0,
+                "h3": meta.get("h3", 0.0) if meta else 0.0,
+                "extra": meta.get("extra", 0.0) if meta else 0.0,
+            })
+        out.sort(key=lambda x: (not x["watch"], -x["extra"], x["base"]))
+        return {"signals": out}
+
+    def somma_9091_snapshot(self):
+        """Metodo somma 90/91.
+
+        Somma i 20 numeri, riduce fuori 90, poi crea terzina:
+        A, 90-A, 91-A normalizzati in 1..90.
+        """
+        cur = self._latest_draw()
+        if not cur:
+            return {"sum": 0, "a": 0, "nums": []}
+        total = sum(map(int, cur))
+        a = num90(total)
+        c90 = num90(90 - a)
+        c91 = num90(91 - a)
+        nums = []
+        for x in (a, c90, c91):
+            if x not in nums:
+                nums.append(x)
+        return {"sum": total, "a": a, "c90": c90, "c91": c91, "nums": nums}
+
+    def lab_methods_text(self):
+        if not LAB_METHODS_ENABLED:
+            return "🧪 LAB METODI — OFF"
+
+        cur = self._latest_draw()
+        if not cur:
+            return "🧪 LAB METODI — nessuna estrazione caricata"
+
+        # Cottone fissi/T1
+        cott = self.cottone_fissi_t1_snapshot()
+        cott_lines = []
+        if cott["rows"]:
+            for row in cott["rows"][:6]:
+                mark = " ⭐" if row["is_top_fissi"] else ""
+                tmark = " T1" if row["is_t1_watch"] else ""
+                cott_lines.append(
+                    f"• {row['row']}{mark}{tmark}: fissi {fmt_nums(row['fissi'])} | T1 {fmt_nums(row['t1'])} | gia' in ultima {fmt_nums(row['fissi_in_ultima']) or '-'}"
+                )
+            if len(cott["rows"]) > 6:
+                cott_lines.append(f"• altri ripetuti Cottone = {len(cott['rows']) - 6}")
+        else:
+            cott_lines.append("• nessun estratto ripetuto 90/1-19 tra ultime 2 estrazioni")
+
+        # Distanza +5
+        p5 = self.plus5_distance_snapshot()["pairs"]
+        p5_watch = [p for p in p5 if p["watch"]]
+        if p5_watch:
+            plus5_txt = ", ".join(
+                f"{a}-{b}({p['tag']}{' ROI '+format(p['roi'], '+.1f')+'%' if p['roi'] else ''})"
+                for p in p5_watch[:8]
+                for a, b in [p["pair"]]
+            )
+        elif p5:
+            plus5_txt = ", ".join(f"{a}-{b}" for p in p5[:10] for a, b in [p["pair"]])
+        else:
+            plus5_txt = "nessuna coppia +5 nell'ultima estrazione"
+
+        # Conteggio +4
+        c4 = self.conteggio_plus4_snapshot()["signals"]
+        c4_watch = [x for x in c4 if x["watch"]]
+        if c4_watch:
+            c4_txt = "; ".join(
+                f"{x['base']}→{x['confirm']} = ambata {x['target']} | terzina {fmt_nums(x['triad'])} | {x['tag']} H3 {x['h3']:.2f}%"
+                for x in c4_watch[:5]
+            )
+        elif c4:
+            c4_txt = "; ".join(
+                f"{x['base']}→{x['confirm']} = {x['target']} ({fmt_nums(x['triad'])})"
+                for x in c4[:5]
+            )
+        else:
+            c4_txt = "nessuna coppia N/N+4 valida nell'ultima estrazione"
+
+        # Somma 90/91
+        sm = self.somma_9091_snapshot()
+
+        # Convergenze tra moduli LAB
+        conv = Counter()
+        conv_src = defaultdict(list)
+        for row in cott["rows"]:
+            for n in row["fissi"]:
+                conv[n] += 1
+                conv_src[n].append(f"fissi {row['row']}")
+            for n in row["t1"]:
+                conv[n] += 1
+                conv_src[n].append(f"T1 {row['row']}")
+        for p in p5_watch[:8]:
+            for n in p["pair"]:
+                conv[n] += 1
+                conv_src[n].append("+5")
+        for x in c4_watch[:5]:
+            for n in [x["target"], *x["triad"]]:
+                conv[n] += 1
+                conv_src[n].append("+4")
+        for n in sm.get("nums", []):
+            conv[n] += 1
+            conv_src[n].append("somma")
+        strong = [(n, c) for n, c in conv.items() if c >= 2]
+        strong.sort(key=lambda kv: (-kv[1], kv[0]))
+        if strong:
+            conv_txt = "; ".join(f"{n}({c}: {', '.join(conv_src[n][:3])})" for n, c in strong[:8])
+        else:
+            conv_txt = "nessuna convergenza 2+ metodi"
+
+        return "\n".join([
+            "🧪 LAB METODI — COTTONE / +5 / +4 / SOMMA",
+            "• uso = laboratorio/report; NON modifica il play automatico v9 CORE",
+            "• moduli attivi: FISSI IN USCITA, TERNE T1, distanza +5, conteggio +4, somma 90/91",
+            "",
+            "📌 COTTONE — FISSI IN USCITA + T1",
+            *cott_lines,
+            "",
+            "📏 DISTANZA +5",
+            f"• coppie +5 live = {plus5_txt}",
+            "• top storico +5: 15-20, 10-15, 5-10; più forte nelle prime due decine",
+            "",
+            "📐 CONTEGGIO +4",
+            f"• segnali live = {c4_txt}",
+            "• top storico +4: 2→6, 3→7, 4→8, 9→13",
+            "",
+            "🧮 SOMMA 90/91",
+            f"• somma 20 numeri = {sm['sum']} | fuori 90 = {sm['a']} | terzina = {fmt_nums(sm['nums'])}",
+            "",
+            "🔗 CONVERGENZE LAB",
+            f"• numeri usciti da 2+ metodi = {conv_txt}",
+            "• lettura = la convergenza serve solo come filtro/attenzione, non come previsione certa",
+        ])
+
     def _v48_accel_active(self):
         """v14: v48 di default NON accelera il play.
         Se PLAYABLE_V48_ACCEL_ENABLED=1, accelera solo quando il cluster v48 conferma davvero
@@ -2097,7 +2360,7 @@ class SniperV48BaseFullSpy:
             "🎲 GIOCABILITÀ DECINA/MULTIPLA — H3",
             "• cosa significa: non terno secco, ma ricerca di almeno 2/3 numeri entro 3 colpi",
             "• filtro usato: rete DECINA + livello MULTIPLA + CORE 88/89/90",
-            "• giocata auto = v15 V9 CORE + LOCK + SPALLE 1-19: ambata + max 2 ambi CORE; niente single; terno solo dopo conferma reale",
+            "• giocata auto = v16 V9 CORE + LOCK + LAB METODI: ambata + max 2 ambi CORE; niente single; terno solo dopo conferma reale",
             "• nota: laboratorio statistico, non previsione certa",
         ]
 
@@ -2358,6 +2621,7 @@ class SniperV48BaseFullSpy:
             self.focus_h3_text(),
             self.decina_multipla_playability_text(),
             self.core_spalle_1_19_text(),
+            self.lab_methods_text(),
             self.spy_elite_text(),
             self.spy_summary_text(),
             self.spy_top_text(limit=10),
@@ -2707,6 +2971,11 @@ async def cmd_spalle_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, engine.core_spalle_1_19_text())
 
 
+async def cmd_lab_metodi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.lab_methods_text())
+
+
 async def cmd_v48(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine = context.application.bot_data["engine"]
     await reply(update, engine.v48_stats_text())
@@ -2758,6 +3027,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = engine.decina_multipla_playability_text()
     elif data == "spalle_core":
         text = engine.core_spalle_1_19_text()
+    elif data == "lab_metodi":
+        text = engine.lab_methods_text()
     elif data == "spie_top":
         text = engine.spy_top_text()
     elif data == "spie_network":
@@ -2823,6 +3094,7 @@ async def setup_commands(app):
         BotCommand("spie_elite", "Spie elite storiche live"),
         BotCommand("spie_play", "Giocabilità DECINA/MULTIPLA"),
         BotCommand("spalle_core", "Spalle 1-19 CORE"),
+        BotCommand("lab_metodi", "Fissi/T1 +5 +4 somma"),
         BotCommand("spie_top", "Migliori spie live"),
         BotCommand("spie_network", "Reti numeriche spia"),
         BotCommand("menu", "Mostra pulsanti"),
@@ -2845,7 +3117,7 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v15 PLAY AMBATA/AMBI — V9 CORE + LOCK + SPALLE 1-19 AVVIATO\n"
+            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v16 PLAY AMBATA/AMBI — V9 CORE + LOCK + LAB METODI AVVIATO\n"
             "✅ v48 base invariata: ambata + 3 ambi classici\n"
             "✅ max 7 colpi, cooldown e cluster reuse invariati\n"
             "✅ monitor rank ambo vincente 1/2/3\n"
@@ -2860,7 +3132,7 @@ async def startup(engine, app):
             "✅ sezione ⭐ SPIE ELITE STORICHE — LIVE\n"
             "✅ sezione 🎲 GIOCABILITÀ DECINA/MULTIPLA — H3\n"
             "✅ sezione 🧩 SPALLE 1-19 CORE — LAB\n"
-            f"✅ play operativo = v15 V9 CORE + LOCK + SPALLE 1-19: ambata + max {PLAYABLE_MAX_AMBI} ambi CORE; niente single; v48 solo bonus; max {PLAYABLE_MAX_COLPI} colpi\n"
+            f"✅ play operativo = v16 V9 CORE + LOCK + LAB METODI: ambata + max {PLAYABLE_MAX_AMBI} ambi CORE; niente single; v48 solo bonus; max {PLAYABLE_MAX_COLPI} colpi\n"
             "✅ v48 opzionale: conferma forte, ma non blocca il play\n"
             "✅ ambi ammessi: CORE 88-90/89-90/88-89 | SAT 87-88/87-89/87-90/86-90\n"
             f"✅ soglie CORE v9: DECINA>={PLAYABLE_MIN_DECINA_EXTRA:+.1f} pp | MULTIPLA>={PLAYABLE_MIN_MULTIPLA_EXTRA:+.1f} pp | almeno 2 ambi CORE supporto>={PLAYABLE_CORE_MULTI_MIN_SUPPORT} | segnali>={PLAYABLE_MIN_SIGNALS}\n"
@@ -2932,6 +3204,7 @@ async def main():
     app.add_handler(CommandHandler("spie_elite", cmd_spie_elite))
     app.add_handler(CommandHandler("spie_play", cmd_spie_play))
     app.add_handler(CommandHandler("spalle_core", cmd_spalle_core))
+    app.add_handler(CommandHandler("lab_metodi", cmd_lab_metodi))
     app.add_handler(CommandHandler("spie_top", cmd_spie_top))
     app.add_handler(CommandHandler("spie_network", cmd_spie_network))
     app.add_handler(CallbackQueryHandler(on_button))
