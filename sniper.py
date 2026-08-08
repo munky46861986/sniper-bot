@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v18 PLAY AMBATA/AMBI — CORE STRICT + COTTONE H10 LAB
+# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v19 PLAY AMBATA/AMBI — CORE STRICT + COTTONE PER RIGA H10 LAB
 #
 # VERSIONE PULITA
 #   ✅ v48 base invariata: ambata + 3 ambi classici, max 7 colpi
@@ -55,7 +55,7 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v18_state.json")
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v19_state.json")
 CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v18_events.csv")
 LOCK_FILE = "/tmp/sniper_v48_playable_ambata_ambi_v18.lock"
 
@@ -204,7 +204,7 @@ LAB_METHODS_ENABLED = os.getenv("LAB_METHODS_ENABLED", "1") != "0"
 LAB_COTTONE_VISIBLE_ROWS = (90,) + tuple(range(1, 20))  # righe visibili nelle tabelle trovate: 90 + 1..19
 LAB_COTTONE_TOP_FISSI_ROWS = (19, 7, 8, 11, 9)
 LAB_COTTONE_T1_WATCH_ROWS = (3, 8, 10, 11, 19)
-LAB_COTTONE_TRACK_HORIZONS = tuple(range(1, 11))  # v18: misura H1/H2/.../H10
+LAB_COTTONE_TRACK_HORIZONS = tuple(range(1, 11))  # v19: misura H1/H2/.../H10 + dettaglio per riga
 LAB_COTTONE_TRACK_MAX_COLPI = max(LAB_COTTONE_TRACK_HORIZONS)
 LAB_COTTONE_MAX_OPEN_SESSIONS = int(os.getenv("LAB_COTTONE_MAX_OPEN_SESSIONS", "500"))
 LAB_PLUS5_TOP_PAIRS = {
@@ -704,7 +704,7 @@ class SniperV48BaseFullSpy:
         self.playable_core_stop_streak = 0
         self.playable_core_zone_lock = 0
 
-        # v18 — tracking live Cottone FISSI/T1 H1-H10
+        # v19 — tracking live Cottone FISSI/T1 H1-H10 + statistiche per riga
         self.cottone_uid = 0
         self.cottone_sessions = []
         self.cottone_horizon_stats = {str(h): self.new_cottone_stats() for h in LAB_COTTONE_TRACK_HORIZONS}
@@ -763,6 +763,12 @@ class SniperV48BaseFullSpy:
             "t1_target_hits": {},
             "row_sessions": {},
             "row_closed": {},
+            # v19: statistiche separate per ogni estratto ripetuto/riga Cottone.
+            # Esempio riga 90: quanti degli 8 fissi 90-12-...-84 escono entro H10.
+            "row_fissi_k_counts": {},
+            "row_t1_k_counts": {},
+            "row_fissi_target_hits": {},
+            "row_t1_target_hits": {},
         }
 
     def get_nested_stat(self, container, key, h):
@@ -927,6 +933,26 @@ class SniperV48BaseFullSpy:
             st["t1_target_hits"] = {str(k): int(v) for k, v in (old.get("t1_target_hits", {}) or {}).items()}
             st["row_sessions"] = {str(k): int(v) for k, v in (old.get("row_sessions", {}) or {}).items()}
             st["row_closed"] = {str(k): int(v) for k, v in (old.get("row_closed", {}) or {}).items()}
+            st["row_fissi_k_counts"] = {
+                str(r): {str(i): int((d or {}).get(str(i), 0)) for i in range(0, 9)}
+                for r, d in (old.get("row_fissi_k_counts", {}) or {}).items()
+                if isinstance(d, dict)
+            }
+            st["row_t1_k_counts"] = {
+                str(r): {str(i): int((d or {}).get(str(i), 0)) for i in range(0, 4)}
+                for r, d in (old.get("row_t1_k_counts", {}) or {}).items()
+                if isinstance(d, dict)
+            }
+            st["row_fissi_target_hits"] = {
+                str(r): {str(n): int(c) for n, c in (d or {}).items()}
+                for r, d in (old.get("row_fissi_target_hits", {}) or {}).items()
+                if isinstance(d, dict)
+            }
+            st["row_t1_target_hits"] = {
+                str(r): {str(n): int(c) for n, c in (d or {}).items()}
+                for r, d in (old.get("row_t1_target_hits", {}) or {}).items()
+                if isinstance(d, dict)
+            }
         return out
 
     def reset_for_new_day(self, new_day):
@@ -1870,12 +1896,27 @@ class SniperV48BaseFullSpy:
         st.setdefault("fissi_k_counts", {str(i): 0 for i in range(0, 9)})[str(kf)] = int(st.setdefault("fissi_k_counts", {}).get(str(kf), 0)) + 1
         st.setdefault("t1_k_counts", {str(i): 0 for i in range(0, 4)})[str(kt)] = int(st.setdefault("t1_k_counts", {}).get(str(kt), 0)) + 1
 
+        # v19: contatori separati per ogni riga/estratto ripetuto.
+        # Cosi' il report puo' dire: riga 90, H10, media 7.20/8, top fissi, ecc.
+        row_fkc_all = st.setdefault("row_fissi_k_counts", {})
+        row_tkc_all = st.setdefault("row_t1_k_counts", {})
+        row_fkc = row_fkc_all.setdefault(row_key, {str(i): 0 for i in range(0, 9)})
+        row_tkc = row_tkc_all.setdefault(row_key, {str(i): 0 for i in range(0, 4)})
+        row_fkc[str(kf)] = int(row_fkc.get(str(kf), 0)) + 1
+        row_tkc[str(kt)] = int(row_tkc.get(str(kt), 0)) + 1
+
         target_f = st.setdefault("fissi_target_hits", {})
+        row_target_f = st.setdefault("row_fissi_target_hits", {}).setdefault(row_key, {})
         for n in fissi_seen:
-            target_f[str(n)] = int(target_f.get(str(n), 0)) + 1
+            sk = str(n)
+            target_f[sk] = int(target_f.get(sk, 0)) + 1
+            row_target_f[sk] = int(row_target_f.get(sk, 0)) + 1
         target_t = st.setdefault("t1_target_hits", {})
+        row_target_t = st.setdefault("row_t1_target_hits", {}).setdefault(row_key, {})
         for n in t1_seen:
-            target_t[str(n)] = int(target_t.get(str(n), 0)) + 1
+            sk = str(n)
+            target_t[sk] = int(target_t.get(sk, 0)) + 1
+            row_target_t[sk] = int(row_target_t.get(sk, 0)) + 1
 
     def process_cottone_sessions(self, e, nums):
         """Aggiorna le sessioni Cottone aperte e chiude gli orizzonti H1..H10.
@@ -1947,6 +1988,86 @@ class SniperV48BaseFullSpy:
         rows = sorted(((int(k), int(v)) for k, v in data.items()), key=lambda x: (-x[1], x[0]))[:limit]
         return ", ".join(f"{n}({c})" for n, c in rows) or "n/d"
 
+    def _top_cottone_row_targets(self, row, h, key, limit=6):
+        st = self.cottone_horizon_stats.get(str(h), self.new_cottone_stats())
+        all_rows = st.get(key, {}) or {}
+        data = all_rows.get(str(row), {}) or {}
+        rows = sorted(((int(k), int(v)) for k, v in data.items()), key=lambda x: (-x[1], x[0]))[:limit]
+        return ", ".join(f"{n}({c})" for n, c in rows) or "n/d"
+
+    def _cottone_row_metrics(self, row, h):
+        st = self.cottone_horizon_stats.get(str(h), self.new_cottone_stats())
+        rk = str(row)
+        closed = int((st.get("row_closed", {}) or {}).get(rk, 0))
+        if closed <= 0:
+            return {"closed": 0}
+        fk = {str(i): int(((st.get("row_fissi_k_counts", {}) or {}).get(rk, {}) or {}).get(str(i), 0)) for i in range(0, 9)}
+        tk = {str(i): int(((st.get("row_t1_k_counts", {}) or {}).get(rk, {}) or {}).get(str(i), 0)) for i in range(0, 4)}
+        avg_f = sum(i * fk[str(i)] for i in range(0, 9)) / closed
+        avg_t = sum(i * tk[str(i)] for i in range(0, 4)) / closed
+        f_ge7 = sum(fk[str(i)] for i in range(7, 9))
+        f_eq8 = fk["8"]
+        t_ge2 = sum(tk[str(i)] for i in range(2, 4))
+        t_eq3 = tk["3"]
+        return {
+            "closed": closed,
+            "avg_f": avg_f,
+            "f_ge7": f_ge7,
+            "f_eq8": f_eq8,
+            "avg_t": avg_t,
+            "t_ge2": t_ge2,
+            "t_eq3": t_eq3,
+        }
+
+    def cottone_row_inline_h10(self, row):
+        m = self._cottone_row_metrics(row, 10)
+        if int(m.get("closed", 0)) <= 0:
+            return "H10 riga: n/d"
+        c = int(m["closed"])
+        return (
+            f"H10 riga: {c} casi | fissi {m['avg_f']:.2f}/8 "
+            f"| 7+/8 {pct(m['f_ge7'], c):.1f}% | 8/8 {pct(m['f_eq8'], c):.1f}% "
+            f"| T1 {m['avg_t']:.2f}/3 | 3/3 {pct(m['t_eq3'], c):.1f}%"
+        )
+
+    def cottone_by_row_h10_text(self):
+        """v19: riepilogo separato per ogni estratto ripetuto/riga Cottone.
+
+        Esempio riga 90: fissi 90-12-24-36-48-60-72-84.
+        Qui misuriamo entro H10 quanti degli 8 sono usciti, e quali escono di piu'.
+        """
+        h = 10
+        st = self.cottone_horizon_stats.get(str(h), self.new_cottone_stats())
+        row_closed = st.get("row_closed", {}) or {}
+        lines = [
+            "📋 COTTONE PER RIGA — H1-H10",
+            "• misura: per ogni estratto ripetuto, quanti degli 8 fissi e quanti della T1 escono; nel riepilogo mostro H3/H5/H10",
+        ]
+        any_row = False
+        for r in LAB_COTTONE_VISIBLE_ROWS:
+            m10 = self._cottone_row_metrics(r, 10)
+            c10 = int(m10.get("closed", 0))
+            if c10 <= 0:
+                continue
+            any_row = True
+            m3 = self._cottone_row_metrics(r, 3)
+            m5 = self._cottone_row_metrics(r, 5)
+            c3 = int(m3.get("closed", 0))
+            c5 = int(m5.get("closed", 0))
+            avg3 = m3.get("avg_f", 0.0) if c3 > 0 else 0.0
+            avg5 = m5.get("avg_f", 0.0) if c5 > 0 else 0.0
+            top_f = self._top_cottone_row_targets(r, 10, "row_fissi_target_hits", 5)
+            top_t = self._top_cottone_row_targets(r, 10, "row_t1_target_hits", 4)
+            lines.append(
+                f"• {r}: casi H10={c10} | fissi H3 {avg3:.2f}/8, H5 {avg5:.2f}/8, H10 {m10['avg_f']:.2f}/8 "
+                f"| 7+/8 H10 {pct(m10['f_ge7'], c10):.1f}% | 8/8 {pct(m10['f_eq8'], c10):.1f}% "
+                f"| T1 H10 {m10['avg_t']:.2f}/3 | 3/3 {pct(m10['t_eq3'], c10):.1f}%"
+            )
+            lines.append(f"  top fissi H10: {top_f} | top T1 H10: {top_t}")
+        if not any_row:
+            lines.append("• nessuna riga chiusa a H10")
+        return "\n".join(lines)
+
     def cottone_live_h10_text(self):
         if not LAB_METHODS_ENABLED:
             return "📊 COTTONE LIVE H1-H10 — OFF"
@@ -1994,6 +2115,8 @@ class SniperV48BaseFullSpy:
             "🔺 TERNA T1 — quanti dei 3 escono",
             *t_lines,
             f"• top numeri T1 usciti entro H10 = {top_t10}",
+            "",
+            self.cottone_by_row_h10_text(),
         ])
 
     def lab_methods_text(self):
@@ -2012,7 +2135,7 @@ class SniperV48BaseFullSpy:
                 mark = " ⭐" if row["is_top_fissi"] else ""
                 tmark = " T1" if row["is_t1_watch"] else ""
                 cott_lines.append(
-                    f"• {row['row']}{mark}{tmark}: fissi {fmt_nums(row['fissi'])} | T1 {fmt_nums(row['t1'])} | gia' in ultima {fmt_nums(row['fissi_in_ultima']) or '-'}"
+                    f"• {row['row']}{mark}{tmark}: fissi {fmt_nums(row['fissi'])} | T1 {fmt_nums(row['t1'])} | gia' in ultima {fmt_nums(row['fissi_in_ultima']) or '-'} | {self.cottone_row_inline_h10(row['row'])}"
                 )
             if len(cott["rows"]) > 6:
                 cott_lines.append(f"• altri ripetuti Cottone = {len(cott['rows']) - 6}")
@@ -2082,7 +2205,7 @@ class SniperV48BaseFullSpy:
 
         return "\n".join([
             "🧪 LAB METODI — COTTONE H1-H10 / +5 / +4 / SOMMA",
-            "• uso = laboratorio/report; NON modifica il play automatico v9 CORE",
+            "• uso = laboratorio/report; NON modifica il play automatico CORE",
             "• moduli attivi: FISSI/T1 Cottone H1-H10, distanza +5, conteggio +4, somma 90/91",
             "",
             "📌 COTTONE — FISSI IN USCITA + T1",
@@ -2241,7 +2364,7 @@ class SniperV48BaseFullSpy:
             if core_all:
                 best = int(core_all[0][1]) if len(core_all) >= 1 else 0
                 second = int(core_all[1][1]) if len(core_all) >= 2 else 0
-                return None, f"CORE sotto soglia v18 (migliore {best}/{req_core_first_support}, secondo {second}/{req_core_second_support})"
+                return None, f"CORE sotto soglia v19 (migliore {best}/{req_core_first_support}, secondo {second}/{req_core_second_support})"
             return None, "nessun ambo CORE/SATELLITE giocabile"
 
         selected_pairs = [pair for pair, _, _, _ in selected]
@@ -2559,7 +2682,7 @@ class SniperV48BaseFullSpy:
             "🎲 GIOCABILITÀ DECINA/MULTIPLA — H3",
             "• cosa significa: non terno secco, ma ricerca di almeno 2/3 numeri entro 3 colpi",
             "• filtro usato: rete DECINA + livello MULTIPLA + CORE 88/89/90",
-            "• giocata auto = v18 CORE STRICT + COTTONE H10 LAB: ambata + max 2 ambi CORE; niente single; terno solo dopo conferma reale",
+            "• giocata auto = v19 CORE STRICT + COTTONE PER RIGA H10 LAB: ambata + max 2 ambi CORE; niente single; terno solo dopo conferma reale",
             "• nota: laboratorio statistico, non previsione certa",
         ]
 
@@ -2570,7 +2693,7 @@ class SniperV48BaseFullSpy:
         top_nums_txt = ", ".join(f"{n}({c})" for n, c in top_nums[:PLAYABLE_MAX_NUMBERS]) or "n/d"
         if supported_pairs:
             ambi_line = ", ".join(f"{a}-{b}({c}|{g})" for (a, b), c, g in supported_pairs[:PLAYABLE_MAX_PAIRS])
-            verdict = "ambi CORE concentrati: giocabili solo sopra soglia v18"
+            verdict = "ambi CORE concentrati: giocabili solo sopra soglia v19"
         else:
             top_pairs = snap["top_pairs"]
             ambi_line = ", ".join(f"{a}-{b}({c}|{playable_pair_group((a, b))})" for (a, b), c in top_pairs[:PLAYABLE_MAX_PAIRS]) if top_pairs else "n/d"
@@ -2598,7 +2721,7 @@ class SniperV48BaseFullSpy:
                 f"• cluster v48 = {fmt_nums(self.active_snapshot.get('cluster_numbers'))}",
             ])
         else:
-            lines.extend(["", "📎 CONFERMA v48 ATTUALE", "• nessun play v48 attivo: v18 può partire solo con 2 ambi CORE veri"])
+            lines.extend(["", "📎 CONFERMA v48 ATTUALE", "• nessun play v48 attivo: v19 può partire solo con 2 ambi CORE veri"])
 
         candidate, reason = self.build_playable_candidate(0)
         lines.extend(["", "🎯 STATO PLAY AUTO"])
@@ -3319,7 +3442,7 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v18 PLAY AMBATA/AMBI — CORE STRICT + COTTONE H10 LAB AVVIATO\n"
+            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v19 PLAY AMBATA/AMBI — CORE STRICT + COTTONE PER RIGA H10 LAB AVVIATO\n"
             "✅ v48 base invariata: ambata + 3 ambi classici\n"
             "✅ max 7 colpi, cooldown e cluster reuse invariati\n"
             "✅ monitor rank ambo vincente 1/2/3\n"
@@ -3334,7 +3457,7 @@ async def startup(engine, app):
             "✅ sezione ⭐ SPIE ELITE STORICHE — LIVE\n"
             "✅ sezione 🎲 GIOCABILITÀ DECINA/MULTIPLA — H3\n"
             "✅ sezione 🧩 SPALLE 1-19 CORE — LAB\n"
-            f"✅ play operativo = v18 CORE STRICT + COTTONE H10 LAB: ambata + max {PLAYABLE_MAX_AMBI} ambi CORE; niente single; v48 solo bonus; max {PLAYABLE_MAX_COLPI} colpi\n"
+            f"✅ play operativo = v19 CORE STRICT + COTTONE PER RIGA H10 LAB: ambata + max {PLAYABLE_MAX_AMBI} ambi CORE; niente single; v48 solo bonus; max {PLAYABLE_MAX_COLPI} colpi\n"
             "✅ v48 opzionale: conferma forte, ma non blocca il play\n"
             "✅ ambi ammessi: CORE 88-90/89-90/88-89 | SAT 87-88/87-89/87-90/86-90\n"
             f"✅ soglie CORE STRICT: DECINA>={PLAYABLE_MIN_DECINA_EXTRA:+.1f} pp | MULTIPLA>={PLAYABLE_MIN_MULTIPLA_EXTRA:+.1f} pp | miglior ambo>={PLAYABLE_CORE_MULTI_FIRST_MIN_SUPPORT} | secondo ambo>={PLAYABLE_CORE_MULTI_SECOND_MIN_SUPPORT} | segnali>={PLAYABLE_MIN_SIGNALS}\n"
@@ -3343,6 +3466,7 @@ async def startup(engine, app):
             f"✅ CORE_FULL TERNO: solo dopo almeno 1 HIT AMBO CORE | DECINA>={PLAYABLE_CORE_FULL_MIN_DECINA_EXTRA:+.1f} pp | MULTIPLA>={PLAYABLE_CORE_FULL_MIN_MULTIPLA_EXTRA:+.1f} pp | 3 ambi CORE sup>={PLAYABLE_CORE_FULL_MIN_PAIR_SUPPORT} | segnali>={PLAYABLE_CORE_FULL_MIN_SIGNALS} | terno={fmt_nums(PLAYABLE_CORE_FULL_NUMS)}\n"
             f"✅ SPALLE 1-19 CORE: primarie {fmt_nums(PLAYABLE_CORE_SPALLE_PRIMARY)} | watch {fmt_nums(PLAYABLE_CORE_SPALLE_WATCH)} | solo report/lab\n"
             f"✅ COTTONE H1-H10: fissi 8 numeri + T1 tracciati per 1/2/3/4/5/6/7/8/9/10 colpi\n"
+            f"✅ COTTONE PER RIGA: per ogni estratto ripetuto calcola casi, media fissi/T1 H10 e top numeri usciti\n"
             f"✅ anti-raffica CORE: dopo {PLAYABLE_CORE_ZONE_LOCK_AFTER_STOPS} STOP consecutivi, pausa {PLAYABLE_CORE_ZONE_LOCK_DRAWS} estrazioni sulla zona 88/89/90\n"
             "✅ notifiche PLAY = apertura, ambata presa, ambo preso, stop/non preso\n"
             f"✅ notifiche v48 singole = {'ON' if V48_NOTIFY_EVENTS else 'OFF'}\n"
