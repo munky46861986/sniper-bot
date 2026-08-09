@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v19 PLAY AMBATA/AMBI — CORE STRICT + COTTONE PER RIGA H10 LAB
+# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v20 GIOCO COTTONE — SOLO FISSI + T1 WIN/LOSE
 #
 # VERSIONE PULITA
 #   ✅ v48 base invariata: ambata + 3 ambi classici, max 7 colpi
@@ -55,9 +55,9 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v19_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v18_events.csv")
-LOCK_FILE = "/tmp/sniper_v48_playable_ambata_ambi_v18.lock"
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v20_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v20_events.csv")
+LOCK_FILE = "/tmp/sniper_v48_playable_ambata_ambi_v20.lock"
 
 # Orario bot/report: GitHub gira spesso in UTC, qui forziamo Italia.
 BOT_TZ_NAME = os.getenv("BOT_TZ", "Europe/Rome")
@@ -154,7 +154,7 @@ PLAYABLE_MAX_NUMBERS = 7
 # Giocata automatica/pratica: ambata + max 2 ambi CORE, massimo 3 colpi.
 # v48 resta come struttura/conferma opzionale: quando coincide rafforza il play, ma non lo blocca.
 V48_NOTIFY_EVENTS = False
-PLAYABLE_AUTO_ENABLED = True
+PLAYABLE_AUTO_ENABLED = os.getenv("PLAYABLE_AUTO_ENABLED", "0") == "1"  # v20: default OFF, gioco automatico = solo Cottone FISSI/T1
 PLAYABLE_NOTIFY_OPEN = True
 PLAYABLE_NOTIFY_HIT = True
 PLAYABLE_NOTIFY_STOP = True
@@ -204,9 +204,27 @@ LAB_METHODS_ENABLED = os.getenv("LAB_METHODS_ENABLED", "1") != "0"
 LAB_COTTONE_VISIBLE_ROWS = (90,) + tuple(range(1, 20))  # righe visibili nelle tabelle trovate: 90 + 1..19
 LAB_COTTONE_TOP_FISSI_ROWS = (19, 7, 8, 11, 9)
 LAB_COTTONE_T1_WATCH_ROWS = (3, 8, 10, 11, 19)
-LAB_COTTONE_TRACK_HORIZONS = tuple(range(1, 11))  # v19: misura H1/H2/.../H10 + dettaglio per riga
+LAB_COTTONE_TRACK_HORIZONS = tuple(range(1, 11))  # v20: misura H1/H2/.../H10 + dettaglio per riga
 LAB_COTTONE_TRACK_MAX_COLPI = max(LAB_COTTONE_TRACK_HORIZONS)
 LAB_COTTONE_MAX_OPEN_SESSIONS = int(os.getenv("LAB_COTTONE_MAX_OPEN_SESSIONS", "500"))
+
+# ============================================================
+# v20 — GIOCO COTTONE SEMPLICE: SOLO FISSI + T1
+# ============================================================
+# Regole richieste:
+# - FISSI: su 8 numeri, se entro 10 colpi ne escono almeno 5 => WIN 40 euro; meno di 5 => LOSE.
+# - T1: su terzina T1, se entro 10 colpi escono almeno 2 numeri su 3 => WIN 2 euro; meno di 2 => LOSE.
+# Nota: gli importi sono premi/lordi teorici indicati dall'utente; il bot segnala WIN/LOSE, non consiglia puntate.
+COTTONE_GAME_ENABLED = os.getenv("COTTONE_GAME_ENABLED", "1") != "0"
+COTTONE_GAME_MAX_COLPI = int(os.getenv("COTTONE_GAME_MAX_COLPI", "10"))
+COTTONE_GAME_FISSI_MIN_HITS = int(os.getenv("COTTONE_GAME_FISSI_MIN_HITS", "5"))
+COTTONE_GAME_T1_MIN_HITS = int(os.getenv("COTTONE_GAME_T1_MIN_HITS", "2"))
+COTTONE_GAME_FISSI_PRIZE_EUR = float(os.getenv("COTTONE_GAME_FISSI_PRIZE_EUR", "40"))
+COTTONE_GAME_T1_PRIZE_EUR = float(os.getenv("COTTONE_GAME_T1_PRIZE_EUR", "2"))
+COTTONE_GAME_NOTIFY_OPEN = os.getenv("COTTONE_GAME_NOTIFY_OPEN", "1") != "0"
+COTTONE_GAME_NOTIFY_WIN = os.getenv("COTTONE_GAME_NOTIFY_WIN", "1") != "0"
+COTTONE_GAME_NOTIFY_LOSE = os.getenv("COTTONE_GAME_NOTIFY_LOSE", "1") != "0"
+COTTONE_GAME_MAX_OPEN_SESSIONS = int(os.getenv("COTTONE_GAME_MAX_OPEN_SESSIONS", "500"))
 LAB_PLUS5_TOP_PAIRS = {
     (15, 20): {"h3": 27.57, "roi": 44.05, "tag": "TOP"},
     (10, 15): {"h3": 26.95, "roi": 40.47, "tag": "TOP"},
@@ -298,7 +316,8 @@ AUTO_REPORT_ALLOW_ACTIVE_V48_AFTER_COLPO = 1
 # Menu Telegram cliccabile
 MENU_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
-        ["/report", "/play"],
+        ["/report", "/gioco_cottone"],
+        ["/play", "/lab_metodi"],
         ["/v48", "/spie"],
         ["/spie_elite", "/spie_play"],
         ["/spalle_core", "/lab_metodi"],
@@ -314,7 +333,8 @@ MENU_KEYBOARD = ReplyKeyboardMarkup(
 # Su alcuni canali/gruppi Telegram la tastiera fissa puo' non comparire;
 # questi bottoni sotto al messaggio /menu restano cliccabili.
 INLINE_MENU = InlineKeyboardMarkup([
-    [InlineKeyboardButton("📊 Report", callback_data="report"), InlineKeyboardButton("🎲 Play", callback_data="play")],
+    [InlineKeyboardButton("📊 Report", callback_data="report"), InlineKeyboardButton("🎮 Cottone", callback_data="gioco_cottone")],
+    [InlineKeyboardButton("🎲 CORE off", callback_data="play"), InlineKeyboardButton("🧪 Lab metodi", callback_data="lab_metodi")],
     [InlineKeyboardButton("🎯 v48", callback_data="v48"), InlineKeyboardButton("🕵️ Spie", callback_data="spie")],
     [InlineKeyboardButton("⭐ Elite", callback_data="spie_elite"), InlineKeyboardButton("🎲 Giocabilità", callback_data="spie_play")],
     [InlineKeyboardButton("🧩 Spalle 1-19", callback_data="spalle_core"), InlineKeyboardButton("🧪 Lab metodi", callback_data="lab_metodi")],
@@ -709,6 +729,17 @@ class SniperV48BaseFullSpy:
         self.cottone_sessions = []
         self.cottone_horizon_stats = {str(h): self.new_cottone_stats() for h in LAB_COTTONE_TRACK_HORIZONS}
 
+        # v20 — statistiche gioco Cottone FISSI/T1
+        self.cottone_game_total = 0
+        self.cottone_game_fissi_win = 0
+        self.cottone_game_fissi_lose = 0
+        self.cottone_game_t1_win = 0
+        self.cottone_game_t1_lose = 0
+        self.cottone_game_fissi_gross_eur = 0.0
+        self.cottone_game_t1_gross_eur = 0.0
+        self.cottone_game_fissi_win_colpi = {str(i): 0 for i in range(1, COTTONE_GAME_MAX_COLPI + 1)}
+        self.cottone_game_t1_win_colpi = {str(i): 0 for i in range(1, COTTONE_GAME_MAX_COLPI + 1)}
+
         self.load_state()
         ensure_csv()
 
@@ -763,7 +794,7 @@ class SniperV48BaseFullSpy:
             "t1_target_hits": {},
             "row_sessions": {},
             "row_closed": {},
-            # v19: statistiche separate per ogni estratto ripetuto/riga Cottone.
+            # v20: statistiche separate per ogni estratto ripetuto/riga Cottone.
             # Esempio riga 90: quanti degli 8 fissi 90-12-...-84 escono entro H10.
             "row_fissi_k_counts": {},
             "row_t1_k_counts": {},
@@ -836,6 +867,15 @@ class SniperV48BaseFullSpy:
             "cottone_uid": self.cottone_uid,
             "cottone_sessions": self.cottone_sessions,
             "cottone_horizon_stats": self.cottone_horizon_stats,
+            "cottone_game_total": self.cottone_game_total,
+            "cottone_game_fissi_win": self.cottone_game_fissi_win,
+            "cottone_game_fissi_lose": self.cottone_game_fissi_lose,
+            "cottone_game_t1_win": self.cottone_game_t1_win,
+            "cottone_game_t1_lose": self.cottone_game_t1_lose,
+            "cottone_game_fissi_gross_eur": self.cottone_game_fissi_gross_eur,
+            "cottone_game_t1_gross_eur": self.cottone_game_t1_gross_eur,
+            "cottone_game_fissi_win_colpi": self.cottone_game_fissi_win_colpi,
+            "cottone_game_t1_win_colpi": self.cottone_game_t1_win_colpi,
             "scheduled_reports_sent": self.scheduled_reports_sent,
         }
         tmp = STATE_FILE + ".tmp"
@@ -903,6 +943,15 @@ class SniperV48BaseFullSpy:
             self.cottone_uid = int(data.get("cottone_uid", 0))
             self.cottone_sessions = data.get("cottone_sessions", []) if isinstance(data.get("cottone_sessions", []), list) else []
             self.cottone_horizon_stats = self._load_cottone_stat_map(data.get("cottone_horizon_stats", {}))
+            self.cottone_game_total = int(data.get("cottone_game_total", 0))
+            self.cottone_game_fissi_win = int(data.get("cottone_game_fissi_win", 0))
+            self.cottone_game_fissi_lose = int(data.get("cottone_game_fissi_lose", 0))
+            self.cottone_game_t1_win = int(data.get("cottone_game_t1_win", 0))
+            self.cottone_game_t1_lose = int(data.get("cottone_game_t1_lose", 0))
+            self.cottone_game_fissi_gross_eur = float(data.get("cottone_game_fissi_gross_eur", 0.0))
+            self.cottone_game_t1_gross_eur = float(data.get("cottone_game_t1_gross_eur", 0.0))
+            self.cottone_game_fissi_win_colpi = {str(i): int((data.get("cottone_game_fissi_win_colpi", {}) or {}).get(str(i), 0)) for i in range(1, COTTONE_GAME_MAX_COLPI + 1)}
+            self.cottone_game_t1_win_colpi = {str(i): int((data.get("cottone_game_t1_win_colpi", {}) or {}).get(str(i), 0)) for i in range(1, COTTONE_GAME_MAX_COLPI + 1)}
             self.scheduled_reports_sent = data.get("scheduled_reports_sent", {}) if isinstance(data.get("scheduled_reports_sent", {}), dict) else {}
         except Exception as ex:
             print(f"⚠️ Stato non caricato: {ex}")
@@ -1896,7 +1945,7 @@ class SniperV48BaseFullSpy:
         st.setdefault("fissi_k_counts", {str(i): 0 for i in range(0, 9)})[str(kf)] = int(st.setdefault("fissi_k_counts", {}).get(str(kf), 0)) + 1
         st.setdefault("t1_k_counts", {str(i): 0 for i in range(0, 4)})[str(kt)] = int(st.setdefault("t1_k_counts", {}).get(str(kt), 0)) + 1
 
-        # v19: contatori separati per ogni riga/estratto ripetuto.
+        # v20: contatori separati per ogni riga/estratto ripetuto.
         # Cosi' il report puo' dire: riga 90, H10, media 7.20/8, top fissi, ecc.
         row_fkc_all = st.setdefault("row_fissi_k_counts", {})
         row_tkc_all = st.setdefault("row_t1_k_counts", {})
@@ -1918,12 +1967,17 @@ class SniperV48BaseFullSpy:
             target_t[sk] = int(target_t.get(sk, 0)) + 1
             row_target_t[sk] = int(row_target_t.get(sk, 0)) + 1
 
-    def process_cottone_sessions(self, e, nums):
-        """Aggiorna le sessioni Cottone aperte e chiude gli orizzonti H1..H10.
+    async def process_cottone_sessions(self, app, e, nums):
+        """Aggiorna le sessioni Cottone aperte, chiude gli orizzonti H1..H10 e gestisce il gioco WIN/LOSE.
 
         Ogni sessione nasce quando una riga Cottone 90/1..19 è ripetuta tra due estrazioni
         consecutive. Da quel momento misura quanti degli 8 fissi e quanti della T1 escono
         cumulativamente entro 1,2,...,10 colpi.
+
+        v20 GIOCO:
+        - FISSI = WIN se almeno 5/8 entro 10 colpi, premio lordo 40 euro.
+        - T1 = WIN se almeno 2/3 entro 10 colpi, premio lordo 2 euro.
+        - Al colpo 10 chiude e scrive LOSE per ciò che non ha raggiunto soglia.
         """
         if not self.cottone_sessions:
             return
@@ -1939,6 +1993,8 @@ class SniperV48BaseFullSpy:
             s["t1_seen"] = sorted(t1_seen)
             s.setdefault("hit_fissi_by_colpo", []).append(sorted(fissi & nums_set))
             s.setdefault("hit_t1_by_colpo", []).append(sorted(t1 & nums_set))
+
+            # Statistica LAB H1-H10, invariata.
             closed = set(map(str, s.get("closed_horizons", [])))
             for h in LAB_COTTONE_TRACK_HORIZONS:
                 hkey = str(h)
@@ -1946,23 +2002,108 @@ class SniperV48BaseFullSpy:
                     self._record_cottone_horizon(s, h)
                     closed.add(hkey)
             s["closed_horizons"] = sorted(closed, key=lambda x: int(x))
+
+            # v20 — gioco semplice FISSI/T1, separato dal LAB.
+            if COTTONE_GAME_ENABLED and bool(s.get("game_enabled", True)):
+                colpo = int(s.get("colpi", 0))
+                row = int(s.get("row", 0))
+                gid = int(s.get("game_id", s.get("id", 0)))
+                kf = len(fissi_seen)
+                kt = len(t1_seen)
+
+                # WIN FISSI: almeno 5 numeri sugli 8 fissi.
+                if not bool(s.get("game_fissi_done", False)) and kf >= COTTONE_GAME_FISSI_MIN_HITS:
+                    s["game_fissi_done"] = True
+                    s["game_fissi_result"] = "WIN"
+                    s["game_fissi_win_colpo"] = colpo
+                    self.cottone_game_fissi_win += 1
+                    self.cottone_game_fissi_gross_eur += COTTONE_GAME_FISSI_PRIZE_EUR
+                    self.cottone_game_fissi_win_colpi[str(min(colpo, COTTONE_GAME_MAX_COLPI))] = int(self.cottone_game_fissi_win_colpi.get(str(min(colpo, COTTONE_GAME_MAX_COLPI)), 0)) + 1
+                    self.append_csv_event("COTTONE_FISSI_WIN", e=e, play_id=gid, colpo=colpo, outcome="WIN_FISSI")
+                    if COTTONE_GAME_NOTIFY_WIN:
+                        await self.tg(
+                            app,
+                            f"✅ WIN FISSI COTTONE | colpo {colpo}/{COTTONE_GAME_MAX_COLPI}\n"
+                            f"• game_id = {gid}\n"
+                            f"• riga ripetuta = {row}\n"
+                            f"• usciti = {kf}/8: {fmt_nums(sorted(fissi_seen))}\n"
+                            f"• premio lordo = {COTTONE_GAME_FISSI_PRIZE_EUR:.2f}€\n"
+                            f"• regola = almeno {COTTONE_GAME_FISSI_MIN_HITS}/8 entro {COTTONE_GAME_MAX_COLPI} colpi\n"
+                            f"• T1 ora = {kt}/3: {fmt_nums(sorted(t1_seen)) or '-'}\n\n"
+                            f"{self.cottone_game_stats_text()}"
+                        )
+
+                # WIN T1: almeno 2 numeri su 3 della T1.
+                if not bool(s.get("game_t1_done", False)) and kt >= COTTONE_GAME_T1_MIN_HITS:
+                    s["game_t1_done"] = True
+                    s["game_t1_result"] = "WIN"
+                    s["game_t1_win_colpo"] = colpo
+                    self.cottone_game_t1_win += 1
+                    self.cottone_game_t1_gross_eur += COTTONE_GAME_T1_PRIZE_EUR
+                    self.cottone_game_t1_win_colpi[str(min(colpo, COTTONE_GAME_MAX_COLPI))] = int(self.cottone_game_t1_win_colpi.get(str(min(colpo, COTTONE_GAME_MAX_COLPI)), 0)) + 1
+                    self.append_csv_event("COTTONE_T1_WIN", e=e, play_id=gid, colpo=colpo, outcome="WIN_T1")
+                    if COTTONE_GAME_NOTIFY_WIN:
+                        await self.tg(
+                            app,
+                            f"✅ WIN T1 COTTONE | colpo {colpo}/{COTTONE_GAME_MAX_COLPI}\n"
+                            f"• game_id = {gid}\n"
+                            f"• riga ripetuta = {row}\n"
+                            f"• T1 = {fmt_nums(sorted(t1))}\n"
+                            f"• usciti = {kt}/3: {fmt_nums(sorted(t1_seen))}\n"
+                            f"• premio lordo = {COTTONE_GAME_T1_PRIZE_EUR:.2f}€\n"
+                            f"• regola = almeno {COTTONE_GAME_T1_MIN_HITS}/3 entro {COTTONE_GAME_MAX_COLPI} colpi\n"
+                            f"• FISSI ora = {kf}/8: {fmt_nums(sorted(fissi_seen)) or '-'}\n\n"
+                            f"{self.cottone_game_stats_text()}"
+                        )
+
+                # A H10 chiudo ciò che non ha fatto WIN.
+                if colpo >= COTTONE_GAME_MAX_COLPI:
+                    close_lines = [
+                        f"🏁 CHIUSURA GIOCO COTTONE | {COTTONE_GAME_MAX_COLPI} colpi",
+                        f"• game_id = {gid}",
+                        f"• riga ripetuta = {row}",
+                    ]
+                    if not bool(s.get("game_fissi_done", False)):
+                        s["game_fissi_done"] = True
+                        s["game_fissi_result"] = "LOSE"
+                        self.cottone_game_fissi_lose += 1
+                        self.append_csv_event("COTTONE_FISSI_LOSE", e=e, play_id=gid, colpo=colpo, outcome="LOSE_FISSI")
+                        close_lines.append(f"❌ FISSI = LOSE | usciti {kf}/8: {fmt_nums(sorted(fissi_seen)) or '-'} | servivano {COTTONE_GAME_FISSI_MIN_HITS}/8")
+                    else:
+                        close_lines.append(f"✅ FISSI = WIN | usciti {kf}/8: {fmt_nums(sorted(fissi_seen))}")
+
+                    if not bool(s.get("game_t1_done", False)):
+                        s["game_t1_done"] = True
+                        s["game_t1_result"] = "LOSE"
+                        self.cottone_game_t1_lose += 1
+                        self.append_csv_event("COTTONE_T1_LOSE", e=e, play_id=gid, colpo=colpo, outcome="LOSE_T1")
+                        close_lines.append(f"❌ T1 = LOSE | usciti {kt}/3: {fmt_nums(sorted(t1_seen)) or '-'} | servivano {COTTONE_GAME_T1_MIN_HITS}/3")
+                    else:
+                        close_lines.append(f"✅ T1 = WIN | usciti {kt}/3: {fmt_nums(sorted(t1_seen))}")
+
+                    close_lines.append("")
+                    close_lines.append(self.cottone_game_stats_text())
+                    if COTTONE_GAME_NOTIFY_LOSE:
+                        await self.tg(app, "\n".join(close_lines))
+
             if int(s.get("colpi", 0)) < LAB_COTTONE_TRACK_MAX_COLPI:
                 still_open.append(s)
         self.cottone_sessions = still_open[-LAB_COTTONE_MAX_OPEN_SESSIONS:]
-
-    def maybe_open_cottone_sessions(self, e):
+    async def maybe_open_cottone_sessions(self, app, e):
         if not LAB_METHODS_ENABLED or len(self.last_draws) < 2:
             return
         cur = self._latest_draw()
         prev = self._previous_draw()
         cur_set, prev_set = set(cur), set(prev)
         repeated = [r for r in LAB_COTTONE_VISIBLE_ROWS if r in cur_set and r in prev_set]
+        opened_messages = []
         for r in repeated:
             self.cottone_uid += 1
             fissi = cottone_fissi_for_row(r)
             t1 = cottone_t1_for_row(r)
             session = {
                 "id": self.cottone_uid,
+                "game_id": self.cottone_uid,
                 "origin_e": int(e),
                 "row": int(r),
                 "fissi": list(map(int, fissi)),
@@ -1973,6 +2114,12 @@ class SniperV48BaseFullSpy:
                 "hit_fissi_by_colpo": [],
                 "hit_t1_by_colpo": [],
                 "closed_horizons": [],
+                # v20 — stato gioco WIN/LOSE
+                "game_enabled": bool(COTTONE_GAME_ENABLED),
+                "game_fissi_done": False,
+                "game_t1_done": False,
+                "game_fissi_result": "OPEN",
+                "game_t1_result": "OPEN",
             }
             self.cottone_sessions.append(session)
             self.cottone_sessions = self.cottone_sessions[-LAB_COTTONE_MAX_OPEN_SESSIONS:]
@@ -1982,6 +2129,21 @@ class SniperV48BaseFullSpy:
                 rk = str(r)
                 st.setdefault("row_sessions", {})[rk] = int(st.setdefault("row_sessions", {}).get(rk, 0)) + 1
 
+            if COTTONE_GAME_ENABLED:
+                self.cottone_game_total += 1
+                opened_messages.append(
+                    f"🎮 GIOCO COTTONE APERTO\n"
+                    f"• game_id = {self.cottone_uid}\n"
+                    f"• estratto ripetuto = {r}\n"
+                    f"• durata = max {COTTONE_GAME_MAX_COLPI} colpi\n"
+                    f"• FISSI = {fmt_nums(fissi)}\n"
+                    f"• WIN FISSI = almeno {COTTONE_GAME_FISSI_MIN_HITS}/8 → {COTTONE_GAME_FISSI_PRIZE_EUR:.2f}€\n"
+                    f"• T1 = {fmt_nums(t1)}\n"
+                    f"• WIN T1 = almeno {COTTONE_GAME_T1_MIN_HITS}/3 → {COTTONE_GAME_T1_PRIZE_EUR:.2f}€\n"
+                    f"• meno della soglia = LOSE"
+                )
+        if COTTONE_GAME_ENABLED and COTTONE_GAME_NOTIFY_OPEN and opened_messages:
+            await self.tg(app, "\n\n".join(opened_messages))
     def _top_cottone_targets(self, h, key, limit=6):
         st = self.cottone_horizon_stats.get(str(h), self.new_cottone_stats())
         data = st.get(key, {}) or {}
@@ -2030,8 +2192,46 @@ class SniperV48BaseFullSpy:
             f"| T1 {m['avg_t']:.2f}/3 | 3/3 {pct(m['t_eq3'], c):.1f}%"
         )
 
+    def cottone_game_stats_text(self):
+        open_games = [s for s in self.cottone_sessions if bool(s.get("game_enabled", False))]
+        f_total = self.cottone_game_fissi_win + self.cottone_game_fissi_lose
+        t_total = self.cottone_game_t1_win + self.cottone_game_t1_lose
+        gross = self.cottone_game_fissi_gross_eur + self.cottone_game_t1_gross_eur
+        active_lines = []
+        for s in open_games[:8]:
+            row = int(s.get("row", 0))
+            gid = int(s.get("game_id", s.get("id", 0)))
+            colpi = int(s.get("colpi", 0))
+            fissi_seen = sorted({int(x) for x in s.get("fissi_seen", [])})
+            t1_seen = sorted({int(x) for x in s.get("t1_seen", [])})
+            f_status = s.get("game_fissi_result", "OPEN")
+            t_status = s.get("game_t1_result", "OPEN")
+            active_lines.append(
+                f"• #{gid} riga {row} | colpo {colpi}/{COTTONE_GAME_MAX_COLPI} | "
+                f"FISSI {len(fissi_seen)}/8 {f_status} | T1 {len(t1_seen)}/3 {t_status}"
+            )
+        if len(open_games) > 8:
+            active_lines.append(f"• altri giochi aperti = {len(open_games) - 8}")
+        if not active_lines:
+            active_lines.append("• nessun gioco Cottone aperto ora")
+
+        return "\n".join([
+            "🎮 COTTONE GIOCO — SOLO FISSI + T1",
+            f"• regola FISSI = almeno {COTTONE_GAME_FISSI_MIN_HITS}/8 entro {COTTONE_GAME_MAX_COLPI} colpi → WIN {COTTONE_GAME_FISSI_PRIZE_EUR:.2f}€; meno = LOSE",
+            f"• regola T1 = almeno {COTTONE_GAME_T1_MIN_HITS}/3 entro {COTTONE_GAME_MAX_COLPI} colpi → WIN {COTTONE_GAME_T1_PRIZE_EUR:.2f}€; meno = LOSE",
+            f"• giochi aperti = {len(open_games)} | giochi totali aperti = {self.cottone_game_total}",
+            f"• FISSI: WIN {self.cottone_game_fissi_win} / LOSE {self.cottone_game_fissi_lose} | win rate {pct(self.cottone_game_fissi_win, f_total):.1f}% | lordo {self.cottone_game_fissi_gross_eur:.2f}€",
+            f"• T1: WIN {self.cottone_game_t1_win} / LOSE {self.cottone_game_t1_lose} | win rate {pct(self.cottone_game_t1_win, t_total):.1f}% | lordo {self.cottone_game_t1_gross_eur:.2f}€",
+            f"• lordo totale = {gross:.2f}€",
+            f"• WIN FISSI per colpo = {', '.join(f'H{i}:{self.cottone_game_fissi_win_colpi.get(str(i), 0)}' for i in range(1, COTTONE_GAME_MAX_COLPI + 1))}",
+            f"• WIN T1 per colpo = {', '.join(f'H{i}:{self.cottone_game_t1_win_colpi.get(str(i), 0)}' for i in range(1, COTTONE_GAME_MAX_COLPI + 1))}",
+            "",
+            "📌 GIOCHI APERTI ORA",
+            *active_lines,
+        ])
+
     def cottone_by_row_h10_text(self):
-        """v19: riepilogo separato per ogni estratto ripetuto/riga Cottone.
+        """v20: riepilogo separato per ogni estratto ripetuto/riga Cottone.
 
         Esempio riga 90: fissi 90-12-24-36-48-60-72-84.
         Qui misuriamo entro H10 quanti degli 8 sono usciti, e quali escono di piu'.
@@ -2205,7 +2405,7 @@ class SniperV48BaseFullSpy:
 
         return "\n".join([
             "🧪 LAB METODI — COTTONE H1-H10 / +5 / +4 / SOMMA",
-            "• uso = laboratorio/report; NON modifica il play automatico CORE",
+            "• uso = laboratorio/report; in v20 il gioco automatico semplice è solo COTTONE FISSI/T1",
             "• moduli attivi: FISSI/T1 Cottone H1-H10, distanza +5, conteggio +4, somma 90/91",
             "",
             "📌 COTTONE — FISSI IN USCITA + T1",
@@ -2682,7 +2882,7 @@ class SniperV48BaseFullSpy:
             "🎲 GIOCABILITÀ DECINA/MULTIPLA — H3",
             "• cosa significa: non terno secco, ma ricerca di almeno 2/3 numeri entro 3 colpi",
             "• filtro usato: rete DECINA + livello MULTIPLA + CORE 88/89/90",
-            "• giocata auto = v19 CORE STRICT + COTTONE PER RIGA H10 LAB: ambata + max 2 ambi CORE; niente single; terno solo dopo conferma reale",
+            "• gioco automatico v20 = solo Cottone FISSI/T1 WIN/LOSE; CORE strict OFF di default",
             "• nota: laboratorio statistico, non previsione certa",
         ]
 
@@ -2693,7 +2893,7 @@ class SniperV48BaseFullSpy:
         top_nums_txt = ", ".join(f"{n}({c})" for n, c in top_nums[:PLAYABLE_MAX_NUMBERS]) or "n/d"
         if supported_pairs:
             ambi_line = ", ".join(f"{a}-{b}({c}|{g})" for (a, b), c, g in supported_pairs[:PLAYABLE_MAX_PAIRS])
-            verdict = "ambi CORE concentrati: giocabili solo sopra soglia v19"
+            verdict = "ambi CORE concentrati: giocabili solo sopra soglia v20 se CORE riattivato"
         else:
             top_pairs = snap["top_pairs"]
             ambi_line = ", ".join(f"{a}-{b}({c}|{playable_pair_group((a, b))})" for (a, b), c in top_pairs[:PLAYABLE_MAX_PAIRS]) if top_pairs else "n/d"
@@ -2721,7 +2921,7 @@ class SniperV48BaseFullSpy:
                 f"• cluster v48 = {fmt_nums(self.active_snapshot.get('cluster_numbers'))}",
             ])
         else:
-            lines.extend(["", "📎 CONFERMA v48 ATTUALE", "• nessun play v48 attivo: v19 può partire solo con 2 ambi CORE veri"])
+            lines.extend(["", "📎 CONFERMA v48 ATTUALE", "• nessun play v48 attivo: CORE strict è OFF di default; può partire solo se riattivato"])
 
         candidate, reason = self.build_playable_candidate(0)
         lines.extend(["", "🎯 STATO PLAY AUTO"])
@@ -2939,6 +3139,7 @@ class SniperV48BaseFullSpy:
     def full_report_text(self):
         return "\n\n".join([
             self.v48_stats_text(),
+            self.cottone_game_stats_text(),
             self.playable_stats_text(),
             self.focus_h3_text(),
             self.decina_multipla_playability_text(),
@@ -3070,7 +3271,8 @@ class SniperV48BaseFullSpy:
             "🧭 MENU RAPIDO\n"
             "Tocca un pulsante sotto, senza digitare nulla.\n\n"
             "/report — quadro completo\n"
-            "/play — solo play giocabile ambata/ambi\n"
+            "/gioco_cottone — gioco FISSI/T1 win-lose\n"
+            "/play — vecchio CORE strict, OFF di default\n"
             "/v48 — solo v48 base\n"
             "/spie — quadro numeri spia\n"
             "/spie_elite — spie elite storiche live\n"
@@ -3105,12 +3307,12 @@ class SniperV48BaseFullSpy:
 
         # 1) aggiorna sessioni spia, Cottone H1-H10 e play operativo già aperti sui nuovi numeri.
         await self.process_spy_sessions(app, e, nums)
-        self.process_cottone_sessions(e, nums)
+        await self.process_cottone_sessions(app, e, nums)
         await self.process_playable_play(app, e, nums)
 
         # 2) apre nuove spie/LAB dalla condizione appena creata.
         await self.maybe_open_spy_sessions(app, e)
-        self.maybe_open_cottone_sessions(e)
+        await self.maybe_open_cottone_sessions(app, e)
 
         # v17: il play operativo puo' partire solo su CORE_MULTI vero e più selettivo; terno opzionale solo dopo conferma.
         # Se v48 e' attivo, lo valutiamo dopo averlo processato.
@@ -3291,6 +3493,11 @@ async def cmd_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, engine.playable_stats_text() + "\n\n" + engine.decina_multipla_playability_text() + "\n\n" + engine.core_spalle_1_19_text())
 
 
+async def cmd_gioco_cottone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.cottone_game_stats_text())
+
+
 async def cmd_spalle_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine = context.application.bot_data["engine"]
     await reply(update, engine.core_spalle_1_19_text())
@@ -3342,6 +3549,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = engine.full_report_text()
     elif data == "play":
         text = engine.playable_stats_text() + "\n\n" + engine.decina_multipla_playability_text() + "\n\n" + engine.core_spalle_1_19_text()
+    elif data == "gioco_cottone":
+        text = engine.cottone_game_stats_text()
     elif data == "v48":
         text = engine.v48_stats_text()
     elif data == "spie":
@@ -3413,7 +3622,8 @@ def acquire_single_instance_lock():
 async def setup_commands(app):
     await app.bot.set_my_commands([
         BotCommand("report", "Quadro completo"),
-        BotCommand("play", "Play giocabile ambata/ambi"),
+        BotCommand("gioco_cottone", "Gioco Cottone FISSI/T1"),
+        BotCommand("play", "CORE strict OFF di default"),
         BotCommand("v48", "Statistiche v48 base"),
         BotCommand("spie", "Quadro numeri spia"),
         BotCommand("spie_elite", "Spie elite storiche live"),
@@ -3442,7 +3652,7 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v19 PLAY AMBATA/AMBI — CORE STRICT + COTTONE PER RIGA H10 LAB AVVIATO\n"
+            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v20 GIOCO COTTONE — SOLO FISSI + T1 WIN/LOSE AVVIATO\n"
             "✅ v48 base invariata: ambata + 3 ambi classici\n"
             "✅ max 7 colpi, cooldown e cluster reuse invariati\n"
             "✅ monitor rank ambo vincente 1/2/3\n"
@@ -3457,7 +3667,7 @@ async def startup(engine, app):
             "✅ sezione ⭐ SPIE ELITE STORICHE — LIVE\n"
             "✅ sezione 🎲 GIOCABILITÀ DECINA/MULTIPLA — H3\n"
             "✅ sezione 🧩 SPALLE 1-19 CORE — LAB\n"
-            f"✅ play operativo = v19 CORE STRICT + COTTONE PER RIGA H10 LAB: ambata + max {PLAYABLE_MAX_AMBI} ambi CORE; niente single; v48 solo bonus; max {PLAYABLE_MAX_COLPI} colpi\n"
+            f"✅ play operativo = v20 GIOCO COTTONE: solo FISSI + T1; CORE automatico OFF di default: ambata + max {PLAYABLE_MAX_AMBI} ambi CORE; niente single; v48 solo bonus; max {PLAYABLE_MAX_COLPI} colpi\n"
             "✅ v48 opzionale: conferma forte, ma non blocca il play\n"
             "✅ ambi ammessi: CORE 88-90/89-90/88-89 | SAT 87-88/87-89/87-90/86-90\n"
             f"✅ soglie CORE STRICT: DECINA>={PLAYABLE_MIN_DECINA_EXTRA:+.1f} pp | MULTIPLA>={PLAYABLE_MIN_MULTIPLA_EXTRA:+.1f} pp | miglior ambo>={PLAYABLE_CORE_MULTI_FIRST_MIN_SUPPORT} | secondo ambo>={PLAYABLE_CORE_MULTI_SECOND_MIN_SUPPORT} | segnali>={PLAYABLE_MIN_SIGNALS}\n"
@@ -3467,6 +3677,7 @@ async def startup(engine, app):
             f"✅ SPALLE 1-19 CORE: primarie {fmt_nums(PLAYABLE_CORE_SPALLE_PRIMARY)} | watch {fmt_nums(PLAYABLE_CORE_SPALLE_WATCH)} | solo report/lab\n"
             f"✅ COTTONE H1-H10: fissi 8 numeri + T1 tracciati per 1/2/3/4/5/6/7/8/9/10 colpi\n"
             f"✅ COTTONE PER RIGA: per ogni estratto ripetuto calcola casi, media fissi/T1 H10 e top numeri usciti\n"
+            f"✅ COTTONE GIOCO: FISSI WIN se {COTTONE_GAME_FISSI_MIN_HITS}/8 entro {COTTONE_GAME_MAX_COLPI} colpi = {COTTONE_GAME_FISSI_PRIZE_EUR:.2f}€; T1 WIN se {COTTONE_GAME_T1_MIN_HITS}/3 = {COTTONE_GAME_T1_PRIZE_EUR:.2f}€\n"
             f"✅ anti-raffica CORE: dopo {PLAYABLE_CORE_ZONE_LOCK_AFTER_STOPS} STOP consecutivi, pausa {PLAYABLE_CORE_ZONE_LOCK_DRAWS} estrazioni sulla zona 88/89/90\n"
             "✅ notifiche PLAY = apertura, ambata presa, ambo preso, stop/non preso\n"
             f"✅ notifiche v48 singole = {'ON' if V48_NOTIFY_EVENTS else 'OFF'}\n"
@@ -3526,6 +3737,7 @@ async def main():
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("play", cmd_play))
+    app.add_handler(CommandHandler("gioco_cottone", cmd_gioco_cottone))
     app.add_handler(CommandHandler("v48", cmd_v48))
     app.add_handler(CommandHandler("spie", cmd_spie))
     app.add_handler(CommandHandler("spie_elite", cmd_spie_elite))
