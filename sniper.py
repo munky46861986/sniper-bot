@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v24 GIOCO COTTONE HOT FILTER — T1 PRIORITY + FISSI SCREMATI
+# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v25 GIOCO COTTONE T1 ONLY SMART — FISSI SOLO REPORT
 #
 # VERSIONE PULITA
 #   ✅ v48 base invariata: ambata + 3 ambi classici, max 7 colpi
@@ -55,9 +55,9 @@ URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v24_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v24_events.csv")
-LOCK_FILE = "/tmp/sniper_v48_playable_ambata_ambi_v24.lock"
+STATE_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v25_state.json")
+CSV_FILE = os.path.join(BASE_DIR, "sniper_v48_playable_ambata_ambi_v25_events.csv")
+LOCK_FILE = "/tmp/sniper_v48_playable_ambata_ambi_v25.lock"
 
 # Orario bot/report: GitHub gira spesso in UTC, qui forziamo Italia.
 BOT_TZ_NAME = os.getenv("BOT_TZ", "Europe/Rome")
@@ -209,7 +209,7 @@ LAB_COTTONE_TRACK_MAX_COLPI = max(LAB_COTTONE_TRACK_HORIZONS)
 LAB_COTTONE_MAX_OPEN_SESSIONS = int(os.getenv("LAB_COTTONE_MAX_OPEN_SESSIONS", "500"))
 
 # ============================================================
-# v24 — GIOCO COTTONE HOT FILTER: T1 prioritaria + FISSI scremati
+# v25 — GIOCO COTTONE T1 ONLY SMART: FISSI solo report, T1 filtrata + anti-doppio
 # ============================================================
 # Regole gioco REALI richieste:
 # - FISSI: dentro UNA SINGOLA estrazione fra H1...H10, se escono insieme
@@ -225,7 +225,7 @@ COTTONE_GAME_T1_MIN_HITS = int(os.getenv("COTTONE_GAME_T1_MIN_HITS", "2"))
 COTTONE_GAME_FISSI_PRIZES_EUR = {5: 20.0, 6: 200.0, 7: 800.0, 8: 10000.0}
 COTTONE_GAME_T1_PRIZES_EUR = {2: 2.0, 3: 45.0}
 
-# v24 — filtro ricavato dall'ultimo log reale: non apriamo piu' tutte le righe.
+# v25 — filtro ricavato dall'ultimo log reale: FISSI automatici spenti, T1 selettiva.
 # LAB Cottone resta aperto su tutte le righe visibili, ma il GIOCO automatico parte solo
 # sui moduli/righe scremati. Si puo' sempre cambiare tutto da GitHub Secrets/env.
 def _parse_int_tuple_env(name, default_csv):
@@ -244,19 +244,23 @@ def _parse_int_tuple_env(name, default_csv):
     return tuple(out)
 
 COTTONE_GAME_HOT_FILTER_ENABLED = os.getenv("COTTONE_GAME_HOT_FILTER_ENABLED", "1") != "0"
+# v25: per default i FISSI NON aprono gioco automatico; restano in audit/report.
+COTTONE_GAME_FISSI_AUTO_ENABLED = os.getenv("COTTONE_GAME_FISSI_AUTO_ENABLED", "0") == "1"
+# v25: evita spam: una sola T1 per riga aperta e cooldown dopo apertura.
+COTTONE_GAME_T1_ROW_COOLDOWN_DRAWS = int(os.getenv("COTTONE_GAME_T1_ROW_COOLDOWN_DRAWS", "10"))
 # Righe FISSI da giocare: dal file reale erano le piu' interessanti, ma i FISSI restano selettivi.
 COTTONE_GAME_FISSI_FILTER_ROWS = _parse_int_tuple_env("COTTONE_GAME_FISSI_FILTER_ROWS", "5,2,19,14,16")
 # Righe T1 da giocare: T1 e' prioritaria, perche' nel file reale ha tenuto molto meglio dei FISSI.
-COTTONE_GAME_T1_FILTER_ROWS = _parse_int_tuple_env("COTTONE_GAME_T1_FILTER_ROWS", "12,18,2,7,10,19,15,11")
+COTTONE_GAME_T1_FILTER_ROWS = _parse_int_tuple_env("COTTONE_GAME_T1_FILTER_ROWS", "7,15,18,19,12,11,2,10")
 # Numeri caldi osservati nei WIN/best reali del file: servono per report, audit e scrematura visiva.
 COTTONE_GAME_FISSI_HOT_NUMBERS = _parse_int_tuple_env("COTTONE_GAME_FISSI_HOT_NUMBERS", "26,86,43,29,77,38,17,14,1,19,55,79,5")
-COTTONE_GAME_T1_HOT_NUMBERS = _parse_int_tuple_env("COTTONE_GAME_T1_HOT_NUMBERS", "34,40,41,54,64,70,35,51,33,29,50,71,68,62,44")
+COTTONE_GAME_T1_HOT_NUMBERS = _parse_int_tuple_env("COTTONE_GAME_T1_HOT_NUMBERS", "34,39,44,41,47,67,51,63,71,37,24,50")
 
 def cottone_game_fissi_allowed(row, fissi=None):
     if not COTTONE_GAME_HOT_FILTER_ENABLED:
         return True
     try:
-        return int(row) in set(COTTONE_GAME_FISSI_FILTER_ROWS)
+        return bool(COTTONE_GAME_FISSI_AUTO_ENABLED and int(row) in set(COTTONE_GAME_FISSI_FILTER_ROWS))
     except Exception:
         return False
 
@@ -784,7 +788,7 @@ def classify_network(spy, followers):
 
 class SniperV48BaseFullSpy:
     def __init__(self):
-        self.version = "v24_cottone_hot_filter"
+        self.version = "v25_t1_only_smart"
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
@@ -849,7 +853,7 @@ class SniperV48BaseFullSpy:
         self.cottone_sessions = []
         self.cottone_horizon_stats = {str(h): self.new_cottone_stats() for h in LAB_COTTONE_TRACK_HORIZONS}
 
-        # v24 — statistiche gioco Cottone filtrato FISSI/T1 + dedup chiusure
+        # v25 — statistiche gioco Cottone T1 only smart + FISSI solo report + dedup chiusure
         self.cottone_game_total = 0
         self.cottone_game_fissi_win = 0
         self.cottone_game_fissi_lose = 0
@@ -859,8 +863,9 @@ class SniperV48BaseFullSpy:
         self.cottone_game_t1_gross_eur = 0.0
         self.cottone_game_fissi_win_colpi = {str(i): 0 for i in range(1, COTTONE_GAME_MAX_COLPI + 1)}
         self.cottone_game_t1_win_colpi = {str(i): 0 for i in range(1, COTTONE_GAME_MAX_COLPI + 1)}
-        self.cottone_game_closed_ids = []  # v24: anti-doppia chiusura nello stato persistente
-        # v24 — scrematura numeri/righe: contatori reali, basati sul miglior colpo singolo.
+        self.cottone_game_closed_ids = []  # v25: anti-doppia chiusura nello stato persistente
+        self.cottone_game_t1_last_open_e = {}  # row -> estrazione ultimo open T1, per cooldown riga
+        # v25 — scrematura numeri/righe: contatori reali, basati sul miglior colpo singolo.
         self.cottone_game_fissi_win_numbers = {}
         self.cottone_game_t1_win_numbers = {}
         self.cottone_game_fissi_best_numbers = {}
@@ -1005,6 +1010,7 @@ class SniperV48BaseFullSpy:
             "cottone_game_fissi_win_colpi": self.cottone_game_fissi_win_colpi,
             "cottone_game_t1_win_colpi": self.cottone_game_t1_win_colpi,
             "cottone_game_closed_ids": self.cottone_game_closed_ids[-5000:],
+            "cottone_game_t1_last_open_e": self.cottone_game_t1_last_open_e,
             "cottone_game_fissi_win_numbers": self.cottone_game_fissi_win_numbers,
             "cottone_game_t1_win_numbers": self.cottone_game_t1_win_numbers,
             "cottone_game_fissi_best_numbers": self.cottone_game_fissi_best_numbers,
@@ -1088,6 +1094,7 @@ class SniperV48BaseFullSpy:
             self.cottone_game_fissi_win_colpi = {str(i): int((data.get("cottone_game_fissi_win_colpi", {}) or {}).get(str(i), 0)) for i in range(1, COTTONE_GAME_MAX_COLPI + 1)}
             self.cottone_game_t1_win_colpi = {str(i): int((data.get("cottone_game_t1_win_colpi", {}) or {}).get(str(i), 0)) for i in range(1, COTTONE_GAME_MAX_COLPI + 1)}
             self.cottone_game_closed_ids = [int(x) for x in (data.get("cottone_game_closed_ids", []) or []) if str(x).isdigit()][-5000:]
+            self.cottone_game_t1_last_open_e = {str(k): int(v) for k, v in (data.get("cottone_game_t1_last_open_e", {}) or {}).items() if str(k).isdigit()}
             self.cottone_game_fissi_win_numbers = {str(k): int(v) for k, v in (data.get("cottone_game_fissi_win_numbers", {}) or {}).items()}
             self.cottone_game_t1_win_numbers = {str(k): int(v) for k, v in (data.get("cottone_game_t1_win_numbers", {}) or {}).items()}
             self.cottone_game_fissi_best_numbers = {str(k): int(v) for k, v in (data.get("cottone_game_fissi_best_numbers", {}) or {}).items()}
@@ -2203,7 +2210,7 @@ class SniperV48BaseFullSpy:
                         f"• conteggio = SINGOLA ESTRAZIONE: non sommo numeri usciti in colpi diversi",
                     ]
 
-                    # FISSI: premio sul massimo uscito in una singola estrazione, solo se il filtro v24 lo abilita.
+                    # FISSI: premio sul massimo uscito in una singola estrazione, solo se il filtro v25 lo abilita.
                     fissi_enabled = bool(s.get("game_fissi_enabled", True))
                     if fissi_enabled:
                         fissi_prize = cottone_game_fissi_prize_eur(kf)
@@ -2235,9 +2242,9 @@ class SniperV48BaseFullSpy:
                     else:
                         s["game_fissi_done"] = True
                         s["game_fissi_result"] = "OFF_FILTRO"
-                        close_lines.append("⏭️ FISSI = OFF FILTRO v24 | riga non nella scrematura FISSI")
+                        close_lines.append("⏭️ FISSI = OFF v25 | modulo solo report/lab")
 
-                    # T1: premio sul massimo uscito in una singola estrazione, solo se il filtro v24 lo abilita.
+                    # T1: premio sul massimo uscito in una singola estrazione, solo se il filtro v25 lo abilita.
                     t1_enabled = bool(s.get("game_t1_enabled", True))
                     if t1_enabled:
                         t1_prize = cottone_game_t1_prize_eur(kt)
@@ -2269,7 +2276,7 @@ class SniperV48BaseFullSpy:
                     else:
                         s["game_t1_done"] = True
                         s["game_t1_result"] = "OFF_FILTRO"
-                        close_lines.append("⏭️ T1 = OFF FILTRO v24 | riga non nella scrematura T1")
+                        close_lines.append("⏭️ T1 = OFF FILTRO v25 | riga non nella scrematura T1")
 
                     s["game_closed"] = True
                     if gid not in closed_ids_set:
@@ -2286,6 +2293,39 @@ class SniperV48BaseFullSpy:
             if int(s.get("colpi", 0)) < LAB_COTTONE_TRACK_MAX_COLPI:
                 still_open.append(s)
         self.cottone_sessions = still_open[-LAB_COTTONE_MAX_OPEN_SESSIONS:]
+    def _cottone_t1_row_is_open(self, row):
+        """v25: evita doppioni T1 sulla stessa riga mentre una sessione e' aperta."""
+        try:
+            row = int(row)
+        except Exception:
+            return False
+        for s in self.cottone_sessions:
+            try:
+                if int(s.get("row", 0)) != row:
+                    continue
+                if not bool(s.get("game_t1_enabled", False)):
+                    continue
+                if bool(s.get("game_closed", False)):
+                    continue
+                if int(s.get("colpi", 0)) >= COTTONE_GAME_MAX_COLPI:
+                    continue
+                return True
+            except Exception:
+                continue
+        return False
+
+    def _cottone_t1_row_in_cooldown(self, row, current_e):
+        """v25: dopo un'apertura T1, aspetta almeno N estrazioni prima di riaprire la stessa riga."""
+        try:
+            row = int(row)
+            current_e = int(current_e)
+            last_e = int((self.cottone_game_t1_last_open_e or {}).get(str(row), 0))
+        except Exception:
+            return False
+        if last_e <= 0:
+            return False
+        return (current_e - last_e) < COTTONE_GAME_T1_ROW_COOLDOWN_DRAWS
+
     async def maybe_open_cottone_sessions(self, app, e):
         if not LAB_METHODS_ENABLED or len(self.last_draws) < 2:
             return
@@ -2298,8 +2338,17 @@ class SniperV48BaseFullSpy:
             self.cottone_uid += 1
             fissi = cottone_fissi_for_row(r)
             t1 = cottone_t1_for_row(r)
+            # v25: FISSI automatici OFF di default; T1 filtrata + anti-doppio + cooldown riga.
             game_fissi_enabled = bool(COTTONE_GAME_ENABLED and cottone_game_fissi_allowed(r, fissi))
-            game_t1_enabled = bool(COTTONE_GAME_ENABLED and cottone_game_t1_allowed(r, t1))
+            raw_t1_enabled = bool(COTTONE_GAME_ENABLED and cottone_game_t1_allowed(r, t1))
+            t1_block_reason = ""
+            if raw_t1_enabled and self._cottone_t1_row_is_open(r):
+                raw_t1_enabled = False
+                t1_block_reason = "OFF doppio: stessa riga gia' aperta"
+            elif raw_t1_enabled and self._cottone_t1_row_in_cooldown(r, e):
+                raw_t1_enabled = False
+                t1_block_reason = f"OFF cooldown riga {COTTONE_GAME_T1_ROW_COOLDOWN_DRAWS}"
+            game_t1_enabled = bool(raw_t1_enabled)
             game_enabled = bool(game_fissi_enabled or game_t1_enabled)
             fissi_hot = cottone_hot_overlap(fissi, COTTONE_GAME_FISSI_HOT_NUMBERS)
             t1_hot = cottone_hot_overlap(t1, COTTONE_GAME_T1_HOT_NUMBERS)
@@ -2334,10 +2383,11 @@ class SniperV48BaseFullSpy:
                 "game_best_t1_e": "",
                 "game_best_t1_nums": [],
                 "closed_horizons": [],
-                # v24 — stato gioco WIN/LOSE filtrato per righe/numeri caldi.
+                # v25 — stato gioco WIN/LOSE filtrato per righe/numeri caldi.
                 "game_enabled": game_enabled,
                 "game_fissi_enabled": game_fissi_enabled,
                 "game_t1_enabled": game_t1_enabled,
+                "game_t1_block_reason": t1_block_reason,
                 "game_fissi_done": False,
                 "game_t1_done": False,
                 "game_fissi_result": "OPEN",
@@ -2354,10 +2404,17 @@ class SniperV48BaseFullSpy:
 
             if game_enabled:
                 self.cottone_game_total += 1
-                fissi_mod = "ON" if game_fissi_enabled else "OFF filtro"
-                t1_mod = "ON" if game_t1_enabled else "OFF filtro"
+                if game_t1_enabled:
+                    self.cottone_game_t1_last_open_e[str(int(r))] = int(e)
+                fissi_mod = "ON" if game_fissi_enabled else "OFF report"
+                if game_t1_enabled:
+                    t1_mod = "ON"
+                elif t1_block_reason:
+                    t1_mod = t1_block_reason
+                else:
+                    t1_mod = "OFF filtro"
                 opened_messages.append(
-                    f"🎮 GIOCO COTTONE APERTO — v24 HOT FILTER\n"
+                    f"🎮 GIOCO COTTONE APERTO — v25 T1 ONLY SMART\n"
                     f"• game_id = {self.cottone_uid}\n"
                     f"• estratto ripetuto = {r}\n"
                     f"• estrazione segnale = {e}\n"
@@ -2365,7 +2422,7 @@ class SniperV48BaseFullSpy:
                     f"• nota = il segnale NON è H1; H1 parte dalla prossima estrazione\n"
                     f"• durata = max {COTTONE_GAME_MAX_COLPI} colpi\n"
                     f"• regola = conta SOLO la singola estrazione, NON cumulativo\n"
-                    f"• filtro v24 = FISSI {fissi_mod} | T1 {t1_mod}\n"
+                    f"• filtro v25 = FISSI {fissi_mod} | T1 {t1_mod}\n"
                     f"• FISSI = {fmt_nums(fissi)}\n"
                     f"• numeri caldi FISSI in riga = {fmt_nums(fissi_hot) or 'nessuno'}\n"
                     f"• WIN FISSI = in UNA estrazione: 5/8→20€, 6/8→200€, 7/8→800€, 8/8→10000€\n"
@@ -2547,12 +2604,12 @@ class SniperV48BaseFullSpy:
             active_lines.append("• nessun gioco Cottone aperto ora")
 
         return "\n".join([
-            "🎮 COTTONE GIOCO REALE v24 — HOT FILTER",
+            "🎮 COTTONE GIOCO REALE v25 — T1 ONLY SMART",
             f"• regola FISSI = SINGOLA estrazione H1-H10: 5/8→20€, 6/8→200€, 7/8→800€, 8/8→10000€; sotto 5 = LOSE",
             f"• regola T1 = SINGOLA estrazione H1-H10: 2/3→2€, 3/3→45€; sotto 2 = LOSE",
             f"• nota = NON cumulativo: non sommo numeri usciti in colpi diversi",
-            f"• filtro v24 = {'ON' if COTTONE_GAME_HOT_FILTER_ENABLED else 'OFF'} | FISSI righe {fmt_nums(COTTONE_GAME_FISSI_FILTER_ROWS)} | T1 righe {fmt_nums(COTTONE_GAME_T1_FILTER_ROWS)}",
-            f"• hot FISSI osservati = {fmt_nums(COTTONE_GAME_FISSI_HOT_NUMBERS)}",
+            f"• filtro v25 = {'ON' if COTTONE_GAME_HOT_FILTER_ENABLED else 'OFF'} | FISSI auto {'ON' if COTTONE_GAME_FISSI_AUTO_ENABLED else 'OFF'} | T1 righe {fmt_nums(COTTONE_GAME_T1_FILTER_ROWS)} | cooldown riga {COTTONE_GAME_T1_ROW_COOLDOWN_DRAWS}",
+            f"• hot FISSI osservati/report = {fmt_nums(COTTONE_GAME_FISSI_HOT_NUMBERS)}",
             f"• hot T1 osservati = {fmt_nums(COTTONE_GAME_T1_HOT_NUMBERS)}",
             f"• giochi aperti = {len(open_games)} | giochi totali aperti = {self.cottone_game_total}",
             f"• FISSI: WIN {self.cottone_game_fissi_win} / LOSE {self.cottone_game_fissi_lose} | win rate {pct(self.cottone_game_fissi_win, f_total):.1f}% | lordo {self.cottone_game_fissi_gross_eur:.2f}€",
@@ -2567,8 +2624,8 @@ class SniperV48BaseFullSpy:
             f"• FISSI best anche nei lose = {self._top_counter_text(self.cottone_game_fissi_best_numbers, 12)}",
             f"• T1 best anche nei lose = {self._top_counter_text(self.cottone_game_t1_best_numbers, 12)}",
             "",
-            "📋 RIGHE FILTRATE — RISULTATO REALE",
-            f"• FISSI righe = {self._row_stat_text(self.cottone_game_fissi_row_stats, 8)}",
+            "📋 RIGHE FILTRATE — RISULTATO REALE / REPORT",
+            f"• FISSI righe = {self._row_stat_text(self.cottone_game_fissi_row_stats, 8)}  (auto OFF se COTTONE_GAME_FISSI_AUTO_ENABLED=0)",
             f"• T1 righe = {self._row_stat_text(self.cottone_game_t1_row_stats, 8)}",
             "",
             "📌 GIOCHI APERTI ORA",
@@ -3997,7 +4054,7 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v24 GIOCO COTTONE HOT FILTER — T1 PRIORITY + FISSI SCREMATI AVVIATO\n"
+            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v25 GIOCO COTTONE T1 ONLY SMART — FISSI SOLO REPORT AVVIATO\n"
             "✅ v48 base invariata: ambata + 3 ambi classici\n"
             "✅ max 7 colpi, cooldown e cluster reuse invariati\n"
             "✅ monitor rank ambo vincente 1/2/3\n"
@@ -4012,7 +4069,7 @@ async def startup(engine, app):
             "✅ sezione ⭐ SPIE ELITE STORICHE — LIVE\n"
             "✅ sezione 🎲 GIOCABILITÀ DECINA/MULTIPLA — H3\n"
             "✅ sezione 🧩 SPALLE 1-19 CORE — LAB\n"
-            f"✅ play operativo = v24 GIOCO COTTONE HOT FILTER: T1 prioritaria + FISSI scremati; CORE automatico OFF; conteggio su SINGOLA estrazione: ambata + max {PLAYABLE_MAX_AMBI} ambi CORE; niente single; v48 solo bonus; max {PLAYABLE_MAX_COLPI} colpi\n"
+            f"✅ play operativo = v25 GIOCO COTTONE T1 ONLY SMART: FISSI automatici OFF, T1 filtrata, anti-doppio riga e cooldown; CORE automatico OFF; conteggio su SINGOLA estrazione: ambata + max {PLAYABLE_MAX_AMBI} ambi CORE; niente single; v48 solo bonus; max {PLAYABLE_MAX_COLPI} colpi\n"
             "✅ v48 opzionale: conferma forte, ma non blocca il play\n"
             "✅ ambi ammessi: CORE 88-90/89-90/88-89 | SAT 87-88/87-89/87-90/86-90\n"
             f"✅ soglie CORE STRICT: DECINA>={PLAYABLE_MIN_DECINA_EXTRA:+.1f} pp | MULTIPLA>={PLAYABLE_MIN_MULTIPLA_EXTRA:+.1f} pp | miglior ambo>={PLAYABLE_CORE_MULTI_FIRST_MIN_SUPPORT} | secondo ambo>={PLAYABLE_CORE_MULTI_SECOND_MIN_SUPPORT} | segnali>={PLAYABLE_MIN_SIGNALS}\n"
@@ -4022,7 +4079,9 @@ async def startup(engine, app):
             f"✅ SPALLE 1-19 CORE: primarie {fmt_nums(PLAYABLE_CORE_SPALLE_PRIMARY)} | watch {fmt_nums(PLAYABLE_CORE_SPALLE_WATCH)} | solo report/lab\n"
             f"✅ COTTONE H1-H10: fissi 8 numeri + T1 tracciati per 1/2/3/4/5/6/7/8/9/10 colpi\n"
             f"✅ COTTONE PER RIGA: per ogni estratto ripetuto calcola casi, media fissi/T1 H10 e top numeri usciti\n"
-            f"✅ COTTONE GIOCO REALE v24: conta SOLO la singola estrazione; filtro righe/numeri caldi; FISSI 5/8=20€, 6/8=200€, 7/8=800€, 8/8=10000€; T1 2/3=2€, 3/3=45€\n"
+            f"✅ COTTONE GIOCO REALE v25: conta SOLO la singola estrazione; FISSI solo report; T1 righe filtrate; no doppia T1 stessa riga; cooldown riga; T1 2/3=2€, 3/3=45€\n"
+            f"✅ T1 righe attive = {fmt_nums(COTTONE_GAME_T1_FILTER_ROWS)} | hot T1 = {fmt_nums(COTTONE_GAME_T1_HOT_NUMBERS)} | cooldown riga = {COTTONE_GAME_T1_ROW_COOLDOWN_DRAWS} estrazioni\n"
+            f"✅ FISSI auto = {'ON' if COTTONE_GAME_FISSI_AUTO_ENABLED else 'OFF'} | FISSI restano in audit/report, non in conteggio giocabile\n"
             f"✅ anti-raffica CORE: dopo {PLAYABLE_CORE_ZONE_LOCK_AFTER_STOPS} STOP consecutivi, pausa {PLAYABLE_CORE_ZONE_LOCK_DRAWS} estrazioni sulla zona 88/89/90\n"
             "✅ notifiche PLAY = apertura, ambata presa, ambo preso, stop/non preso\n"
             f"✅ notifiche v48 singole = {'ON' if V48_NOTIFY_EVENTS else 'OFF'}\n"
