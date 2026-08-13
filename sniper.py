@@ -1,5 +1,5 @@
 # ============================================================
-# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v25 GIOCO COTTONE T1 ONLY SMART — FISSI SOLO REPORT
+# 🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v27 T1 ONLY SMART + SOMMA 90/91 SOMMA TOTALE RIPETUTA LAB
 #
 # VERSIONE PULITA
 #   ✅ v48 base invariata: ambata + 3 ambi classici, max 7 colpi
@@ -207,6 +207,23 @@ LAB_COTTONE_T1_WATCH_ROWS = (3, 8, 10, 11, 19)
 LAB_COTTONE_TRACK_HORIZONS = tuple(range(1, 11))  # v22: misura H1/H2/.../H10 + dettaglio per riga
 LAB_COTTONE_TRACK_MAX_COLPI = max(LAB_COTTONE_TRACK_HORIZONS)
 LAB_COTTONE_MAX_OPEN_SESSIONS = int(os.getenv("LAB_COTTONE_MAX_OPEN_SESSIONS", "500"))
+
+# v27 — SOMMA 90/91 LAB: trigger sulla SOMMA TOTALE ESATTA ripetuta.
+# Esempio del metodo originale: somma 1048 compare a E221 e ricompare a E225.
+# La ripetizione NON deve essere consecutiva e NON basta che sia uguale il solo A ridotto.
+# Quando la stessa somma totale ricompare nello stesso giorno:
+#   A = somma totale fuori 90 (1..90)
+#   B = 90 - A
+#   C = 91 - A
+# si apre un monitor LAB H1-H10 dalla estrazione SUCCESSIVA al secondo evento.
+# Ogni H e' valutato su UNA SINGOLA estrazione: 2/3 = possibile ambo, 3/3 = possibile terno.
+# Nessuna giocata automatica viene aperta da questo modulo.
+SUM9091_LOGIC_VERSION = 2
+LAB_SUM9091_ENABLED = os.getenv("LAB_SUM9091_ENABLED", "1") != "0"
+LAB_SUM9091_TRACK_HORIZONS = tuple(range(1, 11))
+LAB_SUM9091_MAX_COLPI = max(LAB_SUM9091_TRACK_HORIZONS)
+LAB_SUM9091_MAX_OPEN_SESSIONS = int(os.getenv("LAB_SUM9091_MAX_OPEN_SESSIONS", "500"))
+LAB_SUM9091_NOTIFY_OPEN = os.getenv("LAB_SUM9091_NOTIFY_OPEN", "0") == "1"
 
 # ============================================================
 # v25 — GIOCO COTTONE T1 ONLY SMART: FISSI solo report, T1 filtrata + anti-doppio
@@ -444,7 +461,7 @@ MENU_KEYBOARD = ReplyKeyboardMarkup(
         ["/play", "/lab_metodi"],
         ["/v48", "/spie"],
         ["/spie_elite", "/spie_play"],
-        ["/spalle_core", "/lab_metodi"],
+        ["/spalle_core", "/somma_9091"],
         ["/spie_top", "/spie_network"],
         ["/menu"],
     ],
@@ -461,7 +478,7 @@ INLINE_MENU = InlineKeyboardMarkup([
     [InlineKeyboardButton("🎲 CORE off", callback_data="play"), InlineKeyboardButton("🧪 Lab metodi", callback_data="lab_metodi")],
     [InlineKeyboardButton("🎯 v48", callback_data="v48"), InlineKeyboardButton("🕵️ Spie", callback_data="spie")],
     [InlineKeyboardButton("⭐ Elite", callback_data="spie_elite"), InlineKeyboardButton("🎲 Giocabilità", callback_data="spie_play")],
-    [InlineKeyboardButton("🧩 Spalle 1-19", callback_data="spalle_core"), InlineKeyboardButton("🧪 Lab metodi", callback_data="lab_metodi")],
+    [InlineKeyboardButton("🧩 Spalle 1-19", callback_data="spalle_core"), InlineKeyboardButton("🧮 Somma 90/91", callback_data="somma_9091")],
     [InlineKeyboardButton("🏆 Top spie", callback_data="spie_top"), InlineKeyboardButton("🧬 Network", callback_data="spie_network")],
     [InlineKeyboardButton("🧭 Menu", callback_data="menu")],
 ])
@@ -648,6 +665,35 @@ def cottone_t1_for_row(r):
     return [num90(r + 22), num90(r + 52), num90(r + 32)]
 
 
+def sum9091_from_nums(nums):
+    """Calcola il metodo SOMMA 90/91 su una singola estrazione.
+
+    A = somma dei 20 numeri ridotta in 1..90
+    B = 90 - A, riportato in 1..90 (0 diventa 90)
+    C = 91 - A, riportato in 1..90
+
+    valid_triad=False nei due casi degeneri in cui i tre valori non sono distinti
+    (per esempio A=45 oppure A=90). Tali casi restano visibili nel report ma non
+    aprono una sessione 2/3-3/3, perche' non formano un vero ambo/terno di 3 numeri.
+    """
+    values = [int(x) for x in (nums or [])]
+    if len(values) != 20 or len(set(values)) != 20:
+        return {"sum": 0, "a": 0, "b": 0, "c": 0, "nums": [], "valid_triad": False}
+    total = sum(values)
+    a = num90(total)
+    b = num90(90 - a)
+    c = num90(91 - a)
+    triad = [a, b, c]
+    return {
+        "sum": total,
+        "a": a,
+        "b": b,
+        "c": c,
+        "nums": triad,
+        "valid_triad": len(set(triad)) == 3,
+    }
+
+
 def fmt_ambi(ambi):
     out = []
     for item in ambi or []:
@@ -788,7 +834,7 @@ def classify_network(spy, followers):
 
 class SniperV48BaseFullSpy:
     def __init__(self):
-        self.version = "v25_t1_only_smart"
+        self.version = "v27_t1_only_smart_sum9091_rawrepeat_lab"
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
@@ -873,6 +919,17 @@ class SniperV48BaseFullSpy:
         self.cottone_game_fissi_row_stats = {}
         self.cottone_game_t1_row_stats = {}
 
+        # v27 — SOMMA 90/91: trigger sulla SOMMA TOTALE ESATTA gia' vista nello stesso giorno.
+        # Separata dal gioco T1: solo LAB/report.
+        self.sum9091_logic_version = SUM9091_LOGIC_VERSION
+        self.sum9091_uid = 0
+        self.sum9091_sessions = []
+        self.sum9091_horizon_stats = {str(h): self.new_sum9091_stats() for h in LAB_SUM9091_TRACK_HORIZONS}
+        self.sum9091_a_stats = {}
+        self.sum9091_raw_stats = {}
+        # raw_sum -> {count, first_e, prev_e, last_e}; viene azzerato a cambio giorno.
+        self.sum9091_seen_raw = {}
+
         self.load_state()
         ensure_csv()
 
@@ -914,6 +971,19 @@ class SniperV48BaseFullSpy:
             "k3_gross_units": 0.0,
             "expected_k2_sum": 0.0,
             "expected_k3_sum": 0.0,
+        }
+
+    @staticmethod
+    def new_sum9091_stats():
+        return {
+            "sessions": 0,
+            "closed": 0,
+            # Distribuzione del risultato DEL SINGOLO colpo Hn.
+            "exact_k_counts": {str(i): 0 for i in range(0, 4)},
+            # Miglior risultato ottenuto in una singola estrazione entro H1..Hn.
+            "best_k_counts": {str(i): 0 for i in range(0, 4)},
+            "k2plus": 0,
+            "k3": 0,
         }
 
     @staticmethod
@@ -1017,6 +1087,13 @@ class SniperV48BaseFullSpy:
             "cottone_game_t1_best_numbers": self.cottone_game_t1_best_numbers,
             "cottone_game_fissi_row_stats": self.cottone_game_fissi_row_stats,
             "cottone_game_t1_row_stats": self.cottone_game_t1_row_stats,
+            "sum9091_logic_version": self.sum9091_logic_version,
+            "sum9091_uid": self.sum9091_uid,
+            "sum9091_sessions": self.sum9091_sessions,
+            "sum9091_horizon_stats": self.sum9091_horizon_stats,
+            "sum9091_a_stats": self.sum9091_a_stats,
+            "sum9091_raw_stats": self.sum9091_raw_stats,
+            "sum9091_seen_raw": self.sum9091_seen_raw,
             "scheduled_reports_sent": self.scheduled_reports_sent,
         }
         tmp = STATE_FILE + ".tmp"
@@ -1101,6 +1178,42 @@ class SniperV48BaseFullSpy:
             self.cottone_game_t1_best_numbers = {str(k): int(v) for k, v in (data.get("cottone_game_t1_best_numbers", {}) or {}).items()}
             self.cottone_game_fissi_row_stats = data.get("cottone_game_fissi_row_stats", {}) if isinstance(data.get("cottone_game_fissi_row_stats", {}), dict) else {}
             self.cottone_game_t1_row_stats = data.get("cottone_game_t1_row_stats", {}) if isinstance(data.get("cottone_game_t1_row_stats", {}), dict) else {}
+            stored_sum_logic = int(data.get("sum9091_logic_version", 0) or 0)
+            if stored_sum_logic == SUM9091_LOGIC_VERSION:
+                self.sum9091_logic_version = SUM9091_LOGIC_VERSION
+                self.sum9091_uid = int(data.get("sum9091_uid", 0))
+                self.sum9091_sessions = data.get("sum9091_sessions", []) if isinstance(data.get("sum9091_sessions", []), list) else []
+                self.sum9091_horizon_stats = self._load_sum9091_stat_map(data.get("sum9091_horizon_stats", {}))
+                self.sum9091_a_stats = data.get("sum9091_a_stats", {}) if isinstance(data.get("sum9091_a_stats", {}), dict) else {}
+                self.sum9091_raw_stats = data.get("sum9091_raw_stats", {}) if isinstance(data.get("sum9091_raw_stats", {}), dict) else {}
+                raw_seen = data.get("sum9091_seen_raw", {}) if isinstance(data.get("sum9091_seen_raw", {}), dict) else {}
+                self.sum9091_seen_raw = {}
+                for k, v in raw_seen.items():
+                    if not isinstance(v, dict):
+                        continue
+                    try:
+                        total = int(k)
+                        self.sum9091_seen_raw[str(total)] = {
+                            "count": max(1, int(v.get("count", 1))),
+                            "first_e": int(v.get("first_e", 0) or 0),
+                            "prev_e": int(v.get("prev_e", 0) or 0),
+                            "last_e": int(v.get("last_e", 0) or 0),
+                        }
+                    except Exception:
+                        continue
+            else:
+                # Migrazione v26 -> v27: le vecchie statistiche erano basate su A ripetuta
+                # consecutivamente, quindi NON sono confrontabili con il trigger originale
+                # sulla somma totale esatta. Resettiamo SOLO questo LAB, preservando T1/v48/spie.
+                self.sum9091_logic_version = SUM9091_LOGIC_VERSION
+                self.sum9091_uid = 0
+                self.sum9091_sessions = []
+                self.sum9091_horizon_stats = {str(h): self.new_sum9091_stats() for h in LAB_SUM9091_TRACK_HORIZONS}
+                self.sum9091_a_stats = {}
+                self.sum9091_raw_stats = {}
+                self.sum9091_seen_raw = {}
+                self.rebuild_sum9091_seen_from_loaded_history()
+                print("ℹ️ SOMMA 90/91: migrazione a trigger SOMMA TOTALE ESATTA; vecchio LAB v26 azzerato.")
             self.scheduled_reports_sent = data.get("scheduled_reports_sent", {}) if isinstance(data.get("scheduled_reports_sent", {}), dict) else {}
         except Exception as ex:
             print(f"⚠️ Stato non caricato: {ex}")
@@ -1113,6 +1226,22 @@ class SniperV48BaseFullSpy:
             for k, default in out[hkey].items():
                 value = old.get(k, default)
                 out[hkey][k] = float(value) if isinstance(default, float) else int(value)
+        return out
+
+    def _load_sum9091_stat_map(self, src):
+        out = {str(h): self.new_sum9091_stats() for h in LAB_SUM9091_TRACK_HORIZONS}
+        if not isinstance(src, dict):
+            return out
+        for h in LAB_SUM9091_TRACK_HORIZONS:
+            hk = str(h)
+            old = src.get(hk, {}) if isinstance(src.get(hk, {}), dict) else {}
+            st = out[hk]
+            st["sessions"] = int(old.get("sessions", 0))
+            st["closed"] = int(old.get("closed", 0))
+            st["exact_k_counts"] = {str(i): int((old.get("exact_k_counts", {}) or {}).get(str(i), 0)) for i in range(0, 4)}
+            st["best_k_counts"] = {str(i): int((old.get("best_k_counts", {}) or {}).get(str(i), 0)) for i in range(0, 4)}
+            st["k2plus"] = int(old.get("k2plus", 0))
+            st["k3"] = int(old.get("k3", 0))
         return out
 
     def _load_cottone_stat_map(self, src):
@@ -1175,6 +1304,10 @@ class SniperV48BaseFullSpy:
         self.playable_core_stop_streak = 0
         self.playable_core_zone_lock = 0
         self.draws_since_spy_report = 0
+        # Le sessioni LAB aperte non attraversano il cambio giorno; le statistiche aggregate restano.
+        # Le SOMME TOTALI viste sono invece giornaliere: una ripetizione deve avvenire nello stesso giorno.
+        self.sum9091_sessions = []
+        self.sum9091_seen_raw = {}
         self.save_state()
 
     def append_csv_event(self, event, **kwargs):
@@ -1248,13 +1381,66 @@ class SniperV48BaseFullSpy:
         self.processed_ids = self.processed_ids[-PROCESSED_MAX:]
         self.processed_fps = self.processed_fps[-PROCESSED_MAX:]
 
+    def _remember_sum9091_raw(self, e, nums):
+        """Registra la SOMMA TOTALE esatta di una estrazione senza aprire sessioni.
+
+        Serve sia al live sia al preload/rebuild. La chiave e' la somma grezza
+        dei 20 estratti (es. 1048), NON il valore A ridotto fuori 90.
+        """
+        if not LAB_SUM9091_ENABLED:
+            return None
+        sm = sum9091_from_nums(nums)
+        total = int(sm.get("sum", 0) or 0)
+        if total <= 0:
+            return None
+        key = str(total)
+        old = self.sum9091_seen_raw.get(key, {}) if isinstance(self.sum9091_seen_raw.get(key, {}), dict) else {}
+        old_count = int(old.get("count", 0) or 0)
+        old_last_e = int(old.get("last_e", 0) or 0)
+        first_e = int(old.get("first_e", 0) or 0) or int(e)
+        entry = {
+            "count": old_count + 1,
+            "first_e": first_e,
+            "prev_e": old_last_e if old_count > 0 else 0,
+            "last_e": int(e),
+        }
+        self.sum9091_seen_raw[key] = entry
+        return {
+            "sm": sm,
+            "was_seen": old_count > 0,
+            "previous_e": old_last_e,
+            "occurrence": old_count + 1,
+            "entry": entry,
+        }
+
+    def rebuild_sum9091_seen_from_loaded_history(self):
+        """Ricostruisce le somme raw dal tratto di storico gia' persistito.
+
+        E' usato soprattutto nella migrazione dalla v26, cosi' la nuova logica
+        puo' riconoscere subito una futura somma totale gia' uscita oggi.
+        """
+        self.sum9091_seen_raw = {}
+        if not self.last_draws:
+            return
+        ids = list(self.processed_ids[-len(self.last_draws):])
+        if len(ids) != len(self.last_draws):
+            return
+        for e, nums in zip(ids, self.last_draws):
+            if len(set(nums or [])) == 20:
+                self._remember_sum9091_raw(e, nums)
+
     def preload_today_as_processed(self, es):
+        # Il preload non apre sessioni retroattive, ma costruisce la memoria delle
+        # SOMME TOTALI esatte gia' viste oggi. Cosi' una futura ripetizione viene
+        # riconosciuta anche se il bot e' stato avviato a giornata iniziata.
+        self.sum9091_seen_raw = {}
         for e, nums in es:
             if len(set(nums)) != 20:
                 continue
             self.last_draws.append(nums)
             self.processed_ids.append(e)
             self.processed_fps.append(fingerprint(e, nums))
+            self._remember_sum9091_raw(e, nums)
         self.last_draws = self.last_draws[-HISTORY_MAX:]
         self.processed_ids = self.processed_ids[-PROCESSED_MAX:]
         self.processed_fps = self.processed_fps[-PROCESSED_MAX:]
@@ -2062,23 +2248,262 @@ class SniperV48BaseFullSpy:
         return {"signals": out}
 
     def somma_9091_snapshot(self):
-        """Metodo somma 90/91.
-
-        Somma i 20 numeri, riduce fuori 90, poi crea terzina:
-        A, 90-A, 91-A normalizzati in 1..90.
-        """
+        """Snapshot live del metodo SOMMA 90/91 con trigger sulla somma totale esatta."""
         cur = self._latest_draw()
         if not cur:
-            return {"sum": 0, "a": 0, "nums": []}
-        total = sum(map(int, cur))
-        a = num90(total)
-        c90 = num90(90 - a)
-        c91 = num90(91 - a)
-        nums = []
-        for x in (a, c90, c91):
-            if x not in nums:
-                nums.append(x)
-        return {"sum": total, "a": a, "c90": c90, "c91": c91, "nums": nums}
+            return {
+                "sum": 0, "a": 0, "b": 0, "c": 0, "nums": [], "valid_triad": False,
+                "raw_occurrences": 0, "previous_e": 0, "repeated_raw": False, "gap": None,
+            }
+        sm = sum9091_from_nums(cur)
+        total = int(sm.get("sum", 0) or 0)
+        entry = self.sum9091_seen_raw.get(str(total), {}) if total else {}
+        count = int(entry.get("count", 0) or 0) if isinstance(entry, dict) else 0
+        previous_e = int(entry.get("prev_e", 0) or 0) if isinstance(entry, dict) else 0
+        last_e = int(entry.get("last_e", 0) or 0) if isinstance(entry, dict) else 0
+        # Se lo snapshot viene chiesto prima che la draw corrente sia stata registrata
+        # nella mappa, facciamo comunque un controllo sullo storico caricato.
+        repeated_raw = count >= 2 and last_e == int(self.max_e or 0)
+        gap = (last_e - previous_e) if repeated_raw and previous_e and last_e else None
+        sm["raw_occurrences"] = count
+        sm["previous_e"] = previous_e
+        sm["repeated_raw"] = repeated_raw
+        sm["gap"] = gap
+        return sm
+
+    def _record_sum9091_horizon(self, session, h, exact_k):
+        hk = str(int(h))
+        st = self.sum9091_horizon_stats.setdefault(hk, self.new_sum9091_stats())
+        st["closed"] = int(st.get("closed", 0)) + 1
+        exact_k = max(0, min(3, int(exact_k)))
+        best_k = max(0, min(3, int(session.get("best_k", 0))))
+        ex = st.setdefault("exact_k_counts", {str(i): 0 for i in range(0, 4)})
+        bk = st.setdefault("best_k_counts", {str(i): 0 for i in range(0, 4)})
+        ex[str(exact_k)] = int(ex.get(str(exact_k), 0)) + 1
+        bk[str(best_k)] = int(bk.get(str(best_k), 0)) + 1
+        if best_k >= 2:
+            st["k2plus"] = int(st.get("k2plus", 0)) + 1
+        if best_k >= 3:
+            st["k3"] = int(st.get("k3", 0)) + 1
+
+    @staticmethod
+    def _bump_sum9091_result_stat(mp, key, best_k):
+        key = str(key)
+        st = mp.setdefault(key, {"closed": 0, "best0": 0, "best1": 0, "best2": 0, "best3": 0})
+        st["closed"] = int(st.get("closed", 0)) + 1
+        best_k = max(0, min(3, int(best_k)))
+        st[f"best{best_k}"] = int(st.get(f"best{best_k}", 0)) + 1
+
+    async def process_sum9091_sessions(self, app, e, nums):
+        """Processa i monitor SOMMA 90/91 gia' aperti.
+
+        Ogni H e' una singola estrazione. Il best entro H e' il miglior 0/3, 1/3,
+        2/3 o 3/3 ottenuto in UNA delle estrazioni H1..H; i numeri non si cumulano.
+        """
+        if not LAB_SUM9091_ENABLED or not self.sum9091_sessions:
+            return
+        nums_set = set(map(int, nums or []))
+        still_open = []
+        for s in self.sum9091_sessions:
+            s["colpi"] = int(s.get("colpi", 0)) + 1
+            h = int(s["colpi"])
+            target = set(map(int, s.get("nums", [])))
+            hits = sorted(target & nums_set)
+            k = len(hits)
+            s.setdefault("draws_by_colpo", []).append({
+                "h": h,
+                "e": int(e),
+                "hits": hits,
+                "k": k,
+            })
+            s["draws_by_colpo"] = s.get("draws_by_colpo", [])[-LAB_SUM9091_MAX_COLPI:]
+            if k > int(s.get("best_k", 0)):
+                s["best_k"] = k
+                s["best_hits"] = hits
+                s["best_h"] = h
+                s["best_e"] = int(e)
+
+            if 1 <= h <= LAB_SUM9091_MAX_COLPI:
+                self._record_sum9091_horizon(s, h, k)
+
+            if h >= LAB_SUM9091_MAX_COLPI:
+                best_k = max(0, min(3, int(s.get("best_k", 0))))
+                self._bump_sum9091_result_stat(self.sum9091_a_stats, s.get("a", 0), best_k)
+                self._bump_sum9091_result_stat(self.sum9091_raw_stats, s.get("sum", 0), best_k)
+                self.append_csv_event(
+                    "SUM9091_LAB_CLOSE",
+                    e=e,
+                    play_id=s.get("id", ""),
+                    colpo=h,
+                    ambata=s.get("a", ""),
+                    cluster=fmt_nums(s.get("nums", [])),
+                    outcome=(
+                        f"RAW_SUM_{s.get('sum')}_REPEAT_FROM_E{s.get('previous_e')}_"
+                        f"GAP_{s.get('repeat_gap')}_BEST_{best_k}_3_H{s.get('best_h') or '-'}"
+                    ),
+                )
+            else:
+                still_open.append(s)
+        self.sum9091_sessions = still_open[-LAB_SUM9091_MAX_OPEN_SESSIONS:]
+
+    async def maybe_open_sum9091_session(self, app, e):
+        """Apre il LAB quando la SOMMA TOTALE ESATTA della draw corrente era gia' uscita oggi.
+
+        La ripetizione puo' essere non consecutiva. Due somme diverse che producono
+        lo stesso A fuori 90 NON costituiscono un segnale.
+        """
+        if not LAB_SUM9091_ENABLED or not self.last_draws:
+            return
+
+        cur = sum9091_from_nums(self.last_draws[-1])
+        total = int(cur.get("sum", 0) or 0)
+        if total <= 0:
+            return
+
+        # Leggiamo la memoria PRIMA di registrare la draw corrente.
+        old = self.sum9091_seen_raw.get(str(total), {}) if isinstance(self.sum9091_seen_raw.get(str(total), {}), dict) else {}
+        old_count = int(old.get("count", 0) or 0)
+        previous_e = int(old.get("last_e", 0) or 0)
+
+        # Registriamo SEMPRE la somma corrente, anche se e' la prima volta o la terzina e' degenere.
+        remembered = self._remember_sum9091_raw(e, self.last_draws[-1])
+        if not remembered or old_count <= 0:
+            return
+
+        # Questo e' il vero trigger Cottone: stessa SOMMA TOTALE esatta gia' vista.
+        # 2/3 e 3/3 hanno senso solo con tre numeri distinti.
+        if not bool(cur.get("valid_triad", False)):
+            self.append_csv_event(
+                "SUM9091_RAW_REPEAT_DEGENERATE",
+                e=e,
+                ambata=cur.get("a", ""),
+                cluster=fmt_nums(cur.get("nums", [])),
+                outcome=f"RAW_SUM_{total}_REPEAT_FROM_E{previous_e}_NO_TRIAD",
+            )
+            return
+
+        occurrence = int(remembered.get("occurrence", old_count + 1))
+        repeat_gap = int(e) - previous_e if previous_e else None
+
+        self.sum9091_uid += 1
+        s = {
+            "id": self.sum9091_uid,
+            "signal_e": int(e),
+            "sum": total,
+            "previous_e": previous_e,
+            "repeat_gap": repeat_gap,
+            "occurrence": occurrence,
+            "a": int(cur["a"]),
+            "b": int(cur["b"]),
+            "c": int(cur["c"]),
+            "nums": list(map(int, cur["nums"])),
+            "colpi": 0,
+            "best_k": 0,
+            "best_hits": [],
+            "best_h": None,
+            "best_e": None,
+            "draws_by_colpo": [],
+        }
+        self.sum9091_sessions.append(s)
+        self.sum9091_sessions = self.sum9091_sessions[-LAB_SUM9091_MAX_OPEN_SESSIONS:]
+        for h in LAB_SUM9091_TRACK_HORIZONS:
+            st = self.sum9091_horizon_stats.setdefault(str(h), self.new_sum9091_stats())
+            st["sessions"] = int(st.get("sessions", 0)) + 1
+
+        self.append_csv_event(
+            "SUM9091_LAB_OPEN",
+            e=e,
+            play_id=s["id"],
+            colpo=0,
+            ambata=s["a"],
+            cluster=fmt_nums(s["nums"]),
+            outcome=f"REPEAT_RAW_SUM_{total}_FROM_E{previous_e}_GAP_{repeat_gap}_OCC_{occurrence}",
+        )
+        if LAB_SUM9091_NOTIFY_OPEN:
+            await self.tg(
+                app,
+                "🧮 SOMMA 90/91 — LAB APERTO\n"
+                f"• id = {s['id']} | SOMMA TOTALE RIPETUTA = {total}\n"
+                f"• precedente = E{previous_e} | nuova = E{e} | distanza = {repeat_gap if repeat_gap is not None else '-'} estrazioni\n"
+                f"• fuori 90: A={s['a']} | 90-A={s['b']} | 91-A={s['c']}\n"
+                f"• numeri = {fmt_nums(s['nums'])}\n"
+                f"• segnale = estrazione {e}; H1 parte dalla prossima estrazione\n"
+                f"• monitor = H1-H{LAB_SUM9091_MAX_COLPI}, singola estrazione, solo LAB"
+            )
+
+    def sum9091_lab_text(self, compact=False):
+        if not LAB_SUM9091_ENABLED:
+            return "🧮 SOMMA 90/91 — LAB OFF"
+        sm = self.somma_9091_snapshot()
+        if not sm.get("a"):
+            return "🧮 SOMMA 90/91 — LAB | dati non disponibili"
+
+        repeat_txt = "SI" if sm.get("repeated_raw") else "NO"
+        valid_txt = "OK 3 distinti" if sm.get("valid_triad") else "DEGENERE: meno di 3 distinti, nessun monitor"
+        open_sessions = [s for s in self.sum9091_sessions if int(s.get("colpi", 0)) < LAB_SUM9091_MAX_COLPI]
+        seen_repeated = sum(1 for v in self.sum9091_seen_raw.values() if isinstance(v, dict) and int(v.get("count", 0) or 0) >= 2)
+        lines = [
+            "🧮 SOMMA 90/91 — LAB SOMMA TOTALE RIPETUTA",
+            f"• ultima: somma totale={sm['sum']} → A={sm['a']} | 90-A={sm['b']} | 91-A={sm['c']} | numeri={fmt_nums(sm['nums'])}",
+            f"• stessa somma totale gia' vista={repeat_txt} | occorrenze oggi={sm.get('raw_occurrences', 0)} | precedente E={sm.get('previous_e') or '-'} | gap={sm.get('gap') if sm.get('gap') is not None else '-'} | terzina={valid_txt}",
+            "• trigger LAB = la STESSA SOMMA GREZZA dei 20 estratti ricompare nello stesso giorno, anche NON consecutivamente",
+            "• NON trigger = due somme totali diverse che danno lo stesso A fuori 90",
+            "• verifica = ogni H e' una singola estrazione; NON cumulativo; 2/3=possibile ambo, 3/3=possibile terno",
+            f"• somme raw distinte ripetute oggi = {seen_repeated} | sessioni aperte = {len(open_sessions)}",
+        ]
+
+        # In versione compatta mostriamo H1/H3/H5/H10; il comando dedicato mostra tutti gli H.
+        hs = (1, 3, 5, 10) if compact else LAB_SUM9091_TRACK_HORIZONS
+        lines.append("• risultati entro H (miglior singola estrazione):")
+        for h in hs:
+            st = self.sum9091_horizon_stats.get(str(h), self.new_sum9091_stats())
+            closed = int(st.get("closed", 0))
+            bk = st.get("best_k_counts", {}) or {}
+            k1 = int(bk.get("1", 0)); k2 = int(bk.get("2", 0)); k3 = int(bk.get("3", 0))
+            if closed:
+                lines.append(
+                    f"  H{h}: casi={closed} | 1/3={k1} ({pct(k1, closed):.1f}%) | "
+                    f"2/3={k2} ({pct(k2, closed):.1f}%) | 3/3={k3} ({pct(k3, closed):.1f}%) | "
+                    f">=2/3={pct(k2 + k3, closed):.1f}%"
+                )
+            else:
+                lines.append(f"  H{h}: casi=0 | 1/3=0 | 2/3=0 | 3/3=0")
+
+        if not compact and open_sessions:
+            lines.append("• monitor aperti:")
+            for s in open_sessions[-6:]:
+                shots = ", ".join(f"H{d['h']}={d['k']}/3" for d in (s.get("draws_by_colpo", []) or [])) or "H1 non ancora giocato"
+                lines.append(
+                    f"  #{s.get('id')} SUM={s.get('sum')} (gia' E{s.get('previous_e')}, gap {s.get('repeat_gap')}) → "
+                    f"A={s.get('a')} {fmt_nums(s.get('nums', []))} | segnale E{s.get('signal_e')} | {shots} | best={s.get('best_k', 0)}/3"
+                )
+        if not compact:
+            ranked_a = []
+            for a, st in (self.sum9091_a_stats or {}).items():
+                closed = int(st.get("closed", 0))
+                if not closed:
+                    continue
+                k2 = int(st.get("best2", 0)); k3 = int(st.get("best3", 0))
+                ranked_a.append((pct(k2 + k3, closed), int(a), closed, k2, k3))
+            ranked_a.sort(reverse=True)
+            if ranked_a:
+                lines.append("• migliori A dopo trigger RAW a H10 (>=2/3): " + "; ".join(
+                    f"A{a}: {k2+k3}/{closed}={rate:.1f}% (3/3={k3})" for rate, a, closed, k2, k3 in ranked_a[:8]
+                ))
+
+            ranked_raw = []
+            for raw, st in (self.sum9091_raw_stats or {}).items():
+                closed = int(st.get("closed", 0))
+                if not closed:
+                    continue
+                k2 = int(st.get("best2", 0)); k3 = int(st.get("best3", 0))
+                ranked_raw.append((pct(k2 + k3, closed), int(raw), closed, k2, k3))
+            ranked_raw.sort(reverse=True)
+            if ranked_raw:
+                lines.append("• migliori SOMME TOTALI ripetute a H10 (>=2/3): " + "; ".join(
+                    f"Σ{raw}: {k2+k3}/{closed}={rate:.1f}% (3/3={k3})" for rate, raw, closed, k2, k3 in ranked_raw[:8]
+                ))
+        return "\n".join(lines)
 
     def _record_cottone_horizon(self, session, h):
         hkey = str(h)
@@ -2795,7 +3220,7 @@ class SniperV48BaseFullSpy:
             for n in [x["target"], *x["triad"]]:
                 conv[n] += 1
                 conv_src[n].append("+4")
-        for n in sm.get("nums", []):
+        for n in set(sm.get("nums", [])):
             conv[n] += 1
             conv_src[n].append("somma")
         strong = [(n, c) for n, c in conv.items() if c >= 2]
@@ -2806,9 +3231,9 @@ class SniperV48BaseFullSpy:
             conv_txt = "nessuna convergenza 2+ metodi"
 
         return "\n".join([
-            "🧪 LAB METODI — COTTONE H1-H10 / +5 / +4 / SOMMA",
-            "• uso = laboratorio/report; in v22 il gioco automatico è solo COTTONE FISSI/T1 con premi reali + audit",
-            "• moduli attivi: FISSI/T1 Cottone H1-H10, distanza +5, conteggio +4, somma 90/91",
+            "🧪 LAB METODI — COTTONE H1-H10 / +5 / +4 / SOMMA 90/91 RIPETUTA",
+            "• uso = laboratorio/report; in v27 il gioco automatico resta T1 ONLY SMART, SOMMA 90/91 non apre giocate",
+            "• moduli attivi: FISSI/T1 Cottone H1-H10, distanza +5, conteggio +4, SOMMA 90/91 su SOMMA TOTALE ESATTA ripetuta",
             "",
             "📌 COTTONE — FISSI IN USCITA + T1",
             *cott_lines,
@@ -2823,8 +3248,7 @@ class SniperV48BaseFullSpy:
             f"• segnali live = {c4_txt}",
             "• top storico +4: 2→6, 3→7, 4→8, 9→13",
             "",
-            "🧮 SOMMA 90/91",
-            f"• somma 20 numeri = {sm['sum']} | fuori 90 = {sm['a']} | terzina = {fmt_nums(sm['nums'])}",
+            self.sum9091_lab_text(compact=True),
             "",
             "🔗 CONVERGENZE LAB",
             f"• numeri usciti da 2+ metodi = {conv_txt}",
@@ -3614,6 +4038,10 @@ class SniperV48BaseFullSpy:
             int(v.get("sessions", 0)) or int(v.get("closed", 0))
             for v in self.spy_horizon_stats.values()
         )
+        has_sum9091_data = bool(
+            self.sum9091_sessions
+            or any(int(v.get("closed", 0)) for v in self.sum9091_horizon_stats.values())
+        )
         return bool(
             self.total_play
             or self.total_hit_ambo
@@ -3622,6 +4050,7 @@ class SniperV48BaseFullSpy:
             or self.playable_active
             or self.spy_sessions
             or has_spy_data
+            or has_sum9091_data
         )
 
     def has_scheduled_reportable_data(self):
@@ -3635,7 +4064,8 @@ class SniperV48BaseFullSpy:
             or self.playable_active
             or (self.active and self.colpi >= AUTO_REPORT_ALLOW_ACTIVE_V48_AFTER_COLPO)
         )
-        return meaningful_v48 or h3_closed >= AUTO_REPORT_MIN_H3_CLOSED
+        sum9091_closed = int(self.sum9091_horizon_stats.get(str(LAB_SUM9091_MAX_COLPI), {}).get("closed", 0))
+        return meaningful_v48 or h3_closed >= AUTO_REPORT_MIN_H3_CLOSED or sum9091_closed > 0
 
     async def maybe_send_scheduled_report(self, app):
         if not AUTO_REPORT_ENABLED:
@@ -3681,6 +4111,7 @@ class SniperV48BaseFullSpy:
             "/spie_play — giocabilità DECINA/MULTIPLA live\n"
             "/spalle_core — spalle 1-19 del triangolo CORE\n"
             "/lab_metodi — Cottone, +5, +4, somma e convergenze\n"
+            "/somma_9091 — LAB somma 90/91 su SOMMA TOTALE ripetuta H1-H10\n"
             "/spie_top — migliori spie live\n"
             "/spie_network — reti numeriche spia\n"
             "/menu — mostra questo menu"
@@ -3707,14 +4138,16 @@ class SniperV48BaseFullSpy:
         if DRAW_NOTIFY:
             await self.tg(app, f"📌 Estrazione {e}\n🎱 {', '.join(map(str, nums))}")
 
-        # 1) aggiorna sessioni spia, Cottone H1-H10 e play operativo già aperti sui nuovi numeri.
+        # 1) aggiorna sessioni spia, Cottone H1-H10, SOMMA 90/91 e play operativo gia' aperti.
         await self.process_spy_sessions(app, e, nums)
         await self.process_cottone_sessions(app, e, nums)
+        await self.process_sum9091_sessions(app, e, nums)
         await self.process_playable_play(app, e, nums)
 
         # 2) apre nuove spie/LAB dalla condizione appena creata.
         await self.maybe_open_spy_sessions(app, e)
         await self.maybe_open_cottone_sessions(app, e)
+        await self.maybe_open_sum9091_session(app, e)
 
         # v17: il play operativo puo' partire solo su CORE_MULTI vero e più selettivo; terno opzionale solo dopo conferma.
         # Se v48 e' attivo, lo valutiamo dopo averlo processato.
@@ -3910,6 +4343,11 @@ async def cmd_lab_metodi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, engine.lab_methods_text())
 
 
+async def cmd_somma_9091(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.sum9091_lab_text(compact=False))
+
+
 async def cmd_v48(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine = context.application.bot_data["engine"]
     await reply(update, engine.v48_stats_text())
@@ -3965,6 +4403,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = engine.core_spalle_1_19_text()
     elif data == "lab_metodi":
         text = engine.lab_methods_text()
+    elif data == "somma_9091":
+        text = engine.sum9091_lab_text(compact=False)
     elif data == "spie_top":
         text = engine.spy_top_text()
     elif data == "spie_network":
@@ -4032,6 +4472,7 @@ async def setup_commands(app):
         BotCommand("spie_play", "Giocabilità DECINA/MULTIPLA"),
         BotCommand("spalle_core", "Spalle 1-19 CORE"),
         BotCommand("lab_metodi", "Fissi/T1 +5 +4 somma"),
+        BotCommand("somma_9091", "Somma 90/91 ripetuta H1-H10"),
         BotCommand("spie_top", "Migliori spie live"),
         BotCommand("spie_network", "Reti numeriche spia"),
         BotCommand("menu", "Mostra pulsanti"),
@@ -4054,7 +4495,7 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v25 GIOCO COTTONE T1 ONLY SMART — FISSI SOLO REPORT AVVIATO\n"
+            "🚀 SNIPER v48 BASE + FULL NUMERI SPIA LAB — v27 T1 ONLY SMART + SOMMA 90/91 SOMMA TOTALE RIPETUTA LAB AVVIATO\n"
             "✅ v48 base invariata: ambata + 3 ambi classici\n"
             "✅ max 7 colpi, cooldown e cluster reuse invariati\n"
             "✅ monitor rank ambo vincente 1/2/3\n"
@@ -4079,6 +4520,7 @@ async def startup(engine, app):
             f"✅ SPALLE 1-19 CORE: primarie {fmt_nums(PLAYABLE_CORE_SPALLE_PRIMARY)} | watch {fmt_nums(PLAYABLE_CORE_SPALLE_WATCH)} | solo report/lab\n"
             f"✅ COTTONE H1-H10: fissi 8 numeri + T1 tracciati per 1/2/3/4/5/6/7/8/9/10 colpi\n"
             f"✅ COTTONE PER RIGA: per ogni estratto ripetuto calcola casi, media fissi/T1 H10 e top numeri usciti\n"
+            f"✅ SOMMA 90/91 LAB v27: trigger SOLO quando la stessa SOMMA TOTALE dei 20 estratti ricompare nello stesso giorno, anche non consecutiva; poi A=somma fuori 90 e terzina A-(90-A)-(91-A); H1-H10 su singola estrazione, 2/3 e 3/3\n"
             f"✅ COTTONE GIOCO REALE v25: conta SOLO la singola estrazione; FISSI solo report; T1 righe filtrate; no doppia T1 stessa riga; cooldown riga; T1 2/3=2€, 3/3=45€\n"
             f"✅ T1 righe attive = {fmt_nums(COTTONE_GAME_T1_FILTER_ROWS)} | hot T1 = {fmt_nums(COTTONE_GAME_T1_HOT_NUMBERS)} | cooldown riga = {COTTONE_GAME_T1_ROW_COOLDOWN_DRAWS} estrazioni\n"
             f"✅ FISSI auto = {'ON' if COTTONE_GAME_FISSI_AUTO_ENABLED else 'OFF'} | FISSI restano in audit/report, non in conteggio giocabile\n"
@@ -4148,6 +4590,7 @@ async def main():
     app.add_handler(CommandHandler("spie_play", cmd_spie_play))
     app.add_handler(CommandHandler("spalle_core", cmd_spalle_core))
     app.add_handler(CommandHandler("lab_metodi", cmd_lab_metodi))
+    app.add_handler(CommandHandler("somma_9091", cmd_somma_9091))
     app.add_handler(CommandHandler("spie_top", cmd_spie_top))
     app.add_handler(CommandHandler("spie_network", cmd_spie_network))
     app.add_handler(CallbackQueryHandler(on_button))
