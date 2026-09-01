@@ -1,5 +1,5 @@
 # ============================================================
-# 🎯 SNIPER PLAYABILITY ONLY v2
+# 🎯 SNIPER PLAYABILITY ONLY v2 FIX — COTTONE MAX COLPI
 # AMBO ONLY • H1-H3 • 1 solo ambo • PAIR-SPECIFIC EDGE + SUPPORTI INDIPENDENTI
 #
 # v2: il K2 della terna NON viene piu' trasferito automaticamente all'ambo.
@@ -2216,7 +2216,7 @@ class SniperV48BaseFullSpy:
         t1_live = any(pair.issubset(set(map(int, row.get("t1", [])))) for row in cott.get("rows", []))
         if not t1_live:
             t1_live = any(
-                int(s.get("colpi",0)) < LAB_COTTONE_MAX_COLPI and pair.issubset(set(map(int, s.get("t1", []))))
+                int(s.get("colpi",0)) < LAB_COTTONE_TRACK_MAX_COLPI and pair.issubset(set(map(int, s.get("t1", []))))
                 for s in self.cottone_sessions
             )
         if t1_live:
