@@ -1,8 +1,9 @@
 # ============================================================
-# 🎯 SNIPER PLAYABILITY ONLY v3 — STRICT SHADOW + ORIZZONTE DINAMICO
+# 🎯 SNIPER PLAYABILITY ONLY v3.1 — STRICT + HISTORICAL WARMUP 3 GIORNI
 # AMBO ONLY • H1-H3 • 1 solo ambo • PAIR-SPECIFIC + STRICT CONDITION
 #
-# v3: il PAIR-LAB generale resta diagnostico, ma NON basta piu' per aprire un PLAY.
+# v3.1: il PAIR-LAB generale resta diagnostico, ma NON basta piu' per aprire un PLAY.
+# All'avvio viene eseguito un replay cronologico di altro ieri + ieri + oggi per inizializzare lo STRICT.
 # Ogni coppia deve dimostrare edge/ROI anche nel sottoinsieme STRICT che replica i gate operativi.
 # Il numero massimo di colpi viene scelto dinamicamente (H1/H2/H3) dal ROI STRICT della coppia.
 #
@@ -37,7 +38,7 @@ import sys
 import subprocess
 import time
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from itertools import combinations
 
@@ -61,6 +62,8 @@ CHAT_ID_RAW = os.getenv("CHAT_ID")
 CHAT_ID = None
 
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
+URL_YESTERDAY = "https://10elotto5minuti.com/estrazioni-di-ieri"
+URL_DAY_BEFORE_YESTERDAY = "https://10elotto5minuti.com/estrazioni-dellaltro-ieri"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "identity"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -68,8 +71,8 @@ STATE_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v3_state.json")
 # Migrazione: v3 importa prima lo state v2, preservando SPIE/Cottone/SOMMA e PAIR-LAB generale.
 LEGACY_STATE_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v2_state.json")
 LEGACY_STATE_FILE_V1 = os.path.join(BASE_DIR, "sniper_playability_only_v1_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v3_events.csv")
-LOCK_FILE = "/tmp/sniper_playability_only_v3.lock"
+CSV_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v31_events.csv")
+LOCK_FILE = "/tmp/sniper_playability_only_v31.lock"
 
 # Orario bot/report: GitHub gira spesso in UTC, qui forziamo Italia.
 BOT_TZ_NAME = os.getenv("BOT_TZ", "Europe/Rome")
@@ -143,7 +146,7 @@ def playable_pair_group(pair):
 
 
 # Motore operativo
-PLAYABILITY_ONLY_LOGIC_VERSION = 3
+PLAYABILITY_ONLY_LOGIC_VERSION = 31
 PLAYABLE_AUTO_ENABLED = os.getenv("PLAYABLE_AUTO_ENABLED", "1") != "0"
 PLAYABLE_NOTIFY_OPEN = os.getenv("PLAYABLE_NOTIFY_OPEN", "1") != "0"
 PLAYABLE_NOTIFY_HIT = os.getenv("PLAYABLE_NOTIFY_HIT", "1") != "0"
@@ -198,6 +201,13 @@ PLAYABLE_STRICT_NO_CONFIRM_MIN_EDGE = float(os.getenv("PLAYABLE_STRICT_NO_CONFIR
 PLAYABLE_STRICT_NO_CONFIRM_MIN_ROI = float(os.getenv("PLAYABLE_STRICT_NO_CONFIRM_MIN_ROI", "10.0"))
 # Se due orizzonti hanno ROI quasi uguale, scegli quello piu' corto per ridurre costo/esposizione.
 PLAYABLE_STRICT_SHORTER_TOLERANCE = float(os.getenv("PLAYABLE_STRICT_SHORTER_TOLERANCE", "2.0"))
+
+# v3.1 — warmup/replay storico STRICT.
+# Usa le tre pagine esplicite del sito: altro ieri, ieri, oggi.
+HISTORICAL_WARMUP_VERSION = 1
+HISTORICAL_WARMUP_ENABLED = os.getenv("HISTORICAL_WARMUP_ENABLED", "1") != "0"
+HISTORICAL_WARMUP_MIN_DRAWS = int(os.getenv("HISTORICAL_WARMUP_MIN_DRAWS", "400"))
+HISTORICAL_WARMUP_COPY_PAIRLAB_IF_EMPTY = os.getenv("HISTORICAL_WARMUP_COPY_PAIRLAB_IF_EMPTY", "1") != "0"
 
 # Moduli storici v48/CORE restano calcolati in silenzio solo come laboratorio/conferma.
 V48_NOTIFY_EVENTS = False
@@ -578,36 +588,69 @@ def validate_env():
         raise RuntimeError("CHAT_ID deve essere un intero") from exc
 
 
-def parse_site():
-    # Retry silenzioso: evita spam Telegram per errori HTTP/gzip temporanei del sito.
+def _http_get_text(url):
+    """Download con retry e Accept-Encoding identity per ridurre errori gzip."""
     last_exc = None
-    r = None
     for attempt in range(3):
         try:
-            r = requests.get(URL, headers=HEADERS, timeout=20)
+            r = requests.get(url, headers=HEADERS, timeout=20)
             r.raise_for_status()
-            _ = r.text  # forza la decodifica dentro il try
-            break
+            return r.text
         except Exception as exc:
             last_exc = exc
-            r = None
             if attempt < 2:
                 time.sleep(1.5 * (attempt + 1))
-    if r is None:
-        raise last_exc if last_exc else RuntimeError("download estrazioni fallito")
+    raise last_exc if last_exc else RuntimeError(f"download fallito: {url}")
 
-    text = BeautifulSoup(r.text, "html.parser").get_text("\n", strip=True)
+
+_ITALIAN_MONTHS = {
+    "gennaio": 1, "febbraio": 2, "marzo": 3, "aprile": 4,
+    "maggio": 5, "giugno": 6, "luglio": 7, "agosto": 8,
+    "settembre": 9, "ottobre": 10, "novembre": 11, "dicembre": 12,
+}
+
+
+def _extract_day_from_header(line):
+    """Ritorna YYYY-MM-DD dalla riga 'Estrazione ... 04 Settembre 2026, ore ...'."""
+    m = re.search(
+        r"Estrazione\s+(?:[^,]+,\s*)?(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4}),",
+        str(line), re.IGNORECASE,
+    )
+    if not m:
+        return None
+    day = int(m.group(1))
+    month_name = m.group(2).lower()
+    month = _ITALIAN_MONTHS.get(month_name)
+    if not month:
+        return None
+    try:
+        return datetime(int(m.group(3)), month, day).strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+
+def parse_site_records(url=URL, expected_day=None):
+    """Legge una pagina archivio e restituisce (giorno, n_estrazione, 20 numeri).
+
+    L'ordine viene normalizzato dal piu' vecchio al piu' recente. Se expected_day
+    e' fornito, record di altre date vengono scartati: evita di usare una pagina
+    cache/stale come se appartenesse al giorno richiesto.
+    """
+    html = _http_get_text(url)
+    text = BeautifulSoup(html, "html.parser").get_text("\n", strip=True)
     lines = [x.strip() for x in text.splitlines() if x.strip()]
 
-    out = {}
+    out = []
     i = 0
     while i < len(lines):
-        m = re.search(r"Estrazione\s+.*?\bn\.\s*(\d+)", lines[i], re.IGNORECASE)
+        row0 = lines[i]
+        m = re.search(r"Estrazione\s+.*?\bn\.\s*(\d+)", row0, re.IGNORECASE)
         if not m:
             i += 1
             continue
 
         e = int(m.group(1))
+        rec_day = _extract_day_from_header(row0) or expected_day
         nums = []
         i += 1
         while i < len(lines):
@@ -622,11 +665,49 @@ def parse_site():
 
         if len(nums) >= 20:
             clean = nums[:20]
-            if len(set(clean)) == 20:
-                out[e] = clean
+            if len(set(clean)) == 20 and (not expected_day or rec_day == expected_day):
+                out.append((rec_day or expected_day or day_key(), e, clean))
 
-    return sorted(out.items())
+    # dedup per giorno+n. estrazione e ordine cronologico.
+    dedup = {}
+    for d, e, nums in out:
+        dedup[(str(d), int(e))] = (str(d), int(e), list(map(int, nums)))
+    return sorted(dedup.values(), key=lambda x: (x[0], x[1]))
 
+
+def parse_site():
+    """Compatibilita' live: restituisce la sola pagina di oggi come (e, nums)."""
+    today = day_key()
+    return [(e, nums) for d, e, nums in parse_site_records(URL, expected_day=today)]
+
+
+def fetch_historical_warmup_records():
+    """Scarica altro ieri + ieri + oggi e li concatena in ordine cronologico."""
+    today_date = now_dt().date()
+    specs = [
+        (URL_DAY_BEFORE_YESTERDAY, (today_date - timedelta(days=2)).isoformat(), "altro ieri"),
+        (URL_YESTERDAY, (today_date - timedelta(days=1)).isoformat(), "ieri"),
+        (URL, today_date.isoformat(), "oggi"),
+    ]
+    all_records = []
+    summary = []
+    errors = []
+    for url, expected_day, label in specs:
+        try:
+            recs = parse_site_records(url, expected_day=expected_day)
+            if not recs:
+                errors.append(f"{label}: 0 estrazioni valide per {expected_day}")
+                continue
+            all_records.extend(recs)
+            summary.append({"label": label, "day": expected_day, "draws": len(recs)})
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+
+    dedup = {}
+    for d, e, nums in all_records:
+        dedup[(d, int(e))] = (d, int(e), nums)
+    records = sorted(dedup.values(), key=lambda x: (x[0], x[1]))
+    return records, summary, errors
 
 def fingerprint(e, nums):
     return hashlib.md5(f"{e}-{'-'.join(map(str, nums))}".encode()).hexdigest()
@@ -943,8 +1024,9 @@ def classify_network(spy, followers):
 # ============================================================
 
 class SniperV48BaseFullSpy:
-    def __init__(self):
-        self.version = "playability_only_v3_strict_dynamic"
+    def __init__(self, load_persisted=True, replay_mode=False):
+        self.replay_mode = bool(replay_mode)
+        self.version = "playability_only_v31_historical_warmup"
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
@@ -1018,6 +1100,8 @@ class SniperV48BaseFullSpy:
         self.playable_strict_stats = {}
         self.playable_strict_last_open_e = {}
         self.playable_strict_aborted = 0
+        self.historical_warmup_version = 0
+        self.historical_warmup_summary = {}
 
         # v19 — tracking live Cottone FISSI/T1 H1-H10 + statistiche per riga
         self.cottone_uid = 0
@@ -1055,13 +1139,17 @@ class SniperV48BaseFullSpy:
         # raw_sum -> {count, first_e, prev_e, last_e}; viene azzerato a cambio giorno.
         self.sum9091_seen_raw = {}
 
-        self.load_state()
-        ensure_csv()
+        if load_persisted:
+            self.load_state()
+        if not self.replay_mode:
+            ensure_csv()
 
     # --------------------------------------------------------
     # Telegram
     # --------------------------------------------------------
     async def tg(self, app, msg, with_keyboard=True, inline_menu=False):
+        if self.replay_mode:
+            return
         if not msg:
             return
         for part in chunks(str(msg), 3000):
@@ -1140,6 +1228,8 @@ class SniperV48BaseFullSpy:
         return container[key][h]
 
     def save_state(self):
+        if self.replay_mode:
+            return
         data = {
             "version": self.version,
             "day": self.day,
@@ -1205,6 +1295,8 @@ class SniperV48BaseFullSpy:
             "playable_strict_stats": self.playable_strict_stats,
             "playable_strict_last_open_e": self.playable_strict_last_open_e,
             "playable_strict_aborted": self.playable_strict_aborted,
+            "historical_warmup_version": self.historical_warmup_version,
+            "historical_warmup_summary": self.historical_warmup_summary,
             "cottone_uid": self.cottone_uid,
             "cottone_sessions": self.cottone_sessions,
             "cottone_horizon_stats": self.cottone_horizon_stats,
@@ -1300,7 +1392,7 @@ class SniperV48BaseFullSpy:
             self.playable_core_zone_lock = int(data.get("playable_core_zone_lock", 0))
             stored_play_logic = int(data.get("playability_only_logic_version", 0) or 0)
             if (not migrated_legacy) and stored_play_logic == PLAYABILITY_ONLY_LOGIC_VERSION:
-                # Stato v3 nativo: riprende tutto, inclusi STRICT SHADOW e risultati reali v3.
+                # Stato v3.1 nativo: riprende tutto, incluso warmup storico e risultati reali.
                 self.playability_only_logic_version = PLAYABILITY_ONLY_LOGIC_VERSION
                 raw_buckets = data.get("playable_score_buckets", {}) if isinstance(data.get("playable_score_buckets", {}), dict) else {}
                 self.playable_score_buckets = {}
@@ -1322,11 +1414,13 @@ class SniperV48BaseFullSpy:
                 self.playable_strict_stats = data.get("playable_strict_stats", {}) if isinstance(data.get("playable_strict_stats", {}), dict) else {}
                 self.playable_strict_last_open_e = {str(k): int(v) for k, v in (data.get("playable_strict_last_open_e", {}) or {}).items()}
                 self.playable_strict_aborted = int(data.get("playable_strict_aborted", 0))
+                self.historical_warmup_version = int(data.get("historical_warmup_version", 0) or 0)
+                self.historical_warmup_summary = data.get("historical_warmup_summary", {}) if isinstance(data.get("historical_warmup_summary", {}), dict) else {}
             else:
-                # Migrazione v2/v1 -> v3.
+                # Migrazione v3/v2/v1 -> v3.1.
                 # Conserva PAIR-LAB generale solo se arriva davvero da v2; i PLAY reali ripartono da zero
                 # perche' il nuovo motore richiede validazione STRICT e orizzonte dinamico.
-                preserve_v2_pair_lab = (stored_play_logic == 2)
+                preserve_v2_pair_lab = (stored_play_logic in (2, 3))
                 old_pair_sessions = data.get("playable_pair_lab_sessions", []) if preserve_v2_pair_lab and isinstance(data.get("playable_pair_lab_sessions", []), list) else []
                 old_pair_stats = data.get("playable_pair_lab_stats", {}) if preserve_v2_pair_lab and isinstance(data.get("playable_pair_lab_stats", {}), dict) else {}
                 old_pair_last = {str(k): int(v) for k, v in (data.get("playable_pair_lab_last_open_e", {}) or {}).items()} if preserve_v2_pair_lab else {}
@@ -1358,15 +1452,17 @@ class SniperV48BaseFullSpy:
                 self.playable_pair_lab_stats = old_pair_stats
                 self.playable_pair_lab_last_open_e = old_pair_last
                 self.playable_pair_lab_aborted = old_pair_aborted
-                # STRICT e' una popolazione nuova: parte pulita.
+                # v3.1 ricostruisce STRICT con replay storico: parte pulito per evitare doppio conteggio.
                 self.playable_strict_sessions = []
                 self.playable_strict_stats = {}
                 self.playable_strict_last_open_e = {}
                 self.playable_strict_aborted = 0
+                self.historical_warmup_version = 0
+                self.historical_warmup_summary = {}
                 if preserve_v2_pair_lab:
-                    print("ℹ️ PLAYABILITY ONLY v3: PAIR-LAB v2 preservato; PLAY reali v3 e STRICT ripartono da zero.")
+                    print("ℹ️ PLAYABILITY ONLY v3.1: PAIR-LAB precedente preservato; PLAY reali ripartono da zero e STRICT verra ricostruito dal replay storico.")
                 else:
-                    print("ℹ️ PLAYABILITY ONLY v3: storico SPIE/LAB preservato; PAIR-LAB/STRICT ripartono da zero.")
+                    print("ℹ️ PLAYABILITY ONLY v3.1: storico SPIE/LAB preservato; PAIR-LAB/STRICT verranno inizializzati dal replay storico.")
             self.cottone_uid = int(data.get("cottone_uid", 0))
             self.cottone_sessions = data.get("cottone_sessions", []) if isinstance(data.get("cottone_sessions", []), list) else []
             self.cottone_horizon_stats = self._load_cottone_stat_map(data.get("cottone_horizon_stats", {}))
@@ -1539,6 +1635,8 @@ class SniperV48BaseFullSpy:
         self.save_state()
 
     def append_csv_event(self, event, **kwargs):
+        if self.replay_mode:
+            return
         ensure_csv()
         v48_net, v48_roi = roi_text(self.v48_gross_units, self.v48_cost_units)
         row = {
@@ -4489,6 +4587,7 @@ class SniperV48BaseFullSpy:
     def full_report_text(self):
         return "\n\n".join([
             self.playable_stats_text(),
+            self.historical_warmup_report_text(),
             self.decina_multipla_playability_text(),
             self.focus_h3_text(),
         ])
@@ -4615,7 +4714,7 @@ class SniperV48BaseFullSpy:
 
     def menu_text(self):
         return (
-            "🎯 PLAYABILITY ONLY v3 — STRICT + H DINAMICO\n"
+            "🎯 PLAYABILITY ONLY v3.1 — STRICT + WARMUP 3 GIORNI\n"
             "Bot focalizzato su 1 solo AMBO, STRICT condition e durata dinamica H1/H2/H3.\n\n"
             "/play — classifica live + PLAY/WATCH/NO PLAY\n"
             "/report — risultati, ROI, score e quadro live\n"
@@ -4626,6 +4725,157 @@ class SniperV48BaseFullSpy:
             "/menu — mostra questo menu\n\n"
             "Regola: T1/SOMMA/+5/+4 non aprono mai un PLAY da soli."
         )
+
+    # --------------------------------------------------------
+    # v3.1 — HISTORICAL WARMUP / REPLAY
+    # --------------------------------------------------------
+    @staticmethod
+    def _sum_closed_pairlab_stats(stats_map):
+        total = 0
+        if isinstance(stats_map, dict):
+            for st in stats_map.values():
+                if isinstance(st, dict):
+                    total += int(st.get("closed", 0) or 0)
+        return total
+
+    async def run_historical_warmup_if_needed(self, app=None):
+        """Replay cronologico di altro ieri + ieri + oggi in un motore isolato.
+
+        Il replay non scrive CSV/state, non invia Telegram e NON apre PLAY reali.
+        Serve a costruire PAIR-LAB e soprattutto STRICT senza leakage futuro.
+        Viene eseguito una sola volta per questa versione e poi persistito.
+        """
+        if not HISTORICAL_WARMUP_ENABLED:
+            self.historical_warmup_version = HISTORICAL_WARMUP_VERSION
+            self.historical_warmup_summary = {"enabled": False, "reason": "disabled"}
+            self.save_state()
+            return {"ok": False, "disabled": True, "draws": 0}
+
+        if int(getattr(self, "historical_warmup_version", 0) or 0) >= HISTORICAL_WARMUP_VERSION:
+            return {"ok": True, "already_done": True, **(self.historical_warmup_summary or {})}
+
+        records, day_summary, errors = fetch_historical_warmup_records()
+        if len(records) < HISTORICAL_WARMUP_MIN_DRAWS:
+            # Non marchiare come completato: al prossimo riavvio riprovera'.
+            self.historical_warmup_summary = {
+                "enabled": True, "ok": False, "draws": len(records),
+                "minimum": HISTORICAL_WARMUP_MIN_DRAWS,
+                "days": day_summary, "errors": errors,
+            }
+            self.save_state()
+            return {"ok": False, "draws": len(records), "minimum": HISTORICAL_WARMUP_MIN_DRAWS, "days": day_summary, "errors": errors}
+
+        replay = SniperV48BaseFullSpy(load_persisted=False, replay_mode=True)
+        replay_day = None
+        processed = 0
+        for d, e, nums in records:
+            if replay_day != d:
+                if replay_day is None:
+                    replay.day = d
+                    replay.max_e = 0
+                    replay.last_fp = None
+                    replay.processed_ids = []
+                    replay.processed_fps = []
+                    replay.sum9091_seen_raw = {}
+                else:
+                    replay.reset_for_new_day(d)
+                replay_day = d
+            await replay.on_new(None, int(e), list(nums), allow_open_playable=False)
+            processed += 1
+
+        # Non importiamo sessioni aperte al bordo del replay: solo risultati chiusi.
+        strict_stats = json.loads(json.dumps(replay.playable_strict_stats))
+        pair_stats = json.loads(json.dumps(replay.playable_pair_lab_stats))
+        # Le sessioni ancora aperte sul bordo finale non vengono importate.
+        # Allinea quindi sessions=closed per non lasciare contatori fantasma.
+        for _mp in (strict_stats, pair_stats):
+            for _st in (_mp or {}).values():
+                if isinstance(_st, dict):
+                    _st["sessions"] = int(_st.get("closed", 0) or 0)
+        strict_closed = replay._sum_closed_pairlab_stats(strict_stats)
+        pair_closed = replay._sum_closed_pairlab_stats(pair_stats)
+
+        # STRICT v3 precedente viene sostituito, non sommato: evita doppio conteggio.
+        self.playable_strict_sessions = []
+        self.playable_strict_stats = strict_stats
+        self.playable_strict_last_open_e = {}
+        self.playable_strict_aborted = int(replay.playable_strict_aborted)
+
+        # Se non esiste gia' un PAIR-LAB utile (installazione nuova), inizializzalo dal replay.
+        existing_pair_closed = self._sum_closed_pairlab_stats(self.playable_pair_lab_stats)
+        pairlab_copied = False
+        if HISTORICAL_WARMUP_COPY_PAIRLAB_IF_EMPTY and existing_pair_closed < PLAYABLE_PAIR_LAB_MIN_CLOSED:
+            self.playable_pair_lab_sessions = []
+            self.playable_pair_lab_stats = pair_stats
+            self.playable_pair_lab_last_open_e = {}
+            self.playable_pair_lab_aborted = int(replay.playable_pair_lab_aborted)
+            pairlab_copied = True
+
+        per_pair = {}
+        for key in sorted(strict_stats):
+            st = strict_stats.get(key, {}) or {}
+            if int(st.get("closed", 0) or 0) <= 0:
+                continue
+            m = replay._strict_pair_metrics(tuple(map(int, key.split("-"))))
+            h = replay._choose_strict_horizon(tuple(map(int, key.split("-"))))
+            per_pair[key] = {
+                "closed": int(st.get("closed", 0) or 0),
+                "best_h": int(h or 0),
+                "roi_h1": round(float(m["rois"][1]), 4),
+                "roi_h2": round(float(m["rois"][2]), 4),
+                "roi_h3": round(float(m["rois"][3]), 4),
+                "edge_h1": round(float(m["edges"][1]), 4),
+                "edge_h2": round(float(m["edges"][2]), 4),
+                "edge_h3": round(float(m["edges"][3]), 4),
+            }
+
+        self.historical_warmup_version = HISTORICAL_WARMUP_VERSION
+        self.historical_warmup_summary = {
+            "enabled": True,
+            "ok": True,
+            "draws": processed,
+            "days": day_summary,
+            "errors": errors,
+            "strict_closed_total": strict_closed,
+            "pairlab_closed_total_replay": pair_closed,
+            "pairlab_copied": pairlab_copied,
+            "strict_pairs": per_pair,
+            "completed_at": now_txt(),
+        }
+        self.save_state()
+        return {"ok": True, **self.historical_warmup_summary}
+
+    def historical_warmup_report_text(self):
+        sm = self.historical_warmup_summary or {}
+        if not sm:
+            return "🕰️ WARMUP STORICO — non ancora eseguito"
+        if not sm.get("ok"):
+            return (
+                "⚠️ WARMUP STORICO NON COMPLETATO\n"
+                f"• estrazioni valide = {sm.get('draws',0)}/{sm.get('minimum',HISTORICAL_WARMUP_MIN_DRAWS)}\n"
+                f"• errori = {'; '.join(sm.get('errors',[]) or []) or '-'}\n"
+                "• il bot riprovera' al prossimo avvio; nessun dato storico parziale viene promosso a STRICT"
+            )
+        days = ", ".join(f"{x.get('label')} {x.get('day')}={x.get('draws')}" for x in sm.get("days",[]) or [])
+        pairs = sm.get("strict_pairs", {}) or {}
+        lines = [
+            "🕰️ WARMUP STORICO v3.1 — COMPLETATO",
+            f"• replay cronologico = {sm.get('draws',0)} estrazioni",
+            f"• fonti = {days or '-'}",
+            f"• STRICT chiuse totali = {sm.get('strict_closed_total',0)}",
+            f"• PAIR-LAB replay chiuse = {sm.get('pairlab_closed_total_replay',0)} | copiato nel live = {'SI' if sm.get('pairlab_copied') else 'NO, storico precedente preservato'}",
+        ]
+        if pairs:
+            for key, d in sorted(pairs.items(), key=lambda kv: int((kv[1] or {}).get("closed",0)), reverse=True)[:8]:
+                lines.append(
+                    f"• {key}: STRICT n={d.get('closed',0)} | BEST H{d.get('best_h',0)} | "
+                    f"ROI H1/H2/H3={d.get('roi_h1',0):+.1f}%/{d.get('roi_h2',0):+.1f}%/{d.get('roi_h3',0):+.1f}%"
+                )
+        else:
+            lines.append("• nessuna STRICT chiusa nel replay: il live continuera' a raccogliere")
+        if sm.get("errors"):
+            lines.append("• avvisi fonti: " + "; ".join(sm.get("errors") or []))
+        return "\n".join(lines)
 
     # --------------------------------------------------------
     # Main draw logic
@@ -4974,7 +5224,7 @@ def acquire_single_instance_lock():
 
 async def setup_commands(app):
     await app.bot.set_my_commands([
-        BotCommand("play", "Giocabilità STRICT + H dinamico"),
+        BotCommand("play", "Giocabilità STRICT + warmup storico"),
         BotCommand("report", "Risultati, ROI e quadro live"),
         BotCommand("spie", "Statistiche numeri spia"),
         BotCommand("spie_top", "Migliori regole live H3"),
@@ -4991,6 +5241,10 @@ async def startup(engine, app):
         engine.reset_for_new_day(current_day)
         await engine.tg(app, "🗓️ Nuovo giorno: reset operativo PLAYABILITY/SPIE. Statistiche aggregate conservate.")
 
+    # v3.1: prima del live costruisce STRICT con replay altro ieri -> ieri -> oggi.
+    warm = await engine.run_historical_warmup_if_needed(app)
+    await engine.tg(app, engine.historical_warmup_report_text())
+
     es = parse_site()
     if not es:
         await engine.tg(app, "⚠️ parser vuoto")
@@ -5000,8 +5254,9 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER PLAYABILITY ONLY v3 — STRICT + H DINAMICO AVVIATO\n"
+            "🚀 SNIPER PLAYABILITY ONLY v3.1 — STRICT + WARMUP 3 GIORNI AVVIATO\n"
             "✅ 1 solo AMBO\n"
+            f"✅ warmup storico = {warm.get('draws',0)} estrazioni | STRICT chiuse = {engine.historical_warmup_summary.get('strict_closed_total',0)}\n"
             "✅ PAIR-LAB generale preservato dalla v2 e usato solo come filtro/diagnostica\n"
             f"✅ STRICT SHADOW: minimo {PLAYABLE_STRICT_MIN_CLOSED} casi chiusi per coppia prima di un PLAY reale\n"
             "✅ STRICT nasce solo quando la condizione avrebbe superato tutti i gate v2\n"
@@ -5015,7 +5270,7 @@ async def startup(engine, app):
             f"✅ orario bot = {BOT_TZ_NAME}\n"
             f"✅ persistenza GitHub state/csv = {'ON' if PERSIST_GIT_STATE else 'OFF'}\n"
             f"✅ report automatici: {', '.join(AUTO_REPORT_TIMES)} + cambio giorno\n"
-            "✅ storico iniziale marcato come processato; niente replay\n\n"
+            "✅ warmup storico: altro ieri + ieri + oggi in replay cronologico, poi live\n\n"
             "Tocca /menu per vedere i pulsanti."
         )
         await engine.tg(app, engine.menu_text(), inline_menu=True)
@@ -5054,7 +5309,7 @@ async def live_loop(engine, app):
             should_notify = (err_txt != last_error_text) or (now_err - last_error_notify_ts >= 900)
             if should_notify:
                 try:
-                    await engine.tg(app, f"⚠️ errore PLAYABILITY ONLY v3: {ex}")
+                    await engine.tg(app, f"⚠️ errore PLAYABILITY ONLY v3.1: {ex}")
                     last_error_text = err_txt
                     last_error_notify_ts = now_err
                 except Exception:
