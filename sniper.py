@@ -1,11 +1,12 @@
 # ============================================================
-# 🎯 SNIPER PLAYABILITY ONLY v3.2.1 — STRICT + PRE-ROLL STORICO
-# AMBO ONLY • H1-H3 • 1 solo ambo • PAIR-SPECIFIC + STRICT CONDITION
+# 🎯 SNIPER PLAYABILITY ONLY v3.3 — STRICT-LAB + PLAY-STRICT + PRE-ROLL
+# AMBO ONLY • H1-H3 • 1 solo ambo • PAIR-SPECIFIC + STRICT-LAB
 #
-# v3.2.1: il PAIR-LAB generale resta diagnostico, ma NON basta piu' per aprire un PLAY.
-# All'avvio viene eseguito un replay cronologico separato: PRE-ROLL storico prima del periodo STRICT, senza leakage futuro.
-# Ogni coppia deve dimostrare edge/ROI anche nel sottoinsieme STRICT che replica i gate operativi.
-# Il numero massimo di colpi viene scelto dinamicamente (H1/H2/H3) dal ROI STRICT della coppia.
+# v3.3: il PAIR-LAB generale resta filtro/diagnostica, ma NON basta per aprire un PLAY.
+# Lo STRICT-LAB raccoglie una popolazione piu' ampia: contesto operativo forte + pairLAB maturo,
+# senza richiedere che edge/ROI siano gia' positivi al momento dell'apertura.
+# Il PLAY-STRICT resta severo: per giocare servono sia i gate BASE attuali sia edge/ROI positivi
+# sul campione STRICT-LAB. Il numero massimo di colpi e' dinamico H1/H2/H3.
 #
 # LOGICA OPERATIVA
 #   ✅ trigger principale: SPIE attive in rete DECINA + livello MULTIPLA
@@ -87,8 +88,8 @@ STATE_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v3_state.json")
 # Migrazione: v3 importa prima lo state v2, preservando SPIE/Cottone/SOMMA e PAIR-LAB generale.
 LEGACY_STATE_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v2_state.json")
 LEGACY_STATE_FILE_V1 = os.path.join(BASE_DIR, "sniper_playability_only_v1_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v321_events.csv")
-LOCK_FILE = "/tmp/sniper_playability_only_v321.lock"
+CSV_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v33_events.csv")
+LOCK_FILE = "/tmp/sniper_playability_only_v33.lock"
 
 # Orario bot/report: GitHub gira spesso in UTC, qui forziamo Italia.
 BOT_TZ_NAME = os.getenv("BOT_TZ", "Europe/Rome")
@@ -135,7 +136,7 @@ SPY_MIN_MODEL_EVENTS = 80
 SPY_TOP_MIN_CLOSED = 20
 
 # ============================================================
-# PLAYABILITY ONLY v3 — AMBO ONLY, STRICT SHADOW, orizzonte dinamico H1-H3
+# PLAYABILITY ONLY v3.3 — AMBO ONLY, STRICT-LAB + PLAY-STRICT, orizzonte dinamico H1-H3
 # ============================================================
 # Trigger principale: segnali SPIE aperti contemporaneamente in rete DECINA + livello MULTIPLA.
 # T1 / SOMMA 90-91 / +5 / +4 / v48 NON aprono il play: sono solo conferme indipendenti.
@@ -162,7 +163,7 @@ def playable_pair_group(pair):
 
 
 # Motore operativo
-PLAYABILITY_ONLY_LOGIC_VERSION = 32
+PLAYABILITY_ONLY_LOGIC_VERSION = 33
 PLAYABLE_AUTO_ENABLED = os.getenv("PLAYABLE_AUTO_ENABLED", "1") != "0"
 PLAYABLE_NOTIFY_OPEN = os.getenv("PLAYABLE_NOTIFY_OPEN", "1") != "0"
 PLAYABLE_NOTIFY_HIT = os.getenv("PLAYABLE_NOTIFY_HIT", "1") != "0"
@@ -205,11 +206,15 @@ PLAYABLE_REQUIRE_CONFIRMATION = os.getenv("PLAYABLE_REQUIRE_CONFIRMATION", "1") 
 PLAYABLE_NO_CONFIRM_MIN_EDGE = float(os.getenv("PLAYABLE_NO_CONFIRM_MIN_EDGE", "6.0"))
 PLAYABLE_NO_CONFIRM_MIN_ROI = float(os.getenv("PLAYABLE_NO_CONFIRM_MIN_ROI", "10.0"))
 
-# v3 — STRICT CONDITION SHADOW.
-# Registra soltanto eventi che avrebbero superato i gate v2 (prima del filtro STRICT).
-# Nessun PLAY reale finche' la stessa coppia non ha almeno questo campione STRICT chiuso.
+# v3.3 — STRICT-LAB.
+# Raccoglie contesti operativi forti ma NON pretende edge/ROI gia' positivi: prima osserva, poi giudica.
+# Il PLAY reale resta piu' severo e richiede anche i gate BASE correnti + validazione STRICT-LAB.
 PLAYABLE_STRICT_MIN_CLOSED = int(os.getenv("PLAYABLE_STRICT_MIN_CLOSED", "30"))
 PLAYABLE_STRICT_REOPEN_AFTER = int(os.getenv("PLAYABLE_STRICT_REOPEN_AFTER", "10"))
+# Gate di RACCOLTA STRICT-LAB: volutamente NON include edge/ROI o conferme.
+PLAYABLE_STRICT_LAB_MIN_RAW_SUPPORT = int(os.getenv("PLAYABLE_STRICT_LAB_MIN_RAW_SUPPORT", str(PLAYABLE_MIN_PAIR_SUPPORT)))
+PLAYABLE_STRICT_LAB_MIN_INDEPENDENT = int(os.getenv("PLAYABLE_STRICT_LAB_MIN_INDEPENDENT", str(PLAYABLE_MIN_INDEPENDENT_SPIES)))
+PLAYABLE_STRICT_LAB_MIN_PAIR_CLOSED = int(os.getenv("PLAYABLE_STRICT_LAB_MIN_PAIR_CLOSED", str(PLAYABLE_PAIR_LAB_MIN_CLOSED)))
 PLAYABLE_STRICT_MIN_EDGE = float(os.getenv("PLAYABLE_STRICT_MIN_EDGE", "3.0"))
 PLAYABLE_STRICT_MIN_ROI = float(os.getenv("PLAYABLE_STRICT_MIN_ROI", "5.0"))
 # Senza conferma esterna, anche lo STRICT deve essere piu' forte.
@@ -221,7 +226,7 @@ PLAYABLE_STRICT_SHORTER_TOLERANCE = float(os.getenv("PLAYABLE_STRICT_SHORTER_TOL
 # v3.2 — PRE-ROLL + STRICT TEST storico, senza leakage futuro.
 # PRE-ROLL: giorni piu' vecchi, usati solo per costruire SPIE/PAIR-LAB e contesto.
 # STRICT TEST: ultimi giorni, usati per misurare le vere condizioni che avrebbero superato i gate.
-HISTORICAL_WARMUP_VERSION = 3
+HISTORICAL_WARMUP_VERSION = 4
 HISTORICAL_WARMUP_ENABLED = os.getenv("HISTORICAL_WARMUP_ENABLED", "1") != "0"
 HISTORICAL_PREROLL_DAYS = int(os.getenv("HISTORICAL_PREROLL_DAYS", "5"))
 HISTORICAL_STRICT_TEST_DAYS = int(os.getenv("HISTORICAL_STRICT_TEST_DAYS", "3"))
@@ -1256,7 +1261,7 @@ class SniperV48BaseFullSpy:
         self.replay_mode = bool(replay_mode)
         # Nel replay v3.2 il PRE-ROLL puo' disabilitare l'apertura STRICT mantenendo attivi PAIR-LAB/SPIE.
         self.strict_collection_enabled = True
-        self.version = "playability_only_v32_preroll_strict"
+        self.version = "playability_only_v33_strict_lab_play_strict"
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
@@ -1325,7 +1330,7 @@ class SniperV48BaseFullSpy:
         self.playable_pair_lab_stats = {}
         self.playable_pair_lab_last_open_e = {}
         self.playable_pair_lab_aborted = 0
-        # v3: STRICT SHADOW = solo eventi che superano i gate v2.
+        # v3.3: STRICT-LAB = contesti forti, senza gate edge/ROI all'apertura.
         self.playable_strict_sessions = []
         self.playable_strict_stats = {}
         self.playable_strict_last_open_e = {}
@@ -1622,7 +1627,7 @@ class SniperV48BaseFullSpy:
             self.playable_core_zone_lock = int(data.get("playable_core_zone_lock", 0))
             stored_play_logic = int(data.get("playability_only_logic_version", 0) or 0)
             if (not migrated_legacy) and stored_play_logic == PLAYABILITY_ONLY_LOGIC_VERSION:
-                # Stato v3.2 nativo: riprende tutto, incluso warmup storico e risultati reali.
+                # Stato v3.3 nativo: riprende tutto, incluso warmup storico e risultati reali.
                 self.playability_only_logic_version = PLAYABILITY_ONLY_LOGIC_VERSION
                 raw_buckets = data.get("playable_score_buckets", {}) if isinstance(data.get("playable_score_buckets", {}), dict) else {}
                 self.playable_score_buckets = {}
@@ -1647,10 +1652,10 @@ class SniperV48BaseFullSpy:
                 self.historical_warmup_version = int(data.get("historical_warmup_version", 0) or 0)
                 self.historical_warmup_summary = data.get("historical_warmup_summary", {}) if isinstance(data.get("historical_warmup_summary", {}), dict) else {}
             else:
-                # Migrazione v3/v2/v1 -> v3.2.
-                # Conserva PAIR-LAB generale solo se arriva davvero da v2; i PLAY reali ripartono da zero
-                # perche' il nuovo motore richiede validazione STRICT e orizzonte dinamico.
-                preserve_v2_pair_lab = (stored_play_logic in (2, 3))
+                # Migrazione versioni precedenti -> v3.3.
+                # Conserva il PAIR-LAB generale anche dalla v3.2.x, ma ricostruisce da zero lo STRICT-LAB
+                # perche' la popolazione v3.3 e' volutamente piu' ampia e non confrontabile con la vecchia STRICT.
+                preserve_v2_pair_lab = (stored_play_logic in (2, 3, 32))
                 old_pair_sessions = data.get("playable_pair_lab_sessions", []) if preserve_v2_pair_lab and isinstance(data.get("playable_pair_lab_sessions", []), list) else []
                 old_pair_stats = data.get("playable_pair_lab_stats", {}) if preserve_v2_pair_lab and isinstance(data.get("playable_pair_lab_stats", {}), dict) else {}
                 old_pair_last = {str(k): int(v) for k, v in (data.get("playable_pair_lab_last_open_e", {}) or {}).items()} if preserve_v2_pair_lab else {}
@@ -1682,7 +1687,7 @@ class SniperV48BaseFullSpy:
                 self.playable_pair_lab_stats = old_pair_stats
                 self.playable_pair_lab_last_open_e = old_pair_last
                 self.playable_pair_lab_aborted = old_pair_aborted
-                # v3.2 ricostruisce STRICT con replay storico: parte pulito per evitare doppio conteggio.
+                # v3.3 ricostruisce STRICT-LAB con replay storico: parte pulito per evitare doppio conteggio.
                 self.playable_strict_sessions = []
                 self.playable_strict_stats = {}
                 self.playable_strict_last_open_e = {}
@@ -1690,9 +1695,9 @@ class SniperV48BaseFullSpy:
                 self.historical_warmup_version = 0
                 self.historical_warmup_summary = {}
                 if preserve_v2_pair_lab:
-                    print("ℹ️ PLAYABILITY ONLY v3.2: PAIR-LAB precedente preservato; PLAY reali ripartono da zero e STRICT verra ricostruito dal replay storico.")
+                    print("ℹ️ PLAYABILITY ONLY v3.3: PAIR-LAB precedente preservato; PLAY reali ripartono da zero e STRICT-LAB verra ricostruito dal replay storico.")
                 else:
-                    print("ℹ️ PLAYABILITY ONLY v3.2: storico SPIE/LAB preservato; PAIR-LAB/STRICT verranno inizializzati dal replay storico.")
+                    print("ℹ️ PLAYABILITY ONLY v3.3: storico SPIE/LAB preservato; PAIR-LAB/STRICT-LAB verranno inizializzati dal replay storico.")
             self.cottone_uid = int(data.get("cottone_uid", 0))
             self.cottone_sessions = data.get("cottone_sessions", []) if isinstance(data.get("cottone_sessions", []), list) else []
             self.cottone_horizon_stats = self._load_cottone_stat_map(data.get("cottone_horizon_stats", {}))
@@ -2815,6 +2820,47 @@ class SniperV48BaseFullSpy:
                                  "context": context_score},
         }
 
+    def _strict_lab_gate_metrics(self, pair, support, snap):
+        """Gate di RACCOLTA STRICT-LAB v3.3.
+
+        Scopo: creare un campione osservativo abbastanza ampio e realistico.
+        Richiede il contesto operativo forte (raw/ind/DEC/MULT + pairLAB maturo),
+        ma NON richiede edge/ROI positivi e NON richiede conferme esterne.
+        Queste ultime condizioni restano gate del PLAY reale.
+        """
+        pair = norm_pair(pair)
+        indep = self._pair_independent_support(pair, snap)
+        lab = self._pair_lab_metrics(pair)
+        closed = int(lab["stats"].get("closed", 0))
+
+        reasons = []
+        if int(support) < PLAYABLE_STRICT_LAB_MIN_RAW_SUPPORT:
+            reasons.append(f"raw {support}<{PLAYABLE_STRICT_LAB_MIN_RAW_SUPPORT}")
+        if indep["count"] < PLAYABLE_STRICT_LAB_MIN_INDEPENDENT:
+            reasons.append(f"ind {indep['count']}<{PLAYABLE_STRICT_LAB_MIN_INDEPENDENT}")
+        if len(snap.get("raw_signals", [])) < PLAYABLE_MIN_SIGNALS:
+            reasons.append(f"segnali {len(snap.get('raw_signals', []))}<{PLAYABLE_MIN_SIGNALS}")
+        if float(snap.get("dec_extra", 0.0)) < PLAYABLE_MIN_DECINA_EXTRA:
+            reasons.append("DEC sotto soglia")
+        if float(snap.get("mult_extra", 0.0)) < PLAYABLE_MIN_MULTIPLA_EXTRA:
+            reasons.append("MULT sotto soglia")
+        if closed < PLAYABLE_STRICT_LAB_MIN_PAIR_CLOSED:
+            reasons.append(f"pair-LAB {closed}<{PLAYABLE_STRICT_LAB_MIN_PAIR_CLOSED}")
+
+        # Ranking neutrale rispetto alla redditivita': evita di preselezionare il LAB
+        # proprio sull'edge/ROI che poi vogliamo misurare.
+        independent_score = linear_score(indep["count"], PLAYABLE_STRICT_LAB_MIN_INDEPENDENT - 1, 7, 40)
+        raw_score = linear_score(int(support), PLAYABLE_STRICT_LAB_MIN_RAW_SUPPORT - 1, 14, 30)
+        maturity_score = linear_score(closed, PLAYABLE_STRICT_LAB_MIN_PAIR_CLOSED - 1, 180, 15)
+        dec_score = linear_score(float(snap.get("dec_extra", 0.0)), PLAYABLE_MIN_DECINA_EXTRA, PLAYABLE_MIN_DECINA_EXTRA + 10.0, 7.5)
+        mult_score = linear_score(float(snap.get("mult_extra", 0.0)), PLAYABLE_MIN_MULTIPLA_EXTRA, PLAYABLE_MIN_MULTIPLA_EXTRA + 6.0, 7.5)
+        lab_score = min(100.0, independent_score + raw_score + maturity_score + dec_score + mult_score)
+
+        return {
+            "pair": pair, "support": int(support), "indep": indep, "lab": lab, "closed": closed,
+            "lab_score": float(lab_score), "reasons": reasons, "eligible": not reasons,
+        }
+
     def _strict_pair_metrics(self, pair):
         key = self._pair_key(pair)
         raw = self.playable_strict_stats.get(key, {}) if isinstance(self.playable_strict_stats, dict) else {}
@@ -2870,44 +2916,58 @@ class SniperV48BaseFullSpy:
                 hc[str(h)] = int(hc.get(str(h),0)) + 1
                 st["cost"] = float(st.get("cost",0.0)) + h
                 st["gross"] = float(st.get("gross",0.0)) + AMBO_PAYOUT
-                self.append_csv_event("STRICT_HIT", e=e, playable_colpo=h, playable_ambi=key,
-                                      playable_outcome=f"STRICT_HIT_H{h}", playable_score=f"{float(ses.get('base_score',0)):.2f}")
+                self.append_csv_event("STRICTLAB_HIT", e=e, playable_colpo=h, playable_ambi=key,
+                                      playable_outcome=f"STRICTLAB_HIT_H{h}", playable_score=f"{float(ses.get('base_score',0)):.2f}")
                 continue
             if h >= PLAYABLE_MAX_COLPI:
                 st["closed"] = int(st.get("closed",0)) + 1
                 st["stop"] = int(st.get("stop",0)) + 1
                 st["cost"] = float(st.get("cost",0.0)) + PLAYABLE_MAX_COLPI
-                self.append_csv_event("STRICT_STOP", e=e, playable_colpo=h, playable_ambi=key,
-                                      playable_outcome="STRICT_STOP_H3", playable_score=f"{float(ses.get('base_score',0)):.2f}")
+                self.append_csv_event("STRICTLAB_STOP", e=e, playable_colpo=h, playable_ambi=key,
+                                      playable_outcome="STRICTLAB_STOP_H3", playable_score=f"{float(ses.get('base_score',0)):.2f}")
                 continue
             keep.append(ses)
         self.playable_strict_sessions = keep
 
     async def maybe_open_strict_shadow_sessions(self, app, e):
-        """Registra il SOLO ambo che la v2 avrebbe scelto in quella condizione.
+        """Apre UNA sessione STRICT-LAB sul miglior contesto operativo disponibile.
 
-        Ignora il cooldown/play reale v3 per non perdere casi di studio, ma mantiene una finestra
-        pair-specific di anti-ripetizione. In questo modo STRICT replica la selezione 1-AMBO,
-        non una collezione di tutte le coppie contemporaneamente eleggibili.
+        Diversamente dalla v3.2.x, la raccolta NON richiede che PAIR-LAB edge/ROI siano
+        gia' positivi e NON richiede conferme. Questo evita il paradosso di usare la
+        redditivita' come prerequisito della stessa statistica che deve misurarla.
+
+        Il PLAY reale resta invariato/severo: in _pair_candidate_metrics dovra' superare
+        sia i gate BASE correnti sia i gate edge/ROI sullo STRICT-LAB.
         """
         if not getattr(self, "strict_collection_enabled", True):
             return
+
         snap = self.playable_signal_snapshot()
-        ranked = self.playability_rankings(snap)
-        base_candidates = [
-            r for r in ranked
-            if r.get("base_eligible") and float(r.get("base_score",0.0)) >= PLAYABLE_PLAY_SCORE
-        ]
-        base_candidates.sort(key=lambda r: (-float(r.get("base_score",0.0)), -int(r.get("support",0)), r.get("pair")))
+        lab_candidates = []
+        for pair, support in snap.get("top_pairs", []):
+            m = self._strict_lab_gate_metrics(pair, support, snap)
+            if m.get("eligible"):
+                lab_candidates.append(m)
+
+        # Un solo ambo per condizione: ranking basato su forza del contesto, NON su edge/ROI.
+        lab_candidates.sort(
+            key=lambda r: (
+                -float(r.get("lab_score", 0.0)),
+                -int((r.get("indep") or {}).get("count", 0)),
+                -int(r.get("support", 0)),
+                -int(r.get("closed", 0)),
+                r.get("pair"),
+            )
+        )
         active_keys = {self._pair_key(x.get("pair", [])) for x in self.playable_strict_sessions if len(x.get("pair", [])) == 2}
 
         chosen = None
-        for r in base_candidates:
+        for r in lab_candidates:
             key = self._pair_key(r["pair"])
             if key in active_keys:
                 continue
-            last_e = int(self.playable_strict_last_open_e.get(key,0) or 0)
-            if last_e and (int(e)-last_e) < PLAYABLE_STRICT_REOPEN_AFTER:
+            last_e = int(self.playable_strict_last_open_e.get(key, 0) or 0)
+            if last_e and (int(e) - last_e) < PLAYABLE_STRICT_REOPEN_AFTER:
                 continue
             chosen = r
             break
@@ -2917,20 +2977,24 @@ class SniperV48BaseFullSpy:
         r = chosen
         pair = r["pair"]
         key = self._pair_key(pair)
+        confirmations = self._pair_confirmations(pair)
         self.playable_strict_sessions.append({
             "pair": list(pair), "opened_e": int(e), "colpi": 0,
-            "base_score": float(r.get("base_score",0.0)),
-            "raw_support": int(r.get("support",0)),
-            "independent": int(r.get("independent_support",0)),
-            "confirmations": list(r.get("confirmations",[])),
+            "base_score": float(r.get("lab_score", 0.0)),
+            "lab_score": float(r.get("lab_score", 0.0)),
+            "raw_support": int(r.get("support", 0)),
+            "independent": int((r.get("indep") or {}).get("count", 0)),
+            "confirmations": list(confirmations),
         })
         st = self.playable_strict_stats.setdefault(key, self.new_pair_lab_stats())
-        st["sessions"] = int(st.get("sessions",0)) + 1
+        st["sessions"] = int(st.get("sessions", 0)) + 1
         self.playable_strict_last_open_e[key] = int(e)
-        self.append_csv_event("STRICT_OPEN", e=e, playable_ambi=key, playable_outcome="STRICT_SHADOW_OPEN",
-                              playable_support=f"raw={r.get('support',0)}|ind={r.get('independent_support',0)}",
-                              playable_score=f"{float(r.get('base_score',0)):.2f}",
-                              playable_confirmations=",".join(r.get("confirmations",[])))
+        self.append_csv_event(
+            "STRICTLAB_OPEN", e=e, playable_ambi=key, playable_outcome="STRICT_LAB_OPEN",
+            playable_support=f"raw={r.get('support',0)}|ind={(r.get('indep') or {}).get('count',0)}|pairlab={r.get('closed',0)}",
+            playable_score=f"{float(r.get('lab_score',0)):.2f}",
+            playable_confirmations=",".join(confirmations),
+        )
 
     def _pair_candidate_metrics(self, pair, support, snap):
         pair = norm_pair(pair)
@@ -2960,7 +3024,7 @@ class SniperV48BaseFullSpy:
 
         strict_reasons=[]
         if strict_closed < PLAYABLE_STRICT_MIN_CLOSED:
-            strict_reasons.append(f"STRICT {strict_closed}<{PLAYABLE_STRICT_MIN_CLOSED}")
+            strict_reasons.append(f"STRICT-LAB {strict_closed}<{PLAYABLE_STRICT_MIN_CLOSED}")
         else:
             if not selected_h:
                 strict_reasons.append("orizzonte STRICT non disponibile")
@@ -2987,7 +3051,7 @@ class SniperV48BaseFullSpy:
         elif eligible and score >= PLAYABLE_PLAY_SCORE:
             state="🟢 PLAY"
         elif base["base_eligible"] and strict_closed < PLAYABLE_STRICT_MIN_CLOSED:
-            state="🧪 STRICT SHADOW"
+            state="🧪 STRICT-LAB"
         elif int(lab["stats"].get("closed",0)) < PLAYABLE_PAIR_LAB_MIN_CLOSED:
             state="🧪 PAIR SHADOW"
         elif score >= PLAYABLE_WATCH_SCORE or base["base_eligible"]:
@@ -4566,13 +4630,13 @@ class SniperV48BaseFullSpy:
             rows.append((c, roi, edge, key, m, h))
         rows.sort(key=lambda x:(-x[0],-x[1],-x[2]))
         lines=[
-            "🎯 STRICT PLAY SHADOW — CONDIZIONI REALMENTE GIOCABILI",
+            "🧪 STRICT-LAB — CONTESTI FORTI OSSERVATI",
             f"• aperte ora = {len(self.playable_strict_sessions)} | incomplete cambio giorno = {self.playable_strict_aborted}",
             f"• minimo prima di soldi reali = {PLAYABLE_STRICT_MIN_CLOSED} chiuse per coppia",
-            "• ogni sessione nasce solo se avrebbe superato tutti i gate v2; anti-ripetizione pair-specific attiva",
+            "• raccolta: raw/ind/DEC/MULT + pairLAB maturo; edge/ROI e conferme NON sono gate di apertura",
         ]
         if not rows:
-            lines.append("• nessun caso STRICT chiuso: PLAY reale bloccato")
+            lines.append("• nessun caso STRICT-LAB chiuso: PLAY reale bloccato")
             return "\n".join(lines)
         for c,_,_,key,m,h in rows[:limit]:
             best = f"BEST=H{h} edge {m['edges'][h]:+.1f}pp ROI {m['rois'][h]:+.1f}%" if h else f"raccolta {c}/{PLAYABLE_STRICT_MIN_CLOSED}"
@@ -4586,15 +4650,15 @@ class SniperV48BaseFullSpy:
     def decina_multipla_playability_text(self):
         snap=self.playable_signal_snapshot(); ranked=self.playability_rankings(snap)
         lines=[
-            "🎯 GIOCABILITÀ v3 — STRICT + ORIZZONTE DINAMICO",
+            "🎯 GIOCABILITÀ v3.3 — STRICT-LAB + PLAY-STRICT",
             "• PAIR-LAB generale = filtro/diagnostica; NON basta per giocare",
-            "• STRICT = solo condizioni che avrebbero superato tutti i gate v2",
-            "• PLAY reale = almeno 30 STRICT chiuse + edge/ROI positivi sull'orizzonte migliore",
-            "• max colpi = dinamico H1/H2/H3: sceglie il ROI STRICT migliore, a quasi-parita' preferisce il piu' corto",
-            "• T1 / SOMMA 90-91 / +5 / +4 / v48 = conferme; non salvano un ambo con STRICT negativo",
+            "• STRICT-LAB = contesti forti raccolti senza prefiltrare edge/ROI",
+            "• PLAY-STRICT = gate BASE attuali + almeno 30 STRICT-LAB chiuse + edge/ROI positivi sul BEST H",
+            "• max colpi = dinamico H1/H2/H3: sceglie il ROI STRICT-LAB migliore, a quasi-parita' preferisce il piu' corto",
+            "• T1 / SOMMA 90-91 / +5 / +4 / v48 = conferme del PLAY; non filtrano l'apertura STRICT-LAB",
             f"• gate BASE = raw>={PLAYABLE_MIN_PAIR_SUPPORT} | ind>={PLAYABLE_MIN_INDEPENDENT_SPIES} | pairLAB>={PLAYABLE_PAIR_LAB_MIN_CLOSED} | edgeH3>={PLAYABLE_PAIR_MIN_EDGE_H3:+.1f}pp | ROI H3>={PLAYABLE_PAIR_MIN_ROI_H3:+.1f}%",
-            f"• gate STRICT = n>={PLAYABLE_STRICT_MIN_CLOSED} | edge BEST>={PLAYABLE_STRICT_MIN_EDGE:+.1f}pp | ROI BEST>={PLAYABLE_STRICT_MIN_ROI:+.1f}% | senza conf >={PLAYABLE_STRICT_NO_CONFIRM_MIN_EDGE:+.1f}pp/{PLAYABLE_STRICT_NO_CONFIRM_MIN_ROI:+.1f}%",
-            f"• DEC>={PLAYABLE_MIN_DECINA_EXTRA:+.0f}pp | MULT>={PLAYABLE_MIN_MULTIPLA_EXTRA:+.0f}pp | anti-riuso reale={PLAYABLE_PAIR_REUSE_AFTER} | anti-ripetizione STRICT={PLAYABLE_STRICT_REOPEN_AFTER}",
+            f"• gate PLAY-STRICT = n>={PLAYABLE_STRICT_MIN_CLOSED} | edge BEST>={PLAYABLE_STRICT_MIN_EDGE:+.1f}pp | ROI BEST>={PLAYABLE_STRICT_MIN_ROI:+.1f}% | senza conf >={PLAYABLE_STRICT_NO_CONFIRM_MIN_EDGE:+.1f}pp/{PLAYABLE_STRICT_NO_CONFIRM_MIN_ROI:+.1f}%",
+            f"• DEC>={PLAYABLE_MIN_DECINA_EXTRA:+.0f}pp | MULT>={PLAYABLE_MIN_MULTIPLA_EXTRA:+.0f}pp | anti-riuso reale={PLAYABLE_PAIR_REUSE_AFTER} | anti-ripetizione STRICT-LAB={PLAYABLE_STRICT_REOPEN_AFTER}",
             "",
             f"• segnali DECINA/MULTIPLA aperti = {len(snap.get('raw_signals',[]))}",
             f"• DECINA extra H3 = {snap.get('dec_extra',0):+.2f} pp | MULTIPLA extra H3 = {snap.get('mult_extra',0):+.2f} pp",
@@ -4608,7 +4672,7 @@ class SniperV48BaseFullSpy:
             if r.get("hard_reasons"):
                 blocks=" | blocco: "+"; ".join(r["hard_reasons"][:4])
             sh=int(r.get("strict_horizon",0) or 0)
-            strict_txt=(f"STRICT {r.get('strict_closed',0)} | H{sh} edge {r.get('strict_edge',0):+.1f}pp ROI {r.get('strict_roi',0):+.1f}%" if sh else f"STRICT {r.get('strict_closed',0)}/{PLAYABLE_STRICT_MIN_CLOSED}")
+            strict_txt=(f"STRICT-LAB {r.get('strict_closed',0)} | H{sh} edge {r.get('strict_edge',0):+.1f}pp ROI {r.get('strict_roi',0):+.1f}%" if sh else f"STRICT-LAB {r.get('strict_closed',0)}/{PLAYABLE_STRICT_MIN_CLOSED}")
             lines.append(
                 f"{i}) {a}-{b} | {r['state']} | S{r['score']:.1f} | raw {r['support']} | ind {r['independent_support']} | "
                 f"pairLAB {r['pair_lab_closed']} H3 {r['pair_edge_h3']:+.1f}pp/{r['pair_roi_h3']:+.1f}% | {strict_txt} | conf {conf}{blocks}"
@@ -4620,7 +4684,7 @@ class SniperV48BaseFullSpy:
         elif best.get("eligible") and best.get("score",0) >= PLAYABLE_PLAY_SCORE:
             lines.append(f"• 🟢 PLAY {best['pair'][0]}-{best['pair'][1]} | H1-H{best.get('strict_horizon',0)}")
         elif best.get("base_eligible") and best.get("strict_closed",0) < PLAYABLE_STRICT_MIN_CLOSED:
-            lines.append(f"• 🧪 STRICT SHADOW {best['pair'][0]}-{best['pair'][1]} — {best.get('strict_closed',0)}/{PLAYABLE_STRICT_MIN_CLOSED}, nessuna giocata")
+            lines.append(f"• 🧪 STRICT-LAB {best['pair'][0]}-{best['pair'][1]} — {best.get('strict_closed',0)}/{PLAYABLE_STRICT_MIN_CLOSED}, nessuna giocata")
         elif best.get("pair_lab_closed",0) < PLAYABLE_PAIR_LAB_MIN_CLOSED:
             lines.append(f"• 🧪 PAIR SHADOW {best['pair'][0]}-{best['pair'][1]} — {best.get('pair_lab_closed',0)}/{PLAYABLE_PAIR_LAB_MIN_CLOSED}")
         else:
@@ -4946,7 +5010,7 @@ class SniperV48BaseFullSpy:
 
     def menu_text(self):
         return (
-            "🎯 PLAYABILITY ONLY v3.2.1 — STRICT + PRE-ROLL\n"
+            "🎯 PLAYABILITY ONLY v3.3 — STRICT + PRE-ROLL\n"
             "Bot focalizzato su 1 solo AMBO, STRICT condition e durata dinamica H1/H2/H3.\n\n"
             "/play — classifica live + PLAY/WATCH/NO PLAY\n"
             "/report — risultati, ROI, score e quadro live\n"
@@ -4971,10 +5035,10 @@ class SniperV48BaseFullSpy:
         return total
 
     async def run_historical_warmup_if_needed(self, app=None):
-        """v3.2: PRE-ROLL storico separato dal periodo STRICT TEST.
+        """v3.3: PRE-ROLL storico separato dal periodo STRICT-LAB TEST.
 
-        1) PRE-ROLL: costruisce SPIE, PAIR-LAB, T1/SOMMA/+5/+4 e contesto, ma NON apre STRICT.
-        2) STRICT TEST: abilita STRICT e misura solo condizioni future rispetto al PRE-ROLL.
+        1) PRE-ROLL: costruisce SPIE, PAIR-LAB, T1/SOMMA/+5/+4 e contesto, ma NON apre STRICT-LAB.
+        2) STRICT-LAB TEST: raccoglie contesti forti futuri rispetto al PRE-ROLL senza gate edge/ROI.
         Il motore e' isolato: niente Telegram, niente state/csv, nessun PLAY reale.
         """
         if not HISTORICAL_WARMUP_ENABLED:
@@ -5025,7 +5089,7 @@ class SniperV48BaseFullSpy:
                 replay_day = d
             await replay.on_new(None, int(e), list(nums), allow_open_playable=False)
 
-        # FASE 1 — PRE-ROLL: costruisce il passato, ma STRICT resta completamente spento.
+        # FASE 1 — PRE-ROLL: costruisce il passato, ma STRICT-LAB resta completamente spento.
         replay.strict_collection_enabled = False
         replay.playable_strict_sessions = []
         replay.playable_strict_stats = {}
@@ -5053,7 +5117,7 @@ class SniperV48BaseFullSpy:
                 "roi_h3": round(float(m["rois"][3]), 4),
             }
 
-        # FASE 2 — STRICT TEST: da qui in poi ogni apertura STRICT usa SOLO informazioni precedenti.
+        # FASE 2 — STRICT-LAB TEST: da qui in poi ogni apertura usa SOLO informazioni precedenti.
         replay.strict_collection_enabled = True
         replay.playable_strict_sessions = []
         replay.playable_strict_stats = {}
@@ -5074,7 +5138,7 @@ class SniperV48BaseFullSpy:
         strict_closed = replay._sum_closed_pairlab_stats(strict_stats)
         pair_closed = replay._sum_closed_pairlab_stats(pair_stats)
 
-        # STRICT precedente viene sostituito dal test storico pulito, non sommato: niente doppio conteggio.
+        # STRICT-LAB precedente viene sostituito dal test storico pulito, non sommato: niente doppio conteggio.
         self.playable_strict_sessions = []
         self.playable_strict_stats = strict_stats
         self.playable_strict_last_open_e = {}
@@ -5136,7 +5200,7 @@ class SniperV48BaseFullSpy:
         if not sm.get("ok"):
             days = ", ".join(f"{x.get('zone')} {x.get('day')}={x.get('draws')}[{x.get('source','?')}]" for x in sm.get("days",[]) or [])
             return (
-                "⚠️ WARMUP PRE-ROLL v3.2.1 NON COMPLETATO\n"
+                "⚠️ WARMUP PRE-ROLL v3.3 NON COMPLETATO\n"
                 f"• PRE-ROLL = {sm.get('pre_draws',0)}/{sm.get('pre_minimum',HISTORICAL_PREROLL_MIN_DRAWS)} estrazioni su {sm.get('pre_days',0)} giorni\n"
                 f"• STRICT TEST = {sm.get('test_draws',0)}/{sm.get('test_minimum',HISTORICAL_TEST_MIN_DRAWS)} estrazioni su {sm.get('test_days',0)} giorni\n"
                 f"• fonti valide = {days or '-'}\n"
@@ -5148,13 +5212,13 @@ class SniperV48BaseFullSpy:
         days_test = ", ".join(f"{x.get('day')}={x.get('draws')}[{x.get('source','?')}]" for x in sm.get("days",[]) or [] if x.get("zone") == "TEST")
         pairs = sm.get("strict_pairs", {}) or {}
         lines = [
-            "🕰️ WARMUP PRE-ROLL v3.2.1 — COMPLETATO",
+            "🕰️ WARMUP PRE-ROLL v3.3 — COMPLETATO",
             f"• PRE-ROLL = {sm.get('pre_draws',0)} estrazioni / {sm.get('pre_days',0)} giorni",
             f"• fonti PRE = {days_pre or '-'}",
             f"• PAIR-LAB gia' costruite all'inizio del TEST = {sm.get('pairlab_closed_at_test_start',0)}",
             f"• STRICT TEST = {sm.get('test_draws',0)} estrazioni / {sm.get('test_days',0)} giorni",
             f"• fonti TEST = {days_test or '-'}",
-            f"• STRICT aperte/chiuse nel TEST = {sm.get('strict_opened_total',0)}/{sm.get('strict_closed_total',0)}",
+            f"• STRICT-LAB aperte/chiuse nel TEST = {sm.get('strict_opened_total',0)}/{sm.get('strict_closed_total',0)}",
             f"• PAIR-LAB replay finali = {sm.get('pairlab_closed_total_replay',0)} | copiato nel live = {'SI' if sm.get('pairlab_copied') else 'NO, storico precedente preservato'}",
         ]
         start_pairs = sm.get("pairlab_at_test_start", {}) or {}
@@ -5163,14 +5227,14 @@ class SniperV48BaseFullSpy:
             for key, d in list(start_pairs.items())[:6]:
                 lines.append(f"  - {key}: n={d.get('closed',0)} | H3 edge {d.get('edge_h3',0):+.1f}pp | ROI {d.get('roi_h3',0):+.1f}%")
         if pairs:
-            lines.append("• STRICT TEST per coppia:")
+            lines.append("• STRICT-LAB TEST per coppia:")
             for key, d in sorted(pairs.items(), key=lambda kv: int((kv[1] or {}).get("closed",0)), reverse=True)[:8]:
                 lines.append(
                     f"  - {key}: n={d.get('closed',0)} | BEST H{d.get('best_h',0)} | "
                     f"ROI H1/H2/H3={d.get('roi_h1',0):+.1f}%/{d.get('roi_h2',0):+.1f}%/{d.get('roi_h3',0):+.1f}%"
                 )
         else:
-            lines.append("• nessuna STRICT chiusa nel TEST: questa volta significa davvero che nessun caso valido ha chiuso nel periodo test")
+            lines.append("• nessuna STRICT-LAB chiusa nel TEST: nessun contesto forte ha completato H1-H3 nel periodo test")
         if sm.get("errors"):
             lines.append("• avvisi fonti: " + "; ".join(sm.get("errors") or []))
         return "\n".join(lines)
@@ -5208,7 +5272,7 @@ class SniperV48BaseFullSpy:
         await self.maybe_open_spy_sessions(app, e)
         await self.maybe_open_cottone_sessions(app, e)
         await self.maybe_open_sum9091_session(app, e)
-        # v3: PAIR-LAB generale + STRICT SHADOW prima della valutazione del PLAY reale.
+        # v3: PAIR-LAB generale + STRICT-LAB prima della valutazione del PLAY reale.
         await self.maybe_open_pair_lab_sessions(app, e)
         await self.maybe_open_strict_shadow_sessions(app, e)
 
@@ -5539,7 +5603,7 @@ async def startup(engine, app):
         engine.reset_for_new_day(current_day)
         await engine.tg(app, "🗓️ Nuovo giorno: reset operativo PLAYABILITY/SPIE. Statistiche aggregate conservate.")
 
-    # v3.2.1: prima del live costruisce PAIR-LAB nel PRE-ROLL, poi misura STRICT nel TEST.
+    # v3.3: prima del live costruisce PAIR-LAB nel PRE-ROLL, poi misura STRICT-LAB nel TEST.
     warm = await engine.run_historical_warmup_if_needed(app)
     await engine.tg(app, engine.historical_warmup_report_text())
 
@@ -5552,23 +5616,23 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER PLAYABILITY ONLY v3.2.1 — STRICT + PRE-ROLL AVVIATO\n"
+            "🚀 SNIPER PLAYABILITY ONLY v3.3 — STRICT-LAB + PLAY-STRICT AVVIATO\n"
             "✅ 1 solo AMBO\n"
-            f"✅ warmup storico = {warm.get('draws',0)} estrazioni | STRICT TEST chiuse = {engine.historical_warmup_summary.get('strict_closed_total',0)}\n"
+            f"✅ warmup storico = {warm.get('draws',0)} estrazioni | STRICT-LAB TEST chiuse = {engine.historical_warmup_summary.get('strict_closed_total',0)}\n"
             "✅ PAIR-LAB generale preservato dalla v2 e usato solo come filtro/diagnostica\n"
-            f"✅ STRICT SHADOW: minimo {PLAYABLE_STRICT_MIN_CLOSED} casi chiusi per coppia prima di un PLAY reale\n"
-            "✅ STRICT nasce solo quando la condizione avrebbe superato tutti i gate v2\n"
-            "✅ durata PLAY dinamica: H1/H2/H3 scelta dal ROI STRICT migliore\n"
-            f"✅ gate STRICT: edge>={PLAYABLE_STRICT_MIN_EDGE:+.1f}pp | ROI>={PLAYABLE_STRICT_MIN_ROI:+.1f}%\n"
+            f"✅ STRICT-LAB: minimo {PLAYABLE_STRICT_MIN_CLOSED} casi chiusi per coppia prima di un PLAY reale\n"
+            "✅ STRICT-LAB raccoglie raw/ind/DEC/MULT + pairLAB maturo, senza gate edge/ROI\n"
+            "✅ durata PLAY dinamica: H1/H2/H3 scelta dal ROI STRICT-LAB migliore\n"
+            f"✅ gate PLAY-STRICT: edge>={PLAYABLE_STRICT_MIN_EDGE:+.1f}pp | ROI>={PLAYABLE_STRICT_MIN_ROI:+.1f}%\n"
             f"✅ senza conferma: edge>={PLAYABLE_STRICT_NO_CONFIRM_MIN_EDGE:+.1f}pp | ROI>={PLAYABLE_STRICT_NO_CONFIRM_MIN_ROI:+.1f}%\n"
-            f"✅ anti-ripetizione STRICT = {PLAYABLE_STRICT_REOPEN_AFTER} estrazioni | anti-riuso reale = {PLAYABLE_PAIR_REUSE_AFTER}\n"
+            f"✅ anti-ripetizione STRICT-LAB = {PLAYABLE_STRICT_REOPEN_AFTER} estrazioni | anti-riuso reale = {PLAYABLE_PAIR_REUSE_AFTER}\n"
             "✅ T1 / SOMMA 90-91 / +5 / +4 / v48 = solo conferme\n"
             "✅ nessun terno, nessuna progressione, nessun secondo ambo\n"
             "✅ retry HTTP silenzioso x3 per errori temporanei/gzip\n"
             f"✅ orario bot = {BOT_TZ_NAME}\n"
             f"✅ persistenza GitHub state/csv = {'ON' if PERSIST_GIT_STATE else 'OFF'}\n"
             f"✅ report automatici: {', '.join(AUTO_REPORT_TIMES)} + cambio giorno\n"
-            "✅ warmup storico: PRE-ROLL vecchio -> STRICT TEST recente -> live, senza leakage\n\n"
+            "✅ warmup storico: PRE-ROLL vecchio -> STRICT-LAB TEST recente -> live, senza leakage\n\n"
             "Tocca /menu per vedere i pulsanti."
         )
         await engine.tg(app, engine.menu_text(), inline_menu=True)
@@ -5607,7 +5671,7 @@ async def live_loop(engine, app):
             should_notify = (err_txt != last_error_text) or (now_err - last_error_notify_ts >= 900)
             if should_notify:
                 try:
-                    await engine.tg(app, f"⚠️ errore PLAYABILITY ONLY v3.2: {ex}")
+                    await engine.tg(app, f"⚠️ errore PLAYABILITY ONLY v3.3: {ex}")
                     last_error_text = err_txt
                     last_error_notify_ts = now_err
                 except Exception:
