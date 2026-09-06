@@ -1,5 +1,5 @@
 {
-  "version": "playability_only_v31_historical_warmup",
+  "version": "playability_only_v32_preroll_strict",
   "day": "2026-09-06",
   "max_e": 160,
   "last_fp": "d9dfc9cdc92333d66ae27567d6dfceef",
@@ -18227,31 +18227,46 @@
   "historical_warmup_version": 1,
   "historical_warmup_summary": {
     "enabled": true,
-    "ok": true,
-    "draws": 733,
+    "ok": false,
+    "pre_draws": 0,
+    "test_draws": 736,
+    "pre_days": 0,
+    "test_days": 3,
+    "pre_minimum": 1000,
+    "test_minimum": 400,
     "days": [
       {
-        "label": "altro ieri",
-        "day": "2026-09-04",
-        "draws": 288
+        "label": "oggi",
+        "day": "2026-09-06",
+        "draws": 160,
+        "source": "10elotto5minuti",
+        "zone": "TEST",
+        "offset": 0
       },
       {
         "label": "ieri",
         "day": "2026-09-05",
-        "draws": 288
+        "draws": 288,
+        "source": "10elotto5minuti",
+        "zone": "TEST",
+        "offset": 1
       },
       {
-        "label": "oggi",
-        "day": "2026-09-06",
-        "draws": 157
+        "label": "altro ieri",
+        "day": "2026-09-04",
+        "draws": 288,
+        "source": "10elotto5minuti",
+        "zone": "TEST",
+        "offset": 2
       }
     ],
-    "errors": [],
-    "strict_closed_total": 0,
-    "pairlab_closed_total_replay": 220,
-    "pairlab_copied": false,
-    "strict_pairs": {},
-    "completed_at": "2026-09-06 13:08:30"
+    "errors": [
+      "3gg fa 2026-09-03: nessuna estrazione valida (lottologia=0)",
+      "4gg fa 2026-09-02: nessuna estrazione valida (lottologia=0)",
+      "5gg fa 2026-09-01: nessuna estrazione valida (lottologia=0)",
+      "6gg fa 2026-08-31: nessuna estrazione valida (lottologia=0)",
+      "7gg fa 2026-08-30: nessuna estrazione valida (lottologia=0)"
+    ]
   },
   "cottone_uid": 6905,
   "cottone_sessions": [
