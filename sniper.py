@@ -1,8 +1,8 @@
 # ============================================================
-# 🎯 SNIPER PLAYABILITY ONLY v3.2 — STRICT + PRE-ROLL STORICO
+# 🎯 SNIPER PLAYABILITY ONLY v3.2.1 — STRICT + PRE-ROLL STORICO
 # AMBO ONLY • H1-H3 • 1 solo ambo • PAIR-SPECIFIC + STRICT CONDITION
 #
-# v3.2: il PAIR-LAB generale resta diagnostico, ma NON basta piu' per aprire un PLAY.
+# v3.2.1: il PAIR-LAB generale resta diagnostico, ma NON basta piu' per aprire un PLAY.
 # All'avvio viene eseguito un replay cronologico separato: PRE-ROLL storico prima del periodo STRICT, senza leakage futuro.
 # Ogni coppia deve dimostrare edge/ROI anche nel sottoinsieme STRICT che replica i gate operativi.
 # Il numero massimo di colpi viene scelto dinamicamente (H1/H2/H3) dal ROI STRICT della coppia.
@@ -64,17 +64,31 @@ CHAT_ID = None
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 URL_YESTERDAY = "https://10elotto5minuti.com/estrazioni-di-ieri"
 URL_DAY_BEFORE_YESTERDAY = "https://10elotto5minuti.com/estrazioni-dellaltro-ieri"
+# Archivio annuale 10elotto5minuti: fallback per i giorni piu' vecchi se disponibile.
+URL_YEAR_ARCHIVE = "https://10elotto5minuti.com/estrazioni-ultimo-anno"
 # Fonte secondaria con pagine relative giorno-per-giorno, usata per il PRE-ROLL oltre 2 giorni.
 LOTTOLOGIA_BASE = "https://lottologia.com/10elotto5minuti"
-HEADERS = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "identity"}
+# Header browser piu' realistici: alcuni endpoint archivio restituiscono HTML ridotto ai client troppo generici.
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "it-IT,it;q=0.9,en;q=0.7",
+    "Accept-Encoding": "identity",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v3_state.json")
 # Migrazione: v3 importa prima lo state v2, preservando SPIE/Cottone/SOMMA e PAIR-LAB generale.
 LEGACY_STATE_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v2_state.json")
 LEGACY_STATE_FILE_V1 = os.path.join(BASE_DIR, "sniper_playability_only_v1_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v32_events.csv")
-LOCK_FILE = "/tmp/sniper_playability_only_v32.lock"
+CSV_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v321_events.csv")
+LOCK_FILE = "/tmp/sniper_playability_only_v321.lock"
 
 # Orario bot/report: GitHub gira spesso in UTC, qui forziamo Italia.
 BOT_TZ_NAME = os.getenv("BOT_TZ", "Europe/Rome")
@@ -148,7 +162,7 @@ def playable_pair_group(pair):
 
 
 # Motore operativo
-PLAYABILITY_ONLY_LOGIC_VERSION = 31
+PLAYABILITY_ONLY_LOGIC_VERSION = 32
 PLAYABLE_AUTO_ENABLED = os.getenv("PLAYABLE_AUTO_ENABLED", "1") != "0"
 PLAYABLE_NOTIFY_OPEN = os.getenv("PLAYABLE_NOTIFY_OPEN", "1") != "0"
 PLAYABLE_NOTIFY_HIT = os.getenv("PLAYABLE_NOTIFY_HIT", "1") != "0"
@@ -207,7 +221,7 @@ PLAYABLE_STRICT_SHORTER_TOLERANCE = float(os.getenv("PLAYABLE_STRICT_SHORTER_TOL
 # v3.2 — PRE-ROLL + STRICT TEST storico, senza leakage futuro.
 # PRE-ROLL: giorni piu' vecchi, usati solo per costruire SPIE/PAIR-LAB e contesto.
 # STRICT TEST: ultimi giorni, usati per misurare le vere condizioni che avrebbero superato i gate.
-HISTORICAL_WARMUP_VERSION = 2
+HISTORICAL_WARMUP_VERSION = 3
 HISTORICAL_WARMUP_ENABLED = os.getenv("HISTORICAL_WARMUP_ENABLED", "1") != "0"
 HISTORICAL_PREROLL_DAYS = int(os.getenv("HISTORICAL_PREROLL_DAYS", "5"))
 HISTORICAL_STRICT_TEST_DAYS = int(os.getenv("HISTORICAL_STRICT_TEST_DAYS", "3"))
@@ -717,50 +731,97 @@ def _parse_lottologia_day_header(line):
         return None
 
 
-def parse_lottologia_records(url, expected_day=None):
-    """Legge una giornata dall'archivio Lottologia.
+def _lottologia_month_number(token):
+    aliases = {
+        "gen": 1, "gennaio": 1, "feb": 2, "febbraio": 2, "mar": 3, "marzo": 3,
+        "apr": 4, "aprile": 4, "mag": 5, "maggio": 5, "giu": 6, "giugno": 6,
+        "lug": 7, "luglio": 7, "ago": 8, "agosto": 8,
+        "set": 9, "sett": 9, "settembre": 9,
+        "ott": 10, "ottobre": 10, "nov": 11, "novembre": 11,
+        "dic": 12, "dicembre": 12,
+    }
+    return aliases.get(str(token).lower().strip().rstrip("."))
 
-    Formato tipico: header '#288 4 Set 2026 23:59', poi sezione 'Numeri'
-    su quattro righe da cinque numeri. Prende SOLO i 20 numeri principali.
+
+def parse_lottologia_records(url, expected_day=None):
+    """Legge una giornata dall'archivio Lottologia in modo robusto.
+
+    La vecchia v3.2 assumeva che BeautifulSoup producesse una singola riga tipo
+    '#288 3 Set 2026 23:59'. Nel vero HTML i pezzi possono essere in nodi separati
+    ('#288' / '3 Set 2026' / '23:59'), quindi il parser restituiva 0 record.
+
+    Qui normalizziamo TUTTO il testo in una sola sequenza e delimitiamo i record
+    tramite gli header #N giorno mese anno ora. Poi prendiamo esclusivamente i
+    numeri fra 'Numeri' e 'Oro/Doppio Oro/Extra'.
     """
     html = _http_get_text(url)
-    text = BeautifulSoup(html, "html.parser").get_text("\n", strip=True)
-    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True).replace("\xa0", " ")
+    text = re.sub(r"\s+", " ", text)
+
+    header_re = re.compile(
+        r"#\s*(\d{1,3})\s+(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\.?\s+(\d{4})\s+(\d{1,2}:\d{2})",
+        re.IGNORECASE,
+    )
+    headers = list(header_re.finditer(text))
     out = []
-    i = 0
-    while i < len(lines):
-        parsed = _parse_lottologia_day_header(lines[i])
-        if not parsed:
-            i += 1
+
+    for idx, m in enumerate(headers):
+        e = int(m.group(1))
+        mon = _lottologia_month_number(m.group(3))
+        if not mon:
             continue
-        e, rec_day = parsed
-        i += 1
-        # cerca la sezione Numeri del record corrente
-        while i < len(lines) and lines[i].lower() != "numeri":
-            if _parse_lottologia_day_header(lines[i]):
-                break
-            i += 1
-        if i >= len(lines) or lines[i].lower() != "numeri":
+        try:
+            rec_day = datetime(int(m.group(4)), mon, int(m.group(2))).strftime("%Y-%m-%d")
+        except Exception:
             continue
-        i += 1
-        nums = []
-        while i < len(lines):
-            row = lines[i]
-            if row.lower() in ("oro", "doppio oro", "extra") or _parse_lottologia_day_header(row):
-                break
-            vals = [int(x) for x in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", row)]
-            for n in vals:
-                if 1 <= n <= 90:
-                    nums.append(n)
-                    if len(nums) == 20:
-                        break
-            if len(nums) == 20:
-                break
-            i += 1
-        if len(nums) == 20 and len(set(nums)) == 20 and (not expected_day or rec_day == expected_day):
-            out.append((rec_day, int(e), nums))
-        # lascia i sul record corrente; il loop ritrovera' il prossimo header
-        i += 1
+
+        # Scarta subito giornate cache/stale diverse dalla data richiesta.
+        if expected_day and rec_day != expected_day:
+            continue
+
+        block_end = headers[idx + 1].start() if idx + 1 < len(headers) else len(text)
+        block = text[m.end():block_end]
+
+        # I 20 numeri principali sono fra 'Numeri' e la prima sezione speciale.
+        sec = re.search(
+            r"\bNumeri\b(.*?)(?=\bOro\b|\bDoppio\s+Oro\b|\bExtra\b|$)",
+            block,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not sec:
+            continue
+
+        vals = [int(x) for x in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", sec.group(1))]
+        nums = [n for n in vals if 1 <= n <= 90][:20]
+        if len(nums) == 20 and len(set(nums)) == 20:
+            out.append((rec_day, e, nums))
+
+    # Fallback: alcune varianti HTML possono non avere la parola 'Numeri' nel blocco.
+    # In quel caso usa i primi 20 valori 1..90 dopo l'header, ma SOLO se il blocco
+    # contiene una sezione Oro/Extra che conferma di essere un record estrazione.
+    if not out and headers:
+        for idx, m in enumerate(headers):
+            e = int(m.group(1))
+            mon = _lottologia_month_number(m.group(3))
+            if not mon:
+                continue
+            try:
+                rec_day = datetime(int(m.group(4)), mon, int(m.group(2))).strftime("%Y-%m-%d")
+            except Exception:
+                continue
+            if expected_day and rec_day != expected_day:
+                continue
+            block_end = headers[idx + 1].start() if idx + 1 < len(headers) else len(text)
+            block = text[m.end():block_end]
+            special = re.search(r"\b(?:Oro|Doppio\s+Oro|Extra)\b", block, re.IGNORECASE)
+            if not special:
+                continue
+            main = block[:special.start()]
+            vals = [int(x) for x in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", main)]
+            nums = [n for n in vals if 1 <= n <= 90][:20]
+            if len(nums) == 20 and len(set(nums)) == 20:
+                out.append((rec_day, e, nums))
 
     dedup = {}
     for d, e, nums in out:
@@ -768,12 +829,35 @@ def parse_lottologia_records(url, expected_day=None):
     return sorted(dedup.values(), key=lambda x: (x[0], x[1]))
 
 
+def _annual_archive_by_day(target_days):
+    """Fallback: prova l'archivio annuale della fonte primaria una sola volta.
+
+    Ritorna un dict giorno -> record. Se la pagina annuale e' cache/stale o non
+    contiene i giorni richiesti, semplicemente non produce quei giorni.
+    """
+    target_days = {str(x) for x in (target_days or [])}
+    if not target_days:
+        return {}
+    try:
+        rows = parse_site_records(URL_YEAR_ARCHIVE, expected_day=None)
+    except Exception:
+        return {}
+    by_day = defaultdict(list)
+    for d, e, nums in rows:
+        if d in target_days:
+            by_day[d].append((d, e, nums))
+    return {d: sorted(v, key=lambda x: x[1]) for d, v in by_day.items()}
+
 def fetch_historical_warmup_records():
     """Scarica PRE-ROLL + STRICT TEST in giorni separati.
 
-    Ultimi 3 giorni: fonte primaria 10elotto5minuti.com, con fallback Lottologia.
-    Giorni piu' vecchi: Lottologia usa rotte relative /estrazioni-Ngg-fa.
-    Ogni pagina viene validata contro la data attesa: una cache/stale non viene accettata.
+    Strategia v3.2.1:
+    - offset 0..2: 10elotto5minuti.com (fonte primaria gia' verificata live)
+    - offset >=3: Lottologia con parser robusto a nodi HTML separati
+    - se un giorno vecchio manca ancora, fallback singolo su archivio annuale
+      10elotto5minuti.com e filtro per data.
+
+    Ogni record viene sempre validato contro la data attesa: niente cache/stale.
     """
     today_date = now_dt().date()
     total_days = max(1, HISTORICAL_PREROLL_DAYS + HISTORICAL_STRICT_TEST_DAYS)
@@ -787,6 +871,9 @@ def fetch_historical_warmup_records():
         2: URL_DAY_BEFORE_YESTERDAY,
     }
 
+    # Prima passata: fonte primaria per TEST recente, Lottologia per giorni vecchi.
+    missing = []
+    pending_info = {}
     for offset in range(total_days):
         expected_day = (today_date - timedelta(days=offset)).isoformat()
         label = "oggi" if offset == 0 else ("ieri" if offset == 1 else ("altro ieri" if offset == 2 else f"{offset}gg fa"))
@@ -801,7 +888,7 @@ def fetch_historical_warmup_records():
                 if not recs:
                     attempts.append("primary=0")
             except Exception as exc:
-                attempts.append(f"primary={exc}")
+                attempts.append(f"primary={type(exc).__name__}:{exc}")
                 recs = []
 
         if not recs:
@@ -811,7 +898,7 @@ def fetch_historical_warmup_records():
                 if not recs:
                     attempts.append("lottologia=0")
             except Exception as exc:
-                attempts.append(f"lottologia={exc}")
+                attempts.append(f"lottologia={type(exc).__name__}:{exc}")
                 recs = []
 
         if recs:
@@ -819,16 +906,35 @@ def fetch_historical_warmup_records():
             zone = "TEST" if offset < HISTORICAL_STRICT_TEST_DAYS else "PRE"
             summary.append({"label": label, "day": expected_day, "draws": len(recs), "source": source, "zone": zone, "offset": offset})
         else:
+            missing.append(expected_day)
+            pending_info[expected_day] = (offset, label, attempts)
+
+    # Seconda passata: UN SOLO download dell'archivio annuale per i giorni mancanti.
+    annual_map = _annual_archive_by_day(missing) if missing else {}
+    for expected_day in missing:
+        offset, label, attempts = pending_info[expected_day]
+        recs = annual_map.get(expected_day, [])
+        if recs:
+            all_records.extend(recs)
+            zone = "TEST" if offset < HISTORICAL_STRICT_TEST_DAYS else "PRE"
+            summary.append({
+                "label": label, "day": expected_day, "draws": len(recs),
+                "source": "10elotto-annual", "zone": zone, "offset": offset,
+            })
+        else:
+            attempts.append("annual=0")
             errors.append(f"{label} {expected_day}: nessuna estrazione valida ({'; '.join(attempts)})")
 
     dedup = {}
     for d, e, nums in all_records:
-        dedup[(d, int(e))] = (d, int(e), nums)
+        # Chiave con data + numero estrazione: E riparte ogni giorno.
+        dedup[(str(d), int(e))] = (str(d), int(e), list(map(int, nums)))
     records = sorted(dedup.values(), key=lambda x: (x[0], x[1]))
 
     test_start = (today_date - timedelta(days=max(0, HISTORICAL_STRICT_TEST_DAYS - 1))).isoformat()
     pre_records = [x for x in records if x[0] < test_start]
     test_records = [x for x in records if x[0] >= test_start]
+    summary = sorted(summary, key=lambda x: x.get("offset", 0))
     return pre_records, test_records, summary, errors
 
 def fingerprint(e, nums):
@@ -4840,7 +4946,7 @@ class SniperV48BaseFullSpy:
 
     def menu_text(self):
         return (
-            "🎯 PLAYABILITY ONLY v3.2 — STRICT + PRE-ROLL\n"
+            "🎯 PLAYABILITY ONLY v3.2.1 — STRICT + PRE-ROLL\n"
             "Bot focalizzato su 1 solo AMBO, STRICT condition e durata dinamica H1/H2/H3.\n\n"
             "/play — classifica live + PLAY/WATCH/NO PLAY\n"
             "/report — risultati, ROI, score e quadro live\n"
@@ -5030,7 +5136,7 @@ class SniperV48BaseFullSpy:
         if not sm.get("ok"):
             days = ", ".join(f"{x.get('zone')} {x.get('day')}={x.get('draws')}[{x.get('source','?')}]" for x in sm.get("days",[]) or [])
             return (
-                "⚠️ WARMUP PRE-ROLL v3.2 NON COMPLETATO\n"
+                "⚠️ WARMUP PRE-ROLL v3.2.1 NON COMPLETATO\n"
                 f"• PRE-ROLL = {sm.get('pre_draws',0)}/{sm.get('pre_minimum',HISTORICAL_PREROLL_MIN_DRAWS)} estrazioni su {sm.get('pre_days',0)} giorni\n"
                 f"• STRICT TEST = {sm.get('test_draws',0)}/{sm.get('test_minimum',HISTORICAL_TEST_MIN_DRAWS)} estrazioni su {sm.get('test_days',0)} giorni\n"
                 f"• fonti valide = {days or '-'}\n"
@@ -5042,7 +5148,7 @@ class SniperV48BaseFullSpy:
         days_test = ", ".join(f"{x.get('day')}={x.get('draws')}[{x.get('source','?')}]" for x in sm.get("days",[]) or [] if x.get("zone") == "TEST")
         pairs = sm.get("strict_pairs", {}) or {}
         lines = [
-            "🕰️ WARMUP PRE-ROLL v3.2 — COMPLETATO",
+            "🕰️ WARMUP PRE-ROLL v3.2.1 — COMPLETATO",
             f"• PRE-ROLL = {sm.get('pre_draws',0)} estrazioni / {sm.get('pre_days',0)} giorni",
             f"• fonti PRE = {days_pre or '-'}",
             f"• PAIR-LAB gia' costruite all'inizio del TEST = {sm.get('pairlab_closed_at_test_start',0)}",
@@ -5433,7 +5539,7 @@ async def startup(engine, app):
         engine.reset_for_new_day(current_day)
         await engine.tg(app, "🗓️ Nuovo giorno: reset operativo PLAYABILITY/SPIE. Statistiche aggregate conservate.")
 
-    # v3.2: prima del live costruisce PAIR-LAB nel PRE-ROLL, poi misura STRICT nel TEST.
+    # v3.2.1: prima del live costruisce PAIR-LAB nel PRE-ROLL, poi misura STRICT nel TEST.
     warm = await engine.run_historical_warmup_if_needed(app)
     await engine.tg(app, engine.historical_warmup_report_text())
 
@@ -5446,7 +5552,7 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER PLAYABILITY ONLY v3.2 — STRICT + PRE-ROLL AVVIATO\n"
+            "🚀 SNIPER PLAYABILITY ONLY v3.2.1 — STRICT + PRE-ROLL AVVIATO\n"
             "✅ 1 solo AMBO\n"
             f"✅ warmup storico = {warm.get('draws',0)} estrazioni | STRICT TEST chiuse = {engine.historical_warmup_summary.get('strict_closed_total',0)}\n"
             "✅ PAIR-LAB generale preservato dalla v2 e usato solo come filtro/diagnostica\n"
