@@ -1,9 +1,9 @@
 # ============================================================
-# 🎯 SNIPER PLAYABILITY ONLY v3.1 — STRICT + HISTORICAL WARMUP 3 GIORNI
+# 🎯 SNIPER PLAYABILITY ONLY v3.2 — STRICT + PRE-ROLL STORICO
 # AMBO ONLY • H1-H3 • 1 solo ambo • PAIR-SPECIFIC + STRICT CONDITION
 #
-# v3.1: il PAIR-LAB generale resta diagnostico, ma NON basta piu' per aprire un PLAY.
-# All'avvio viene eseguito un replay cronologico di altro ieri + ieri + oggi per inizializzare lo STRICT.
+# v3.2: il PAIR-LAB generale resta diagnostico, ma NON basta piu' per aprire un PLAY.
+# All'avvio viene eseguito un replay cronologico separato: PRE-ROLL storico prima del periodo STRICT, senza leakage futuro.
 # Ogni coppia deve dimostrare edge/ROI anche nel sottoinsieme STRICT che replica i gate operativi.
 # Il numero massimo di colpi viene scelto dinamicamente (H1/H2/H3) dal ROI STRICT della coppia.
 #
@@ -64,6 +64,8 @@ CHAT_ID = None
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 URL_YESTERDAY = "https://10elotto5minuti.com/estrazioni-di-ieri"
 URL_DAY_BEFORE_YESTERDAY = "https://10elotto5minuti.com/estrazioni-dellaltro-ieri"
+# Fonte secondaria con pagine relative giorno-per-giorno, usata per il PRE-ROLL oltre 2 giorni.
+LOTTOLOGIA_BASE = "https://lottologia.com/10elotto5minuti"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "identity"}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -71,8 +73,8 @@ STATE_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v3_state.json")
 # Migrazione: v3 importa prima lo state v2, preservando SPIE/Cottone/SOMMA e PAIR-LAB generale.
 LEGACY_STATE_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v2_state.json")
 LEGACY_STATE_FILE_V1 = os.path.join(BASE_DIR, "sniper_playability_only_v1_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v31_events.csv")
-LOCK_FILE = "/tmp/sniper_playability_only_v31.lock"
+CSV_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v32_events.csv")
+LOCK_FILE = "/tmp/sniper_playability_only_v32.lock"
 
 # Orario bot/report: GitHub gira spesso in UTC, qui forziamo Italia.
 BOT_TZ_NAME = os.getenv("BOT_TZ", "Europe/Rome")
@@ -202,11 +204,15 @@ PLAYABLE_STRICT_NO_CONFIRM_MIN_ROI = float(os.getenv("PLAYABLE_STRICT_NO_CONFIRM
 # Se due orizzonti hanno ROI quasi uguale, scegli quello piu' corto per ridurre costo/esposizione.
 PLAYABLE_STRICT_SHORTER_TOLERANCE = float(os.getenv("PLAYABLE_STRICT_SHORTER_TOLERANCE", "2.0"))
 
-# v3.1 — warmup/replay storico STRICT.
-# Usa le tre pagine esplicite del sito: altro ieri, ieri, oggi.
-HISTORICAL_WARMUP_VERSION = 1
+# v3.2 — PRE-ROLL + STRICT TEST storico, senza leakage futuro.
+# PRE-ROLL: giorni piu' vecchi, usati solo per costruire SPIE/PAIR-LAB e contesto.
+# STRICT TEST: ultimi giorni, usati per misurare le vere condizioni che avrebbero superato i gate.
+HISTORICAL_WARMUP_VERSION = 2
 HISTORICAL_WARMUP_ENABLED = os.getenv("HISTORICAL_WARMUP_ENABLED", "1") != "0"
-HISTORICAL_WARMUP_MIN_DRAWS = int(os.getenv("HISTORICAL_WARMUP_MIN_DRAWS", "400"))
+HISTORICAL_PREROLL_DAYS = int(os.getenv("HISTORICAL_PREROLL_DAYS", "5"))
+HISTORICAL_STRICT_TEST_DAYS = int(os.getenv("HISTORICAL_STRICT_TEST_DAYS", "3"))
+HISTORICAL_PREROLL_MIN_DRAWS = int(os.getenv("HISTORICAL_PREROLL_MIN_DRAWS", "1000"))
+HISTORICAL_TEST_MIN_DRAWS = int(os.getenv("HISTORICAL_TEST_MIN_DRAWS", "400"))
 HISTORICAL_WARMUP_COPY_PAIRLAB_IF_EMPTY = os.getenv("HISTORICAL_WARMUP_COPY_PAIRLAB_IF_EMPTY", "1") != "0"
 
 # Moduli storici v48/CORE restano calcolati in silenzio solo come laboratorio/conferma.
@@ -681,33 +687,149 @@ def parse_site():
     return [(e, nums) for d, e, nums in parse_site_records(URL, expected_day=today)]
 
 
+def _lottologia_url_for_offset(day_offset):
+    day_offset = int(day_offset)
+    if day_offset <= 0:
+        return f"{LOTTOLOGIA_BASE}/estrazioni/"
+    if day_offset == 1:
+        return f"{LOTTOLOGIA_BASE}/estrazioni-ieri"
+    return f"{LOTTOLOGIA_BASE}/estrazioni-{day_offset}gg-fa"
+
+
+def _parse_lottologia_day_header(line):
+    """Parsa '#288 4 Set 2026 23:59' -> (288, '2026-09-04')."""
+    m = re.search(r"#\s*(\d+)\s+(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})\s+\d{1,2}:\d{2}", str(line), re.IGNORECASE)
+    if not m:
+        return None
+    aliases = {
+        "gen":1, "gennaio":1, "feb":2, "febbraio":2, "mar":3, "marzo":3,
+        "apr":4, "aprile":4, "mag":5, "maggio":5, "giu":6, "giugno":6,
+        "lug":7, "luglio":7, "ago":8, "agosto":8, "set":9, "sett":9, "settembre":9,
+        "ott":10, "ottobre":10, "nov":11, "novembre":11, "dic":12, "dicembre":12,
+    }
+    mon = aliases.get(m.group(3).lower().rstrip('.'))
+    if not mon:
+        return None
+    try:
+        d = datetime(int(m.group(4)), mon, int(m.group(2))).strftime("%Y-%m-%d")
+        return int(m.group(1)), d
+    except Exception:
+        return None
+
+
+def parse_lottologia_records(url, expected_day=None):
+    """Legge una giornata dall'archivio Lottologia.
+
+    Formato tipico: header '#288 4 Set 2026 23:59', poi sezione 'Numeri'
+    su quattro righe da cinque numeri. Prende SOLO i 20 numeri principali.
+    """
+    html = _http_get_text(url)
+    text = BeautifulSoup(html, "html.parser").get_text("\n", strip=True)
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    out = []
+    i = 0
+    while i < len(lines):
+        parsed = _parse_lottologia_day_header(lines[i])
+        if not parsed:
+            i += 1
+            continue
+        e, rec_day = parsed
+        i += 1
+        # cerca la sezione Numeri del record corrente
+        while i < len(lines) and lines[i].lower() != "numeri":
+            if _parse_lottologia_day_header(lines[i]):
+                break
+            i += 1
+        if i >= len(lines) or lines[i].lower() != "numeri":
+            continue
+        i += 1
+        nums = []
+        while i < len(lines):
+            row = lines[i]
+            if row.lower() in ("oro", "doppio oro", "extra") or _parse_lottologia_day_header(row):
+                break
+            vals = [int(x) for x in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", row)]
+            for n in vals:
+                if 1 <= n <= 90:
+                    nums.append(n)
+                    if len(nums) == 20:
+                        break
+            if len(nums) == 20:
+                break
+            i += 1
+        if len(nums) == 20 and len(set(nums)) == 20 and (not expected_day or rec_day == expected_day):
+            out.append((rec_day, int(e), nums))
+        # lascia i sul record corrente; il loop ritrovera' il prossimo header
+        i += 1
+
+    dedup = {}
+    for d, e, nums in out:
+        dedup[(str(d), int(e))] = (str(d), int(e), list(map(int, nums)))
+    return sorted(dedup.values(), key=lambda x: (x[0], x[1]))
+
+
 def fetch_historical_warmup_records():
-    """Scarica altro ieri + ieri + oggi e li concatena in ordine cronologico."""
+    """Scarica PRE-ROLL + STRICT TEST in giorni separati.
+
+    Ultimi 3 giorni: fonte primaria 10elotto5minuti.com, con fallback Lottologia.
+    Giorni piu' vecchi: Lottologia usa rotte relative /estrazioni-Ngg-fa.
+    Ogni pagina viene validata contro la data attesa: una cache/stale non viene accettata.
+    """
     today_date = now_dt().date()
-    specs = [
-        (URL_DAY_BEFORE_YESTERDAY, (today_date - timedelta(days=2)).isoformat(), "altro ieri"),
-        (URL_YESTERDAY, (today_date - timedelta(days=1)).isoformat(), "ieri"),
-        (URL, today_date.isoformat(), "oggi"),
-    ]
+    total_days = max(1, HISTORICAL_PREROLL_DAYS + HISTORICAL_STRICT_TEST_DAYS)
     all_records = []
     summary = []
     errors = []
-    for url, expected_day, label in specs:
-        try:
-            recs = parse_site_records(url, expected_day=expected_day)
-            if not recs:
-                errors.append(f"{label}: 0 estrazioni valide per {expected_day}")
-                continue
+
+    primary_by_offset = {
+        0: URL,
+        1: URL_YESTERDAY,
+        2: URL_DAY_BEFORE_YESTERDAY,
+    }
+
+    for offset in range(total_days):
+        expected_day = (today_date - timedelta(days=offset)).isoformat()
+        label = "oggi" if offset == 0 else ("ieri" if offset == 1 else ("altro ieri" if offset == 2 else f"{offset}gg fa"))
+        recs = []
+        source = None
+        attempts = []
+
+        if offset in primary_by_offset:
+            try:
+                recs = parse_site_records(primary_by_offset[offset], expected_day=expected_day)
+                source = "10elotto5minuti"
+                if not recs:
+                    attempts.append("primary=0")
+            except Exception as exc:
+                attempts.append(f"primary={exc}")
+                recs = []
+
+        if not recs:
+            try:
+                recs = parse_lottologia_records(_lottologia_url_for_offset(offset), expected_day=expected_day)
+                source = "lottologia"
+                if not recs:
+                    attempts.append("lottologia=0")
+            except Exception as exc:
+                attempts.append(f"lottologia={exc}")
+                recs = []
+
+        if recs:
             all_records.extend(recs)
-            summary.append({"label": label, "day": expected_day, "draws": len(recs)})
-        except Exception as exc:
-            errors.append(f"{label}: {exc}")
+            zone = "TEST" if offset < HISTORICAL_STRICT_TEST_DAYS else "PRE"
+            summary.append({"label": label, "day": expected_day, "draws": len(recs), "source": source, "zone": zone, "offset": offset})
+        else:
+            errors.append(f"{label} {expected_day}: nessuna estrazione valida ({'; '.join(attempts)})")
 
     dedup = {}
     for d, e, nums in all_records:
         dedup[(d, int(e))] = (d, int(e), nums)
     records = sorted(dedup.values(), key=lambda x: (x[0], x[1]))
-    return records, summary, errors
+
+    test_start = (today_date - timedelta(days=max(0, HISTORICAL_STRICT_TEST_DAYS - 1))).isoformat()
+    pre_records = [x for x in records if x[0] < test_start]
+    test_records = [x for x in records if x[0] >= test_start]
+    return pre_records, test_records, summary, errors
 
 def fingerprint(e, nums):
     return hashlib.md5(f"{e}-{'-'.join(map(str, nums))}".encode()).hexdigest()
@@ -1026,7 +1148,9 @@ def classify_network(spy, followers):
 class SniperV48BaseFullSpy:
     def __init__(self, load_persisted=True, replay_mode=False):
         self.replay_mode = bool(replay_mode)
-        self.version = "playability_only_v31_historical_warmup"
+        # Nel replay v3.2 il PRE-ROLL puo' disabilitare l'apertura STRICT mantenendo attivi PAIR-LAB/SPIE.
+        self.strict_collection_enabled = True
+        self.version = "playability_only_v32_preroll_strict"
         self.day = day_key()
         self.max_e = 0
         self.last_fp = None
@@ -1392,7 +1516,7 @@ class SniperV48BaseFullSpy:
             self.playable_core_zone_lock = int(data.get("playable_core_zone_lock", 0))
             stored_play_logic = int(data.get("playability_only_logic_version", 0) or 0)
             if (not migrated_legacy) and stored_play_logic == PLAYABILITY_ONLY_LOGIC_VERSION:
-                # Stato v3.1 nativo: riprende tutto, incluso warmup storico e risultati reali.
+                # Stato v3.2 nativo: riprende tutto, incluso warmup storico e risultati reali.
                 self.playability_only_logic_version = PLAYABILITY_ONLY_LOGIC_VERSION
                 raw_buckets = data.get("playable_score_buckets", {}) if isinstance(data.get("playable_score_buckets", {}), dict) else {}
                 self.playable_score_buckets = {}
@@ -1417,7 +1541,7 @@ class SniperV48BaseFullSpy:
                 self.historical_warmup_version = int(data.get("historical_warmup_version", 0) or 0)
                 self.historical_warmup_summary = data.get("historical_warmup_summary", {}) if isinstance(data.get("historical_warmup_summary", {}), dict) else {}
             else:
-                # Migrazione v3/v2/v1 -> v3.1.
+                # Migrazione v3/v2/v1 -> v3.2.
                 # Conserva PAIR-LAB generale solo se arriva davvero da v2; i PLAY reali ripartono da zero
                 # perche' il nuovo motore richiede validazione STRICT e orizzonte dinamico.
                 preserve_v2_pair_lab = (stored_play_logic in (2, 3))
@@ -1452,7 +1576,7 @@ class SniperV48BaseFullSpy:
                 self.playable_pair_lab_stats = old_pair_stats
                 self.playable_pair_lab_last_open_e = old_pair_last
                 self.playable_pair_lab_aborted = old_pair_aborted
-                # v3.1 ricostruisce STRICT con replay storico: parte pulito per evitare doppio conteggio.
+                # v3.2 ricostruisce STRICT con replay storico: parte pulito per evitare doppio conteggio.
                 self.playable_strict_sessions = []
                 self.playable_strict_stats = {}
                 self.playable_strict_last_open_e = {}
@@ -1460,9 +1584,9 @@ class SniperV48BaseFullSpy:
                 self.historical_warmup_version = 0
                 self.historical_warmup_summary = {}
                 if preserve_v2_pair_lab:
-                    print("ℹ️ PLAYABILITY ONLY v3.1: PAIR-LAB precedente preservato; PLAY reali ripartono da zero e STRICT verra ricostruito dal replay storico.")
+                    print("ℹ️ PLAYABILITY ONLY v3.2: PAIR-LAB precedente preservato; PLAY reali ripartono da zero e STRICT verra ricostruito dal replay storico.")
                 else:
-                    print("ℹ️ PLAYABILITY ONLY v3.1: storico SPIE/LAB preservato; PAIR-LAB/STRICT verranno inizializzati dal replay storico.")
+                    print("ℹ️ PLAYABILITY ONLY v3.2: storico SPIE/LAB preservato; PAIR-LAB/STRICT verranno inizializzati dal replay storico.")
             self.cottone_uid = int(data.get("cottone_uid", 0))
             self.cottone_sessions = data.get("cottone_sessions", []) if isinstance(data.get("cottone_sessions", []), list) else []
             self.cottone_horizon_stats = self._load_cottone_stat_map(data.get("cottone_horizon_stats", {}))
@@ -2660,6 +2784,8 @@ class SniperV48BaseFullSpy:
         pair-specific di anti-ripetizione. In questo modo STRICT replica la selezione 1-AMBO,
         non una collezione di tutte le coppie contemporaneamente eleggibili.
         """
+        if not getattr(self, "strict_collection_enabled", True):
+            return
         snap = self.playable_signal_snapshot()
         ranked = self.playability_rankings(snap)
         base_candidates = [
@@ -4714,7 +4840,7 @@ class SniperV48BaseFullSpy:
 
     def menu_text(self):
         return (
-            "🎯 PLAYABILITY ONLY v3.1 — STRICT + WARMUP 3 GIORNI\n"
+            "🎯 PLAYABILITY ONLY v3.2 — STRICT + PRE-ROLL\n"
             "Bot focalizzato su 1 solo AMBO, STRICT condition e durata dinamica H1/H2/H3.\n\n"
             "/play — classifica live + PLAY/WATCH/NO PLAY\n"
             "/report — risultati, ROI, score e quadro live\n"
@@ -4727,7 +4853,7 @@ class SniperV48BaseFullSpy:
         )
 
     # --------------------------------------------------------
-    # v3.1 — HISTORICAL WARMUP / REPLAY
+    # v3.2 — HISTORICAL WARMUP / REPLAY
     # --------------------------------------------------------
     @staticmethod
     def _sum_closed_pairlab_stats(stats_map):
@@ -4739,11 +4865,11 @@ class SniperV48BaseFullSpy:
         return total
 
     async def run_historical_warmup_if_needed(self, app=None):
-        """Replay cronologico di altro ieri + ieri + oggi in un motore isolato.
+        """v3.2: PRE-ROLL storico separato dal periodo STRICT TEST.
 
-        Il replay non scrive CSV/state, non invia Telegram e NON apre PLAY reali.
-        Serve a costruire PAIR-LAB e soprattutto STRICT senza leakage futuro.
-        Viene eseguito una sola volta per questa versione e poi persistito.
+        1) PRE-ROLL: costruisce SPIE, PAIR-LAB, T1/SOMMA/+5/+4 e contesto, ma NON apre STRICT.
+        2) STRICT TEST: abilita STRICT e misura solo condizioni future rispetto al PRE-ROLL.
+        Il motore e' isolato: niente Telegram, niente state/csv, nessun PLAY reale.
         """
         if not HISTORICAL_WARMUP_ENABLED:
             self.historical_warmup_version = HISTORICAL_WARMUP_VERSION
@@ -4754,21 +4880,32 @@ class SniperV48BaseFullSpy:
         if int(getattr(self, "historical_warmup_version", 0) or 0) >= HISTORICAL_WARMUP_VERSION:
             return {"ok": True, "already_done": True, **(self.historical_warmup_summary or {})}
 
-        records, day_summary, errors = fetch_historical_warmup_records()
-        if len(records) < HISTORICAL_WARMUP_MIN_DRAWS:
+        pre_records, test_records, day_summary, errors = fetch_historical_warmup_records()
+        pre_days = len({d for d, _, _ in pre_records})
+        test_days = len({d for d, _, _ in test_records})
+        enough_pre = len(pre_records) >= HISTORICAL_PREROLL_MIN_DRAWS
+        enough_test = len(test_records) >= HISTORICAL_TEST_MIN_DRAWS
+
+        if not (enough_pre and enough_test):
             # Non marchiare come completato: al prossimo riavvio riprovera'.
             self.historical_warmup_summary = {
-                "enabled": True, "ok": False, "draws": len(records),
-                "minimum": HISTORICAL_WARMUP_MIN_DRAWS,
+                "enabled": True, "ok": False,
+                "pre_draws": len(pre_records), "test_draws": len(test_records),
+                "pre_days": pre_days, "test_days": test_days,
+                "pre_minimum": HISTORICAL_PREROLL_MIN_DRAWS,
+                "test_minimum": HISTORICAL_TEST_MIN_DRAWS,
                 "days": day_summary, "errors": errors,
             }
             self.save_state()
-            return {"ok": False, "draws": len(records), "minimum": HISTORICAL_WARMUP_MIN_DRAWS, "days": day_summary, "errors": errors}
+            return {"ok": False, **self.historical_warmup_summary}
 
         replay = SniperV48BaseFullSpy(load_persisted=False, replay_mode=True)
         replay_day = None
-        processed = 0
-        for d, e, nums in records:
+        processed_pre = 0
+        processed_test = 0
+
+        async def feed_record(d, e, nums):
+            nonlocal replay_day
             if replay_day != d:
                 if replay_day is None:
                     replay.day = d
@@ -4781,13 +4918,49 @@ class SniperV48BaseFullSpy:
                     replay.reset_for_new_day(d)
                 replay_day = d
             await replay.on_new(None, int(e), list(nums), allow_open_playable=False)
-            processed += 1
 
-        # Non importiamo sessioni aperte al bordo del replay: solo risultati chiusi.
+        # FASE 1 — PRE-ROLL: costruisce il passato, ma STRICT resta completamente spento.
+        replay.strict_collection_enabled = False
+        replay.playable_strict_sessions = []
+        replay.playable_strict_stats = {}
+        replay.playable_strict_last_open_e = {}
+        replay.playable_strict_aborted = 0
+        for d, e, nums in pre_records:
+            await feed_record(d, e, nums)
+            processed_pre += 1
+
+        pair_closed_at_test_start = replay._sum_closed_pairlab_stats(replay.playable_pair_lab_stats)
+        pair_at_start = {}
+        for key in sorted(replay.playable_pair_lab_stats):
+            st = replay.playable_pair_lab_stats.get(key, {}) or {}
+            closed = int(st.get("closed", 0) or 0)
+            if closed <= 0:
+                continue
+            try:
+                pair = tuple(map(int, key.split("-")))
+                m = replay._pair_lab_metrics(pair)
+            except Exception:
+                continue
+            pair_at_start[key] = {
+                "closed": closed,
+                "edge_h3": round(float(m["edges"][3]), 4),
+                "roi_h3": round(float(m["rois"][3]), 4),
+            }
+
+        # FASE 2 — STRICT TEST: da qui in poi ogni apertura STRICT usa SOLO informazioni precedenti.
+        replay.strict_collection_enabled = True
+        replay.playable_strict_sessions = []
+        replay.playable_strict_stats = {}
+        replay.playable_strict_last_open_e = {}
+        replay.playable_strict_aborted = 0
+        for d, e, nums in test_records:
+            await feed_record(d, e, nums)
+            processed_test += 1
+
         strict_stats = json.loads(json.dumps(replay.playable_strict_stats))
         pair_stats = json.loads(json.dumps(replay.playable_pair_lab_stats))
-        # Le sessioni ancora aperte sul bordo finale non vengono importate.
-        # Allinea quindi sessions=closed per non lasciare contatori fantasma.
+        strict_opened = sum(int((st or {}).get("sessions", 0) or 0) for st in strict_stats.values())
+        # Sessioni ancora aperte sul bordo finale non diventano risultati chiusi.
         for _mp in (strict_stats, pair_stats):
             for _st in (_mp or {}).values():
                 if isinstance(_st, dict):
@@ -4795,13 +4968,13 @@ class SniperV48BaseFullSpy:
         strict_closed = replay._sum_closed_pairlab_stats(strict_stats)
         pair_closed = replay._sum_closed_pairlab_stats(pair_stats)
 
-        # STRICT v3 precedente viene sostituito, non sommato: evita doppio conteggio.
+        # STRICT precedente viene sostituito dal test storico pulito, non sommato: niente doppio conteggio.
         self.playable_strict_sessions = []
         self.playable_strict_stats = strict_stats
         self.playable_strict_last_open_e = {}
         self.playable_strict_aborted = int(replay.playable_strict_aborted)
 
-        # Se non esiste gia' un PAIR-LAB utile (installazione nuova), inizializzalo dal replay.
+        # PAIR-LAB live viene copiato solo se l'installazione non ne possiede gia' uno utile.
         existing_pair_closed = self._sum_closed_pairlab_stats(self.playable_pair_lab_stats)
         pairlab_copied = False
         if HISTORICAL_WARMUP_COPY_PAIRLAB_IF_EMPTY and existing_pair_closed < PLAYABLE_PAIR_LAB_MIN_CLOSED:
@@ -4816,8 +4989,9 @@ class SniperV48BaseFullSpy:
             st = strict_stats.get(key, {}) or {}
             if int(st.get("closed", 0) or 0) <= 0:
                 continue
-            m = replay._strict_pair_metrics(tuple(map(int, key.split("-"))))
-            h = replay._choose_strict_horizon(tuple(map(int, key.split("-"))))
+            pair = tuple(map(int, key.split("-")))
+            m = replay._strict_pair_metrics(pair)
+            h = replay._select_strict_horizon(m)
             per_pair[key] = {
                 "closed": int(st.get("closed", 0) or 0),
                 "best_h": int(h or 0),
@@ -4829,13 +5003,17 @@ class SniperV48BaseFullSpy:
                 "edge_h3": round(float(m["edges"][3]), 4),
             }
 
+        top_pair_start = dict(sorted(pair_at_start.items(), key=lambda kv: int((kv[1] or {}).get("closed", 0)), reverse=True)[:8])
         self.historical_warmup_version = HISTORICAL_WARMUP_VERSION
         self.historical_warmup_summary = {
-            "enabled": True,
-            "ok": True,
-            "draws": processed,
-            "days": day_summary,
-            "errors": errors,
+            "enabled": True, "ok": True,
+            "draws": processed_pre + processed_test,
+            "pre_draws": processed_pre, "test_draws": processed_test,
+            "pre_days": pre_days, "test_days": test_days,
+            "days": day_summary, "errors": errors,
+            "pairlab_closed_at_test_start": pair_closed_at_test_start,
+            "pairlab_at_test_start": top_pair_start,
+            "strict_opened_total": strict_opened,
             "strict_closed_total": strict_closed,
             "pairlab_closed_total_replay": pair_closed,
             "pairlab_copied": pairlab_copied,
@@ -4850,29 +5028,43 @@ class SniperV48BaseFullSpy:
         if not sm:
             return "🕰️ WARMUP STORICO — non ancora eseguito"
         if not sm.get("ok"):
+            days = ", ".join(f"{x.get('zone')} {x.get('day')}={x.get('draws')}[{x.get('source','?')}]" for x in sm.get("days",[]) or [])
             return (
-                "⚠️ WARMUP STORICO NON COMPLETATO\n"
-                f"• estrazioni valide = {sm.get('draws',0)}/{sm.get('minimum',HISTORICAL_WARMUP_MIN_DRAWS)}\n"
+                "⚠️ WARMUP PRE-ROLL v3.2 NON COMPLETATO\n"
+                f"• PRE-ROLL = {sm.get('pre_draws',0)}/{sm.get('pre_minimum',HISTORICAL_PREROLL_MIN_DRAWS)} estrazioni su {sm.get('pre_days',0)} giorni\n"
+                f"• STRICT TEST = {sm.get('test_draws',0)}/{sm.get('test_minimum',HISTORICAL_TEST_MIN_DRAWS)} estrazioni su {sm.get('test_days',0)} giorni\n"
+                f"• fonti valide = {days or '-'}\n"
                 f"• errori = {'; '.join(sm.get('errors',[]) or []) or '-'}\n"
-                "• il bot riprovera' al prossimo avvio; nessun dato storico parziale viene promosso a STRICT"
+                "• nessun dato parziale viene promosso a STRICT; il bot riprovera' al prossimo avvio"
             )
-        days = ", ".join(f"{x.get('label')} {x.get('day')}={x.get('draws')}" for x in sm.get("days",[]) or [])
+
+        days_pre = ", ".join(f"{x.get('day')}={x.get('draws')}[{x.get('source','?')}]" for x in sm.get("days",[]) or [] if x.get("zone") == "PRE")
+        days_test = ", ".join(f"{x.get('day')}={x.get('draws')}[{x.get('source','?')}]" for x in sm.get("days",[]) or [] if x.get("zone") == "TEST")
         pairs = sm.get("strict_pairs", {}) or {}
         lines = [
-            "🕰️ WARMUP STORICO v3.1 — COMPLETATO",
-            f"• replay cronologico = {sm.get('draws',0)} estrazioni",
-            f"• fonti = {days or '-'}",
-            f"• STRICT chiuse totali = {sm.get('strict_closed_total',0)}",
-            f"• PAIR-LAB replay chiuse = {sm.get('pairlab_closed_total_replay',0)} | copiato nel live = {'SI' if sm.get('pairlab_copied') else 'NO, storico precedente preservato'}",
+            "🕰️ WARMUP PRE-ROLL v3.2 — COMPLETATO",
+            f"• PRE-ROLL = {sm.get('pre_draws',0)} estrazioni / {sm.get('pre_days',0)} giorni",
+            f"• fonti PRE = {days_pre or '-'}",
+            f"• PAIR-LAB gia' costruite all'inizio del TEST = {sm.get('pairlab_closed_at_test_start',0)}",
+            f"• STRICT TEST = {sm.get('test_draws',0)} estrazioni / {sm.get('test_days',0)} giorni",
+            f"• fonti TEST = {days_test or '-'}",
+            f"• STRICT aperte/chiuse nel TEST = {sm.get('strict_opened_total',0)}/{sm.get('strict_closed_total',0)}",
+            f"• PAIR-LAB replay finali = {sm.get('pairlab_closed_total_replay',0)} | copiato nel live = {'SI' if sm.get('pairlab_copied') else 'NO, storico precedente preservato'}",
         ]
+        start_pairs = sm.get("pairlab_at_test_start", {}) or {}
+        if start_pairs:
+            lines.append("• PAIR-LAB al confine PRE→TEST:")
+            for key, d in list(start_pairs.items())[:6]:
+                lines.append(f"  - {key}: n={d.get('closed',0)} | H3 edge {d.get('edge_h3',0):+.1f}pp | ROI {d.get('roi_h3',0):+.1f}%")
         if pairs:
+            lines.append("• STRICT TEST per coppia:")
             for key, d in sorted(pairs.items(), key=lambda kv: int((kv[1] or {}).get("closed",0)), reverse=True)[:8]:
                 lines.append(
-                    f"• {key}: STRICT n={d.get('closed',0)} | BEST H{d.get('best_h',0)} | "
+                    f"  - {key}: n={d.get('closed',0)} | BEST H{d.get('best_h',0)} | "
                     f"ROI H1/H2/H3={d.get('roi_h1',0):+.1f}%/{d.get('roi_h2',0):+.1f}%/{d.get('roi_h3',0):+.1f}%"
                 )
         else:
-            lines.append("• nessuna STRICT chiusa nel replay: il live continuera' a raccogliere")
+            lines.append("• nessuna STRICT chiusa nel TEST: questa volta significa davvero che nessun caso valido ha chiuso nel periodo test")
         if sm.get("errors"):
             lines.append("• avvisi fonti: " + "; ".join(sm.get("errors") or []))
         return "\n".join(lines)
@@ -5241,7 +5433,7 @@ async def startup(engine, app):
         engine.reset_for_new_day(current_day)
         await engine.tg(app, "🗓️ Nuovo giorno: reset operativo PLAYABILITY/SPIE. Statistiche aggregate conservate.")
 
-    # v3.1: prima del live costruisce STRICT con replay altro ieri -> ieri -> oggi.
+    # v3.2: prima del live costruisce PAIR-LAB nel PRE-ROLL, poi misura STRICT nel TEST.
     warm = await engine.run_historical_warmup_if_needed(app)
     await engine.tg(app, engine.historical_warmup_report_text())
 
@@ -5254,9 +5446,9 @@ async def startup(engine, app):
         engine.preload_today_as_processed(es)
         await engine.tg(
             app,
-            "🚀 SNIPER PLAYABILITY ONLY v3.1 — STRICT + WARMUP 3 GIORNI AVVIATO\n"
+            "🚀 SNIPER PLAYABILITY ONLY v3.2 — STRICT + PRE-ROLL AVVIATO\n"
             "✅ 1 solo AMBO\n"
-            f"✅ warmup storico = {warm.get('draws',0)} estrazioni | STRICT chiuse = {engine.historical_warmup_summary.get('strict_closed_total',0)}\n"
+            f"✅ warmup storico = {warm.get('draws',0)} estrazioni | STRICT TEST chiuse = {engine.historical_warmup_summary.get('strict_closed_total',0)}\n"
             "✅ PAIR-LAB generale preservato dalla v2 e usato solo come filtro/diagnostica\n"
             f"✅ STRICT SHADOW: minimo {PLAYABLE_STRICT_MIN_CLOSED} casi chiusi per coppia prima di un PLAY reale\n"
             "✅ STRICT nasce solo quando la condizione avrebbe superato tutti i gate v2\n"
@@ -5270,7 +5462,7 @@ async def startup(engine, app):
             f"✅ orario bot = {BOT_TZ_NAME}\n"
             f"✅ persistenza GitHub state/csv = {'ON' if PERSIST_GIT_STATE else 'OFF'}\n"
             f"✅ report automatici: {', '.join(AUTO_REPORT_TIMES)} + cambio giorno\n"
-            "✅ warmup storico: altro ieri + ieri + oggi in replay cronologico, poi live\n\n"
+            "✅ warmup storico: PRE-ROLL vecchio -> STRICT TEST recente -> live, senza leakage\n\n"
             "Tocca /menu per vedere i pulsanti."
         )
         await engine.tg(app, engine.menu_text(), inline_menu=True)
@@ -5309,7 +5501,7 @@ async def live_loop(engine, app):
             should_notify = (err_txt != last_error_text) or (now_err - last_error_notify_ts >= 900)
             if should_notify:
                 try:
-                    await engine.tg(app, f"⚠️ errore PLAYABILITY ONLY v3.1: {ex}")
+                    await engine.tg(app, f"⚠️ errore PLAYABILITY ONLY v3.2: {ex}")
                     last_error_text = err_txt
                     last_error_notify_ts = now_err
                 except Exception:
