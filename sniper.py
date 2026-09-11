@@ -37,16 +37,17 @@
 #       - se H1 perde -> H2 sulla PROSSIMA
 #       - dopo HIT H1 / HIT H2 / STOP H2 -> chiusura
 #
-# WARMUP INIZIALE:
+# WARMUP INIZIALE v5:
 #   • al primo avvio scarica gli ultimi WARMUP_DAYS giorni
 #   • ogni giorno GIA' CONCLUSO deve avere esattamente 288 estrazioni
 #   • se una fonte e' incompleta prova automaticamente le altre e integra
-#   • se restano buchi/conflitti il warmup viene BLOCCATO, non ricostruito male
+#   • se restano buchi/conflitti il il warmup usa SOLO il segmento continuo successivo al buco; blocca solo se insufficiente
 #   • crea retroattivamente tutte le origini storiche necessarie
 #   • ricostruisce basket, superstiti e candidati ancora vivi
 #   • NON manda segnali retroattivi
 #   • quindi all'avvio non bisogna aspettare decine di estrazioni
 #   • agli avvii successivi riparte dallo state persistente
+#   • se il warmup non e' pronto il processo NON termina: resta acceso e ritenta
 #
 # SHADOW/FORWARD:
 #   • default SHADOW_MODE=1 -> messaggi marcati SHADOW
@@ -113,8 +114,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE_DIR, "superambo_5survivors_70_79_wait30_state.json")
 LOCK_FILE = "/tmp/superambo_5survivors_70_79_wait30.lock"
 
-LOGIC_VERSION = 3
+LOGIC_VERSION = 5
 LOOP_SEC = int(os.getenv("LOOP_SEC", "60"))
+WARMUP_RETRY_SEC = int(os.getenv("WARMUP_RETRY_SEC", "300"))
+WARMUP_FAIL_TG_MIN_SECONDS = int(os.getenv("WARMUP_FAIL_TG_MIN_SECONDS", "900"))
 WARMUP_DAYS = int(os.getenv("WARMUP_DAYS", "7"))
 WARMUP_MIN_DRAWS = int(os.getenv("WARMUP_MIN_DRAWS", "900"))
 WARMUP_FULL_DAY_DRAWS = int(os.getenv("WARMUP_FULL_DAY_DRAWS", "288"))
@@ -168,6 +171,11 @@ def now_txt():
 
 def day_key():
     return now_dt().strftime("%Y-%m-%d")
+
+
+def console_log(message):
+    """Log immediato nei GitHub Actions (stdout non bufferizzato lato applicazione)."""
+    print(f"[{now_txt()}] {message}", flush=True)
 
 
 def draw_key(day, e):
@@ -542,13 +550,73 @@ def _warmup_integrity_problems(summary, today_iso=None):
     return problems
 
 
+def _select_latest_contiguous_warmup(records, summary, today_iso=None):
+    """
+    Usa soltanto il segmento cronologico continuo piu' recente che arriva fino a oggi.
+
+    Se un vecchio giorno concluso e' incompleto/conflittuale NON uniamo le estrazioni
+    prima e dopo il buco: tutto cio' che precede (e include) l'ultimo giorno rotto
+    viene scartato dal warmup. In questo modo il motore non inventa continuita'.
+
+    Esempio:
+      05 OK, 06 OK, 07 INCOMPLETO, 08 OK, 09 OK, 10 OK, 11 LIVE
+      -> warmup effettivo = 08 + 09 + 10 + 11.
+    """
+    today_iso = str(today_iso or now_dt().date().isoformat())
+    summary = [dict(x) for x in (summary or [])]
+
+    bad_past_days = []
+    for x in summary:
+        day = str(x.get("day"))
+        if day >= today_iso:
+            continue
+        conflicts = int(x.get("conflicts", 0) or 0)
+        if conflicts or (WARMUP_REQUIRE_COMPLETE_PAST_DAYS and not bool(x.get("complete", False))):
+            bad_past_days.append(day)
+
+    cutoff_day = max(bad_past_days) if bad_past_days else None
+    for x in summary:
+        day = str(x.get("day"))
+        x["used_for_warmup"] = not (cutoff_day is not None and day <= cutoff_day)
+
+    used_summary = [x for x in summary if x.get("used_for_warmup", True)]
+    used_days = {str(x.get("day")) for x in used_summary}
+    selected = [(d, e, nums) for d, e, nums in (records or []) if str(d) in used_days]
+
+    # Sul segmento che useremo l'integrita' resta obbligatoria. In particolare,
+    # un buco interno nel giorno corrente non viene mai ignorato.
+    problems = _warmup_integrity_problems(used_summary, today_iso=today_iso)
+
+    note = None
+    dropped_days = []
+    if cutoff_day is not None:
+        dropped_days = [str(x.get("day")) for x in summary if not x.get("used_for_warmup", True)]
+        first_used = min(used_days) if used_days else None
+        if first_used:
+            note = (
+                f"ultimo giorno storico non integro = {cutoff_day}; "
+                f"warmup ricostruito senza attraversare il buco, da {first_used} in poi"
+            )
+        else:
+            note = f"ultimo giorno storico non integro = {cutoff_day}; nessun segmento successivo disponibile"
+
+    return selected, summary, {
+        "problems": problems,
+        "cutoff_day": cutoff_day,
+        "dropped_days": dropped_days,
+        "note": note,
+    }
+
+
 def format_warmup_sources(summary):
     parts = []
     for x in summary or []:
         day = x.get("day", "?")
         draws = int(x.get("draws", 0) or 0)
         src = x.get("source", "?")
-        if x.get("is_today"):
+        if x.get("used_for_warmup") is False:
+            status = "SCARTATO"
+        elif x.get("is_today"):
             if draws <= 0:
                 status = "VUOTO"
             else:
@@ -563,7 +631,7 @@ def fetch_warmup_records(days=WARMUP_DAYS):
     """
     Scarica gli ultimi N giorni in ordine cronologico.
 
-    Regola di integrita' v3:
+    Regola di integrita' v4:
       • i giorni gia' conclusi devono coprire #1..#288 senza buchi;
       • se la prima fonte e' incompleta viene provata la fonte alternativa;
       • se ancora incompleto viene usato l'archivio annuale per integrare;
@@ -1165,24 +1233,28 @@ class FiveSurvivorsEngine:
                 "sources": self.warmup_sources,
             }
 
-        records, sources = fetch_warmup_records(WARMUP_DAYS)
-        integrity_problems = _warmup_integrity_problems(sources)
+        all_records, sources = fetch_warmup_records(WARMUP_DAYS)
+        records, sources, continuity = _select_latest_contiguous_warmup(all_records, sources)
+        integrity_problems = list(continuity.get("problems", []) or [])
         if integrity_problems:
             return {
                 "already_done": False,
                 "ok": False,
                 "draws": len(records),
                 "sources": sources,
-                "reason": "warmup bloccato per integrita': " + " | ".join(integrity_problems),
+                "continuity_note": continuity.get("note"),
+                "reason": "warmup bloccato per integrita' nel segmento utilizzabile: " + " | ".join(integrity_problems),
             }
 
         if len(records) < WARMUP_MIN_DRAWS:
+            extra = f"; {continuity.get('note')}" if continuity.get("note") else ""
             return {
                 "already_done": False,
                 "ok": False,
                 "draws": len(records),
                 "sources": sources,
-                "reason": f"warmup insufficiente: {len(records)}<{WARMUP_MIN_DRAWS}",
+                "continuity_note": continuity.get("note"),
+                "reason": f"warmup continuo insufficiente: {len(records)}<{WARMUP_MIN_DRAWS}{extra}",
             }
 
         # Stato completamente pulito.
@@ -1216,6 +1288,8 @@ class FiveSurvivorsEngine:
             "ok": True,
             "draws": len(records),
             "sources": sources,
+            "continuity_note": continuity.get("note"),
+            "dropped_days": continuity.get("dropped_days", []),
         }
 
     # ----------------------------
@@ -1412,28 +1486,89 @@ async def notify_actionable_state(engine, app):
         )
 
 
-async def startup(engine, app):
-    warm = await engine.run_initial_warmup(app)
+async def startup(engine, app, warmup_retry_state=None):
+    """Esegue UN tentativo di startup.
+
+    Se il warmup non e' ancora utilizzabile restituisce False ma NON chiude il bot.
+    Il chiamante puo' quindi lasciare Telegram polling attivo e ritentare.
+    """
+    warmup_retry_state = warmup_retry_state if warmup_retry_state is not None else {}
+
+    console_log(
+        f"STARTUP tentativo warmup | logic={LOGIC_VERSION} | "
+        f"days={WARMUP_DAYS} | min_draws={WARMUP_MIN_DRAWS}"
+    )
+
+    try:
+        warm = await engine.run_initial_warmup(app)
+    except Exception as exc:
+        warm = {
+            "already_done": False,
+            "ok": False,
+            "draws": 0,
+            "sources": [],
+            "continuity_note": None,
+            "reason": f"eccezione warmup: {type(exc).__name__}: {exc}",
+        }
+
     if not warm.get("already_done") and not warm.get("ok"):
-        await engine.tg(
-            app,
-            "⚠️ WARMUP INIZIALE NON COMPLETATO\n\n"
-            f"• estrazioni raccolte = {warm.get('draws', 0)}\n"
-            f"• motivo = {warm.get('reason', 'non disponibile')}\n"
-            f"• giorni/fonti = {format_warmup_sources(warm.get('sources', [])) or '-'}\n\n"
-            "⛔ Il bot NON entra in live con un buco storico. "
-            "Riprovera' al prossimo riavvio quando una fonte dara' i record mancanti."
+        reason = str(warm.get("reason", "non disponibile"))
+        sources_txt = format_warmup_sources(warm.get("sources", [])) or "-"
+        continuity_txt = warm.get("continuity_note") or "nessun taglio applicato"
+
+        console_log("WARMUP FAIL")
+        console_log(f"  draws raccolti = {warm.get('draws', 0)}")
+        console_log(f"  motivo = {reason}")
+        console_log(f"  giorni/fonti = {sources_txt}")
+        console_log(f"  continuita = {continuity_txt}")
+        console_log(
+            f"  il processo RESTA ATTIVO; nuovo tentativo tra {WARMUP_RETRY_SEC}s"
         )
+
+        # Evita spam Telegram: avvisa al cambio motivo oppure almeno ogni N secondi.
+        now_ts = time.time()
+        last_reason = str(warmup_retry_state.get("last_reason", ""))
+        last_tg_ts = float(warmup_retry_state.get("last_tg_ts", 0.0) or 0.0)
+        should_tg = (
+            reason != last_reason
+            or now_ts - last_tg_ts >= max(60, WARMUP_FAIL_TG_MIN_SECONDS)
+        )
+        if should_tg:
+            await engine.tg(
+                app,
+                "⚠️ WARMUP INIZIALE NON COMPLETATO\n\n"
+                f"• estrazioni raccolte = {warm.get('draws', 0)}\n"
+                f"• motivo = {reason}\n"
+                f"• giorni/fonti = {sources_txt}\n"
+                f"• continuita' = {continuity_txt}\n\n"
+                "⏳ Il bot RESTA ACCESO e NON entra ancora nel motore live.\n"
+                f"Riprova automaticamente il warmup ogni {WARMUP_RETRY_SEC} secondi.\n"
+                "Nel frattempo /status e /stats restano disponibili."
+            )
+            warmup_retry_state["last_tg_ts"] = now_ts
+            warmup_retry_state["last_reason"] = reason
         return False
+
+    console_log(
+        f"WARMUP OK | already_done={bool(warm.get('already_done'))} | "
+        f"draws={warm.get('draws', engine.warmup_draws)} | "
+        f"continuita={warm.get('continuity_note') or 'state/segmento valido'}"
+    )
+    if warm.get("sources"):
+        console_log(f"WARMUP SOURCES | {format_warmup_sources(warm.get('sources', []))}")
 
     # Recupera eventuali draw di oggi successivi all'ultimo draw nello state.
     try:
         rows = parse_site_today()
+        console_log(f"CATCH-UP iniziale | righe live lette={len(rows)}")
     except Exception as exc:
+        console_log(f"CATCH-UP parser fallito | {type(exc).__name__}: {exc}")
         await engine.tg(app, f"⚠️ Parser live iniziale fallito: {exc}")
         rows = []
 
     unseen = [(d, e, nums) for d, e, nums in rows if not engine.already_processed(d, e)]
+    unseen.sort(key=lambda x: (x[0], x[1]))
+    console_log(f"CATCH-UP iniziale | unseen={len(unseen)}")
     for d, e, nums in unseen:
         # Catch-up silenzioso: mai inviare un segnale scaduto.
         await engine.process_draw(app=None, day=d, e=e, nums=nums, mode="live", notify=False)
@@ -1448,6 +1583,7 @@ async def startup(engine, app):
             f"• estrazioni = {warm.get('draws', 0)}\n"
             f"• giorni = {WARMUP_DAYS}\n"
             f"• fonti = {source_txt or '-'}\n"
+            f"• continuita' = {warm.get('continuity_note') or 'tutti i giorni richiesti integri'}\n"
             f"• origini ancora attive = {len(engine.origins)}\n"
             f"• basket unici ricostruiti = {len(engine.seen_basket_set)}\n"
             f"• candidati ancora attivi = {len(engine.candidates)}\n\n"
@@ -1468,14 +1604,31 @@ async def startup(engine, app):
         f"✅ modalita' = {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}\n"
         "✅ warmup iniziale + state persistente\n"
         f"✅ giorni conclusi richiesti = {WARMUP_FULL_DAY_DRAWS} estrazioni senza buchi\n"
-        "✅ fallback automatico tra fonti + blocco su conflitti\n\n"
+        "✅ fallback automatico tra fonti\n"
+        "✅ se un vecchio giorno e' incompleto usa solo il segmento continuo successivo\n"
+        f"✅ se il warmup fallisce il processo resta acceso e ritenta ogni {WARMUP_RETRY_SEC}s\n\n"
         f"Candidati attivi: {len(engine.candidates)}"
     )
     await notify_actionable_state(engine, app)
+    console_log("STARTUP COMPLETATO -> entro nel live_loop")
     return True
 
 
+async def startup_until_ready(engine, app):
+    """Resta vivo finche' il warmup non e' pronto."""
+    retry_state = {}
+    attempt = 0
+    while True:
+        attempt += 1
+        console_log(f"STARTUP attempt #{attempt}")
+        ok = await startup(engine, app, warmup_retry_state=retry_state)
+        if ok:
+            return True
+        await asyncio.sleep(max(30, WARMUP_RETRY_SEC))
+
+
 async def live_loop(engine, app):
+    console_log(f"LIVE LOOP ATTIVO | polling sito ogni {LOOP_SEC}s")
     last_error = ""
     last_error_ts = 0.0
 
@@ -1501,7 +1654,7 @@ async def live_loop(engine, app):
         except Exception as exc:
             txt = f"{type(exc).__name__}: {exc}"
             now = time.time()
-            print(f"⚠️ loop: {txt}")
+            console_log(f"⚠️ loop: {txt}")
             if txt != last_error or now - last_error_ts >= 900:
                 await engine.tg(app, f"⚠️ ERRORE BOT\n{txt}\nRiprovo automaticamente.")
                 last_error = txt
@@ -1634,14 +1787,13 @@ async def main():
     await app.start()
     await setup_commands(app)
 
-    ok = await startup(engine, app)
-    if not ok:
-        await app.stop()
-        await app.shutdown()
-        return
-
+    # Avvia subito il polling Telegram: anche durante un warmup non pronto
+    # /status, /stats e /menu restano disponibili e GitHub Actions resta in corso.
     await app.updater.start_polling(drop_pending_updates=True)
+    console_log("TELEGRAM polling attivo; avvio/ritento warmup fino a successo")
+
     try:
+        await startup_until_ready(engine, app)
         await live_loop(engine, app)
     finally:
         try:
