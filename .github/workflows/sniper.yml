@@ -1,26 +1,32 @@
 name: Sniper Bot
 
-concurrency:
-  group: sniper-v48-bot
-  cancel-in-progress: true
-
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "7 */6 * * *"
 
 permissions:
   contents: write
 
+concurrency:
+  group: sniper-bot-live
+  cancel-in-progress: true
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+
+    env:
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      CHAT_ID: ${{ secrets.CHAT_ID }}
+      PYTHONUNBUFFERED: "1"
+      PERSIST_GIT_STATE: "1"
+      GIT_COMMIT_MIN_SECONDS: "300"
+      STATE_GIT_BRANCH: "main"
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: true
 
       - name: Set up Python
@@ -31,11 +37,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install requests beautifulsoup4 python-telegram-bot==22.8
 
       - name: Run bot
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: |
-          python sniper.py
+        run: python -u sniper.py
