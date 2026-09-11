@@ -37,7 +37,7 @@
 #       - se H1 perde -> H2 sulla PROSSIMA
 #       - dopo HIT H1 / HIT H2 / STOP H2 -> chiusura
 #
-# WARMUP INIZIALE v5:
+# WARMUP INIZIALE v6:
 #   • al primo avvio scarica gli ultimi WARMUP_DAYS giorni
 #   • ogni giorno GIA' CONCLUSO deve avere esattamente 288 estrazioni
 #   • se una fonte e' incompleta prova automaticamente le altre e integra
@@ -48,6 +48,8 @@
 #   • quindi all'avvio non bisogna aspettare decine di estrazioni
 #   • agli avvii successivi riparte dallo state persistente
 #   • se il warmup non e' pronto il processo NON termina: resta acceso e ritenta
+#   • lo STATE viene versionato e pushato su GitHub con verifica reale del remote
+#   • ai riavvii lo state viene caricato e il warmup NON riparte se e' gia' valido
 #
 # SHADOW/FORWARD:
 #   • default SHADOW_MODE=1 -> messaggi marcati SHADOW
@@ -721,40 +723,175 @@ def fetch_warmup_records(days=WARMUP_DAYS):
 
 
 # ============================================================
-# PERSISTENZA GIT OPZIONALE
+# PERSISTENZA GIT VERIFICATA
 # ============================================================
 
+def _git_clean_text(text, limit=900):
+    txt = str(text or "").strip()
+    # Non mostrare mai eventuali credenziali presenti in un URL remoto.
+    txt = re.sub(r"https://[^\s/@]+@github\.com", "https://***@github.com", txt, flags=re.I)
+    txt = re.sub(r"gh[ps]_[A-Za-z0-9_]+", "***", txt)
+    if len(txt) > limit:
+        txt = txt[-limit:]
+    return txt
+
+
+def _git_run(args, cwd, timeout=45):
+    try:
+        r = subprocess.run(
+            ["git", *args], cwd=cwd, text=True, capture_output=True,
+            timeout=timeout, check=False,
+        )
+        return r.returncode, _git_clean_text(r.stdout), _git_clean_text(r.stderr)
+    except Exception as exc:
+        return 999, "", f"{type(exc).__name__}: {exc}"
+
+
+def _git_status(ok, action, detail="", branch="", commit=""):
+    return {
+        "ok": bool(ok),
+        "action": str(action),
+        "detail": str(detail or ""),
+        "branch": str(branch or ""),
+        "commit": str(commit or ""),
+        "at": now_txt(),
+    }
+
+
 def git_commit_state_if_needed(force=False):
+    """Salva STATE_FILE nel repository e verifica che il commit sia sul remote.
+
+    Importante: un commit locale NON viene considerato successo. Il risultato e' OK
+    solo quando `origin/<branch>` punta allo stesso commit locale (o lo contiene).
+    Se un push precedente era fallito, la funzione ritenta anche quando il file non
+    ha nuove modifiche, perche' controlla gli eventuali commit locali non pushati.
+    """
     global _LAST_GIT_COMMIT_TS
+
     if not PERSIST_GIT_STATE:
-        return False
+        st = _git_status(True, "disabled", "PERSIST_GIT_STATE=0")
+        console_log("STATE GIT DISABILITATO")
+        return st
+
     now = time.time()
     if not force and (now - _LAST_GIT_COMMIT_TS) < GIT_COMMIT_MIN_SECONDS:
-        return False
+        return _git_status(True, "throttled", f"prossimo controllo tra {int(GIT_COMMIT_MIN_SECONDS - (now - _LAST_GIT_COMMIT_TS))}s")
+
+    if not os.path.exists(STATE_FILE):
+        st = _git_status(False, "missing-state", f"file non trovato: {STATE_FILE}")
+        console_log(f"STATE PUSH FAIL | {st['detail']}")
+        return st
+
+    rc, root_out, root_err = _git_run(["rev-parse", "--show-toplevel"], BASE_DIR)
+    if rc != 0 or not root_out:
+        st = _git_status(False, "no-repo", root_err or root_out or "repository Git non trovato")
+        console_log(f"STATE PUSH FAIL | {st['detail']}")
+        return st
+    root = root_out.splitlines()[-1].strip()
+
+    branch = os.getenv("GITHUB_REF_NAME", "").strip()
+    if not branch or os.getenv("GITHUB_REF_TYPE", "branch") not in {"", "branch"}:
+        rc, bout, _ = _git_run(["rev-parse", "--abbrev-ref", "HEAD"], root)
+        branch = bout.strip() if rc == 0 else ""
+    if not branch or branch == "HEAD":
+        branch = os.getenv("STATE_GIT_BRANCH", "main").strip() or "main"
+
+    # GitHub Actions non garantisce che user.name/email siano configurati.
+    _git_run(["config", "user.name", "github-actions[bot]"], root)
+    _git_run(["config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"], root)
+
+    rel = os.path.relpath(STATE_FILE, root)
+    if rel.startswith(".."):
+        st = _git_status(False, "outside-repo", f"state fuori dal repository: {STATE_FILE}", branch=branch)
+        console_log(f"STATE PUSH FAIL | {st['detail']}")
+        return st
+
+    # -f rende persistibile lo state anche se per errore e' presente nel .gitignore.
+    rc, _, err = _git_run(["add", "-f", "--", rel], root)
+    if rc != 0:
+        st = _git_status(False, "git-add-failed", err, branch=branch)
+        console_log(f"STATE PUSH FAIL | git add | {err}")
+        return st
+
+    rc_diff, _, _ = _git_run(["diff", "--cached", "--quiet", "--", rel], root)
+    committed_now = False
+    if rc_diff == 1:
+        rc, out, err = _git_run(["commit", "-m", "state: 5-survivors 70-79"], root)
+        if rc != 0:
+            st = _git_status(False, "commit-failed", err or out, branch=branch)
+            console_log(f"STATE PUSH FAIL | git commit | {st['detail']}")
+            return st
+        committed_now = True
+        console_log("STATE COMMIT OK")
+    elif rc_diff not in {0, 1}:
+        st = _git_status(False, "diff-failed", "git diff --cached fallito", branch=branch)
+        console_log("STATE PUSH FAIL | git diff --cached")
+        return st
+
+    # Aggiorna la vista del remote. Se il branch remoto e' avanzato, rebase prima del push.
+    rc_fetch, _, err_fetch = _git_run(["fetch", "origin", branch, "--prune"], root, timeout=60)
+    if rc_fetch != 0:
+        st = _git_status(False, "fetch-failed", err_fetch, branch=branch)
+        console_log(f"STATE PUSH FAIL | git fetch origin {branch} | {err_fetch}")
+        return st
+
+    rc, counts, err = _git_run(["rev-list", "--left-right", "--count", f"origin/{branch}...HEAD"], root)
+    if rc != 0:
+        st = _git_status(False, "rev-list-failed", err or counts, branch=branch)
+        console_log(f"STATE PUSH FAIL | confronto remote | {st['detail']}")
+        return st
     try:
-        root = subprocess.check_output(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=BASE_DIR, stderr=subprocess.DEVNULL, text=True,
-        ).strip()
-        if not root:
-            return False
-        rel = os.path.relpath(STATE_FILE, root)
-        subprocess.run(["git", "add", rel], cwd=root, check=False,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        diff = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=root)
-        if diff.returncode == 0:
-            _LAST_GIT_COMMIT_TS = now
-            return False
-        subprocess.run(
-            ["git", "commit", "-m", "update 5-survivors 70-79 state"],
-            cwd=root, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        subprocess.run(["git", "push"], cwd=root, check=False,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        _LAST_GIT_COMMIT_TS = now
-        return True
+        behind, ahead = [int(x) for x in counts.split()[:2]]
     except Exception:
-        return False
+        st = _git_status(False, "rev-list-parse", f"output inatteso: {counts}", branch=branch)
+        console_log(f"STATE PUSH FAIL | {st['detail']}")
+        return st
+
+    if behind > 0:
+        rc, out, err = _git_run(["rebase", f"origin/{branch}"], root, timeout=60)
+        if rc != 0:
+            _git_run(["rebase", "--abort"], root)
+            st = _git_status(False, "rebase-failed", err or out, branch=branch)
+            console_log(f"STATE PUSH FAIL | rebase | {st['detail']}")
+            return st
+        rc, counts, err = _git_run(["rev-list", "--left-right", "--count", f"origin/{branch}...HEAD"], root)
+        if rc != 0:
+            st = _git_status(False, "post-rebase-check-failed", err or counts, branch=branch)
+            console_log(f"STATE PUSH FAIL | post-rebase | {st['detail']}")
+            return st
+        behind, ahead = [int(x) for x in counts.split()[:2]]
+
+    if ahead > 0:
+        rc, out, err = _git_run(["push", "origin", f"HEAD:{branch}"], root, timeout=90)
+        if rc != 0:
+            st = _git_status(False, "push-failed", err or out, branch=branch)
+            console_log(f"STATE PUSH FAIL | git push | {st['detail']}")
+            return st
+
+    # Verifica indipendente del commit remoto.
+    rc, local_head, err = _git_run(["rev-parse", "HEAD"], root)
+    if rc != 0:
+        st = _git_status(False, "local-head-failed", err, branch=branch)
+        console_log(f"STATE PUSH FAIL | {st['detail']}")
+        return st
+    local_head = local_head.strip().splitlines()[-1]
+
+    rc, remote_line, err = _git_run(["ls-remote", "origin", f"refs/heads/{branch}"], root, timeout=60)
+    remote_head = remote_line.split()[0] if rc == 0 and remote_line.split() else ""
+    if rc != 0 or remote_head != local_head:
+        st = _git_status(
+            False, "remote-verify-failed",
+            f"local={local_head[:10]} remote={(remote_head or '?')[:10]} | {err}",
+            branch=branch, commit=local_head,
+        )
+        console_log(f"STATE PUSH FAIL | verifica remote | {st['detail']}")
+        return st
+
+    _LAST_GIT_COMMIT_TS = now
+    action = "committed+pushed" if committed_now else ("pushed-pending" if ahead > 0 else "already-synced")
+    st = _git_status(True, action, "remote verificato", branch=branch, commit=local_head)
+    console_log(f"STATE PUSH OK | branch={branch} | commit={local_head[:10]} | action={action}")
+    return st
 
 
 # ============================================================
@@ -790,6 +927,12 @@ class FiveSurvivorsEngine:
 
         self.stats_warmup = self._new_stats()
         self.stats_live = self._new_stats()
+
+        self.state_load_info = {
+            "loaded": False, "reason": "non ancora controllato",
+            "saved_at": None, "path": STATE_FILE,
+        }
+        self.last_git_status = _git_status(True, "not-run", "nessun push ancora eseguito")
 
         if load:
             self.load_state()
@@ -852,12 +995,24 @@ class FiveSurvivorsEngine:
 
     def load_state(self):
         if not os.path.exists(STATE_FILE):
-            return
+            self.state_load_info = {
+                "loaded": False, "reason": "state non presente nel checkout",
+                "saved_at": None, "path": STATE_FILE,
+            }
+            console_log(f"STATE NON TROVATO | {STATE_FILE}")
+            return False
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 d = json.load(f)
-            if int(d.get("logic_version", 0)) != LOGIC_VERSION:
-                return
+            found_logic = int(d.get("logic_version", 0))
+            if found_logic != LOGIC_VERSION:
+                self.state_load_info = {
+                    "loaded": False,
+                    "reason": f"logic_version incompatibile: file={found_logic} bot={LOGIC_VERSION}",
+                    "saved_at": d.get("saved_at"), "path": STATE_FILE,
+                }
+                console_log(f"STATE IGNORATO | {self.state_load_info['reason']}")
+                return False
 
             self.warmup_done = bool(d.get("warmup_done", False))
             self.warmup_completed_at = d.get("warmup_completed_at")
@@ -884,8 +1039,25 @@ class FiveSurvivorsEngine:
 
             self.stats_warmup.update(d.get("stats_warmup") or {})
             self.stats_live.update(d.get("stats_live") or {})
+
+            self.state_load_info = {
+                "loaded": True, "reason": "OK",
+                "saved_at": d.get("saved_at"), "path": STATE_FILE,
+            }
+            console_log(
+                f"STATE CARICATO | saved_at={d.get('saved_at') or '-'} | "
+                f"warmup={'OK' if self.warmup_done else 'NO'} | seq={self.seq} | "
+                f"last={self.last_draw_key or '-'} | origini={len(self.origins)} | "
+                f"basket={len(self.seen_basket_set)} | candidati={len(self.candidates)}"
+            )
+            return True
         except Exception as exc:
-            print(f"⚠️ state non caricato: {exc}")
+            self.state_load_info = {
+                "loaded": False, "reason": f"{type(exc).__name__}: {exc}",
+                "saved_at": None, "path": STATE_FILE,
+            }
+            console_log(f"STATE NON CARICATO | {self.state_load_info['reason']}")
+            return False
 
     def save_state(self, git=False, force_git=False):
         data = {
@@ -908,7 +1080,9 @@ class FiveSurvivorsEngine:
         }
         atomic_write_json(STATE_FILE, data)
         if git:
-            git_commit_state_if_needed(force=force_git)
+            self.last_git_status = git_commit_state_if_needed(force=force_git)
+            return self.last_git_status
+        return _git_status(True, "local-only", "state scritto localmente")
 
     def already_processed(self, day, e):
         return draw_key(day, e) in self.processed_set
@@ -1377,6 +1551,8 @@ class FiveSurvivorsEngine:
             f"• basket globali gia' deduplicati = {len(self.seen_basket_set)}",
             f"• candidati attivi = {len(self.candidates)}",
             f"• warmup = {'OK' if self.warmup_done else 'NO'} | {self.warmup_draws} draw",
+            f"• state checkout = {'CARICATO' if self.state_load_info.get('loaded') else 'NUOVO'} | saved_at={self.state_load_info.get('saved_at') or '-'}",
+            f"• state Git = {'OK' if self.last_git_status.get('ok') else 'ERRORE'} | {self.last_git_status.get('action', '-')} | {self.last_git_status.get('detail', '-')}",
             "",
             "🧩 CANDIDATI ATTUALI",
             *self.candidate_lines(),
@@ -1573,7 +1749,16 @@ async def startup(engine, app, warmup_retry_state=None):
         # Catch-up silenzioso: mai inviare un segnale scaduto.
         await engine.process_draw(app=None, day=d, e=e, nums=nums, mode="live", notify=False)
 
-    engine.save_state(git=True, force_git=True)
+    persist = engine.save_state(git=True, force_git=True)
+    if not persist.get("ok"):
+        await engine.tg(
+            app,
+            "⚠️ STATE NON PERSISTITO SU GITHUB\n\n"
+            f"Azione: {persist.get('action', '-')}\n"
+            f"Dettaglio: {persist.get('detail', '-')}\n\n"
+            "Il bot resta attivo, ma un riavvio potrebbe perdere lo stato forward. "
+            "Controlla che il workflow abbia `permissions: contents: write`."
+        )
 
     if not warm.get("already_done"):
         source_txt = format_warmup_sources(warm.get("sources", []))
@@ -1602,7 +1787,7 @@ async def startup(engine, app, warmup_retry_state=None):
         f"✅ +{EXTRA_WAIT} assenze\n"
         f"✅ H1 {STAKE_H1:.2f}€ + eventuale H2 {STAKE_H2:.2f}€\n"
         f"✅ modalita' = {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}\n"
-        "✅ warmup iniziale + state persistente\n"
+        "✅ warmup iniziale + state persistente VERIFICATO su GitHub\n"
         f"✅ giorni conclusi richiesti = {WARMUP_FULL_DAY_DRAWS} estrazioni senza buchi\n"
         "✅ fallback automatico tra fonti\n"
         "✅ se un vecchio giorno e' incompleto usa solo il segmento continuo successivo\n"
@@ -1778,6 +1963,11 @@ async def main():
     app = ApplicationBuilder().token(TOKEN).build()
     engine = FiveSurvivorsEngine()
     app.bot_data["engine"] = engine
+    console_log(
+        f"STATE STARTUP | loaded={engine.state_load_info.get('loaded')} | "
+        f"reason={engine.state_load_info.get('reason')} | "
+        f"saved_at={engine.state_load_info.get('saved_at') or '-'}"
+    )
 
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("stats", cmd_stats))
