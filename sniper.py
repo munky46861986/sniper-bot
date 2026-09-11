@@ -1,51 +1,74 @@
 # ============================================================
-# 🎯 SNIPER PLAYABILITY ONLY v3.4 — TRAIN + FORWARD + PLAY-STRICT + PRE-ROLL
-# AMBO ONLY • H1-H3 • 1 solo ambo • STRICT-LAB separato TRAIN/FORWARD
+# 🎯 SUPERAMBO — 5 SUPERSTITI / OLDEST 70-79 / +30 / H1-H2
+# ============================================================
 #
-# v3.4: lo STRICT-LAB storico diventa TRAIN fisso; i casi successivi al warmup sono FORWARD.
-# Un PLAY puo' usare soltanto un orizzonte H1/H2/H3 che resta positivo nello STESSO H
-# sia nel TRAIN sia nel FORWARD. Il PAIR-LAB generale resta un gate BASE separato.
-# Obiettivo: evitare di scegliere il BEST H sul totale e inseguire il tratto storico migliore.
+# STRATEGIA UNICA, CONGELATA:
 #
-# LOGICA OPERATIVA
-#   ✅ trigger principale: SPIE attive in rete DECINA + livello MULTIPLA
-#   ✅ classifica QUALSIASI ambo supportato, non solo CORE 88/89/90
-#   ✅ score 0-100: supporti indipendenti + edge/ROI della COPPIA + conferme + contesto
-#   ✅ hard gate: campione pair-LAB, edge pair-specific, ROI, DECINA/MULTIPLA e indipendenza
-#   ✅ PLAY da score >=75; PLAY STRONG >=85
-#   ✅ una sola sessione attiva; 1 solo ambo: nessuna copertura con secondo ambo
-#   ✅ durata operativa solo H1-H3; nessun terno; nessuna progressione
-#   ✅ T1 / SOMMA 90-91 / +5 / +4 / v48 = SOLO conferme, non trigger
-#   ✅ confronto con probabilita' casuale e ROI teorico 14x
-#   ✅ statistiche per fascia score per capire se 80/90+ rende davvero piu' di 70+
+#   • Ogni estrazione diventa un NUOVO PUNTO DI PARTENZA (origine).
+#     Esempio: origine = estrazione 127 -> il conteggio parte dalla 128.
 #
-# COMPATIBILITA'
-#   • importa al primo avvio lo state v1, preservando SPIE/Cottone/SOMMA
-#   • azzera i vecchi PLAY v1, non confrontabili col motore pair-specific v2
+#   • Per OGNI origine vengono seguite in parallelo tutte le 9 decine:
+#       90-9, 10-19, 20-29, 30-39, 40-49,
+#       50-59, 60-69, 70-79, 80-89.
 #
-# NOTA
-#   Questo bot non effettua puntate e non garantisce previsioni: invia segnali statistici su Telegram.
+#   • Ogni decina parte con tutti i suoi 45 ambi possibili.
+#     Man mano che gli ambi compaiono, vengono eliminati.
+#
+#   • Quando una decina resta con 1 solo ambo non ancora uscito,
+#     quell'ambo e' un SUPERSTITE e si memorizza da quale estrazione
+#     e' rimasto solo.
+#
+#   • Quando, per la stessa origine, ci sono ESATTAMENTE 5 superstiti
+#     contemporaneamente, si forma un BASKET da 5.
+#
+#   • Lo stesso IDENTICO basket (stesse 5 decine + stessi 5 ambi)
+#     viene considerato UNA SOLA VOLTA globalmente, anche se compare
+#     da origini diverse. Questa e' la deduplica usata nel test.
+#
+#   • Tra i 5 superstiti si sceglie il PIU' VECCHIO, cioe' quello
+#     che e' rimasto unico da piu' tempo.
+#
+#   • Il basket e' valido SOLO se il piu' vecchio appartiene alla 70-79.
+#
+#   • Da quando nasce il basket, l'ambo 70-79 deve restare ASSENTE
+#     per altre 30 estrazioni complete.
+#       - se esce durante le 30 -> candidato annullato
+#       - se sopravvive -> H1 sulla PROSSIMA estrazione
+#       - se H1 perde -> H2 sulla PROSSIMA
+#       - dopo HIT H1 / HIT H2 / STOP H2 -> chiusura
+#
+# WARMUP INIZIALE:
+#   • al primo avvio scarica gli ultimi WARMUP_DAYS giorni
+#   • crea retroattivamente tutte le origini storiche necessarie
+#   • ricostruisce basket, superstiti e candidati ancora vivi
+#   • NON manda segnali retroattivi
+#   • quindi all'avvio non bisogna aspettare decine di estrazioni
+#   • agli avvii successivi riparte dallo state persistente
+#
+# SHADOW/FORWARD:
+#   • default SHADOW_MODE=1 -> messaggi marcati SHADOW
+#   • SHADOW_MODE=0 -> messaggi marcati PLAY
+#   • il bot NON effettua puntate automaticamente
+#
 # ============================================================
 
 import asyncio
 import atexit
-import csv
 import hashlib
 import json
 import os
 import re
-import sys
 import subprocess
+import sys
 import time
-from collections import Counter, defaultdict
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 from itertools import combinations
+from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
-from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram import BotCommand, Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 try:
     import fcntl
@@ -59,16 +82,17 @@ except ImportError:
 
 TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID_RAW = os.getenv("CHAT_ID")
-CHAT_ID = None
+CHAT_ID = int(CHAT_ID_RAW) if CHAT_ID_RAW and str(CHAT_ID_RAW).lstrip("-").isdigit() else None
+
+BOT_TZ_NAME = os.getenv("BOT_TZ", "Europe/Rome")
+BOT_TZ = ZoneInfo(BOT_TZ_NAME)
 
 URL = "https://10elotto5minuti.com/estrazioni-di-oggi"
 URL_YESTERDAY = "https://10elotto5minuti.com/estrazioni-di-ieri"
 URL_DAY_BEFORE_YESTERDAY = "https://10elotto5minuti.com/estrazioni-dellaltro-ieri"
-# Archivio annuale 10elotto5minuti: fallback per i giorni piu' vecchi se disponibile.
 URL_YEAR_ARCHIVE = "https://10elotto5minuti.com/estrazioni-ultimo-anno"
-# Fonte secondaria con pagine relative giorno-per-giorno, usata per il PRE-ROLL oltre 2 giorni.
 LOTTOLOGIA_BASE = "https://lottologia.com/10elotto5minuti"
-# Header browser piu' realistici: alcuni endpoint archivio restituiscono HTML ridotto ai client troppo generici.
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -83,556 +107,121 @@ HEADERS = {
 }
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v3_state.json")
-# Migrazione: v3 importa prima lo state v2, preservando SPIE/Cottone/SOMMA e PAIR-LAB generale.
-LEGACY_STATE_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v2_state.json")
-LEGACY_STATE_FILE_V1 = os.path.join(BASE_DIR, "sniper_playability_only_v1_state.json")
-CSV_FILE = os.path.join(BASE_DIR, "sniper_playability_only_v34_events.csv")
-LOCK_FILE = "/tmp/sniper_playability_only_v33.lock"
+STATE_FILE = os.path.join(BASE_DIR, "superambo_5survivors_70_79_wait30_state.json")
+LOCK_FILE = "/tmp/superambo_5survivors_70_79_wait30.lock"
 
-# Orario bot/report: GitHub gira spesso in UTC, qui forziamo Italia.
-BOT_TZ_NAME = os.getenv("BOT_TZ", "Europe/Rome")
-BOT_TZ = ZoneInfo(BOT_TZ_NAME)
+LOGIC_VERSION = 2
+LOOP_SEC = int(os.getenv("LOOP_SEC", "60"))
+WARMUP_DAYS = int(os.getenv("WARMUP_DAYS", "7"))
+WARMUP_MIN_DRAWS = int(os.getenv("WARMUP_MIN_DRAWS", "900"))
+ORIGIN_MAX_AGE = int(os.getenv("ORIGIN_MAX_AGE", "1000"))
 
-# Persistenza GitHub Actions: salva state/csv nel repository per non spezzare la giornata
-# tra una run programmata e la successiva. Richiede permissions: contents: write.
+BASKET_SIZE = 5
+TARGET_DECADE = "70-79"
+TARGET_DECADE_INDEX = 7
+EXTRA_WAIT = 30
+STAKE_H1 = float(os.getenv("STAKE_H1", "1"))
+STAKE_H2 = float(os.getenv("STAKE_H2", "1"))
+AMBO_PAYOUT = float(os.getenv("AMBO_PAYOUT", "14"))
+SHADOW_MODE = os.getenv("SHADOW_MODE", "1") != "0"
+
 PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
 _LAST_GIT_COMMIT_TS = 0.0
 
-LOOP_SEC = 60
-HISTORY_MAX = 320
-PROCESSED_MAX = 1200
-
-# v48 legacy — calcolato in silenzio solo per eventuale conferma/laboratorio
-TOP_RITARDATARI = 10
-PLAY_POSITIONS = [6, 7, 8, 9, 10]
-WATCH_WINDOW = 12
-HOT_TTL = 45
-MIN_HOT_ACTIVE = 3
-MAX_AMBI_PER_PLAY = 3
-MAX_COLPI = 7
-COOLDOWN_AFTER_PLAY = 5
-CLUSTER_REUSE_AFTER = 12
-
-# Economia teorica
-AMBO_PAYOUT = 14.0
-TERNO_PAYOUT = 45.0
-
-# Numeri Spia Lab
-SPY_HORIZONS = (1, 2, 3)
-SPY_MAX_COLPI = max(SPY_HORIZONS)
-
-# Modalità pulita: il bot calcola tutto, ma non intasa Telegram.
-# Modalità REPORT ONLY: il bot calcola tutto, ma Telegram non riceve singoli segnali spia.
-# I TRIS 3/3 entrano solo nei report aggregati.
-DRAW_NOTIFY = False
-SPY_NOTIFY_OPEN = False
-SPY_NOTIFY_HIT_K2 = False
-SPY_NOTIFY_HIT_K3 = False
-SPY_OPEN_NOTIFY_MAX_LINES = 8
-SPY_MIN_MODEL_EVENTS = 80
-SPY_TOP_MIN_CLOSED = 20
-
-# ============================================================
-# PLAYABILITY ONLY v3.4 — AMBO ONLY, STRICT TRAIN/FORWARD + PLAY-STRICT, H1-H3 stabile
-# ============================================================
-# Trigger principale: segnali SPIE aperti contemporaneamente in rete DECINA + livello MULTIPLA.
-# T1 / SOMMA 90-91 / +5 / +4 / v48 NON aprono il play: sono solo conferme indipendenti.
-PLAYABLE_NETWORK = "DECINA"
-PLAYABLE_LEVEL = "MULTIPLA"
-
-# Compatibilita' report CORE: non limita piu' la selezione degli ambi.
-PLAYABLE_CORE_PAIRS = {tuple(sorted(p)) for p in [(88, 90), (89, 90), (88, 89)]}
-PLAYABLE_SATELLITE_PAIRS = {tuple(sorted(p)) for p in [(87, 88), (87, 89), (87, 90), (86, 90)]}
-
-
-def norm_pair(pair):
-    a, b = tuple(map(int, pair))
-    return tuple(sorted((a, b)))
-
-
-def playable_pair_group(pair):
-    pair = norm_pair(pair)
-    if pair in PLAYABLE_CORE_PAIRS:
-        return "CORE"
-    if pair in PLAYABLE_SATELLITE_PAIRS:
-        return "SATELLITE"
-    return "OPEN"
-
-
-# Motore operativo
-PLAYABILITY_ONLY_LOGIC_VERSION = 34
-PLAYABLE_AUTO_ENABLED = os.getenv("PLAYABLE_AUTO_ENABLED", "1") != "0"
-PLAYABLE_NOTIFY_OPEN = os.getenv("PLAYABLE_NOTIFY_OPEN", "1") != "0"
-PLAYABLE_NOTIFY_HIT = os.getenv("PLAYABLE_NOTIFY_HIT", "1") != "0"
-PLAYABLE_NOTIFY_STOP = os.getenv("PLAYABLE_NOTIFY_STOP", "1") != "0"
-PLAYABLE_MAX_COLPI = 3
-PLAYABLE_MAX_AMBI = 1  # v2: un solo ambo, sempre
-PLAYABLE_COOLDOWN_AFTER_PLAY = int(os.getenv("PLAYABLE_COOLDOWN_AFTER_PLAY", "3"))
-PLAYABLE_PAIR_REUSE_AFTER = int(os.getenv("PLAYABLE_PAIR_REUSE_AFTER", "10"))
-
-# Soglie minime: il punteggio NON puo' trasformare un segnale debole in PLAY.
-PLAYABLE_MIN_PAIR_SUPPORT = int(os.getenv("PLAYABLE_MIN_PAIR_SUPPORT", "8"))
-PLAYABLE_MIN_SIGNALS = int(os.getenv("PLAYABLE_MIN_SIGNALS", "10"))
-PLAYABLE_MIN_DECINA_EXTRA = float(os.getenv("PLAYABLE_MIN_DECINA_EXTRA", "15.0"))
-PLAYABLE_MIN_MULTIPLA_EXTRA = float(os.getenv("PLAYABLE_MIN_MULTIPLA_EXTRA", "7.0"))
-PLAYABLE_MIN_LIVE_RULE_CLOSED = int(os.getenv("PLAYABLE_MIN_LIVE_RULE_CLOSED", "20"))
-PLAYABLE_TOP_NUMBERS_FOR_CONFIRM = int(os.getenv("PLAYABLE_TOP_NUMBERS_FOR_CONFIRM", "8"))
-PLAYABLE_MAX_SIGNALS = 10
-PLAYABLE_MAX_PAIRS = 10
-PLAYABLE_MAX_NUMBERS = 10
-
-# v2 — il punteggio non premia piu' il supporto grezzo ripetuto.
-# 25 supporti INDIPENDENTI (spie distinte) + 30 edge pair-specific H3 +
-# 25 ROI pair-specific + 15 conferme indipendenti + 5 contesto DEC/MULT.
-PLAYABLE_WATCH_SCORE = float(os.getenv("PLAYABLE_WATCH_SCORE", "60"))
-PLAYABLE_PLAY_SCORE = float(os.getenv("PLAYABLE_PLAY_SCORE", "75"))
-PLAYABLE_STRONG_SCORE = float(os.getenv("PLAYABLE_STRONG_SCORE", "85"))
-
-# LAB specifico della coppia: osserva ogni candidato H1-H3 anche quando non viene giocato.
-PLAYABLE_PAIR_LAB_MIN_RAW_SUPPORT = int(os.getenv("PLAYABLE_PAIR_LAB_MIN_RAW_SUPPORT", "8"))
-PLAYABLE_PAIR_LAB_MIN_INDEPENDENT = int(os.getenv("PLAYABLE_PAIR_LAB_MIN_INDEPENDENT", "4"))
-PLAYABLE_PAIR_LAB_REOPEN_AFTER = int(os.getenv("PLAYABLE_PAIR_LAB_REOPEN_AFTER", "4"))
-PLAYABLE_PAIR_LAB_MIN_CLOSED = int(os.getenv("PLAYABLE_PAIR_LAB_MIN_CLOSED", "60"))
-PLAYABLE_MIN_INDEPENDENT_SPIES = int(os.getenv("PLAYABLE_MIN_INDEPENDENT_SPIES", "4"))
-PLAYABLE_PAIR_MIN_EDGE_H3 = float(os.getenv("PLAYABLE_PAIR_MIN_EDGE_H3", "3.0"))
-PLAYABLE_PAIR_MIN_ROI_H3 = float(os.getenv("PLAYABLE_PAIR_MIN_ROI_H3", "0.0"))
-PLAYABLE_PAIR_STRONG_EDGE_H3 = float(os.getenv("PLAYABLE_PAIR_STRONG_EDGE_H3", "6.0"))
-PLAYABLE_PAIR_STRONG_ROI_H3 = float(os.getenv("PLAYABLE_PAIR_STRONG_ROI_H3", "10.0"))
-PLAYABLE_REQUIRE_CONFIRMATION = os.getenv("PLAYABLE_REQUIRE_CONFIRMATION", "1") != "0"
-# Se non c'e' T1/SOMMA/+5/+4/v48, il pair-specific deve essere molto forte per sostituire la conferma.
-PLAYABLE_NO_CONFIRM_MIN_EDGE = float(os.getenv("PLAYABLE_NO_CONFIRM_MIN_EDGE", "6.0"))
-PLAYABLE_NO_CONFIRM_MIN_ROI = float(os.getenv("PLAYABLE_NO_CONFIRM_MIN_ROI", "10.0"))
-
-# v3.3 — STRICT-LAB.
-# Raccoglie contesti operativi forti ma NON pretende edge/ROI gia' positivi: prima osserva, poi giudica.
-# Il PLAY reale resta piu' severo e richiede anche i gate BASE correnti + validazione STRICT-LAB.
-PLAYABLE_STRICT_MIN_CLOSED = int(os.getenv("PLAYABLE_STRICT_MIN_CLOSED", "30"))
-PLAYABLE_STRICT_REOPEN_AFTER = int(os.getenv("PLAYABLE_STRICT_REOPEN_AFTER", "10"))
-# Gate di RACCOLTA STRICT-LAB: volutamente NON include edge/ROI o conferme.
-PLAYABLE_STRICT_LAB_MIN_RAW_SUPPORT = int(os.getenv("PLAYABLE_STRICT_LAB_MIN_RAW_SUPPORT", str(PLAYABLE_MIN_PAIR_SUPPORT)))
-PLAYABLE_STRICT_LAB_MIN_INDEPENDENT = int(os.getenv("PLAYABLE_STRICT_LAB_MIN_INDEPENDENT", str(PLAYABLE_MIN_INDEPENDENT_SPIES)))
-PLAYABLE_STRICT_LAB_MIN_PAIR_CLOSED = int(os.getenv("PLAYABLE_STRICT_LAB_MIN_PAIR_CLOSED", str(PLAYABLE_PAIR_LAB_MIN_CLOSED)))
-PLAYABLE_STRICT_MIN_EDGE = float(os.getenv("PLAYABLE_STRICT_MIN_EDGE", "3.0"))
-PLAYABLE_STRICT_MIN_ROI = float(os.getenv("PLAYABLE_STRICT_MIN_ROI", "5.0"))
-# Senza conferma esterna, anche lo STRICT deve essere piu' forte.
-PLAYABLE_STRICT_NO_CONFIRM_MIN_EDGE = float(os.getenv("PLAYABLE_STRICT_NO_CONFIRM_MIN_EDGE", "5.0"))
-PLAYABLE_STRICT_NO_CONFIRM_MIN_ROI = float(os.getenv("PLAYABLE_STRICT_NO_CONFIRM_MIN_ROI", "10.0"))
-# Se due orizzonti hanno ROI quasi uguale, scegli quello piu' corto per ridurre costo/esposizione.
-PLAYABLE_STRICT_SHORTER_TOLERANCE = float(os.getenv("PLAYABLE_STRICT_SHORTER_TOLERANCE", "2.0"))
-
-# v3.4 — validazione fuori campione.
-# TRAIN = STRICT-LAB del replay storico; FORWARD = casi raccolti soltanto dopo il warmup.
-# Lo stesso H deve superare le soglie in ENTRAMBI i campioni.
-PLAYABLE_STRICT_TRAIN_MIN_CLOSED = int(os.getenv("PLAYABLE_STRICT_TRAIN_MIN_CLOSED", str(PLAYABLE_STRICT_MIN_CLOSED)))
-PLAYABLE_STRICT_FORWARD_MIN_CLOSED = int(os.getenv("PLAYABLE_STRICT_FORWARD_MIN_CLOSED", "30"))
-PLAYABLE_STRICT_REQUIRE_SAME_H = os.getenv("PLAYABLE_STRICT_REQUIRE_SAME_H", "1") != "0"
-
-# v3.2 — PRE-ROLL + STRICT TEST storico, senza leakage futuro.
-# PRE-ROLL: giorni piu' vecchi, usati solo per costruire SPIE/PAIR-LAB e contesto.
-# STRICT TEST: ultimi giorni, usati per misurare le vere condizioni che avrebbero superato i gate.
-HISTORICAL_WARMUP_VERSION = 4
-HISTORICAL_WARMUP_ENABLED = os.getenv("HISTORICAL_WARMUP_ENABLED", "1") != "0"
-HISTORICAL_PREROLL_DAYS = int(os.getenv("HISTORICAL_PREROLL_DAYS", "5"))
-HISTORICAL_STRICT_TEST_DAYS = int(os.getenv("HISTORICAL_STRICT_TEST_DAYS", "3"))
-HISTORICAL_PREROLL_MIN_DRAWS = int(os.getenv("HISTORICAL_PREROLL_MIN_DRAWS", "1000"))
-HISTORICAL_TEST_MIN_DRAWS = int(os.getenv("HISTORICAL_TEST_MIN_DRAWS", "400"))
-HISTORICAL_WARMUP_COPY_PAIRLAB_IF_EMPTY = os.getenv("HISTORICAL_WARMUP_COPY_PAIRLAB_IF_EMPTY", "1") != "0"
-
-# Moduli storici v48/CORE restano calcolati in silenzio solo come laboratorio/conferma.
-V48_NOTIFY_EVENTS = False
-PLAYABLE_REQUIRE_V48_CONFIRM = False
-PLAYABLE_V48_ACCEL_ENABLED = False
-PLAYABLE_SAT_AUTO_ENABLED = False
-
-# Compatibilita' con funzioni CORE legacy non operative in questa versione.
-PLAYABLE_SATELLITE_MIN_PAIR_SUPPORT = 999
-PLAYABLE_SAT_MIN_SIGNALS = 999
-PLAYABLE_SAT_MIN_DECINA_EXTRA = 999.0
-PLAYABLE_SAT_MIN_MULTIPLA_EXTRA = 999.0
-PLAYABLE_CORE_SINGLE_MIN_SUPPORT = 999
-PLAYABLE_CORE_MIN_PAIRS_FOR_MULTI = 2
-PLAYABLE_CORE_MULTI_MIN_SUPPORT = 999
-PLAYABLE_CORE_MULTI_FIRST_MIN_SUPPORT = 999
-PLAYABLE_CORE_MULTI_SECOND_MIN_SUPPORT = 999
-PLAYABLE_V48_MIN_SIGNALS = 999
-PLAYABLE_V48_MIN_DECINA_EXTRA = 999.0
-PLAYABLE_V48_MIN_MULTIPLA_EXTRA = 999.0
-PLAYABLE_V48_MIN_PAIR_SUPPORT = 999
-PLAYABLE_V48_CORE_OVERLAP_MIN = 3
-PLAYABLE_SAT_MAX_AMBI = 0
-
-# v11 CORE FULL: solo quando il triangolo 88-89-90 e' fortissimo.
-# In questa modalita' il bot puo' giocare 3 ambi CORE + 1 terno secco 88-89-90.
-PLAYABLE_CORE_FULL_ENABLED = os.getenv("PLAYABLE_CORE_FULL_ENABLED", "1") != "0"
-PLAYABLE_CORE_FULL_TERNO_ENABLED = os.getenv("PLAYABLE_CORE_FULL_TERNO_ENABLED", "1") != "0"
-PLAYABLE_CORE_FULL_NUMS = tuple(sorted(map(int, os.getenv("PLAYABLE_CORE_FULL_NUMS", "88,89,90").split(","))))
-PLAYABLE_CORE_FULL_PAIRS = {tuple(sorted(p)) for p in combinations(PLAYABLE_CORE_FULL_NUMS, 2)}
-PLAYABLE_CORE_FULL_MAX_AMBI = int(os.getenv("PLAYABLE_CORE_FULL_MAX_AMBI", "3"))
-PLAYABLE_CORE_FULL_MIN_PAIR_SUPPORT = int(os.getenv("PLAYABLE_CORE_FULL_MIN_PAIR_SUPPORT", "8"))
-PLAYABLE_CORE_FULL_MIN_SIGNALS = int(os.getenv("PLAYABLE_CORE_FULL_MIN_SIGNALS", "15"))
-PLAYABLE_CORE_FULL_MIN_DECINA_EXTRA = float(os.getenv("PLAYABLE_CORE_FULL_MIN_DECINA_EXTRA", "35.0"))
-PLAYABLE_CORE_FULL_MIN_MULTIPLA_EXTRA = float(os.getenv("PLAYABLE_CORE_FULL_MIN_MULTIPLA_EXTRA", "14.0"))
-PLAYABLE_CORE_FULL_REQUIRE_ALL_TOP = os.getenv("PLAYABLE_CORE_FULL_REQUIRE_ALL_TOP", "1") != "0"
-PLAYABLE_CORE_FULL_MIN_STRONG_PAIRS = int(os.getenv("PLAYABLE_CORE_FULL_MIN_STRONG_PAIRS", "3"))
-PLAYABLE_CORE_FULL_STRONG_PAIR_SUPPORT = int(os.getenv("PLAYABLE_CORE_FULL_STRONG_PAIR_SUPPORT", "8"))
-PLAYABLE_CORE_FULL_REQUIRE_PRIOR_HIT = os.getenv("PLAYABLE_CORE_FULL_REQUIRE_PRIOR_HIT", "1") != "0"  # terno solo dopo almeno 1 HIT AMBO CORE
-
-# v15: modulo SPALLE 1-19 del triangolo 88-89-90.
-# NON apre giocate automatiche: serve a leggere quali numeri 1-19 stanno accompagnando i CORE.
-PLAYABLE_CORE_SPALLE_ENABLED = os.getenv("PLAYABLE_CORE_SPALLE_ENABLED", "1") != "0"
-PLAYABLE_CORE_SPALLE_MIN = int(os.getenv("PLAYABLE_CORE_SPALLE_MIN", "1"))
-PLAYABLE_CORE_SPALLE_MAX = int(os.getenv("PLAYABLE_CORE_SPALLE_MAX", "19"))
-PLAYABLE_CORE_SPALLE_RANGE = tuple(range(PLAYABLE_CORE_SPALLE_MIN, PLAYABLE_CORE_SPALLE_MAX + 1))
-PLAYABLE_CORE_SPALLE_PRIMARY = tuple(map(int, os.getenv("PLAYABLE_CORE_SPALLE_PRIMARY", "17,10,8").split(",")))
-PLAYABLE_CORE_SPALLE_WATCH = tuple(map(int, os.getenv("PLAYABLE_CORE_SPALLE_WATCH", "7,9,19").split(",")))
-PLAYABLE_CORE_SPALLE_TOP_N = int(os.getenv("PLAYABLE_CORE_SPALLE_TOP_N", "6"))
-
-# Sintesi del test storico fatto su 10elotto_gennaio_settembre_clean_FINAL.txt.
-# Le percentuali sono osservazione storica/lab, non garanzia.
-CORE_SPALLE_HISTORIC_PAIR = {
-    (88, 89): [(10, 127, 24.85), (3, 118, 23.09), (8, 118, 23.09), (1, 114, 22.31)],
-    (88, 90): [(10, 97, 24.13), (17, 97, 24.13), (7, 94, 23.38)],
-    (89, 90): [(8, 106, 25.06), (9, 100, 23.64), (19, 94, 22.22)],
-}
-CORE_SPALLE_HISTORIC_TRIANGLE = [(17, 26, 28.57), (7, 23, 25.27), (9, 21, 23.08), (18, 21, 23.08), (19, 21, 23.08)]
-
-# ============================================================
-# v17 — LAB METODI NUMERISTITANUS/COTTONE/STRUTTURALI
-# ============================================================
-# Tutto questo NON apre giocate automatiche: viene mostrato in report/comandi.
-LAB_METHODS_ENABLED = os.getenv("LAB_METHODS_ENABLED", "1") != "0"
-LAB_COTTONE_VISIBLE_ROWS = (90,) + tuple(range(1, 20))  # righe visibili nelle tabelle trovate: 90 + 1..19
-LAB_COTTONE_TOP_FISSI_ROWS = (19, 7, 8, 11, 9)
-LAB_COTTONE_T1_WATCH_ROWS = (3, 8, 10, 11, 19)
-LAB_COTTONE_TRACK_HORIZONS = tuple(range(1, 11))  # v22: misura H1/H2/.../H10 + dettaglio per riga
-LAB_COTTONE_TRACK_MAX_COLPI = max(LAB_COTTONE_TRACK_HORIZONS)
-LAB_COTTONE_MAX_OPEN_SESSIONS = int(os.getenv("LAB_COTTONE_MAX_OPEN_SESSIONS", "500"))
-
-# v27 — SOMMA 90/91 LAB: trigger sulla SOMMA TOTALE ESATTA ripetuta.
-# Esempio del metodo originale: somma 1048 compare a E221 e ricompare a E225.
-# La ripetizione NON deve essere consecutiva e NON basta che sia uguale il solo A ridotto.
-# Quando la stessa somma totale ricompare nello stesso giorno:
-#   A = somma totale fuori 90 (1..90)
-#   B = 90 - A
-#   C = 91 - A
-# si apre un monitor LAB H1-H10 dalla estrazione SUCCESSIVA al secondo evento.
-# Ogni H e' valutato su UNA SINGOLA estrazione: 2/3 = possibile ambo, 3/3 = possibile terno.
-# Nessuna giocata automatica viene aperta da questo modulo.
-SUM9091_LOGIC_VERSION = 2
-LAB_SUM9091_ENABLED = os.getenv("LAB_SUM9091_ENABLED", "1") != "0"
-LAB_SUM9091_TRACK_HORIZONS = tuple(range(1, 11))
-LAB_SUM9091_MAX_COLPI = max(LAB_SUM9091_TRACK_HORIZONS)
-LAB_SUM9091_MAX_OPEN_SESSIONS = int(os.getenv("LAB_SUM9091_MAX_OPEN_SESSIONS", "500"))
-LAB_SUM9091_NOTIFY_OPEN = os.getenv("LAB_SUM9091_NOTIFY_OPEN", "0") == "1"
-
-# ============================================================
-# v25 — GIOCO COTTONE T1 ONLY SMART: FISSI solo report, T1 filtrata + anti-doppio
-# ============================================================
-# Regole gioco REALI richieste:
-# - FISSI: dentro UNA SINGOLA estrazione fra H1...H10, se escono insieme
-#   5/8 = 20 euro, 6/8 = 200 euro, 7/8 = 800 euro, 8/8 = 10000 euro; sotto 5 = LOSE.
-# - T1: dentro UNA SINGOLA estrazione fra H1...H10, 2/3 = 2 euro, 3/3 = 45 euro; sotto 2 = LOSE.
-# - NON cumulativo: il bot non somma numeri usciti in estrazioni diverse per pagare il gioco.
-# Nota: gli importi sono premi/lordi teorici indicati dall'utente; il bot segnala WIN/LOSE, non consiglia puntate.
-COTTONE_GAME_ENABLED = os.getenv("COTTONE_GAME_ENABLED", "0") != "0"  # PLAYABILITY ONLY: T1 e FISSI non aprono gioco
-COTTONE_GAME_MAX_COLPI = int(os.getenv("COTTONE_GAME_MAX_COLPI", "10"))
-COTTONE_GAME_FISSI_MIN_HITS = int(os.getenv("COTTONE_GAME_FISSI_MIN_HITS", "5"))
-COTTONE_GAME_T1_MIN_HITS = int(os.getenv("COTTONE_GAME_T1_MIN_HITS", "2"))
-# Premi lordi teorici. Si possono sovrascrivere da env con JSON se serve.
-COTTONE_GAME_FISSI_PRIZES_EUR = {5: 20.0, 6: 200.0, 7: 800.0, 8: 10000.0}
-COTTONE_GAME_T1_PRIZES_EUR = {2: 2.0, 3: 45.0}
-
-# v25 — filtro ricavato dall'ultimo log reale: FISSI automatici spenti, T1 selettiva.
-# LAB Cottone resta aperto su tutte le righe visibili, ma il GIOCO automatico parte solo
-# sui moduli/righe scremati. Si puo' sempre cambiare tutto da GitHub Secrets/env.
-def _parse_int_tuple_env(name, default_csv):
-    raw = os.getenv(name, default_csv)
-    out = []
-    for part in str(raw).replace(';', ',').split(','):
-        part = part.strip()
-        if not part:
-            continue
-        try:
-            n = int(part)
-        except Exception:
-            continue
-        if 1 <= n <= 90 and n not in out:
-            out.append(n)
-    return tuple(out)
-
-COTTONE_GAME_HOT_FILTER_ENABLED = os.getenv("COTTONE_GAME_HOT_FILTER_ENABLED", "1") != "0"
-# v25: per default i FISSI NON aprono gioco automatico; restano in audit/report.
-COTTONE_GAME_FISSI_AUTO_ENABLED = os.getenv("COTTONE_GAME_FISSI_AUTO_ENABLED", "0") == "1"
-# v25: evita spam: una sola T1 per riga aperta e cooldown dopo apertura.
-COTTONE_GAME_T1_ROW_COOLDOWN_DRAWS = int(os.getenv("COTTONE_GAME_T1_ROW_COOLDOWN_DRAWS", "10"))
-# Righe FISSI da giocare: dal file reale erano le piu' interessanti, ma i FISSI restano selettivi.
-COTTONE_GAME_FISSI_FILTER_ROWS = _parse_int_tuple_env("COTTONE_GAME_FISSI_FILTER_ROWS", "5,2,19,14,16")
-# Righe T1 da giocare: T1 e' prioritaria, perche' nel file reale ha tenuto molto meglio dei FISSI.
-COTTONE_GAME_T1_FILTER_ROWS = _parse_int_tuple_env("COTTONE_GAME_T1_FILTER_ROWS", "7,15,18,19,12,11,2,10")
-# Numeri caldi osservati nei WIN/best reali del file: servono per report, audit e scrematura visiva.
-COTTONE_GAME_FISSI_HOT_NUMBERS = _parse_int_tuple_env("COTTONE_GAME_FISSI_HOT_NUMBERS", "26,86,43,29,77,38,17,14,1,19,55,79,5")
-COTTONE_GAME_T1_HOT_NUMBERS = _parse_int_tuple_env("COTTONE_GAME_T1_HOT_NUMBERS", "34,39,44,41,47,67,51,63,71,37,24,50")
-
-def cottone_game_fissi_allowed(row, fissi=None):
-    if not COTTONE_GAME_HOT_FILTER_ENABLED:
-        return True
-    try:
-        return bool(COTTONE_GAME_FISSI_AUTO_ENABLED and int(row) in set(COTTONE_GAME_FISSI_FILTER_ROWS))
-    except Exception:
-        return False
-
-def cottone_game_t1_allowed(row, t1=None):
-    if not COTTONE_GAME_HOT_FILTER_ENABLED:
-        return True
-    try:
-        return int(row) in set(COTTONE_GAME_T1_FILTER_ROWS)
-    except Exception:
-        return False
-
-def cottone_hot_overlap(nums, hot_nums):
-    return sorted(set(map(int, nums or [])) & set(map(int, hot_nums or [])))
-
-def bump_counter_map(mp, items, amount=1):
-    if not isinstance(mp, dict):
-        return
-    for x in items or []:
-        try:
-            k = str(int(x))
-        except Exception:
-            continue
-        mp[k] = int(mp.get(k, 0)) + int(amount)
-
-def bump_cottone_row_stat(mp, row, result, gross=0.0):
-    if not isinstance(mp, dict):
-        return
-    rk = str(int(row))
-    st = mp.setdefault(rk, {"win": 0, "lose": 0, "gross": 0.0})
-    if str(result).upper() == "WIN":
-        st["win"] = int(st.get("win", 0)) + 1
-    else:
-        st["lose"] = int(st.get("lose", 0)) + 1
-    st["gross"] = float(st.get("gross", 0.0)) + float(gross or 0.0)
-
-def cottone_game_fissi_prize_eur(k):
-    try:
-        k = int(k)
-    except Exception:
-        k = 0
-    if k >= 8:
-        return COTTONE_GAME_FISSI_PRIZES_EUR[8]
-    return float(COTTONE_GAME_FISSI_PRIZES_EUR.get(k, 0.0))
-
-def cottone_game_t1_prize_eur(k):
-    try:
-        k = int(k)
-    except Exception:
-        k = 0
-    if k >= 3:
-        return COTTONE_GAME_T1_PRIZES_EUR[3]
-    return float(COTTONE_GAME_T1_PRIZES_EUR.get(k, 0.0))
-
-def first_colpo_reach(history, target_hits):
-    seen = set()
-    for i, hits in enumerate(history or [], start=1):
-        for x in hits or []:
-            try:
-                seen.add(int(x))
-            except Exception:
-                pass
-        if len(seen) >= int(target_hits):
-            return i
-    return None
-
-def best_single_draw_from_session(s, hit_key):
-    """Ritorna il miglior colpo SINGOLO, non cumulativo.
-
-    hit_key = 'fissi_hit' oppure 't1_hit'.
-    Usa i dettagli H1-H10 salvati in draws_by_colpo.
-    """
-    best = {"k": 0, "hits": [], "h": None, "e": None, "nums": []}
-    for d in (s.get("draws_by_colpo", []) or []):
-        hits = sorted({int(x) for x in (d.get(hit_key, []) or [])})
-        k = len(hits)
-        if k > int(best.get("k", 0)):
-            best = {
-                "k": k,
-                "hits": hits,
-                "h": int(d.get("h", 0) or 0),
-                "e": d.get("e", ""),
-                "nums": list(map(int, d.get("nums", []) or [])),
-            }
-    return best
-COTTONE_GAME_NOTIFY_OPEN = os.getenv("COTTONE_GAME_NOTIFY_OPEN", "0") != "0"
-COTTONE_GAME_NOTIFY_WIN = os.getenv("COTTONE_GAME_NOTIFY_WIN", "0") != "0"
-COTTONE_GAME_NOTIFY_LOSE = os.getenv("COTTONE_GAME_NOTIFY_LOSE", "0") != "0"
-COTTONE_GAME_MAX_OPEN_SESSIONS = int(os.getenv("COTTONE_GAME_MAX_OPEN_SESSIONS", "500"))
-LAB_PLUS5_TOP_PAIRS = {
-    (15, 20): {"h3": 27.57, "roi": 44.05, "tag": "TOP"},
-    (10, 15): {"h3": 26.95, "roi": 40.47, "tag": "TOP"},
-    (5, 10): {"h3": 26.72, "roi": 38.87, "tag": "TOP"},
-    (11, 16): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
-    (7, 12): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
-    (9, 14): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
-    (18, 23): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
-    (6, 11): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
-    (12, 17): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
-    (8, 13): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
-    (16, 21): {"h3": 0.0, "roi": 0.0, "tag": "BUONA"},
-}
-LAB_CONTEGGIO_PLUS4_TOP = {
-    2: {"pair": (2, 6), "h1": 30.81, "h3": 61.97, "extra": 2.84, "tag": "TOP"},
-    3: {"pair": (3, 7), "h1": 26.86, "h3": 59.11, "extra": 1.10, "tag": "BUONA"},
-    4: {"pair": (4, 8), "h1": 25.99, "h3": 57.22, "extra": 0.43, "tag": "WATCH"},
-    9: {"pair": (9, 13), "h1": 23.73, "h3": 55.48, "extra": 0.84, "tag": "WATCH"},
-}
-
-# PLAYABILITY ONLY: le soglie operative sono definite nel blocco principale sopra.
-# Questi lock CORE restano solo per compatibilita' con lo stato legacy e non guidano il nuovo motore.
-PLAYABLE_CORE_ZONE_LOCK_AFTER_STOPS = 999
-PLAYABLE_CORE_ZONE_LOCK_DRAWS = 0
-
-
-# Spie Elite Storiche — selezionate dal backtest H3 sullo storico gennaio-settembre.
-# TOP3 = nucleo più pulito qualità/quantità; WATCH = estensione utile per confronto live.
-SPY_ELITE_HISTORIC = {
-    "5_C3plus": {
-        "tier": "TOP3", "rank": 1,
-        "label": "5 C3plus → 4-55-56", "network": "PONTE_55",
-        "hist_closed": 2121, "hist_k2_pct": 52.90, "hist_k3_pct": 10.23, "hist_roi_pct": 58.75,
-    },
-    "10_C3plus": {
-        "tier": "TOP3", "rank": 2,
-        "label": "10 C3plus → 9-5-55", "network": "MOD5",
-        "hist_closed": 2086, "hist_k2_pct": 58.10, "hist_k3_pct": 9.88, "hist_roi_pct": 52.97,
-    },
-    "20_C2_exact": {
-        "tier": "TOP3", "rank": 3,
-        "label": "20 C2_exact → 15-10-5", "network": "CATENA_5",
-        "hist_closed": 3010, "hist_k2_pct": 54.39, "hist_k3_pct": 9.27, "hist_roi_pct": 43.72,
-    },
-    "15_C3plus": {
-        "tier": "WATCH", "rank": 4,
-        "label": "15 C3plus → 14-28-55", "network": "PONTE_55",
-        "hist_closed": 2092, "hist_k2_pct": 55.02, "hist_k3_pct": 9.03, "hist_roi_pct": 39.70,
-    },
-    "9_C3plus": {
-        "tier": "WATCH", "rank": 5,
-        "label": "9 C3plus → 8-25-67", "network": "ALTRO",
-        "hist_closed": 1795, "hist_k2_pct": 55.21, "hist_k3_pct": 8.91, "hist_roi_pct": 37.72,
-    },
-    "25_C2_exact": {
-        "tier": "WATCH", "rank": 6,
-        "label": "25 C2_exact → 20-15-10", "network": "CATENA_5",
-        "hist_closed": 2816, "hist_k2_pct": 54.83, "hist_k3_pct": 8.31, "hist_roi_pct": 29.00,
-    },
-    "23_C3plus": {
-        "tier": "WATCH", "rank": 7,
-        "label": "23 C3plus → 22-42-39", "network": "LATERALE_23",
-        "hist_closed": 1797, "hist_k2_pct": 51.75, "hist_k3_pct": 7.57, "hist_roi_pct": 16.50,
-    },
-}
-SPY_ELITE_TOP3_KEYS = tuple(k for k, v in sorted(SPY_ELITE_HISTORIC.items(), key=lambda kv: kv[1]["rank"]) if v["tier"] == "TOP3")
-SPY_ELITE_ALL_KEYS = tuple(k for k, v in sorted(SPY_ELITE_HISTORIC.items(), key=lambda kv: kv[1]["rank"]))
-SPY_ELITE_MIN_CLOSED = 20
-
-# Report automatici: due tranche giornaliere + fallback a cambio giorno.
-AUTO_REPORT_ENABLED = True
-AUTO_REPORT_TIMES = ("14:00", "23:50")
-AUTO_REPORT_WINDOW_MINUTES = 8
-SPY_REPORT_EVERY_DRAWS = 0
-
-# Report automatici severi:
-# evita report vuoti/giovani prodotti da istanze appena avviate o stati separati.
-# I comandi manuali /report /spie restano sempre disponibili.
-AUTO_REPORT_MIN_H3_CLOSED = 50
-AUTO_REPORT_ALLOW_ACTIVE_V48_AFTER_COLPO = 1
-
-# Menu Telegram cliccabile
-MENU_KEYBOARD = ReplyKeyboardMarkup(
-    keyboard=[
-        ["/play", "/report"],
-        ["/spie", "/spie_top"],
-        ["/lab_metodi", "/somma_9091"],
-        ["/menu"],
-    ],
-    resize_keyboard=True,
-    one_time_keyboard=False,
-    input_field_placeholder="PLAY / REPORT",
-)
-
-# Pulsanti inline: utili anche quando non vuoi digitare nulla.
-# Su alcuni canali/gruppi Telegram la tastiera fissa puo' non comparire;
-# questi bottoni sotto al messaggio /menu restano cliccabili.
-INLINE_MENU = InlineKeyboardMarkup([
-    [InlineKeyboardButton("🎯 Play", callback_data="play"), InlineKeyboardButton("📊 Report", callback_data="report")],
-    [InlineKeyboardButton("🕵️ Spie", callback_data="spie"), InlineKeyboardButton("🏆 Top", callback_data="spie_top")],
-    [InlineKeyboardButton("🧪 Conferme", callback_data="lab_metodi"), InlineKeyboardButton("🧮 Somma", callback_data="somma_9091")],
-    [InlineKeyboardButton("🧭 Menu", callback_data="menu")],
-])
-
-# Modello storico spie incorporato.
-# Ogni riga: numero spia + condizione + TOP3 accompagnatori + benchmark storico 1-colpo.
-SPY_MODEL_EMBEDDED_JSON = r'[{"spy":1,"condition":"C1_exact","followers":[86,90,85],"events":8995,"k2_pct":0.032685,"base_k2_pct":0.030866,"k3_pct":0.002112,"base_k3_pct":0.00193,"k2_extra_pp":0.001819,"label":"1 C1_exact → 86-90-85"},{"spy":1,"condition":"NC2_W3_gap","followers":[90,85,73],"events":2295,"k2_pct":0.051416,"base_k2_pct":0.035273,"k3_pct":0.002179,"base_k3_pct":0.00156,"k2_extra_pp":0.016143,"label":"1 NC2_W3_gap → 90-85-73"},{"spy":1,"condition":"NC3_W5_gap","followers":[29,8,89],"events":2883,"k2_pct":0.08845,"base_k2_pct":0.073763,"k3_pct":0.001387,"base_k3_pct":0.001852,"k2_extra_pp":0.014687,"label":"1 NC3_W5_gap → 29-8-89"},{"spy":2,"condition":"NC2_W3_gap","followers":[90,89,87],"events":2219,"k2_pct":0.036503,"base_k2_pct":0.022638,"k3_pct":0.001803,"base_k3_pct":0.001755,"k2_extra_pp":0.013865,"label":"2 NC2_W3_gap → 90-89-87"},{"spy":3,"condition":"C1_exact","followers":[90,89,9],"events":8929,"k2_pct":0.026879,"base_k2_pct":0.02254,"k3_pct":0.002576,"base_k3_pct":0.00195,"k2_extra_pp":0.004338,"label":"3 C1_exact → 90-89-9"},{"spy":3,"condition":"C2_exact","followers":[2,30,45],"events":2133,"k2_pct":0.198781,"base_k2_pct":0.175311,"k3_pct":0.018284,"base_k3_pct":0.017802,"k2_extra_pp":0.02347,"label":"3 C2_exact → 2-30-45"},{"spy":3,"condition":"C3plus","followers":[2,56,63],"events":1745,"k2_pct":0.194269,"base_k2_pct":0.137211,"k3_pct":0.016619,"base_k3_pct":0.010724,"k2_extra_pp":0.057058,"label":"3 C3plus → 2-56-63"},{"spy":3,"condition":"NC2_W3_gap","followers":[90,89,88],"events":2178,"k2_pct":0.037649,"base_k2_pct":0.022501,"k3_pct":0.004132,"base_k3_pct":0.001774,"k2_extra_pp":0.015148,"label":"3 NC2_W3_gap → 90-89-88"},{"spy":4,"condition":"C1_exact","followers":[88,89,90],"events":9033,"k2_pct":0.027344,"base_k2_pct":0.022501,"k3_pct":0.002546,"base_k3_pct":0.001774,"k2_extra_pp":0.004843,"label":"4 C1_exact → 88-89-90"},{"spy":4,"condition":"C2_exact","followers":[60,40,66],"events":2172,"k2_pct":0.166667,"base_k2_pct":0.143821,"k3_pct":0.021639,"base_k3_pct":0.012928,"k2_extra_pp":0.022846,"label":"4 C2_exact → 60-40-66"},{"spy":4,"condition":"NC2_W3_gap","followers":[90,88,89],"events":2331,"k2_pct":0.032175,"base_k2_pct":0.022501,"k3_pct":0.003432,"base_k3_pct":0.001774,"k2_extra_pp":0.009674,"label":"4 NC2_W3_gap → 90-88-89"},{"spy":5,"condition":"C1_exact","followers":[88,87,89],"events":10466,"k2_pct":0.033537,"base_k2_pct":0.027376,"k3_pct":0.003535,"base_k3_pct":0.002184,"k2_extra_pp":0.006161,"label":"5 C1_exact → 88-87-89"},{"spy":5,"condition":"C2_exact","followers":[55,50,72],"events":2874,"k2_pct":0.20007,"base_k2_pct":0.163495,"k3_pct":0.019137,"base_k3_pct":0.014936,"k2_extra_pp":0.036575,"label":"5 C2_exact → 55-50-72"},{"spy":5,"condition":"C3plus","followers":[4,55,56],"events":2121,"k2_pct":0.219708,"base_k2_pct":0.15901,"k3_pct":0.03206,"base_k3_pct":0.016047,"k2_extra_pp":0.060697,"label":"5 C3plus → 4-55-56"},{"spy":5,"condition":"NC2_W3_gap","followers":[90,89,88],"events":3052,"k2_pct":0.033093,"base_k2_pct":0.022501,"k3_pct":0.001311,"base_k3_pct":0.001774,"k2_extra_pp":0.010592,"label":"5 NC2_W3_gap → 90-89-88"},{"spy":5,"condition":"NC3_W5_gap","followers":[88,86,87],"events":4004,"k2_pct":0.043207,"base_k2_pct":0.034317,"k3_pct":0.003247,"base_k3_pct":0.002437,"k2_extra_pp":0.008889,"label":"5 NC3_W5_gap → 88-86-87"},{"spy":6,"condition":"NC2_W3_gap","followers":[90,87,88],"events":2239,"k2_pct":0.042876,"base_k2_pct":0.025056,"k3_pct":0.00402,"base_k3_pct":0.001813,"k2_extra_pp":0.017821,"label":"6 NC2_W3_gap → 90-87-88"},{"spy":6,"condition":"NC3_W5_gap","followers":[90,9,36],"events":2713,"k2_pct":0.087357,"base_k2_pct":0.066958,"k3_pct":0.004423,"base_k3_pct":0.001989,"k2_extra_pp":0.020399,"label":"6 NC3_W5_gap → 90-9-36"},{"spy":7,"condition":"C1_exact","followers":[69,89,4],"events":8992,"k2_pct":0.077625,"base_k2_pct":0.068518,"k3_pct":0.002002,"base_k3_pct":0.001716,"k2_extra_pp":0.009107,"label":"7 C1_exact → 69-89-4"},{"spy":7,"condition":"NC2_W3_gap","followers":[88,90,85],"events":2252,"k2_pct":0.038188,"base_k2_pct":0.024373,"k3_pct":0.000888,"base_k3_pct":0.001501,"k2_extra_pp":0.013815,"label":"7 NC2_W3_gap → 88-90-85"},{"spy":7,"condition":"NC2_W5","followers":[8,15,25],"events":7283,"k2_pct":0.206371,"base_k2_pct":0.187712,"k3_pct":0.022793,"base_k3_pct":0.019167,"k2_extra_pp":0.018659,"label":"7 NC2_W5 → 8-15-25"},{"spy":7,"condition":"NC3_W5_gap","followers":[88,90,85],"events":2811,"k2_pct":0.03095,"base_k2_pct":0.024373,"k3_pct":0.000356,"base_k3_pct":0.001501,"k2_extra_pp":0.006577,"label":"7 NC3_W5_gap → 88-90-85"},{"spy":8,"condition":"C1_exact","followers":[87,90,89],"events":9169,"k2_pct":0.027593,"base_k2_pct":0.022638,"k3_pct":0.002181,"base_k3_pct":0.001755,"k2_extra_pp":0.004955,"label":"8 C1_exact → 87-90-89"},{"spy":8,"condition":"C2_exact","followers":[29,64,46],"events":2217,"k2_pct":0.156518,"base_k2_pct":0.128183,"k3_pct":0.016689,"base_k3_pct":0.010003,"k2_extra_pp":0.028335,"label":"8 C2_exact → 29-64-46"},{"spy":8,"condition":"NC2_W3_gap","followers":[90,89,83],"events":2298,"k2_pct":0.032202,"base_k2_pct":0.021624,"k3_pct":0.002176,"base_k3_pct":0.00156,"k2_extra_pp":0.010578,"label":"8 NC2_W3_gap → 90-89-83"},{"spy":9,"condition":"C1_exact","followers":[90,62,89],"events":8983,"k2_pct":0.025938,"base_k2_pct":0.023301,"k3_pct":0.001558,"base_k3_pct":0.001677,"k2_extra_pp":0.002637,"label":"9 C1_exact → 90-62-89"},{"spy":9,"condition":"C3plus","followers":[8,25,67],"events":1795,"k2_pct":0.222284,"base_k2_pct":0.159147,"k3_pct":0.028969,"base_k3_pct":0.014994,"k2_extra_pp":0.063137,"label":"9 C3plus → 8-25-67"},{"spy":9,"condition":"NC2_W3_gap","followers":[88,90,89],"events":2245,"k2_pct":0.035189,"base_k2_pct":0.022501,"k3_pct":0.002673,"base_k3_pct":0.001774,"k2_extra_pp":0.012688,"label":"9 NC2_W3_gap → 88-90-89"},{"spy":9,"condition":"NC3_W5_gap","followers":[28,35,8],"events":2869,"k2_pct":0.189265,"base_k2_pct":0.157801,"k3_pct":0.016731,"base_k3_pct":0.014487,"k2_extra_pp":0.031463,"label":"9 NC3_W5_gap → 28-35-8"},{"spy":10,"condition":"C1_exact","followers":[5,90,89],"events":10367,"k2_pct":0.028649,"base_k2_pct":0.022228,"k3_pct":0.002797,"base_k3_pct":0.001813,"k2_extra_pp":0.00642,"label":"10 C1_exact → 5-90-89"},{"spy":10,"condition":"C2_exact","followers":[5,87,77],"events":2912,"k2_pct":0.103022,"base_k2_pct":0.080724,"k3_pct":0.004808,"base_k3_pct":0.003315,"k2_extra_pp":0.022298,"label":"10 C2_exact → 5-87-77"},{"spy":10,"condition":"C3plus","followers":[9,5,55],"events":2086,"k2_pct":0.243528,"base_k2_pct":0.186094,"k3_pct":0.03164,"base_k3_pct":0.019245,"k2_extra_pp":0.057435,"label":"10 C3plus → 9-5-55"},{"spy":10,"condition":"NC2_W3_gap","followers":[90,89,50],"events":2946,"k2_pct":0.035302,"base_k2_pct":0.023164,"k3_pct":0.002037,"base_k3_pct":0.001833,"k2_extra_pp":0.012138,"label":"10 NC2_W3_gap → 90-89-50"},{"spy":10,"condition":"NC2_W5","followers":[5,1,23],"events":8968,"k2_pct":0.191793,"base_k2_pct":0.173244,"k3_pct":0.021521,"base_k3_pct":0.017256,"k2_extra_pp":0.018549,"label":"10 NC2_W5 → 5-1-23"},{"spy":10,"condition":"NC3_W5_gap","followers":[11,78,77],"events":4066,"k2_pct":0.132563,"base_k2_pct":0.11471,"k3_pct":0.012051,"base_k3_pct":0.009847,"k2_extra_pp":0.017853,"label":"10 NC3_W5_gap → 11-78-77"},{"spy":11,"condition":"C1_exact","followers":[90,88,86],"events":8954,"k2_pct":0.030601,"base_k2_pct":0.024763,"k3_pct":0.001899,"base_k3_pct":0.001599,"k2_extra_pp":0.005838,"label":"11 C1_exact → 90-88-86"},{"spy":11,"condition":"NC2_W3_gap","followers":[90,88,87],"events":2245,"k2_pct":0.035189,"base_k2_pct":0.025056,"k3_pct":0.003118,"base_k3_pct":0.001813,"k2_extra_pp":0.010134,"label":"11 NC2_W3_gap → 90-88-87"},{"spy":12,"condition":"C1_exact","followers":[89,86,90],"events":9030,"k2_pct":0.027353,"base_k2_pct":0.022521,"k3_pct":0.002658,"base_k3_pct":0.001911,"k2_extra_pp":0.004833,"label":"12 C1_exact → 89-86-90"},{"spy":12,"condition":"NC2_W3_gap","followers":[89,90,87],"events":2331,"k2_pct":0.031317,"base_k2_pct":0.022638,"k3_pct":0.002145,"base_k3_pct":0.001755,"k2_extra_pp":0.008679,"label":"12 NC2_W3_gap → 89-90-87"},{"spy":12,"condition":"NC2_W5","followers":[14,17,59],"events":7340,"k2_pct":0.16049,"base_k2_pct":0.147233,"k3_pct":0.013624,"base_k3_pct":0.012869,"k2_extra_pp":0.013257,"label":"12 NC2_W5 → 14-17-59"},{"spy":12,"condition":"NC3_W5_gap","followers":[89,90,86],"events":2897,"k2_pct":0.032447,"base_k2_pct":0.022521,"k3_pct":0.002761,"base_k3_pct":0.001911,"k2_extra_pp":0.009927,"label":"12 NC3_W5_gap → 89-90-86"},{"spy":13,"condition":"C1_exact","followers":[89,90,50],"events":9033,"k2_pct":0.027787,"base_k2_pct":0.023164,"k3_pct":0.00155,"base_k3_pct":0.001833,"k2_extra_pp":0.004623,"label":"13 C1_exact → 89-90-50"},{"spy":13,"condition":"C2_exact","followers":[43,61,70],"events":2104,"k2_pct":0.154468,"base_k2_pct":0.124537,"k3_pct":0.015684,"base_k3_pct":0.010295,"k2_extra_pp":0.029931,"label":"13 C2_exact → 43-61-70"},{"spy":13,"condition":"NC2_W3_gap","followers":[89,90,86],"events":2275,"k2_pct":0.037363,"base_k2_pct":0.022521,"k3_pct":0.005714,"base_k3_pct":0.001911,"k2_extra_pp":0.014842,"label":"13 NC2_W3_gap → 89-90-86"},{"spy":13,"condition":"NC3_W5_gap","followers":[89,86,82],"events":2748,"k2_pct":0.045488,"base_k2_pct":0.033693,"k3_pct":0.003639,"base_k3_pct":0.002008,"k2_extra_pp":0.011794,"label":"13 NC3_W5_gap → 89-86-82"},{"spy":14,"condition":"C1_exact","followers":[90,89,88],"events":9055,"k2_pct":0.024406,"base_k2_pct":0.022501,"k3_pct":0.001877,"base_k3_pct":0.001774,"k2_extra_pp":0.001905,"label":"14 C1_exact → 90-89-88"},{"spy":14,"condition":"C2_exact","followers":[2,40,76],"events":2201,"k2_pct":0.170831,"base_k2_pct":0.144952,"k3_pct":0.015902,"base_k3_pct":0.012538,"k2_extra_pp":0.02588,"label":"14 C2_exact → 2-40-76"},{"spy":14,"condition":"NC2_W3_gap","followers":[89,90,88],"events":2325,"k2_pct":0.034839,"base_k2_pct":0.022501,"k3_pct":0.003441,"base_k3_pct":0.001774,"k2_extra_pp":0.012337,"label":"14 NC2_W3_gap → 89-90-88"},{"spy":14,"condition":"NC3_W5_gap","followers":[89,90,76],"events":2996,"k2_pct":0.03271,"base_k2_pct":0.022638,"k3_pct":0.00267,"base_k3_pct":0.001794,"k2_extra_pp":0.010073,"label":"14 NC3_W5_gap → 89-90-76"},{"spy":15,"condition":"C1_exact","followers":[10,89,88],"events":10366,"k2_pct":0.035597,"base_k2_pct":0.02917,"k3_pct":0.004148,"base_k3_pct":0.002476,"k2_extra_pp":0.006427,"label":"15 C1_exact → 10-89-88"},{"spy":15,"condition":"C2_exact","followers":[10,5,52],"events":2961,"k2_pct":0.229314,"base_k2_pct":0.182233,"k3_pct":0.029044,"base_k3_pct":0.02059,"k2_extra_pp":0.047081,"label":"15 C2_exact → 10-5-52"},{"spy":15,"condition":"C3plus","followers":[14,28,55],"events":2092,"k2_pct":0.228489,"base_k2_pct":0.158152,"k3_pct":0.030593,"base_k3_pct":0.014273,"k2_extra_pp":0.070337,"label":"15 C3plus → 14-28-55"},{"spy":15,"condition":"NC2_W3_gap","followers":[89,10,90],"events":3041,"k2_pct":0.031897,"base_k2_pct":0.023398,"k3_pct":0.001644,"base_k3_pct":0.00156,"k2_extra_pp":0.008499,"label":"15 NC2_W3_gap → 89-10-90"},{"spy":15,"condition":"NC2_W5","followers":[10,16,82],"events":8903,"k2_pct":0.146018,"base_k2_pct":0.133779,"k3_pct":0.011681,"base_k3_pct":0.009769,"k2_extra_pp":0.012239,"label":"15 NC2_W5 → 10-16-82"},{"spy":15,"condition":"NC3_W5_gap","followers":[10,58,68],"events":4150,"k2_pct":0.173012,"base_k2_pct":0.154155,"k3_pct":0.020241,"base_k3_pct":0.014019,"k2_extra_pp":0.018857,"label":"15 NC3_W5_gap → 10-58-68"},{"spy":16,"condition":"C1_exact","followers":[88,90,59],"events":8991,"k2_pct":0.028362,"base_k2_pct":0.02451,"k3_pct":0.001891,"base_k3_pct":0.001638,"k2_extra_pp":0.003852,"label":"16 C1_exact → 88-90-59"},{"spy":16,"condition":"C3plus","followers":[15,10,54],"events":1905,"k2_pct":0.24252,"base_k2_pct":0.181473,"k3_pct":0.025197,"base_k3_pct":0.017646,"k2_extra_pp":0.061047,"label":"16 C3plus → 15-10-54"},{"spy":16,"condition":"NC2_W3_gap","followers":[89,90,88],"events":2264,"k2_pct":0.038869,"base_k2_pct":0.022501,"k3_pct":0.003092,"base_k3_pct":0.001774,"k2_extra_pp":0.016368,"label":"16 NC2_W3_gap → 89-90-88"},{"spy":16,"condition":"NC3_W5_gap","followers":[89,90,75],"events":2827,"k2_pct":0.034312,"base_k2_pct":0.022852,"k3_pct":0.003891,"base_k3_pct":0.002164,"k2_extra_pp":0.01146,"label":"16 NC3_W5_gap → 89-90-75"},{"spy":17,"condition":"C1_exact","followers":[90,86,88],"events":9072,"k2_pct":0.030093,"base_k2_pct":0.024763,"k3_pct":0.002315,"base_k3_pct":0.001599,"k2_extra_pp":0.005329,"label":"17 C1_exact → 90-86-88"},{"spy":17,"condition":"NC2_W3_gap","followers":[90,87,89],"events":2335,"k2_pct":0.035546,"base_k2_pct":0.022638,"k3_pct":0.003854,"base_k3_pct":0.001755,"k2_extra_pp":0.012908,"label":"17 NC2_W3_gap → 90-87-89"},{"spy":17,"condition":"NC3_W5_gap","followers":[87,76,89],"events":2823,"k2_pct":0.043216,"base_k2_pct":0.031178,"k3_pct":0.003188,"base_k3_pct":0.001969,"k2_extra_pp":0.012038,"label":"17 NC3_W5_gap → 87-76-89"},{"spy":18,"condition":"C1_exact","followers":[90,86,87],"events":8855,"k2_pct":0.033315,"base_k2_pct":0.027707,"k3_pct":0.001694,"base_k3_pct":0.001735,"k2_extra_pp":0.005607,"label":"18 C1_exact → 90-86-87"},{"spy":18,"condition":"NC2_W3_gap","followers":[90,88,89],"events":2203,"k2_pct":0.03586,"base_k2_pct":0.022501,"k3_pct":0.002724,"base_k3_pct":0.001774,"k2_extra_pp":0.013359,"label":"18 NC2_W3_gap → 90-88-89"},{"spy":18,"condition":"NC2_W5","followers":[16,11,44],"events":7007,"k2_pct":0.165121,"base_k2_pct":0.147955,"k3_pct":0.015413,"base_k3_pct":0.013395,"k2_extra_pp":0.017166,"label":"18 NC2_W5 → 16-11-44"},{"spy":18,"condition":"NC3_W5_gap","followers":[90,89,84],"events":2698,"k2_pct":0.032987,"base_k2_pct":0.022462,"k3_pct":0.002595,"base_k3_pct":0.00156,"k2_extra_pp":0.010525,"label":"18 NC3_W5_gap → 90-89-84"},{"spy":19,"condition":"C1_exact","followers":[89,85,90],"events":9037,"k2_pct":0.028771,"base_k2_pct":0.02215,"k3_pct":0.002434,"base_k3_pct":0.001618,"k2_extra_pp":0.00662,"label":"19 C1_exact → 89-85-90"},{"spy":19,"condition":"C2_exact","followers":[40,35,47],"events":2217,"k2_pct":0.198917,"base_k2_pct":0.165991,"k3_pct":0.023906,"base_k3_pct":0.01554,"k2_extra_pp":0.032927,"label":"19 C2_exact → 40-35-47"},{"spy":19,"condition":"NC2_W3_gap","followers":[89,90,86],"events":2243,"k2_pct":0.041016,"base_k2_pct":0.022521,"k3_pct":0.002675,"base_k3_pct":0.001911,"k2_extra_pp":0.018496,"label":"19 NC2_W3_gap → 89-90-86"},{"spy":19,"condition":"NC2_W5","followers":[2,17,23],"events":7202,"k2_pct":0.173007,"base_k2_pct":0.156163,"k3_pct":0.014996,"base_k3_pct":0.01439,"k2_extra_pp":0.016844,"label":"19 NC2_W5 → 2-17-23"},{"spy":19,"condition":"NC3_W5_gap","followers":[89,85,82],"events":2830,"k2_pct":0.044876,"base_k2_pct":0.036872,"k3_pct":0.004594,"base_k3_pct":0.001657,"k2_extra_pp":0.008005,"label":"19 NC3_W5_gap → 89-85-82"},{"spy":20,"condition":"C1_exact","followers":[15,90,87],"events":10384,"k2_pct":0.038424,"base_k2_pct":0.030028,"k3_pct":0.00183,"base_k3_pct":0.001618,"k2_extra_pp":0.008397,"label":"20 C1_exact → 15-90-87"},{"spy":20,"condition":"C2_exact","followers":[15,10,5],"events":3011,"k2_pct":0.272335,"base_k2_pct":0.212397,"k3_pct":0.034208,"base_k3_pct":0.024432,"k2_extra_pp":0.059938,"label":"20 C2_exact → 15-10-5"},{"spy":20,"condition":"C3plus","followers":[19,32,5],"events":2081,"k2_pct":0.219125,"base_k2_pct":0.166673,"k3_pct":0.027871,"base_k3_pct":0.016008,"k2_extra_pp":0.052452,"label":"20 C3plus → 19-32-5"},{"spy":20,"condition":"NC2_W3_gap","followers":[90,87,88],"events":3025,"k2_pct":0.035372,"base_k2_pct":0.025056,"k3_pct":0.004628,"base_k3_pct":0.001813,"k2_extra_pp":0.010316,"label":"20 NC2_W3_gap → 90-87-88"},{"spy":20,"condition":"NC3_W5_gap","followers":[10,5,15],"events":4194,"k2_pct":0.242012,"base_k2_pct":0.212397,"k3_pct":0.033143,"base_k3_pct":0.024432,"k2_extra_pp":0.029615,"label":"20 NC3_W5_gap → 10-5-15"},{"spy":21,"condition":"C1_exact","followers":[51,88,84],"events":8986,"k2_pct":0.051858,"base_k2_pct":0.04471,"k3_pct":0.003116,"base_k3_pct":0.002164,"k2_extra_pp":0.007148,"label":"21 C1_exact → 51-88-84"},{"spy":21,"condition":"C2_exact","followers":[40,12,25],"events":2145,"k2_pct":0.207925,"base_k2_pct":0.175428,"k3_pct":0.017249,"base_k3_pct":0.016593,"k2_extra_pp":0.032497,"label":"21 C2_exact → 40-12-25"},{"spy":21,"condition":"NC2_W3_gap","followers":[89,88,90],"events":2225,"k2_pct":0.034157,"base_k2_pct":0.022501,"k3_pct":0.003596,"base_k3_pct":0.001774,"k2_extra_pp":0.011656,"label":"21 NC2_W3_gap → 89-88-90"},{"spy":21,"condition":"NC3_W5_gap","followers":[89,87,90],"events":2761,"k2_pct":0.028613,"base_k2_pct":0.022638,"k3_pct":0.001449,"base_k3_pct":0.001755,"k2_extra_pp":0.005975,"label":"21 NC3_W5_gap → 89-87-90"},{"spy":22,"condition":"C2_exact","followers":[61,27,74],"events":2136,"k2_pct":0.13764,"base_k2_pct":0.120696,"k3_pct":0.010768,"base_k3_pct":0.008872,"k2_extra_pp":0.016945,"label":"22 C2_exact → 61-27-74"},{"spy":22,"condition":"C3plus","followers":[21,60,79],"events":1773,"k2_pct":0.168641,"base_k2_pct":0.122139,"k3_pct":0.01128,"base_k3_pct":0.00895,"k2_extra_pp":0.046502,"label":"22 C3plus → 21-60-79"},{"spy":22,"condition":"NC2_W3_gap","followers":[89,88,90],"events":2288,"k2_pct":0.034091,"base_k2_pct":0.022501,"k3_pct":0.002185,"base_k3_pct":0.001774,"k2_extra_pp":0.01159,"label":"22 NC2_W3_gap → 89-88-90"},{"spy":22,"condition":"NC3_W5_gap","followers":[88,83,89],"events":2760,"k2_pct":0.036957,"base_k2_pct":0.02642,"k3_pct":0.002536,"base_k3_pct":0.002067,"k2_extra_pp":0.010536,"label":"22 NC3_W5_gap → 88-83-89"},{"spy":23,"condition":"C1_exact","followers":[88,57,14],"events":9001,"k2_pct":0.083324,"base_k2_pct":0.075615,"k3_pct":0.003888,"base_k3_pct":0.002067,"k2_extra_pp":0.007709,"label":"23 C1_exact → 88-57-14"},{"spy":23,"condition":"C3plus","followers":[22,42,39],"events":1797,"k2_pct":0.194213,"base_k2_pct":0.136977,"k3_pct":0.025598,"base_k3_pct":0.011875,"k2_extra_pp":0.057236,"label":"23 C3plus → 22-42-39"},{"spy":23,"condition":"NC2_W3_gap","followers":[88,89,83],"events":2344,"k2_pct":0.037543,"base_k2_pct":0.02642,"k3_pct":0.001706,"base_k3_pct":0.002067,"k2_extra_pp":0.011122,"label":"23 NC2_W3_gap → 88-89-83"},{"spy":24,"condition":"C1_exact","followers":[88,69,87],"events":8991,"k2_pct":0.037482,"base_k2_pct":0.0342,"k3_pct":0.002781,"base_k3_pct":0.002769,"k2_extra_pp":0.003282,"label":"24 C1_exact → 88-69-87"},{"spy":24,"condition":"C3plus","followers":[9,60,8],"events":581,"k2_pct":0.203098,"base_k2_pct":0.148169,"k3_pct":0.018933,"base_k3_pct":0.012811,"k2_extra_pp":0.054929,"label":"24 C3plus → 9-60-8"},{"spy":24,"condition":"NC2_W3_gap","followers":[87,3,13],"events":2005,"k2_pct":0.099252,"base_k2_pct":0.08474,"k3_pct":0.00399,"base_k3_pct":0.003861,"k2_extra_pp":0.014511,"label":"24 NC2_W3_gap → 87-3-13"},{"spy":24,"condition":"NC3_W5_gap","followers":[16,57,45],"events":2370,"k2_pct":0.18481,"base_k2_pct":0.157567,"k3_pct":0.016034,"base_k3_pct":0.014468,"k2_extra_pp":0.027243,"label":"24 NC3_W5_gap → 16-57-45"},{"spy":25,"condition":"C1_exact","followers":[20,90,36],"events":10461,"k2_pct":0.096931,"base_k2_pct":0.079105,"k3_pct":0.002103,"base_k3_pct":0.001657,"k2_extra_pp":0.017826,"label":"25 C1_exact → 20-90-36"},{"spy":25,"condition":"C2_exact","followers":[20,15,10],"events":2816,"k2_pct":0.278409,"base_k2_pct":0.2123,"k3_pct":0.037642,"base_k3_pct":0.023476,"k2_extra_pp":0.066109,"label":"25 C2_exact → 20-15-10"},{"spy":25,"condition":"C3plus","followers":[20,10,80],"events":1014,"k2_pct":0.20217,"base_k2_pct":0.156709,"k3_pct":0.017751,"base_k3_pct":0.01361,"k2_extra_pp":0.04546,"label":"25 C3plus → 20-10-80"},{"spy":25,"condition":"NC2_W3_gap","followers":[20,90,24],"events":2795,"k2_pct":0.100894,"base_k2_pct":0.080314,"k3_pct":0.002862,"base_k3_pct":0.001911,"k2_extra_pp":0.02058,"label":"25 NC2_W3_gap → 20-90-24"},{"spy":25,"condition":"NC2_W5","followers":[20,46,6],"events":9189,"k2_pct":0.183371,"base_k2_pct":0.163963,"k3_pct":0.019262,"base_k3_pct":0.015501,"k2_extra_pp":0.019409,"label":"25 NC2_W5 → 20-46-6"},{"spy":25,"condition":"NC3_W5_gap","followers":[20,15,57],"events":3872,"k2_pct":0.217459,"base_k2_pct":0.183383,"k3_pct":0.019628,"base_k3_pct":0.017763,"k2_extra_pp":0.034075,"label":"25 NC3_W5_gap → 20-15-57"},{"spy":26,"condition":"NC2_W3_gap","followers":[19,27,14],"events":2006,"k2_pct":0.185942,"base_k2_pct":0.146122,"k3_pct":0.021436,"base_k3_pct":0.012245,"k2_extra_pp":0.03982,"label":"26 NC2_W3_gap → 19-27-14"},{"spy":27,"condition":"C1_exact","followers":[7,40,88],"events":8833,"k2_pct":0.098268,"base_k2_pct":0.088465,"k3_pct":0.003849,"base_k3_pct":0.00232,"k2_extra_pp":0.009803,"label":"27 C1_exact → 7-40-88"},{"spy":28,"condition":"C3plus","followers":[63,39,60],"events":588,"k2_pct":0.192177,"base_k2_pct":0.127189,"k3_pct":0.015306,"base_k3_pct":0.009691,"k2_extra_pp":0.064988,"label":"28 C3plus → 63-39-60"},{"spy":28,"condition":"NC2_W3_gap","followers":[63,52,27],"events":2003,"k2_pct":0.137294,"base_k2_pct":0.12479,"k3_pct":0.009985,"base_k3_pct":0.009203,"k2_extra_pp":0.012504,"label":"28 NC2_W3_gap → 63-52-27"},{"spy":29,"condition":"C1_exact","followers":[81,8,77],"events":9051,"k2_pct":0.115236,"base_k2_pct":0.10576,"k3_pct":0.008618,"base_k3_pct":0.008072,"k2_extra_pp":0.009476,"label":"29 C1_exact → 81-8-77"},{"spy":29,"condition":"C2_exact","followers":[84,59,54],"events":2059,"k2_pct":0.114133,"base_k2_pct":0.090493,"k3_pct":0.008742,"base_k3_pct":0.005128,"k2_extra_pp":0.023641,"label":"29 C2_exact → 84-59-54"},{"spy":29,"condition":"C3plus","followers":[65,67,78],"events":602,"k2_pct":0.156146,"base_k2_pct":0.113462,"k3_pct":0.016611,"base_k3_pct":0.008033,"k2_extra_pp":0.042684,"label":"29 C3plus → 65-67-78"},{"spy":29,"condition":"NC2_W3_gap","followers":[81,32,42],"events":2124,"k2_pct":0.134181,"base_k2_pct":0.103518,"k3_pct":0.012712,"base_k3_pct":0.007097,"k2_extra_pp":0.030663,"label":"29 NC2_W3_gap → 81-32-42"},{"spy":29,"condition":"NC2_W5","followers":[89,18,81],"events":7428,"k2_pct":0.058158,"base_k2_pct":0.053816,"k3_pct":0.002423,"base_k3_pct":0.002028,"k2_extra_pp":0.004342,"label":"29 NC2_W5 → 89-18-81"},{"spy":30,"condition":"C2_exact","followers":[25,20,1],"events":2772,"k2_pct":0.24531,"base_k2_pct":0.184729,"k3_pct":0.029582,"base_k3_pct":0.019187,"k2_extra_pp":0.060581,"label":"30 C2_exact → 25-20-1"},{"spy":30,"condition":"C3plus","followers":[20,25,10],"events":982,"k2_pct":0.271894,"base_k2_pct":0.200815,"k3_pct":0.026477,"base_k3_pct":0.021663,"k2_extra_pp":0.071079,"label":"30 C3plus → 20-25-10"},{"spy":30,"condition":"NC2_W3_gap","followers":[25,2,10],"events":2823,"k2_pct":0.211477,"base_k2_pct":0.181317,"k3_pct":0.024088,"base_k3_pct":0.018153,"k2_extra_pp":0.030161,"label":"30 NC2_W3_gap → 25-2-10"},{"spy":30,"condition":"NC3_W5_gap","followers":[10,25,15],"events":3866,"k2_pct":0.219607,"base_k2_pct":0.201069,"k3_pct":0.02328,"base_k3_pct":0.021019,"k2_extra_pp":0.018538,"label":"30 NC3_W5_gap → 10-25-15"},{"spy":31,"condition":"NC3_W5_gap","followers":[19,69,81],"events":2473,"k2_pct":0.130611,"base_k2_pct":0.112857,"k3_pct":0.009705,"base_k3_pct":0.007546,"k2_extra_pp":0.017753,"label":"31 NC3_W5_gap → 19-69-81"},{"spy":32,"condition":"C2_exact","followers":[35,33,13],"events":2012,"k2_pct":0.183897,"base_k2_pct":0.156202,"k3_pct":0.016899,"base_k3_pct":0.014721,"k2_extra_pp":0.027694,"label":"32 C2_exact → 35-33-13"},{"spy":32,"condition":"NC3_W5_gap","followers":[56,1,47],"events":2386,"k2_pct":0.162196,"base_k2_pct":0.135027,"k3_pct":0.021794,"base_k3_pct":0.012031,"k2_extra_pp":0.027169,"label":"32 NC3_W5_gap → 56-1-47"},{"spy":33,"condition":"C2_exact","followers":[26,29,87],"events":2043,"k2_pct":0.083211,"base_k2_pct":0.071579,"k3_pct":0.004895,"base_k3_pct":0.002925,"k2_extra_pp":0.011632,"label":"33 C2_exact → 26-29-87"},{"spy":33,"condition":"C3plus","followers":[39,67,18],"events":639,"k2_pct":0.173709,"base_k2_pct":0.135359,"k3_pct":0.017214,"base_k3_pct":0.011699,"k2_extra_pp":0.03835,"label":"33 C3plus → 39-67-18"},{"spy":34,"condition":"C1_exact","followers":[58,77,62],"events":8895,"k2_pct":0.1267,"base_k2_pct":0.115841,"k3_pct":0.009556,"base_k3_pct":0.008014,"k2_extra_pp":0.01086,"label":"34 C1_exact → 58-77-62"},{"spy":34,"condition":"C2_exact","followers":[13,30,18],"events":2008,"k2_pct":0.191733,"base_k2_pct":0.16406,"k3_pct":0.016932,"base_k3_pct":0.016203,"k2_extra_pp":0.027673,"label":"34 C2_exact → 13-30-18"},{"spy":35,"condition":"C1_exact","followers":[30,85,48],"events":10426,"k2_pct":0.123921,"base_k2_pct":0.098019,"k3_pct":0.007865,"base_k3_pct":0.005557,"k2_extra_pp":0.025902,"label":"35 C1_exact → 30-85-48"},{"spy":35,"condition":"C2_exact","followers":[30,25,4],"events":2823,"k2_pct":0.222813,"base_k2_pct":0.176286,"k3_pct":0.023025,"base_k3_pct":0.018777,"k2_extra_pp":0.046527,"label":"35 C2_exact → 30-25-4"},{"spy":35,"condition":"C3plus","followers":[30,15,29],"events":1050,"k2_pct":0.222857,"base_k2_pct":0.173615,"k3_pct":0.026667,"base_k3_pct":0.016574,"k2_extra_pp":0.049243,"label":"35 C3plus → 30-15-29"},{"spy":35,"condition":"NC2_W3_gap","followers":[30,8,85],"events":2848,"k2_pct":0.133427,"base_k2_pct":0.108295,"k3_pct":0.005969,"base_k3_pct":0.006123,"k2_extra_pp":0.025132,"label":"35 NC2_W3_gap → 30-8-85"},{"spy":35,"condition":"NC2_W5","followers":[30,25,12],"events":9029,"k2_pct":0.19094,"base_k2_pct":0.175175,"k3_pct":0.021043,"base_k3_pct":0.017705,"k2_extra_pp":0.015766,"label":"35 NC2_W5 → 30-25-12"},{"spy":35,"condition":"NC3_W5_gap","followers":[30,49,64],"events":3871,"k2_pct":0.16404,"base_k2_pct":0.143762,"k3_pct":0.016533,"base_k3_pct":0.012128,"k2_extra_pp":0.020278,"label":"35 NC3_W5_gap → 30-49-64"},{"spy":36,"condition":"C2_exact","followers":[31,33,25],"events":2029,"k2_pct":0.184327,"base_k2_pct":0.146902,"k3_pct":0.015278,"base_k3_pct":0.012811,"k2_extra_pp":0.037426,"label":"36 C2_exact → 31-33-25"},{"spy":37,"condition":"C3plus","followers":[54,32,24],"events":623,"k2_pct":0.168539,"base_k2_pct":0.126389,"k3_pct":0.014446,"base_k3_pct":0.010763,"k2_extra_pp":0.04215,"label":"37 C3plus → 54-32-24"},{"spy":37,"condition":"NC3_W5_gap","followers":[58,3,67],"events":2514,"k2_pct":0.153142,"base_k2_pct":0.133721,"k3_pct":0.016706,"base_k3_pct":0.010919,"k2_extra_pp":0.019422,"label":"37 NC3_W5_gap → 58-3-67"},{"spy":38,"condition":"C3plus","followers":[31,72,14],"events":661,"k2_pct":0.175492,"base_k2_pct":0.133292,"k3_pct":0.022693,"base_k3_pct":0.011836,"k2_extra_pp":0.0422,"label":"38 C3plus → 31-72-14"},{"spy":38,"condition":"NC3_W5_gap","followers":[48,42,69],"events":2454,"k2_pct":0.144254,"base_k2_pct":0.124244,"k3_pct":0.016707,"base_k3_pct":0.009691,"k2_extra_pp":0.02001,"label":"38 NC3_W5_gap → 48-42-69"},{"spy":39,"condition":"C3plus","followers":[88,63,10],"events":647,"k2_pct":0.120556,"base_k2_pct":0.087178,"k3_pct":0.004637,"base_k3_pct":0.002535,"k2_extra_pp":0.033379,"label":"39 C3plus → 88-63-10"},{"spy":39,"condition":"NC2_W5","followers":[81,25,79],"events":7274,"k2_pct":0.120291,"base_k2_pct":0.109192,"k3_pct":0.010311,"base_k3_pct":0.008579,"k2_extra_pp":0.0111,"label":"39 NC2_W5 → 81-25-79"},{"spy":40,"condition":"C2_exact","followers":[35,30,25],"events":2780,"k2_pct":0.228777,"base_k2_pct":0.180888,"k3_pct":0.02518,"base_k3_pct":0.018582,"k2_extra_pp":0.047889,"label":"40 C2_exact → 35-30-25"},{"spy":40,"condition":"NC2_W3_gap","followers":[35,32,43],"events":2866,"k2_pct":0.175157,"base_k2_pct":0.145537,"k3_pct":0.016399,"base_k3_pct":0.012577,"k2_extra_pp":0.02962,"label":"40 NC2_W3_gap → 35-32-43"},{"spy":40,"condition":"NC3_W5_gap","followers":[35,30,25],"events":3913,"k2_pct":0.198824,"base_k2_pct":0.180888,"k3_pct":0.020445,"base_k3_pct":0.018582,"k2_extra_pp":0.017937,"label":"40 NC3_W5_gap → 35-30-25"},{"spy":41,"condition":"C2_exact","followers":[78,6,13],"events":2034,"k2_pct":0.160275,"base_k2_pct":0.134267,"k3_pct":0.017207,"base_k3_pct":0.010217,"k2_extra_pp":0.026009,"label":"41 C2_exact → 78-6-13"},{"spy":41,"condition":"NC2_W3_gap","followers":[46,36,88],"events":2078,"k2_pct":0.085659,"base_k2_pct":0.06998,"k3_pct":0.004812,"base_k3_pct":0.002457,"k2_extra_pp":0.015679,"label":"41 NC2_W3_gap → 46-36-88"},{"spy":41,"condition":"NC3_W5_gap","followers":[73,6,42],"events":2515,"k2_pct":0.154672,"base_k2_pct":0.130776,"k3_pct":0.012326,"base_k3_pct":0.011621,"k2_extra_pp":0.023896,"label":"41 NC3_W5_gap → 73-6-42"},{"spy":42,"condition":"C3plus","followers":[27,47,56],"events":590,"k2_pct":0.159322,"base_k2_pct":0.12598,"k3_pct":0.023729,"base_k3_pct":0.009535,"k2_extra_pp":0.033342,"label":"42 C3plus → 27-47-56"},{"spy":42,"condition":"NC2_W3_gap","followers":[66,72,19],"events":2046,"k2_pct":0.154448,"base_k2_pct":0.134559,"k3_pct":0.012708,"base_k3_pct":0.0109,"k2_extra_pp":0.019889,"label":"42 NC2_W3_gap → 66-72-19"},{"spy":44,"condition":"C2_exact","followers":[67,77,43],"events":2023,"k2_pct":0.148295,"base_k2_pct":0.118531,"k3_pct":0.009886,"base_k3_pct":0.008813,"k2_extra_pp":0.029763,"label":"44 C2_exact → 67-77-43"},{"spy":44,"condition":"NC2_W3_gap","followers":[6,15,66],"events":2058,"k2_pct":0.192906,"base_k2_pct":0.16213,"k3_pct":0.01895,"base_k3_pct":0.015423,"k2_extra_pp":0.030776,"label":"44 NC2_W3_gap → 6-15-66"},{"spy":44,"condition":"NC3_W5_gap","followers":[15,73,66],"events":2619,"k2_pct":0.169912,"base_k2_pct":0.14854,"k3_pct":0.017946,"base_k3_pct":0.012284,"k2_extra_pp":0.021373,"label":"44 NC3_W5_gap → 15-73-66"},{"spy":45,"condition":"C1_exact","followers":[40,35,90],"events":10461,"k2_pct":0.105248,"base_k2_pct":0.087626,"k3_pct":0.002485,"base_k3_pct":0.00193,"k2_extra_pp":0.017622,"label":"45 C1_exact → 40-35-90"},{"spy":45,"condition":"C2_exact","followers":[40,35,30],"events":2859,"k2_pct":0.23015,"base_k2_pct":0.181999,"k3_pct":0.026583,"base_k3_pct":0.018524,"k2_extra_pp":0.048151,"label":"45 C2_exact → 40-35-30"},{"spy":45,"condition":"C3plus","followers":[40,15,54],"events":1021,"k2_pct":0.226249,"base_k2_pct":0.173849,"k3_pct":0.022527,"base_k3_pct":0.017295,"k2_extra_pp":0.0524,"label":"45 C3plus → 40-15-54"},{"spy":45,"condition":"NC2_W3_gap","followers":[40,30,73],"events":2880,"k2_pct":0.191319,"base_k2_pct":0.156846,"k3_pct":0.01875,"base_k3_pct":0.013044,"k2_extra_pp":0.034474,"label":"45 NC2_W3_gap → 40-30-73"},{"spy":45,"condition":"NC2_W5","followers":[35,40,42],"events":9192,"k2_pct":0.174826,"base_k2_pct":0.164431,"k3_pct":0.017624,"base_k3_pct":0.015228,"k2_extra_pp":0.010395,"label":"45 NC2_W5 → 35-40-42"},{"spy":45,"condition":"NC3_W5_gap","followers":[35,40,77],"events":3919,"k2_pct":0.170196,"base_k2_pct":0.152634,"k3_pct":0.016076,"base_k3_pct":0.013863,"k2_extra_pp":0.017562,"label":"45 NC3_W5_gap → 35-40-77"},{"spy":46,"condition":"C3plus","followers":[86,68,34],"events":622,"k2_pct":0.114148,"base_k2_pct":0.077409,"k3_pct":0.012862,"base_k3_pct":0.003841,"k2_extra_pp":0.036739,"label":"46 C3plus → 86-68-34"},{"spy":46,"condition":"NC2_W5","followers":[11,22,21],"events":7241,"k2_pct":0.170142,"base_k2_pct":0.153161,"k3_pct":0.018368,"base_k3_pct":0.014019,"k2_extra_pp":0.016982,"label":"46 NC2_W5 → 11-22-21"},{"spy":48,"condition":"NC2_W3_gap","followers":[86,84,88],"events":1987,"k2_pct":0.051334,"base_k2_pct":0.038315,"k3_pct":0.004529,"base_k3_pct":0.002379,"k2_extra_pp":0.013019,"label":"48 NC2_W3_gap → 86-84-88"},{"spy":48,"condition":"NC3_W5_gap","followers":[19,55,34],"events":2408,"k2_pct":0.190199,"base_k2_pct":0.15784,"k3_pct":0.013704,"base_k3_pct":0.014429,"k2_extra_pp":0.032359,"label":"48 NC3_W5_gap → 19-55-34"},{"spy":49,"condition":"NC2_W3_gap","followers":[15,81,42],"events":2062,"k2_pct":0.164403,"base_k2_pct":0.128008,"k3_pct":0.008244,"base_k3_pct":0.008774,"k2_extra_pp":0.036396,"label":"49 NC2_W3_gap → 15-81-42"},{"spy":49,"condition":"NC3_W5_gap","followers":[89,46,81],"events":2466,"k2_pct":0.064477,"base_k2_pct":0.050111,"k3_pct":0.002028,"base_k3_pct":0.001618,"k2_extra_pp":0.014366,"label":"49 NC3_W5_gap → 89-46-81"},{"spy":50,"condition":"C1_exact","followers":[45,39,81],"events":10459,"k2_pct":0.151544,"base_k2_pct":0.121573,"k3_pct":0.010995,"base_k3_pct":0.008131,"k2_extra_pp":0.029971,"label":"50 C1_exact → 45-39-81"},{"spy":50,"condition":"C2_exact","followers":[45,40,18],"events":2875,"k2_pct":0.241391,"base_k2_pct":0.174395,"k3_pct":0.027478,"base_k3_pct":0.018251,"k2_extra_pp":0.066997,"label":"50 C2_exact → 45-40-18"},{"spy":50,"condition":"C3plus","followers":[35,4,40],"events":1024,"k2_pct":0.222656,"base_k2_pct":0.177183,"k3_pct":0.022461,"base_k3_pct":0.018836,"k2_extra_pp":0.045473,"label":"50 C3plus → 35-4-40"},{"spy":50,"condition":"NC2_W3_gap","followers":[45,39,25],"events":2848,"k2_pct":0.202949,"base_k2_pct":0.166244,"k3_pct":0.019663,"base_k3_pct":0.01595,"k2_extra_pp":0.036705,"label":"50 NC2_W3_gap → 45-39-25"},{"spy":50,"condition":"NC2_W5","followers":[45,40,35],"events":9152,"k2_pct":0.200066,"base_k2_pct":0.184222,"k3_pct":0.019996,"base_k3_pct":0.019206,"k2_extra_pp":0.015844,"label":"50 NC2_W5 → 45-40-35"},{"spy":50,"condition":"NC3_W5_gap","followers":[45,40,20],"events":3920,"k2_pct":0.229082,"base_k2_pct":0.19518,"k3_pct":0.029082,"base_k3_pct":0.019109,"k2_extra_pp":0.033902,"label":"50 NC3_W5_gap → 45-40-20"},{"spy":51,"condition":"NC2_W5","followers":[63,45,66],"events":7369,"k2_pct":0.162437,"base_k2_pct":0.143899,"k3_pct":0.018727,"base_k3_pct":0.012908,"k2_extra_pp":0.018538,"label":"51 NC2_W5 → 63-45-66"},{"spy":52,"condition":"NC2_W3_gap","followers":[5,8,1],"events":2045,"k2_pct":0.213692,"base_k2_pct":0.17611,"k3_pct":0.019071,"base_k3_pct":0.017022,"k2_extra_pp":0.037581,"label":"52 NC2_W3_gap → 5-8-1"},{"spy":53,"condition":"C2_exact","followers":[82,3,83],"events":2032,"k2_pct":0.103839,"base_k2_pct":0.082459,"k3_pct":0.007382,"base_k3_pct":0.006259,"k2_extra_pp":0.021379,"label":"53 C2_exact → 82-3-83"},{"spy":54,"condition":"C2_exact","followers":[85,66,52],"events":2029,"k2_pct":0.101528,"base_k2_pct":0.083532,"k3_pct":0.007886,"base_k3_pct":0.004543,"k2_extra_pp":0.017996,"label":"54 C2_exact → 85-66-52"},{"spy":54,"condition":"NC2_W3_gap","followers":[84,70,71],"events":2025,"k2_pct":0.108642,"base_k2_pct":0.087451,"k3_pct":0.003951,"base_k3_pct":0.004387,"k2_extra_pp":0.021191,"label":"54 NC2_W3_gap → 84-70-71"},{"spy":54,"condition":"NC3_W5_gap","followers":[48,16,51],"events":2502,"k2_pct":0.156675,"base_k2_pct":0.1361,"k3_pct":0.013589,"base_k3_pct":0.012148,"k2_extra_pp":0.020575,"label":"54 NC3_W5_gap → 48-16-51"},{"spy":55,"condition":"C2_exact","followers":[50,45,42],"events":2906,"k2_pct":0.21989,"base_k2_pct":0.165737,"k3_pct":0.0234,"base_k3_pct":0.016086,"k2_extra_pp":0.054153,"label":"55 C2_exact → 50-45-42"},{"spy":55,"condition":"C3plus","followers":[45,50,40],"events":1109,"k2_pct":0.228133,"base_k2_pct":0.184534,"k3_pct":0.019838,"base_k3_pct":0.017978,"k2_extra_pp":0.0436,"label":"55 C3plus → 45-50-40"},{"spy":55,"condition":"NC3_W5_gap","followers":[50,78,45],"events":4126,"k2_pct":0.167232,"base_k2_pct":0.149982,"k3_pct":0.016723,"base_k3_pct":0.012811,"k2_extra_pp":0.01725,"label":"55 NC3_W5_gap → 50-78-45"},{"spy":56,"condition":"C2_exact","followers":[52,61,47],"events":2083,"k2_pct":0.151224,"base_k2_pct":0.125356,"k3_pct":0.010082,"base_k3_pct":0.009769,"k2_extra_pp":0.025868,"label":"56 C2_exact → 52-61-47"},{"spy":56,"condition":"NC3_W5_gap","followers":[55,21,4],"events":2522,"k2_pct":0.191118,"base_k2_pct":0.167824,"k3_pct":0.021015,"base_k3_pct":0.016379,"k2_extra_pp":0.023295,"label":"56 NC3_W5_gap → 55-21-4"},{"spy":57,"condition":"C2_exact","followers":[55,87,15],"events":2098,"k2_pct":0.133937,"base_k2_pct":0.108509,"k3_pct":0.003813,"base_k3_pct":0.004036,"k2_extra_pp":0.025428,"label":"57 C2_exact → 55-87-15"},{"spy":57,"condition":"NC2_W3_gap","followers":[77,64,81],"events":1992,"k2_pct":0.121988,"base_k2_pct":0.095777,"k3_pct":0.01004,"base_k3_pct":0.006649,"k2_extra_pp":0.026211,"label":"57 NC2_W3_gap → 77-64-81"},{"spy":57,"condition":"NC3_W5_gap","followers":[73,28,63],"events":2498,"k2_pct":0.13811,"base_k2_pct":0.121495,"k3_pct":0.008006,"base_k3_pct":0.009613,"k2_extra_pp":0.016615,"label":"57 NC3_W5_gap → 73-28-63"},{"spy":58,"condition":"C3plus","followers":[32,61,88],"events":645,"k2_pct":0.086822,"base_k2_pct":0.06805,"k3_pct":0.013953,"base_k3_pct":0.002554,"k2_extra_pp":0.018772,"label":"58 C3plus → 32-61-88"},{"spy":58,"condition":"NC3_W5_gap","followers":[35,10,13],"events":2577,"k2_pct":0.207606,"base_k2_pct":0.18352,"k3_pct":0.022507,"base_k3_pct":0.018426,"k2_extra_pp":0.024086,"label":"58 NC3_W5_gap → 35-10-13"},{"spy":61,"condition":"C1_exact","followers":[19,59,83],"events":9023,"k2_pct":0.116591,"base_k2_pct":0.103654,"k3_pct":0.007758,"base_k3_pct":0.006415,"k2_extra_pp":0.012937,"label":"61 C1_exact → 19-59-83"},{"spy":62,"condition":"NC2_W3_gap","followers":[83,9,90],"events":2013,"k2_pct":0.064083,"base_k2_pct":0.044866,"k3_pct":0.000994,"base_k3_pct":0.001501,"k2_extra_pp":0.019217,"label":"62 NC2_W3_gap → 83-9-90"},{"spy":63,"condition":"C2_exact","followers":[5,61,67],"events":2012,"k2_pct":0.184891,"base_k2_pct":0.1524,"k3_pct":0.01839,"base_k3_pct":0.013922,"k2_extra_pp":0.03249,"label":"63 C2_exact → 5-61-67"},{"spy":63,"condition":"C3plus","followers":[29,51,6],"events":579,"k2_pct":0.16753,"base_k2_pct":0.136314,"k3_pct":0.018998,"base_k3_pct":0.011894,"k2_extra_pp":0.031216,"label":"63 C3plus → 29-51-6"},{"spy":64,"condition":"NC3_W5_gap","followers":[69,44,83],"events":2454,"k2_pct":0.114099,"base_k2_pct":0.094334,"k3_pct":0.008557,"base_k3_pct":0.006025,"k2_extra_pp":0.019766,"label":"64 NC3_W5_gap → 69-44-83"},{"spy":65,"condition":"NC2_W3_gap","followers":[79,66,80],"events":2054,"k2_pct":0.123174,"base_k2_pct":0.099306,"k3_pct":0.009737,"base_k3_pct":0.007702,"k2_extra_pp":0.023868,"label":"65 NC2_W3_gap → 79-66-80"},{"spy":65,"condition":"NC3_W5_gap","followers":[21,9,47],"events":2445,"k2_pct":0.17137,"base_k2_pct":0.143645,"k3_pct":0.022495,"base_k3_pct":0.012811,"k2_extra_pp":0.027725,"label":"65 NC3_W5_gap → 21-9-47"},{"spy":66,"condition":"C2_exact","followers":[25,69,26],"events":1962,"k2_pct":0.175841,"base_k2_pct":0.143684,"k3_pct":0.013761,"base_k3_pct":0.011855,"k2_extra_pp":0.032157,"label":"66 C2_exact → 25-69-26"},{"spy":66,"condition":"C3plus","followers":[49,28,76],"events":594,"k2_pct":0.181818,"base_k2_pct":0.117771,"k3_pct":0.010101,"base_k3_pct":0.008579,"k2_extra_pp":0.064047,"label":"66 C3plus → 49-28-76"},{"spy":66,"condition":"NC2_W3_gap","followers":[72,25,70],"events":2032,"k2_pct":0.163878,"base_k2_pct":0.141423,"k3_pct":0.01624,"base_k3_pct":0.012323,"k2_extra_pp":0.022455,"label":"66 NC2_W3_gap → 72-25-70"},{"spy":66,"condition":"NC3_W5_gap","followers":[25,40,1],"events":2447,"k2_pct":0.203106,"base_k2_pct":0.17533,"k3_pct":0.028198,"base_k3_pct":0.017841,"k2_extra_pp":0.027775,"label":"66 NC3_W5_gap → 25-40-1"},{"spy":67,"condition":"C3plus","followers":[90,2,45],"events":637,"k2_pct":0.130298,"base_k2_pct":0.082303,"k3_pct":0.00314,"base_k3_pct":0.001345,"k2_extra_pp":0.047995,"label":"67 C3plus → 90-2-45"},{"spy":67,"condition":"NC2_W5","followers":[1,71,75],"events":7146,"k2_pct":0.139659,"base_k2_pct":0.127481,"k3_pct":0.011755,"base_k3_pct":0.009925,"k2_extra_pp":0.012177,"label":"67 NC2_W5 → 1-71-75"},{"spy":67,"condition":"NC3_W5_gap","followers":[57,83,42],"events":2414,"k2_pct":0.110605,"base_k2_pct":0.095465,"k3_pct":0.009942,"base_k3_pct":0.005752,"k2_extra_pp":0.01514,"label":"67 NC3_W5_gap → 57-83-42"},{"spy":68,"condition":"C3plus","followers":[55,65,13],"events":573,"k2_pct":0.21466,"base_k2_pct":0.157372,"k3_pct":0.022688,"base_k3_pct":0.014273,"k2_extra_pp":0.057287,"label":"68 C3plus → 55-65-13"},{"spy":69,"condition":"NC2_W5","followers":[51,39,21],"events":7185,"k2_pct":0.145999,"base_k2_pct":0.136684,"k3_pct":0.014057,"base_k3_pct":0.011426,"k2_extra_pp":0.009314,"label":"69 NC2_W5 → 51-39-21"},{"spy":70,"condition":"C3plus","followers":[37,76,43],"events":519,"k2_pct":0.175337,"base_k2_pct":0.119331,"k3_pct":0.009634,"base_k3_pct":0.009125,"k2_extra_pp":0.056006,"label":"70 C3plus → 37-76-43"},{"spy":70,"condition":"NC2_W3_gap","followers":[6,23,75],"events":1944,"k2_pct":0.165123,"base_k2_pct":0.137718,"k3_pct":0.016461,"base_k3_pct":0.01166,"k2_extra_pp":0.027406,"label":"70 NC2_W3_gap → 6-23-75"},{"spy":72,"condition":"C3plus","followers":[10,89,87],"events":505,"k2_pct":0.055446,"base_k2_pct":0.031861,"k3_pct":0.00198,"base_k3_pct":0.002067,"k2_extra_pp":0.023585,"label":"72 C3plus → 10-89-87"},{"spy":74,"condition":"C2_exact","followers":[89,86,40],"events":1753,"k2_pct":0.047918,"base_k2_pct":0.036248,"k3_pct":0.002852,"base_k3_pct":0.001969,"k2_extra_pp":0.01167,"label":"74 C2_exact → 89-86-40"},{"spy":74,"condition":"C3plus","followers":[76,16,11],"events":468,"k2_pct":0.188034,"base_k2_pct":0.136684,"k3_pct":0.025641,"base_k3_pct":0.010666,"k2_extra_pp":0.05135,"label":"74 C3plus → 76-16-11"},{"spy":75,"condition":"NC3_W5_gap","followers":[21,7,90],"events":2103,"k2_pct":0.096529,"base_k2_pct":0.075381,"k3_pct":0.001902,"base_k3_pct":0.001891,"k2_extra_pp":0.021148,"label":"75 NC3_W5_gap → 21-7-90"},{"spy":76,"condition":"C1_exact","followers":[45,55,16],"events":8397,"k2_pct":0.193045,"base_k2_pct":0.178938,"k3_pct":0.021793,"base_k3_pct":0.018329,"k2_extra_pp":0.014107,"label":"76 C1_exact → 45-55-16"},{"spy":76,"condition":"C2_exact","followers":[23,13,70],"events":1656,"k2_pct":0.174517,"base_k2_pct":0.142904,"k3_pct":0.014493,"base_k3_pct":0.011972,"k2_extra_pp":0.031612,"label":"76 C2_exact → 23-13-70"},{"spy":76,"condition":"NC2_W3_gap","followers":[41,49,48],"events":1751,"k2_pct":0.149629,"base_k2_pct":0.126955,"k3_pct":0.018275,"base_k3_pct":0.009691,"k2_extra_pp":0.022674,"label":"76 NC2_W3_gap → 41-49-48"},{"spy":76,"condition":"NC3_W5_gap","followers":[23,49,87],"events":1901,"k2_pct":0.101526,"base_k2_pct":0.078559,"k3_pct":0.00526,"base_k3_pct":0.002983,"k2_extra_pp":0.022966,"label":"76 NC3_W5_gap → 23-49-87"},{"spy":77,"condition":"NC3_W5_gap","followers":[29,50,5],"events":1865,"k2_pct":0.198391,"base_k2_pct":0.177222,"k3_pct":0.028418,"base_k3_pct":0.016808,"k2_extra_pp":0.02117,"label":"77 NC3_W5_gap → 29-50-5"},{"spy":79,"condition":"C2_exact","followers":[90,55,29],"events":1494,"k2_pct":0.084337,"base_k2_pct":0.07622,"k3_pct":0.002677,"base_k3_pct":0.001657,"k2_extra_pp":0.008118,"label":"79 C2_exact → 90-55-29"},{"spy":79,"condition":"NC2_W3_gap","followers":[32,31,49],"events":1455,"k2_pct":0.164948,"base_k2_pct":0.127462,"k3_pct":0.014433,"base_k3_pct":0.010159,"k2_extra_pp":0.037487,"label":"79 NC2_W3_gap → 32-31-49"},{"spy":80,"condition":"C1_exact","followers":[3,55,44],"events":7345,"k2_pct":0.171818,"base_k2_pct":0.156924,"k3_pct":0.017427,"base_k3_pct":0.015072,"k2_extra_pp":0.014894,"label":"80 C1_exact → 3-55-44"},{"spy":80,"condition":"NC2_W3_gap","followers":[55,3,22],"events":1325,"k2_pct":0.211321,"base_k2_pct":0.166907,"k3_pct":0.022642,"base_k3_pct":0.016847,"k2_extra_pp":0.044414,"label":"80 NC2_W3_gap → 55-3-22"},{"spy":80,"condition":"NC2_W5","followers":[22,88,86],"events":5149,"k2_pct":0.047776,"base_k2_pct":0.039406,"k3_pct":0.00369,"base_k3_pct":0.00232,"k2_extra_pp":0.00837,"label":"80 NC2_W5 → 22-88-86"},{"spy":81,"condition":"C1_exact","followers":[55,68,21],"events":6965,"k2_pct":0.174444,"base_k2_pct":0.157158,"k3_pct":0.017373,"base_k3_pct":0.01593,"k2_extra_pp":0.017286,"label":"81 C1_exact → 55-68-21"},{"spy":81,"condition":"NC2_W3_gap","followers":[55,68,34],"events":1139,"k2_pct":0.19403,"base_k2_pct":0.147857,"k3_pct":0.014925,"base_k3_pct":0.013512,"k2_extra_pp":0.046173,"label":"81 NC2_W3_gap → 55-68-34"},{"spy":81,"condition":"NC3_W5_gap","followers":[90,83,76],"events":1110,"k2_pct":0.063964,"base_k2_pct":0.042058,"k3_pct":0.0,"base_k3_pct":0.001384,"k2_extra_pp":0.021906,"label":"81 NC3_W5_gap → 90-83-76"},{"spy":82,"condition":"C2_exact","followers":[26,6,89],"events":989,"k2_pct":0.092012,"base_k2_pct":0.071248,"k3_pct":0.002022,"base_k3_pct":0.002145,"k2_extra_pp":0.020765,"label":"82 C2_exact → 26-6-89"},{"spy":82,"condition":"C3plus","followers":[89,5,54],"events":164,"k2_pct":0.195122,"base_k2_pct":0.081972,"k3_pct":0.006098,"base_k3_pct":0.001852,"k2_extra_pp":0.11315,"label":"82 C3plus → 89-5-54"},{"spy":82,"condition":"NC2_W3_gap","followers":[29,15,13],"events":1060,"k2_pct":0.20283,"base_k2_pct":0.164041,"k3_pct":0.017925,"base_k3_pct":0.015384,"k2_extra_pp":0.038789,"label":"82 NC2_W3_gap → 29-15-13"},{"spy":82,"condition":"NC2_W5","followers":[90,84,29],"events":4563,"k2_pct":0.042954,"base_k2_pct":0.038217,"k3_pct":0.001534,"base_k3_pct":0.001521,"k2_extra_pp":0.004737,"label":"82 NC2_W5 → 90-84-29"},{"spy":83,"condition":"C2_exact","followers":[87,89,88],"events":826,"k2_pct":0.039952,"base_k2_pct":0.027376,"k3_pct":0.007264,"base_k3_pct":0.002184,"k2_extra_pp":0.012576,"label":"83 C2_exact → 87-89-88"},{"spy":83,"condition":"NC2_W5","followers":[89,88,87],"events":3700,"k2_pct":0.038108,"base_k2_pct":0.027376,"k3_pct":0.001892,"base_k3_pct":0.002184,"k2_extra_pp":0.010732,"label":"83 NC2_W5 → 89-88-87"},{"spy":83,"condition":"NC3_W5_gap","followers":[89,34,82],"events":695,"k2_pct":0.067626,"base_k2_pct":0.047713,"k3_pct":0.002878,"base_k3_pct":0.001638,"k2_extra_pp":0.019913,"label":"83 NC3_W5_gap → 89-34-82"},{"spy":84,"condition":"C2_exact","followers":[87,89,86],"events":650,"k2_pct":0.06,"base_k2_pct":0.030125,"k3_pct":0.004615,"base_k3_pct":0.002047,"k2_extra_pp":0.029875,"label":"84 C2_exact → 87-89-86"},{"spy":84,"condition":"NC2_W5","followers":[90,87,88],"events":3203,"k2_pct":0.029035,"base_k2_pct":0.025056,"k3_pct":0.00281,"base_k3_pct":0.001813,"k2_extra_pp":0.00398,"label":"84 NC2_W5 → 90-87-88"},{"spy":84,"condition":"NC3_W5_gap","followers":[50,90,81],"events":563,"k2_pct":0.078153,"base_k2_pct":0.055044,"k3_pct":0.007105,"base_k3_pct":0.001599,"k2_extra_pp":0.023108,"label":"84 NC3_W5_gap → 50-90-81"},{"spy":85,"condition":"C1_exact","followers":[55,49,48],"events":4826,"k2_pct":0.167219,"base_k2_pct":0.146999,"k3_pct":0.015541,"base_k3_pct":0.012538,"k2_extra_pp":0.02022,"label":"85 C1_exact → 55-49-48"},{"spy":85,"condition":"C2_exact","followers":[88,82,87],"events":500,"k2_pct":0.056,"base_k2_pct":0.033869,"k3_pct":0.006,"base_k3_pct":0.002827,"k2_extra_pp":0.022131,"label":"85 C2_exact → 88-82-87"},{"spy":85,"condition":"NC2_W5","followers":[89,90,88],"events":2656,"k2_pct":0.034639,"base_k2_pct":0.022501,"k3_pct":0.001883,"base_k3_pct":0.001774,"k2_extra_pp":0.012137,"label":"85 NC2_W5 → 89-90-88"},{"spy":85,"condition":"NC3_W5_gap","followers":[88,41,90],"events":411,"k2_pct":0.043796,"base_k2_pct":0.025056,"k3_pct":0.007299,"base_k3_pct":0.001755,"k2_extra_pp":0.01874,"label":"85 NC3_W5_gap → 88-41-90"},{"spy":86,"condition":"C2_exact","followers":[89,90,88],"events":337,"k2_pct":0.059347,"base_k2_pct":0.022501,"k3_pct":0.002967,"base_k3_pct":0.001774,"k2_extra_pp":0.036846,"label":"86 C2_exact → 89-90-88"},{"spy":86,"condition":"NC2_W5","followers":[89,88,90],"events":2178,"k2_pct":0.039945,"base_k2_pct":0.022501,"k3_pct":0.002296,"base_k3_pct":0.001774,"k2_extra_pp":0.017444,"label":"86 NC2_W5 → 89-88-90"},{"spy":86,"condition":"NC3_W5_gap","followers":[16,90,74],"events":302,"k2_pct":0.099338,"base_k2_pct":0.065105,"k3_pct":0.0,"base_k3_pct":0.001794,"k2_extra_pp":0.034232,"label":"86 NC3_W5_gap → 16-90-74"},{"spy":87,"condition":"C1_exact","followers":[55,6,3],"events":3343,"k2_pct":0.20341,"base_k2_pct":0.167804,"k3_pct":0.021238,"base_k3_pct":0.016398,"k2_extra_pp":0.035606,"label":"87 C1_exact → 55-6-3"},{"spy":87,"condition":"C2_exact","followers":[90,89,85],"events":178,"k2_pct":0.067416,"base_k2_pct":0.02215,"k3_pct":0.005618,"base_k3_pct":0.001618,"k2_extra_pp":0.045265,"label":"87 C2_exact → 90-89-85"},{"spy":87,"condition":"NC2_W3_gap","followers":[25,33,6],"events":498,"k2_pct":0.204819,"base_k2_pct":0.159868,"k3_pct":0.028112,"base_k3_pct":0.014643,"k2_extra_pp":0.044951,"label":"87 NC2_W3_gap → 25-33-6"},{"spy":87,"condition":"NC2_W5","followers":[90,89,88],"events":1875,"k2_pct":0.0352,"base_k2_pct":0.022501,"k3_pct":0.0048,"base_k3_pct":0.001774,"k2_extra_pp":0.012699,"label":"87 NC2_W5 → 90-89-88"},{"spy":87,"condition":"NC3_W5_gap","followers":[6,62,37],"events":216,"k2_pct":0.189815,"base_k2_pct":0.137347,"k3_pct":0.027778,"base_k3_pct":0.011114,"k2_extra_pp":0.052467,"label":"87 NC3_W5_gap → 6-62-37"},{"spy":88,"condition":"NC2_W3_gap","followers":[67,6,55],"events":446,"k2_pct":0.210762,"base_k2_pct":0.158425,"k3_pct":0.026906,"base_k3_pct":0.014526,"k2_extra_pp":0.052337,"label":"88 NC2_W3_gap → 67-6-55"},{"spy":88,"condition":"NC2_W5","followers":[89,90,87],"events":1645,"k2_pct":0.037082,"base_k2_pct":0.022638,"k3_pct":0.007295,"base_k3_pct":0.001755,"k2_extra_pp":0.014444,"label":"88 NC2_W5 → 89-90-87"},{"spy":89,"condition":"C1_exact","followers":[55,70,33],"events":2260,"k2_pct":0.187611,"base_k2_pct":0.147175,"k3_pct":0.014602,"base_k3_pct":0.012362,"k2_extra_pp":0.040436,"label":"89 C1_exact → 55-70-33"},{"spy":89,"condition":"NC2_W3_gap","followers":[15,10,70],"events":420,"k2_pct":0.245238,"base_k2_pct":0.177183,"k3_pct":0.042857,"base_k3_pct":0.018465,"k2_extra_pp":0.068055,"label":"89 NC2_W3_gap → 15-10-70"},{"spy":89,"condition":"NC2_W5","followers":[88,90,84],"events":1473,"k2_pct":0.038018,"base_k2_pct":0.025114,"k3_pct":0.000679,"base_k3_pct":0.001657,"k2_extra_pp":0.012904,"label":"89 NC2_W5 → 88-90-84"},{"spy":90,"condition":"C1_exact","followers":[55,45,24],"events":1955,"k2_pct":0.207673,"base_k2_pct":0.167551,"k3_pct":0.019437,"base_k3_pct":0.01554,"k2_extra_pp":0.040122,"label":"90 C1_exact → 55-45-24"},{"spy":90,"condition":"NC2_W5","followers":[87,89,88],"events":1445,"k2_pct":0.044291,"base_k2_pct":0.027376,"k3_pct":0.002768,"base_k3_pct":0.002184,"k2_extra_pp":0.016915,"label":"90 NC2_W5 → 87-89-88"}]'
-
-SPY_NETWORK_DEFS = {
-    "CATENA_5": {
-        "label": "CATENA 5",
-        "nodes": {5, 10, 15, 20, 25, 30},
-        "note": "rete 30→25→20→15→10→5",
-    },
-    "PONTE_55": {
-        "label": "PONTE 55",
-        "nodes": {4, 5, 14, 15, 28, 55, 56},
-        "note": "ponte 5/15 verso 55-56",
-    },
-    "ZONA_40": {
-        "label": "ZONA 40/50",
-        "nodes": {18, 40, 45, 50},
-        "note": "scala 50→45→40 con ponte 18",
-    },
-    "LATERALE_23": {
-        "label": "LATERALE 23",
-        "nodes": {22, 23, 39, 42},
-        "note": "laterale 23 verso 22-39-42",
-    },
-    "MOD5": {"label": "MOD 5", "nodes": set(), "note": "legame per resto modulo 5"},
-    "DECINA": {"label": "DECINA", "nodes": set(), "note": "concentrazione nella stessa decina"},
-    "ALTRO": {"label": "ALTRO", "nodes": set(), "note": "fuori dalle reti principali"},
-}
-SPY_LEVELS = ("NORMALE", "FORTE", "MULTIPLA")
+DECADES = [
+    ("90-9", (90, 1, 2, 3, 4, 5, 6, 7, 8, 9)),
+    ("10-19", tuple(range(10, 20))),
+    ("20-29", tuple(range(20, 30))),
+    ("30-39", tuple(range(30, 40))),
+    ("40-49", tuple(range(40, 50))),
+    ("50-59", tuple(range(50, 60))),
+    ("60-69", tuple(range(60, 70))),
+    ("70-79", tuple(range(70, 80))),
+    ("80-89", tuple(range(80, 90))),
+]
+DECADE_NAMES = [x[0] for x in DECADES]
+PAIR_LISTS = [tuple(combinations(nums, 2)) for _, nums in DECADES]
+PAIR_INDEX = [
+    {tuple(sorted(pair)): idx for idx, pair in enumerate(pairs)}
+    for pairs in PAIR_LISTS
+]
+FULL_MASK = (1 << 45) - 1
 
 
 # ============================================================
-# UTILS
+# UTILITY
 # ============================================================
 
-def validate_env():
-    if not TOKEN:
-        raise RuntimeError("BOT_TOKEN non impostato nell'ambiente")
-    if not CHAT_ID_RAW:
-        raise RuntimeError("CHAT_ID non impostato nell'ambiente")
-    try:
-        return int(CHAT_ID_RAW)
-    except ValueError as exc:
-        raise RuntimeError("CHAT_ID deve essere un intero") from exc
+def now_dt():
+    return datetime.now(BOT_TZ)
 
 
-def _http_get_text(url):
-    """Download con retry e Accept-Encoding identity per ridurre errori gzip."""
+def now_txt():
+    return now_dt().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def day_key():
+    return now_dt().strftime("%Y-%m-%d")
+
+
+def draw_key(day, e):
+    return f"{day}#{int(e):03d}"
+
+
+def safe_pct(num, den):
+    return (100.0 * float(num) / float(den)) if den else 0.0
+
+
+def signal_word():
+    return "SHADOW" if SHADOW_MODE else "PLAY"
+
+
+def fmt_pair(pair):
+    a, b = sorted(map(int, pair))
+    if b == 90:
+        return f"90-{a}"
+    return f"{a}-{b}"
+
+
+def bit_index(single_bit_mask):
+    return int(single_bit_mask).bit_length() - 1
+
+
+def pair_from_mask(decade_index, mask):
+    if int(mask).bit_count() != 1:
+        return None
+    return PAIR_LISTS[decade_index][bit_index(int(mask))]
+
+
+def atomic_write_json(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def _http_get_text(url, retries=3, timeout=20):
     last_exc = None
-    for attempt in range(3):
+    for attempt in range(1, retries + 1):
         try:
-            r = requests.get(url, headers=HEADERS, timeout=20)
+            r = requests.get(url, headers=HEADERS, timeout=timeout)
             r.raise_for_status()
+            if not r.text or len(r.text) < 100:
+                raise RuntimeError("risposta HTTP vuota/corta")
             return r.text
         except Exception as exc:
             last_exc = exc
-            if attempt < 2:
-                time.sleep(1.5 * (attempt + 1))
-    raise last_exc if last_exc else RuntimeError(f"download fallito: {url}")
+            if attempt < retries:
+                time.sleep(1.2 * attempt)
+    raise RuntimeError(f"download fallito: {url} | {last_exc}")
 
+
+# ============================================================
+# PARSER STORICO / LIVE
+# ============================================================
 
 _ITALIAN_MONTHS = {
     "gennaio": 1, "febbraio": 2, "marzo": 3, "aprile": 4,
@@ -642,31 +231,22 @@ _ITALIAN_MONTHS = {
 
 
 def _extract_day_from_header(line):
-    """Ritorna YYYY-MM-DD dalla riga 'Estrazione ... 04 Settembre 2026, ore ...'."""
     m = re.search(
         r"Estrazione\s+(?:[^,]+,\s*)?(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4}),",
         str(line), re.IGNORECASE,
     )
     if not m:
         return None
-    day = int(m.group(1))
-    month_name = m.group(2).lower()
-    month = _ITALIAN_MONTHS.get(month_name)
+    month = _ITALIAN_MONTHS.get(m.group(2).lower())
     if not month:
         return None
     try:
-        return datetime(int(m.group(3)), month, day).strftime("%Y-%m-%d")
+        return datetime(int(m.group(3)), month, int(m.group(1))).strftime("%Y-%m-%d")
     except Exception:
         return None
 
 
 def parse_site_records(url=URL, expected_day=None):
-    """Legge una pagina archivio e restituisce (giorno, n_estrazione, 20 numeri).
-
-    L'ordine viene normalizzato dal piu' vecchio al piu' recente. Se expected_day
-    e' fornito, record di altre date vengono scartati: evita di usare una pagina
-    cache/stale come se appartenesse al giorno richiesto.
-    """
     html = _http_get_text(url)
     text = BeautifulSoup(html, "html.parser").get_text("\n", strip=True)
     lines = [x.strip() for x in text.splitlines() if x.strip()]
@@ -699,17 +279,14 @@ def parse_site_records(url=URL, expected_day=None):
             if len(set(clean)) == 20 and (not expected_day or rec_day == expected_day):
                 out.append((rec_day or expected_day or day_key(), e, clean))
 
-    # dedup per giorno+n. estrazione e ordine cronologico.
     dedup = {}
     for d, e, nums in out:
         dedup[(str(d), int(e))] = (str(d), int(e), list(map(int, nums)))
     return sorted(dedup.values(), key=lambda x: (x[0], x[1]))
 
 
-def parse_site():
-    """Compatibilita' live: restituisce la sola pagina di oggi come (e, nums)."""
-    today = day_key()
-    return [(e, nums) for d, e, nums in parse_site_records(URL, expected_day=today)]
+def parse_site_today():
+    return parse_site_records(URL, expected_day=day_key())
 
 
 def _lottologia_url_for_offset(day_offset):
@@ -721,50 +298,18 @@ def _lottologia_url_for_offset(day_offset):
     return f"{LOTTOLOGIA_BASE}/estrazioni-{day_offset}gg-fa"
 
 
-def _parse_lottologia_day_header(line):
-    """Parsa '#288 4 Set 2026 23:59' -> (288, '2026-09-04')."""
-    m = re.search(r"#\s*(\d+)\s+(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})\s+\d{1,2}:\d{2}", str(line), re.IGNORECASE)
-    if not m:
-        return None
-    aliases = {
-        "gen":1, "gennaio":1, "feb":2, "febbraio":2, "mar":3, "marzo":3,
-        "apr":4, "aprile":4, "mag":5, "maggio":5, "giu":6, "giugno":6,
-        "lug":7, "luglio":7, "ago":8, "agosto":8, "set":9, "sett":9, "settembre":9,
-        "ott":10, "ottobre":10, "nov":11, "novembre":11, "dic":12, "dicembre":12,
-    }
-    mon = aliases.get(m.group(3).lower().rstrip('.'))
-    if not mon:
-        return None
-    try:
-        d = datetime(int(m.group(4)), mon, int(m.group(2))).strftime("%Y-%m-%d")
-        return int(m.group(1)), d
-    except Exception:
-        return None
-
-
 def _lottologia_month_number(token):
     aliases = {
         "gen": 1, "gennaio": 1, "feb": 2, "febbraio": 2, "mar": 3, "marzo": 3,
         "apr": 4, "aprile": 4, "mag": 5, "maggio": 5, "giu": 6, "giugno": 6,
-        "lug": 7, "luglio": 7, "ago": 8, "agosto": 8,
-        "set": 9, "sett": 9, "settembre": 9,
-        "ott": 10, "ottobre": 10, "nov": 11, "novembre": 11,
+        "lug": 7, "luglio": 7, "ago": 8, "agosto": 8, "set": 9, "sett": 9,
+        "settembre": 9, "ott": 10, "ottobre": 10, "nov": 11, "novembre": 11,
         "dic": 12, "dicembre": 12,
     }
     return aliases.get(str(token).lower().strip().rstrip("."))
 
 
 def parse_lottologia_records(url, expected_day=None):
-    """Legge una giornata dall'archivio Lottologia in modo robusto.
-
-    La vecchia v3.2 assumeva che BeautifulSoup producesse una singola riga tipo
-    '#288 3 Set 2026 23:59'. Nel vero HTML i pezzi possono essere in nodi separati
-    ('#288' / '3 Set 2026' / '23:59'), quindi il parser restituiva 0 record.
-
-    Qui normalizziamo TUTTO il testo in una sola sequenza e delimitiamo i record
-    tramite gli header #N giorno mese anno ora. Poi prendiamo esclusivamente i
-    numeri fra 'Numeri' e 'Oro/Doppio Oro/Extra'.
-    """
     html = _http_get_text(url)
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text(" ", strip=True).replace("\xa0", " ")
@@ -786,31 +331,22 @@ def parse_lottologia_records(url, expected_day=None):
             rec_day = datetime(int(m.group(4)), mon, int(m.group(2))).strftime("%Y-%m-%d")
         except Exception:
             continue
-
-        # Scarta subito giornate cache/stale diverse dalla data richiesta.
         if expected_day and rec_day != expected_day:
             continue
 
         block_end = headers[idx + 1].start() if idx + 1 < len(headers) else len(text)
         block = text[m.end():block_end]
-
-        # I 20 numeri principali sono fra 'Numeri' e la prima sezione speciale.
         sec = re.search(
             r"\bNumeri\b(.*?)(?=\bOro\b|\bDoppio\s+Oro\b|\bExtra\b|$)",
-            block,
-            re.IGNORECASE | re.DOTALL,
+            block, re.IGNORECASE | re.DOTALL,
         )
         if not sec:
             continue
-
         vals = [int(x) for x in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", sec.group(1))]
         nums = [n for n in vals if 1 <= n <= 90][:20]
         if len(nums) == 20 and len(set(nums)) == 20:
             out.append((rec_day, e, nums))
 
-    # Fallback: alcune varianti HTML possono non avere la parola 'Numeri' nel blocco.
-    # In quel caso usa i primi 20 valori 1..90 dopo l'header, ma SOLO se il blocco
-    # contiene una sezione Oro/Extra che conferma di essere un record estrazione.
     if not out and headers:
         for idx, m in enumerate(headers):
             e = int(m.group(1))
@@ -828,8 +364,7 @@ def parse_lottologia_records(url, expected_day=None):
             special = re.search(r"\b(?:Oro|Doppio\s+Oro|Extra)\b", block, re.IGNORECASE)
             if not special:
                 continue
-            main = block[:special.start()]
-            vals = [int(x) for x in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", main)]
+            vals = [int(x) for x in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", block[:special.start()])]
             nums = [n for n in vals if 1 <= n <= 90][:20]
             if len(nums) == 20 and len(set(nums)) == 20:
                 out.append((rec_day, e, nums))
@@ -841,11 +376,6 @@ def parse_lottologia_records(url, expected_day=None):
 
 
 def _annual_archive_by_day(target_days):
-    """Fallback: prova l'archivio annuale della fonte primaria una sola volta.
-
-    Ritorna un dict giorno -> record. Se la pagina annuale e' cache/stale o non
-    contiene i giorni richiesti, semplicemente non produce quei giorni.
-    """
     target_days = {str(x) for x in (target_days or [])}
     if not target_days:
         return {}
@@ -853,4915 +383,763 @@ def _annual_archive_by_day(target_days):
         rows = parse_site_records(URL_YEAR_ARCHIVE, expected_day=None)
     except Exception:
         return {}
-    by_day = defaultdict(list)
+    out = {}
     for d, e, nums in rows:
         if d in target_days:
-            by_day[d].append((d, e, nums))
-    return {d: sorted(v, key=lambda x: x[1]) for d, v in by_day.items()}
+            out.setdefault(d, []).append((d, e, nums))
+    for d in out:
+        out[d].sort(key=lambda x: x[1])
+    return out
 
-def fetch_historical_warmup_records():
-    """Scarica PRE-ROLL + STRICT TEST in giorni separati.
 
-    Strategia v3.2.1:
-    - offset 0..2: 10elotto5minuti.com (fonte primaria gia' verificata live)
-    - offset >=3: Lottologia con parser robusto a nodi HTML separati
-    - se un giorno vecchio manca ancora, fallback singolo su archivio annuale
-      10elotto5minuti.com e filtro per data.
-
-    Ogni record viene sempre validato contro la data attesa: niente cache/stale.
-    """
+def fetch_warmup_records(days=WARMUP_DAYS):
+    """Scarica gli ultimi N giorni e restituisce le estrazioni in ordine cronologico."""
     today_date = now_dt().date()
-    total_days = max(1, HISTORICAL_PREROLL_DAYS + HISTORICAL_STRICT_TEST_DAYS)
-    all_records = []
+    primary_by_offset = {0: URL, 1: URL_YESTERDAY, 2: URL_DAY_BEFORE_YESTERDAY}
+    records = []
     summary = []
-    errors = []
-
-    primary_by_offset = {
-        0: URL,
-        1: URL_YESTERDAY,
-        2: URL_DAY_BEFORE_YESTERDAY,
-    }
-
-    # Prima passata: fonte primaria per TEST recente, Lottologia per giorni vecchi.
     missing = []
-    pending_info = {}
-    for offset in range(total_days):
+
+    for offset in range(max(1, int(days))):
         expected_day = (today_date - timedelta(days=offset)).isoformat()
-        label = "oggi" if offset == 0 else ("ieri" if offset == 1 else ("altro ieri" if offset == 2 else f"{offset}gg fa"))
         recs = []
         source = None
-        attempts = []
 
         if offset in primary_by_offset:
             try:
                 recs = parse_site_records(primary_by_offset[offset], expected_day=expected_day)
                 source = "10elotto5minuti"
-                if not recs:
-                    attempts.append("primary=0")
-            except Exception as exc:
-                attempts.append(f"primary={type(exc).__name__}:{exc}")
+            except Exception:
                 recs = []
 
         if not recs:
             try:
                 recs = parse_lottologia_records(_lottologia_url_for_offset(offset), expected_day=expected_day)
                 source = "lottologia"
-                if not recs:
-                    attempts.append("lottologia=0")
-            except Exception as exc:
-                attempts.append(f"lottologia={type(exc).__name__}:{exc}")
+            except Exception:
                 recs = []
 
         if recs:
-            all_records.extend(recs)
-            zone = "TEST" if offset < HISTORICAL_STRICT_TEST_DAYS else "PRE"
-            summary.append({"label": label, "day": expected_day, "draws": len(recs), "source": source, "zone": zone, "offset": offset})
+            records.extend(recs)
+            summary.append({"day": expected_day, "draws": len(recs), "source": source})
         else:
             missing.append(expected_day)
-            pending_info[expected_day] = (offset, label, attempts)
 
-    # Seconda passata: UN SOLO download dell'archivio annuale per i giorni mancanti.
-    annual_map = _annual_archive_by_day(missing) if missing else {}
+    annual = _annual_archive_by_day(missing) if missing else {}
     for expected_day in missing:
-        offset, label, attempts = pending_info[expected_day]
-        recs = annual_map.get(expected_day, [])
+        recs = annual.get(expected_day, [])
         if recs:
-            all_records.extend(recs)
-            zone = "TEST" if offset < HISTORICAL_STRICT_TEST_DAYS else "PRE"
-            summary.append({
-                "label": label, "day": expected_day, "draws": len(recs),
-                "source": "10elotto-annual", "zone": zone, "offset": offset,
-            })
+            records.extend(recs)
+            summary.append({"day": expected_day, "draws": len(recs), "source": "10elotto5minuti-year"})
         else:
-            attempts.append("annual=0")
-            errors.append(f"{label} {expected_day}: nessuna estrazione valida ({'; '.join(attempts)})")
+            summary.append({"day": expected_day, "draws": 0, "source": "MISSING"})
 
     dedup = {}
-    for d, e, nums in all_records:
-        # Chiave con data + numero estrazione: E riparte ogni giorno.
-        dedup[(str(d), int(e))] = (str(d), int(e), list(map(int, nums)))
-    records = sorted(dedup.values(), key=lambda x: (x[0], x[1]))
+    for d, e, nums in records:
+        if len(nums) == 20 and len(set(nums)) == 20:
+            dedup[(str(d), int(e))] = (str(d), int(e), list(map(int, nums)))
 
-    test_start = (today_date - timedelta(days=max(0, HISTORICAL_STRICT_TEST_DAYS - 1))).isoformat()
-    pre_records = [x for x in records if x[0] < test_start]
-    test_records = [x for x in records if x[0] >= test_start]
-    summary = sorted(summary, key=lambda x: x.get("offset", 0))
-    return pre_records, test_records, summary, errors
-
-def fingerprint(e, nums):
-    return hashlib.md5(f"{e}-{'-'.join(map(str, nums))}".encode()).hexdigest()
+    ordered = sorted(dedup.values(), key=lambda x: (x[0], x[1]))
+    summary.sort(key=lambda x: x["day"])
+    return ordered, summary
 
 
-def now_dt():
-    return datetime.now(BOT_TZ)
+# ============================================================
+# PERSISTENZA GIT OPZIONALE
+# ============================================================
 
-
-def day_key():
-    return now_dt().strftime("%Y-%m-%d")
-
-
-def now_txt():
-    return now_dt().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def pct(part, total):
-    return (part / total * 100.0) if total else 0.0
-
-
-def roi_text(gross, cost):
-    net = gross - cost
-    roi = (net / cost * 100.0) if cost else 0.0
-    return net, roi
-
-
-def maybe_git_commit_state(reason="state", force=False):
-    """Persist state/csv on GitHub Actions by committing them back to the repo.
-
-    Se il codice gira fuori da un repository git, o se PERSIST_GIT_STATE=0, non fa nulla.
-    Il throttling evita un commit a ogni estrazione.
-    """
+def git_commit_state_if_needed(force=False):
     global _LAST_GIT_COMMIT_TS
     if not PERSIST_GIT_STATE:
-        return
-
-    now_ts = time.time()
-    if not force and _LAST_GIT_COMMIT_TS and (now_ts - _LAST_GIT_COMMIT_TS) < GIT_COMMIT_MIN_SECONDS:
-        return
-
+        return False
+    now = time.time()
+    if not force and (now - _LAST_GIT_COMMIT_TS) < GIT_COMMIT_MIN_SECONDS:
+        return False
     try:
-        inside = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=BASE_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        if inside.returncode != 0:
-            return
-
-        subprocess.run(["git", "config", "user.name", "sniper-bot"], cwd=BASE_DIR, check=False)
-        subprocess.run(["git", "config", "user.email", "sniper-bot@users.noreply.github.com"], cwd=BASE_DIR, check=False)
-
-        # Evita conflitti quando la run nuova cancella una precedente.
-        subprocess.run(["git", "pull", "--rebase", "--autostash"], cwd=BASE_DIR, check=False,
+        root = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=BASE_DIR, stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+        if not root:
+            return False
+        rel = os.path.relpath(STATE_FILE, root)
+        subprocess.run(["git", "add", rel], cwd=root, check=False,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        paths = []
-        if os.path.exists(STATE_FILE):
-            paths.append(os.path.basename(STATE_FILE))
-        if os.path.exists(CSV_FILE):
-            paths.append(os.path.basename(CSV_FILE))
-        if not paths:
-            return
-
-        subprocess.run(["git", "add", *paths], cwd=BASE_DIR, check=False)
-        diff = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=BASE_DIR)
+        diff = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=root)
         if diff.returncode == 0:
-            _LAST_GIT_COMMIT_TS = now_ts
-            return
-
-        msg = f"SNIPER state update {now_txt()} [{reason}]"
-        committed = subprocess.run(["git", "commit", "-m", msg], cwd=BASE_DIR, check=False,
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if committed.returncode == 0:
-            subprocess.run(["git", "push"], cwd=BASE_DIR, check=False,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            _LAST_GIT_COMMIT_TS = now_ts
-    except Exception as ex:
-        print(f"Persistenza git saltata: {ex}")
-
-
-def fmt_nums(nums):
-    return "-".join(map(str, nums or []))
-
-def num90(n):
-    """Normalizza un numero nel range 1..90."""
-    return ((int(n) - 1) % 90) + 1
-
-
-def cottone_fissi_for_row(r):
-    """Fissi in uscita Cottone: r, r+12, ..., r+84 fuori 90."""
-    return [num90(int(r) + 12 * k) for k in range(8)]
-
-
-def cottone_t1_for_row(r):
-    """T1 visibile nella tabella: r+22, r+52, r+32 fuori 90."""
-    r = int(r)
-    return [num90(r + 22), num90(r + 52), num90(r + 32)]
-
-
-def sum9091_from_nums(nums):
-    """Calcola il metodo SOMMA 90/91 su una singola estrazione.
-
-    A = somma dei 20 numeri ridotta in 1..90
-    B = 90 - A, riportato in 1..90 (0 diventa 90)
-    C = 91 - A, riportato in 1..90
-
-    valid_triad=False nei due casi degeneri in cui i tre valori non sono distinti
-    (per esempio A=45 oppure A=90). Tali casi restano visibili nel report ma non
-    aprono una sessione 2/3-3/3, perche' non formano un vero ambo/terno di 3 numeri.
-    """
-    values = [int(x) for x in (nums or [])]
-    if len(values) != 20 or len(set(values)) != 20:
-        return {"sum": 0, "a": 0, "b": 0, "c": 0, "nums": [], "valid_triad": False}
-    total = sum(values)
-    a = num90(total)
-    b = num90(90 - a)
-    c = num90(91 - a)
-    triad = [a, b, c]
-    return {
-        "sum": total,
-        "a": a,
-        "b": b,
-        "c": c,
-        "nums": triad,
-        "valid_triad": len(set(triad)) == 3,
-    }
-
-
-def fmt_ambi(ambi):
-    out = []
-    for item in ambi or []:
-        a, b = item["ambo"]
-        out.append(f"{a}-{b}")
-    return ", ".join(out)
-
-
-def condition_clean_label(cond):
-    return {
-        "C1_exact": "C1",
-        "C2_exact": "C2",
-        "C3plus": "C3+",
-        "NC2_W3_gap": "NC2/W3",
-        "NC2_W5": "NC2/W5",
-        "NC3_W5_gap": "NC3/W5",
-    }.get(cond, cond)
-
-
-def expected_within_h(one_draw_prob, h):
-    p = max(0.0, min(1.0, float(one_draw_prob or 0.0)))
-    return 1.0 - ((1.0 - p) ** int(h))
-
-
-def expected_pct_from_sum(expected_sum, closed):
-    """Percentuale attesa media sulle sole sessioni chiuse.
-
-    Protezione importante: una probabilita' non puo' superare 100%.
-    Nelle versioni precedenti l'atteso veniva sommato all'apertura delle sessioni
-    e poi diviso per le sole chiuse: con molte sessioni ancora aperte poteva uscire
-    un atteso impossibile tipo 118%, 130%, 187%.
-    """
-    if not closed:
-        return 0.0
-    value = pct(float(expected_sum or 0.0), int(closed))
-    return max(0.0, min(100.0, value))
-
-
-
-def pair_one_draw_probability():
-    """Probabilita' casuale che un ambo specifico esca in una singola estrazione 20/90."""
-    return (20.0 / 90.0) * (19.0 / 89.0)
-
-
-def pair_expected_within_h(h):
-    return expected_within_h(pair_one_draw_probability(), int(h))
-
-
-def pair_random_roi_stop_on_hit(h=3, payout=AMBO_PAYOUT):
-    """ROI teorico casuale di UN ambo, 1u/colpo, stop al primo hit entro h."""
-    h = max(1, int(h))
-    p = pair_one_draw_probability()
-    q = 1.0 - p
-    expected_cost = sum(q ** i for i in range(h))
-    expected_gross = float(payout) * (1.0 - (q ** h))
-    if expected_cost <= 0:
-        return 0.0
-    return ((expected_gross - expected_cost) / expected_cost) * 100.0
-
-
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
-
-
-def linear_score(value, zero_at, full_at, points):
-    """Scala lineare 0..points; sotto zero_at = 0, sopra full_at = points."""
-    value = float(value)
-    if full_at <= zero_at:
-        return float(points if value >= full_at else 0.0)
-    return float(points) * clamp((value - zero_at) / (full_at - zero_at), 0.0, 1.0)
-
-
-def score_bucket(score):
-    s = float(score or 0.0)
-    if s >= 90:
-        return "90-100"
-    if s >= 80:
-        return "80-89"
-    if s >= 70:
-        return "70-79"
-    if s >= 60:
-        return "60-69"
-    return "0-59"
-
-
-def chunks(text, max_len=3000):
-    return [text[i:i + max_len] for i in range(0, len(text), max_len)] or [""]
-
-
-def max_consecutive_presence(draws, n):
-    best = cur = 0
-    for draw in draws:
-        if n in draw:
-            cur += 1
-            best = max(best, cur)
-        else:
-            cur = 0
-    return best
+            _LAST_GIT_COMMIT_TS = now
+            return False
+        subprocess.run(
+            ["git", "commit", "-m", "update 5-survivors 70-79 state"],
+            cwd=root, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(["git", "push"], cwd=root, check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _LAST_GIT_COMMIT_TS = now
+        return True
+    except Exception:
+        return False
 
 
 # ============================================================
-# CSV
+# MOTORE MULTI-ORIGINE
 # ============================================================
 
-CSV_FIELDS = [
-    "time", "day", "event", "estrazione", "play_id", "colpo",
-    "ambata", "ambi", "cluster", "outcome", "hit_ambi", "hit_ranks",
-    "v48_play", "v48_hit", "v48_stop", "v48_cost", "v48_gross", "v48_net", "v48_roi",
-    "spy_id", "spy", "spy_condition", "spy_followers", "spy_network", "spy_level",
-    "spy_horizon", "spy_k1", "spy_k2", "spy_k3", "spy_hit_nums",
-    "spy_cost", "spy_gross", "spy_net", "spy_roi",
-    "playable_id", "playable_colpo", "playable_ambata", "playable_ambi",
-    "playable_outcome", "playable_hit_ambata", "playable_hit_ambi", "playable_support",
-    "playable_terno", "playable_hit_terno", "playable_terno_cost", "playable_terno_gross",
-    "playable_score", "playable_state", "playable_edge", "playable_confirmations",
-]
+class FiveSurvivorsEngine:
+    def __init__(self, load=True):
+        self.logic_version = LOGIC_VERSION
 
+        self.warmup_done = False
+        self.warmup_completed_at = None
+        self.warmup_draws = 0
+        self.warmup_sources = []
 
-def ensure_csv():
-    if os.path.exists(CSV_FILE):
-        return
-    with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
-        writer.writeheader()
+        self.processed = []
+        self.processed_set = set()
+        self.last_draw_key = None
+        self.seq = 0
 
+        # Ogni draw crea una nuova origine; restano in RAM solo quelle
+        # che possono ancora generare un basket da 5.
+        self.origins = []
+        self.next_origin_id = 1
 
-# ============================================================
-# MODELLO SPIE
-# ============================================================
+        # Deduplica GLOBALE dei basket: stesse 5 decine + stessi 5 ambi = 1 caso.
+        self.seen_baskets = []
+        self.seen_basket_set = set()
 
-def load_spy_model():
-    rows = json.loads(SPY_MODEL_EMBEDDED_JSON)
-    model = {}
-    for r in rows:
-        if int(r.get("events", 0)) < SPY_MIN_MODEL_EVENTS:
-            continue
-        spy = int(r["spy"])
-        condition = str(r["condition"])
-        followers = tuple(int(x) for x in r["followers"])
-        if len(followers) != 3 or not all(1 <= x <= 90 for x in followers):
-            continue
-        key = f"{spy}_{condition}"
-        model[key] = {
-            "key": key,
-            "spy": spy,
-            "condition": condition,
-            "followers": followers,
-            "events": int(r.get("events", 0)),
-            "k2_pct": float(r.get("k2_pct", 0.0)),
-            "base_k2_pct": float(r.get("base_k2_pct", 0.0)),
-            "k3_pct": float(r.get("k3_pct", 0.0)),
-            "base_k3_pct": float(r.get("base_k3_pct", 0.0)),
-            "k2_extra_pp": float(r.get("k2_extra_pp", 0.0)),
-            "label": r.get("label", f"{spy} {condition} → {fmt_nums(followers)}"),
-        }
-    return model
+        # Piu' candidati possono essere contemporaneamente in WAIT/H1/H2.
+        self.candidates = []
+        self.next_candidate_id = 1
 
+        self.stats_warmup = self._new_stats()
+        self.stats_live = self._new_stats()
 
-def number_decina(n):
-    return (int(n) - 1) // 10
-
-
-def classify_network(spy, followers):
-    spy = int(spy)
-    nums = {spy, *map(int, followers)}
-
-    for key in ("CATENA_5", "PONTE_55", "ZONA_40", "LATERALE_23"):
-        nodes = SPY_NETWORK_DEFS[key]["nodes"]
-        if spy in nodes and len(set(followers) & nodes) >= 2:
-            return key
-
-    mod_counts = Counter(n % 5 for n in nums)
-    if mod_counts and max(mod_counts.values()) >= 3:
-        return "MOD5"
-
-    dec_counts = Counter(number_decina(n) for n in nums)
-    if dec_counts and max(dec_counts.values()) >= 3:
-        return "DECINA"
-
-    return "ALTRO"
-
-
-# ============================================================
-# MOTORE
-# ============================================================
-
-class SniperV48BaseFullSpy:
-    def __init__(self, load_persisted=True, replay_mode=False):
-        self.replay_mode = bool(replay_mode)
-        # Nel replay v3.2 il PRE-ROLL puo' disabilitare l'apertura STRICT mantenendo attivi PAIR-LAB/SPIE.
-        self.strict_collection_enabled = True
-        self.version = "playability_only_v34_train_forward"
-        self.day = day_key()
-        self.max_e = 0
-        self.last_fp = None
-        self.last_draws = []
-        self.processed_ids = []
-        self.processed_fps = []
-
-        # v48 core
-        self.watch = {}
-        self.hot_confirmed = {}
-        self.active = False
-        self.colpi = 0
-        self.cooldown = 0
-        self.active_snapshot = None
-        self.last_cluster_numbers = []
-        self.last_cluster_e = 0
-        self.play_uid = 0
-        self.total_play = 0
-        self.total_hit_ambata = 0
-        self.total_hit_ambo = 0
-        self.total_stop = 0
-        self.v48_rank_hits = {"1": 0, "2": 0, "3": 0}
-        self.v48_multi_ambo_hit_draws = 0
-        self.v48_hit_colpi = {str(i): 0 for i in range(1, MAX_COLPI + 1)}
-        self.v48_cost_units = 0.0
-        self.v48_gross_units = 0.0
-
-        # spie
-        self.spy_model = load_spy_model()
-        self.spy_uid = 0
-        self.spy_sessions = []
-        self.spy_horizon_stats = {str(h): self.new_spy_stats() for h in SPY_HORIZONS}
-        self.spy_candidate_horizon_stats = {}
-        self.spy_network_horizon_stats = {}
-        self.spy_level_horizon_stats = {}
-        self.draws_since_spy_report = 0
-        self.scheduled_reports_sent = {}
-
-        # giocata operativa ambata/ambi
-        self.playable_active = False
-        self.playable_snapshot = None
-        self.playable_colpi = 0
-        self.playable_uid = 0
-        self.playable_total = 0
-        self.playable_hit_ambata = 0
-        self.playable_hit_ambo = 0
-        self.playable_stop = 0
-        self.playable_hit_colpi = {str(i): 0 for i in range(1, PLAYABLE_MAX_COLPI + 1)}
-        self.playable_cost_units = 0.0
-        self.playable_gross_units = 0.0
-        self.playable_terno_total = 0
-        self.playable_hit_terno = 0
-        self.playable_hit_terno_colpi = {str(i): 0 for i in range(1, PLAYABLE_MAX_COLPI + 1)}
-        self.playable_terno_cost_units = 0.0
-        self.playable_terno_gross_units = 0.0
-        self.playable_cooldown = 0
-        self.playable_core_stop_streak = 0  # legacy, non usato
-        self.playable_core_zone_lock = 0    # legacy, non usato
-        self.playability_only_logic_version = PLAYABILITY_ONLY_LOGIC_VERSION
-        self.playable_score_buckets = {b: {"play": 0, "hit": 0, "stop": 0, "aborted": 0, "cost": 0.0, "gross": 0.0} for b in ("0-59", "60-69", "70-79", "80-89", "90-100")}
-        self.playable_last_pair_e = {}
-        self.playable_score_sum = 0.0
-        self.playable_aborted = 0
-        # PAIR-LAB H1-H3 generale, separato dai PLAY reali e dallo STRICT v3.
-        self.playable_pair_lab_sessions = []
-        self.playable_pair_lab_stats = {}
-        self.playable_pair_lab_last_open_e = {}
-        self.playable_pair_lab_aborted = 0
-        # v3.4: STRICT-LAB separato in TRAIN storico fisso e FORWARD successivo al warmup.
-        self.playable_strict_sessions = []
-        self.playable_strict_train_stats = {}
-        self.playable_strict_forward_stats = {}
-        # Compatibilita'/diagnostica: somma TRAIN+FORWARD, ricostruita automaticamente.
-        self.playable_strict_stats = {}
-        self.playable_strict_last_open_e = {}
-        self.playable_strict_aborted = 0
-        self.playable_strict_forward_started_at = None
-        self.historical_warmup_version = 0
-        self.historical_warmup_summary = {}
-
-        # v19 — tracking live Cottone FISSI/T1 H1-H10 + statistiche per riga
-        self.cottone_uid = 0
-        self.cottone_sessions = []
-        self.cottone_horizon_stats = {str(h): self.new_cottone_stats() for h in LAB_COTTONE_TRACK_HORIZONS}
-
-        # v25 — statistiche gioco Cottone T1 only smart + FISSI solo report + dedup chiusure
-        self.cottone_game_total = 0
-        self.cottone_game_fissi_win = 0
-        self.cottone_game_fissi_lose = 0
-        self.cottone_game_t1_win = 0
-        self.cottone_game_t1_lose = 0
-        self.cottone_game_fissi_gross_eur = 0.0
-        self.cottone_game_t1_gross_eur = 0.0
-        self.cottone_game_fissi_win_colpi = {str(i): 0 for i in range(1, COTTONE_GAME_MAX_COLPI + 1)}
-        self.cottone_game_t1_win_colpi = {str(i): 0 for i in range(1, COTTONE_GAME_MAX_COLPI + 1)}
-        self.cottone_game_closed_ids = []  # v25: anti-doppia chiusura nello stato persistente
-        self.cottone_game_t1_last_open_e = {}  # row -> estrazione ultimo open T1, per cooldown riga
-        # v25 — scrematura numeri/righe: contatori reali, basati sul miglior colpo singolo.
-        self.cottone_game_fissi_win_numbers = {}
-        self.cottone_game_t1_win_numbers = {}
-        self.cottone_game_fissi_best_numbers = {}
-        self.cottone_game_t1_best_numbers = {}
-        self.cottone_game_fissi_row_stats = {}
-        self.cottone_game_t1_row_stats = {}
-
-        # v27 — SOMMA 90/91: trigger sulla SOMMA TOTALE ESATTA gia' vista nello stesso giorno.
-        # Separata dal gioco T1: solo LAB/report.
-        self.sum9091_logic_version = SUM9091_LOGIC_VERSION
-        self.sum9091_uid = 0
-        self.sum9091_sessions = []
-        self.sum9091_horizon_stats = {str(h): self.new_sum9091_stats() for h in LAB_SUM9091_TRACK_HORIZONS}
-        self.sum9091_a_stats = {}
-        self.sum9091_raw_stats = {}
-        # raw_sum -> {count, first_e, prev_e, last_e}; viene azzerato a cambio giorno.
-        self.sum9091_seen_raw = {}
-
-        if load_persisted:
+        if load:
             self.load_state()
-        if not self.replay_mode:
-            ensure_csv()
 
-    # --------------------------------------------------------
-    # Telegram
-    # --------------------------------------------------------
-    async def tg(self, app, msg, with_keyboard=True, inline_menu=False):
-        if self.replay_mode:
-            return
-        if not msg:
-            return
-        for part in chunks(str(msg), 3000):
-            for attempt in range(3):
-                try:
-                    await app.bot.send_message(
-                        chat_id=CHAT_ID,
-                        text=part,
-                        reply_markup=(INLINE_MENU if inline_menu else (MENU_KEYBOARD if with_keyboard else None)),
-                        read_timeout=30,
-                        write_timeout=30,
-                        connect_timeout=30,
-                        pool_timeout=30,
-                    )
-                    break
-                except Exception as ex:
-                    print(f"Telegram send error attempt {attempt + 1}: {ex}")
-                    await asyncio.sleep(4)
-
-    # --------------------------------------------------------
-    # State / CSV
-    # --------------------------------------------------------
     @staticmethod
-    def new_spy_stats():
+    def _new_stats():
         return {
-            "sessions": 0,
-            "closed": 0,
-            "k1_hits": 0,
-            "k2_hits": 0,
-            "k3_hits": 0,
-            "k3_cost_units": 0.0,
-            "k3_gross_units": 0.0,
-            "expected_k2_sum": 0.0,
-            "expected_k3_sum": 0.0,
+            "origins_started": 0,
+            "origins_pruned": 0,
+            "baskets5": 0,
+            "baskets5_oldest_target": 0,
+            "candidates": 0,
+            "canceled_wait30": 0,
+            "armed_h1": 0,
+            "h1_plays": 0,
+            "h1_hits": 0,
+            "h1_misses": 0,
+            "h2_plays": 0,
+            "h2_hits": 0,
+            "stops_h2": 0,
+            "cost": 0.0,
+            "gross": 0.0,
+        }
+
+    def _stats(self, mode):
+        return self.stats_warmup if mode == "warmup" else self.stats_live
+
+    # ----------------------------
+    # Stato / serializzazione
+    # ----------------------------
+
+    @staticmethod
+    def _serialize_origin(o):
+        return {
+            "id": int(o["id"]),
+            "anchor_seq": int(o["anchor_seq"]),
+            "anchor_key": o.get("anchor_key"),
+            "remaining": [int(x) for x in o["remaining"]],
+            "survivor_since": [None if x is None else int(x) for x in o["survivor_since"]],
+            "survivor_since_key": list(o.get("survivor_since_key", [None] * 9)),
         }
 
     @staticmethod
-    def new_sum9091_stats():
+    def _deserialize_origin(o):
+        rem = list(o.get("remaining", []))
+        ss = list(o.get("survivor_since", []))
+        ssk = list(o.get("survivor_since_key", []))
+        if len(rem) != 9 or len(ss) != 9:
+            return None
+        if len(ssk) != 9:
+            ssk = [None] * 9
         return {
-            "sessions": 0,
-            "closed": 0,
-            # Distribuzione del risultato DEL SINGOLO colpo Hn.
-            "exact_k_counts": {str(i): 0 for i in range(0, 4)},
-            # Miglior risultato ottenuto in una singola estrazione entro H1..Hn.
-            "best_k_counts": {str(i): 0 for i in range(0, 4)},
-            "k2plus": 0,
-            "k3": 0,
+            "id": int(o.get("id", 0)),
+            "anchor_seq": int(o.get("anchor_seq", 0)),
+            "anchor_key": o.get("anchor_key"),
+            "remaining": [int(x) for x in rem],
+            "survivor_since": [None if x is None else int(x) for x in ss],
+            "survivor_since_key": ssk,
         }
-
-    @staticmethod
-    def new_cottone_stats():
-        return {
-            "sessions": 0,
-            "closed": 0,
-            "fissi_k_counts": {str(i): 0 for i in range(0, 9)},
-            "t1_k_counts": {str(i): 0 for i in range(0, 4)},
-            "fissi_target_hits": {},
-            "t1_target_hits": {},
-            "row_sessions": {},
-            "row_closed": {},
-            # v21: statistiche separate per ogni estratto ripetuto/riga Cottone.
-            # Esempio riga 90: quanti degli 8 fissi 90-12-...-84 escono entro H10.
-            "row_fissi_k_counts": {},
-            "row_t1_k_counts": {},
-            "row_fissi_target_hits": {},
-            "row_t1_target_hits": {},
-        }
-
-    def get_nested_stat(self, container, key, h):
-        key = str(key)
-        h = str(h)
-        if key not in container:
-            container[key] = {}
-        if h not in container[key]:
-            container[key][h] = self.new_spy_stats()
-        return container[key][h]
-
-    def save_state(self):
-        if self.replay_mode:
-            return
-        data = {
-            "version": self.version,
-            "day": self.day,
-            "max_e": self.max_e,
-            "last_fp": self.last_fp,
-            "last_draws": self.last_draws[-HISTORY_MAX:],
-            "processed_ids": self.processed_ids[-PROCESSED_MAX:],
-            "processed_fps": self.processed_fps[-PROCESSED_MAX:],
-            "watch": self.watch,
-            "hot_confirmed": self.hot_confirmed,
-            "active": self.active,
-            "colpi": self.colpi,
-            "cooldown": self.cooldown,
-            "active_snapshot": self.active_snapshot,
-            "last_cluster_numbers": self.last_cluster_numbers,
-            "last_cluster_e": self.last_cluster_e,
-            "play_uid": self.play_uid,
-            "total_play": self.total_play,
-            "total_hit_ambata": self.total_hit_ambata,
-            "total_hit_ambo": self.total_hit_ambo,
-            "total_stop": self.total_stop,
-            "v48_rank_hits": self.v48_rank_hits,
-            "v48_multi_ambo_hit_draws": self.v48_multi_ambo_hit_draws,
-            "v48_hit_colpi": self.v48_hit_colpi,
-            "v48_cost_units": self.v48_cost_units,
-            "v48_gross_units": self.v48_gross_units,
-            "spy_uid": self.spy_uid,
-            "spy_sessions": self.spy_sessions,
-            "spy_horizon_stats": self.spy_horizon_stats,
-            "spy_candidate_horizon_stats": self.spy_candidate_horizon_stats,
-            "spy_network_horizon_stats": self.spy_network_horizon_stats,
-            "spy_level_horizon_stats": self.spy_level_horizon_stats,
-            "draws_since_spy_report": self.draws_since_spy_report,
-            "playable_active": self.playable_active,
-            "playable_snapshot": self.playable_snapshot,
-            "playable_colpi": self.playable_colpi,
-            "playable_uid": self.playable_uid,
-            "playable_total": self.playable_total,
-            "playable_hit_ambata": self.playable_hit_ambata,
-            "playable_hit_ambo": self.playable_hit_ambo,
-            "playable_stop": self.playable_stop,
-            "playable_hit_colpi": self.playable_hit_colpi,
-            "playable_cost_units": self.playable_cost_units,
-            "playable_gross_units": self.playable_gross_units,
-            "playable_terno_total": self.playable_terno_total,
-            "playable_hit_terno": self.playable_hit_terno,
-            "playable_hit_terno_colpi": self.playable_hit_terno_colpi,
-            "playable_terno_cost_units": self.playable_terno_cost_units,
-            "playable_terno_gross_units": self.playable_terno_gross_units,
-            "playable_cooldown": self.playable_cooldown,
-            "playable_core_stop_streak": self.playable_core_stop_streak,
-            "playable_core_zone_lock": self.playable_core_zone_lock,
-            "playability_only_logic_version": self.playability_only_logic_version,
-            "playable_score_buckets": self.playable_score_buckets,
-            "playable_last_pair_e": self.playable_last_pair_e,
-            "playable_score_sum": self.playable_score_sum,
-            "playable_aborted": self.playable_aborted,
-            "playable_pair_lab_sessions": self.playable_pair_lab_sessions,
-            "playable_pair_lab_stats": self.playable_pair_lab_stats,
-            "playable_pair_lab_last_open_e": self.playable_pair_lab_last_open_e,
-            "playable_pair_lab_aborted": self.playable_pair_lab_aborted,
-            "playable_strict_sessions": self.playable_strict_sessions,
-            "playable_strict_train_stats": self.playable_strict_train_stats,
-            "playable_strict_forward_stats": self.playable_strict_forward_stats,
-            "playable_strict_stats": self.playable_strict_stats,
-            "playable_strict_last_open_e": self.playable_strict_last_open_e,
-            "playable_strict_aborted": self.playable_strict_aborted,
-            "playable_strict_forward_started_at": self.playable_strict_forward_started_at,
-            "historical_warmup_version": self.historical_warmup_version,
-            "historical_warmup_summary": self.historical_warmup_summary,
-            "cottone_uid": self.cottone_uid,
-            "cottone_sessions": self.cottone_sessions,
-            "cottone_horizon_stats": self.cottone_horizon_stats,
-            "cottone_game_total": self.cottone_game_total,
-            "cottone_game_fissi_win": self.cottone_game_fissi_win,
-            "cottone_game_fissi_lose": self.cottone_game_fissi_lose,
-            "cottone_game_t1_win": self.cottone_game_t1_win,
-            "cottone_game_t1_lose": self.cottone_game_t1_lose,
-            "cottone_game_fissi_gross_eur": self.cottone_game_fissi_gross_eur,
-            "cottone_game_t1_gross_eur": self.cottone_game_t1_gross_eur,
-            "cottone_game_fissi_win_colpi": self.cottone_game_fissi_win_colpi,
-            "cottone_game_t1_win_colpi": self.cottone_game_t1_win_colpi,
-            "cottone_game_closed_ids": self.cottone_game_closed_ids[-5000:],
-            "cottone_game_t1_last_open_e": self.cottone_game_t1_last_open_e,
-            "cottone_game_fissi_win_numbers": self.cottone_game_fissi_win_numbers,
-            "cottone_game_t1_win_numbers": self.cottone_game_t1_win_numbers,
-            "cottone_game_fissi_best_numbers": self.cottone_game_fissi_best_numbers,
-            "cottone_game_t1_best_numbers": self.cottone_game_t1_best_numbers,
-            "cottone_game_fissi_row_stats": self.cottone_game_fissi_row_stats,
-            "cottone_game_t1_row_stats": self.cottone_game_t1_row_stats,
-            "sum9091_logic_version": self.sum9091_logic_version,
-            "sum9091_uid": self.sum9091_uid,
-            "sum9091_sessions": self.sum9091_sessions,
-            "sum9091_horizon_stats": self.sum9091_horizon_stats,
-            "sum9091_a_stats": self.sum9091_a_stats,
-            "sum9091_raw_stats": self.sum9091_raw_stats,
-            "sum9091_seen_raw": self.sum9091_seen_raw,
-            "scheduled_reports_sent": self.scheduled_reports_sent,
-        }
-        tmp = STATE_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, STATE_FILE)
-        maybe_git_commit_state("state", force=False)
 
     def load_state(self):
-        source_state = STATE_FILE if os.path.exists(STATE_FILE) else (LEGACY_STATE_FILE if os.path.exists(LEGACY_STATE_FILE) else (LEGACY_STATE_FILE_V1 if os.path.exists(LEGACY_STATE_FILE_V1) else None))
-        if not source_state:
+        if not os.path.exists(STATE_FILE):
             return
-        migrated_legacy = source_state != STATE_FILE
         try:
-            with open(source_state, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            self.day = data.get("day", day_key())
-            self.max_e = int(data.get("max_e", 0))
-            self.last_fp = data.get("last_fp")
-            self.last_draws = data.get("last_draws", [])[-HISTORY_MAX:]
-            self.processed_ids = data.get("processed_ids", [])[-PROCESSED_MAX:]
-            self.processed_fps = data.get("processed_fps", [])[-PROCESSED_MAX:]
-            self.watch = data.get("watch", {})
-            self.hot_confirmed = data.get("hot_confirmed", {})
-            self.active = bool(data.get("active", False))
-            self.colpi = int(data.get("colpi", 0))
-            self.cooldown = int(data.get("cooldown", 0))
-            self.active_snapshot = data.get("active_snapshot")
-            self.last_cluster_numbers = data.get("last_cluster_numbers", [])
-            self.last_cluster_e = int(data.get("last_cluster_e", 0))
-            self.play_uid = int(data.get("play_uid", 0))
-            self.total_play = int(data.get("total_play", 0))
-            self.total_hit_ambata = int(data.get("total_hit_ambata", 0))
-            self.total_hit_ambo = int(data.get("total_hit_ambo", 0))
-            self.total_stop = int(data.get("total_stop", 0))
-            self.v48_rank_hits = {str(i): int(data.get("v48_rank_hits", {}).get(str(i), 0)) for i in (1, 2, 3)}
-            self.v48_multi_ambo_hit_draws = int(data.get("v48_multi_ambo_hit_draws", 0))
-            self.v48_hit_colpi = {str(i): int(data.get("v48_hit_colpi", {}).get(str(i), 0)) for i in range(1, MAX_COLPI + 1)}
-            self.v48_cost_units = float(data.get("v48_cost_units", 0.0))
-            self.v48_gross_units = float(data.get("v48_gross_units", 0.0))
-            self.spy_uid = int(data.get("spy_uid", 0))
-            self.spy_sessions = data.get("spy_sessions", [])
-            self.spy_horizon_stats = self._load_stat_map(data.get("spy_horizon_stats", {}), SPY_HORIZONS)
-            self.spy_candidate_horizon_stats = data.get("spy_candidate_horizon_stats", {})
-            self.spy_network_horizon_stats = data.get("spy_network_horizon_stats", {})
-            self.spy_level_horizon_stats = data.get("spy_level_horizon_stats", {})
-            self.draws_since_spy_report = int(data.get("draws_since_spy_report", 0))
-            self.playable_active = bool(data.get("playable_active", False))
-            self.playable_snapshot = data.get("playable_snapshot")
-            self.playable_colpi = int(data.get("playable_colpi", 0))
-            self.playable_uid = int(data.get("playable_uid", 0))
-            self.playable_total = int(data.get("playable_total", 0))
-            self.playable_hit_ambata = int(data.get("playable_hit_ambata", 0))
-            self.playable_hit_ambo = int(data.get("playable_hit_ambo", 0))
-            self.playable_stop = int(data.get("playable_stop", 0))
-            self.playable_hit_colpi = {str(i): int(data.get("playable_hit_colpi", {}).get(str(i), 0)) for i in range(1, PLAYABLE_MAX_COLPI + 1)}
-            self.playable_cost_units = float(data.get("playable_cost_units", 0.0))
-            self.playable_gross_units = float(data.get("playable_gross_units", 0.0))
-            self.playable_terno_total = int(data.get("playable_terno_total", 0))
-            self.playable_hit_terno = int(data.get("playable_hit_terno", 0))
-            self.playable_hit_terno_colpi = {str(i): int(data.get("playable_hit_terno_colpi", {}).get(str(i), 0)) for i in range(1, PLAYABLE_MAX_COLPI + 1)}
-            self.playable_terno_cost_units = float(data.get("playable_terno_cost_units", 0.0))
-            self.playable_terno_gross_units = float(data.get("playable_terno_gross_units", 0.0))
-            self.playable_cooldown = int(data.get("playable_cooldown", 0))
-            self.playable_core_stop_streak = int(data.get("playable_core_stop_streak", 0))
-            self.playable_core_zone_lock = int(data.get("playable_core_zone_lock", 0))
-            stored_play_logic = int(data.get("playability_only_logic_version", 0) or 0)
-            if (not migrated_legacy) and stored_play_logic in (PLAYABILITY_ONLY_LOGIC_VERSION, 33):
-                # v3.4 nativo oppure migrazione diretta da v3.3: preserva PAIR-LAB, warmup e risultati reali.
-                self.playability_only_logic_version = PLAYABILITY_ONLY_LOGIC_VERSION
-                raw_buckets = data.get("playable_score_buckets", {}) if isinstance(data.get("playable_score_buckets", {}), dict) else {}
-                self.playable_score_buckets = {}
-                for b in ("0-59", "60-69", "70-79", "80-89", "90-100"):
-                    d = raw_buckets.get(b, {}) if isinstance(raw_buckets.get(b, {}), dict) else {}
-                    self.playable_score_buckets[b] = {
-                        "play": int(d.get("play", 0)), "hit": int(d.get("hit", 0)), "stop": int(d.get("stop", 0)),
-                        "aborted": int(d.get("aborted", 0)),
-                        "cost": float(d.get("cost", 0.0)), "gross": float(d.get("gross", 0.0)),
-                    }
-                self.playable_last_pair_e = {str(k): int(v) for k, v in (data.get("playable_last_pair_e", {}) or {}).items()}
-                self.playable_score_sum = float(data.get("playable_score_sum", 0.0))
-                self.playable_aborted = int(data.get("playable_aborted", 0))
-                self.playable_pair_lab_sessions = data.get("playable_pair_lab_sessions", []) if isinstance(data.get("playable_pair_lab_sessions", []), list) else []
-                self.playable_pair_lab_stats = data.get("playable_pair_lab_stats", {}) if isinstance(data.get("playable_pair_lab_stats", {}), dict) else {}
-                self.playable_pair_lab_last_open_e = {str(k): int(v) for k, v in (data.get("playable_pair_lab_last_open_e", {}) or {}).items()}
-                self.playable_pair_lab_aborted = int(data.get("playable_pair_lab_aborted", 0))
-                self.playable_strict_sessions = data.get("playable_strict_sessions", []) if isinstance(data.get("playable_strict_sessions", []), list) else []
-                old_total_strict = data.get("playable_strict_stats", {}) if isinstance(data.get("playable_strict_stats", {}), dict) else {}
-                self.playable_strict_last_open_e = {str(k): int(v) for k, v in (data.get("playable_strict_last_open_e", {}) or {}).items()}
-                self.playable_strict_aborted = int(data.get("playable_strict_aborted", 0))
-                self.historical_warmup_version = int(data.get("historical_warmup_version", 0) or 0)
-                self.historical_warmup_summary = data.get("historical_warmup_summary", {}) if isinstance(data.get("historical_warmup_summary", {}), dict) else {}
-                if stored_play_logic == PLAYABILITY_ONLY_LOGIC_VERSION:
-                    self.playable_strict_train_stats = data.get("playable_strict_train_stats", {}) if isinstance(data.get("playable_strict_train_stats", {}), dict) else {}
-                    self.playable_strict_forward_stats = data.get("playable_strict_forward_stats", {}) if isinstance(data.get("playable_strict_forward_stats", {}), dict) else {}
-                    self.playable_strict_forward_started_at = data.get("playable_strict_forward_started_at")
-                    if not self.playable_strict_train_stats and self.historical_warmup_summary:
-                        self.playable_strict_train_stats = self._strict_train_stats_from_warmup_summary(self.historical_warmup_summary)
-                    if not self.playable_strict_forward_stats and old_total_strict:
-                        self.playable_strict_forward_stats = self._strict_subtract_stat_maps(old_total_strict, self.playable_strict_train_stats)
-                else:
-                    # Migrazione v3.3 -> v3.4 SENZA perdere i casi forward gia' raccolti:
-                    # TRAIN viene ricostruito dal riepilogo del warmup originale, poi sottratto dal totale v3.3.
-                    self.playable_strict_train_stats = self._strict_train_stats_from_warmup_summary(self.historical_warmup_summary)
-                    self.playable_strict_forward_stats = self._strict_subtract_stat_maps(old_total_strict, self.playable_strict_train_stats)
-                    self.playable_strict_forward_started_at = (self.historical_warmup_summary or {}).get("completed_at") or now_txt()
-                    print("ℹ️ PLAYABILITY ONLY v3.4: migrato v3.3 -> TRAIN storico + FORWARD gia raccolto, senza azzerare i casi live.")
-                self._sync_strict_combined_stats()
-            else:
-                # Migrazione versioni precedenti -> v3.4.
-                # Conserva il PAIR-LAB generale anche dalla v3.2.x, ma ricostruisce da zero lo STRICT-LAB
-                # perche' la popolazione v3.3 e' volutamente piu' ampia e non confrontabile con la vecchia STRICT.
-                preserve_v2_pair_lab = (stored_play_logic in (2, 3, 32))
-                old_pair_sessions = data.get("playable_pair_lab_sessions", []) if preserve_v2_pair_lab and isinstance(data.get("playable_pair_lab_sessions", []), list) else []
-                old_pair_stats = data.get("playable_pair_lab_stats", {}) if preserve_v2_pair_lab and isinstance(data.get("playable_pair_lab_stats", {}), dict) else {}
-                old_pair_last = {str(k): int(v) for k, v in (data.get("playable_pair_lab_last_open_e", {}) or {}).items()} if preserve_v2_pair_lab else {}
-                old_pair_aborted = int(data.get("playable_pair_lab_aborted", 0)) if preserve_v2_pair_lab else 0
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            if int(d.get("logic_version", 0)) != LOGIC_VERSION:
+                return
 
-                self.playability_only_logic_version = PLAYABILITY_ONLY_LOGIC_VERSION
-                self.playable_active = False
-                self.playable_snapshot = None
-                self.playable_colpi = 0
-                self.playable_uid = 0
-                self.playable_total = 0
-                self.playable_hit_ambata = 0
-                self.playable_hit_ambo = 0
-                self.playable_stop = 0
-                self.playable_hit_colpi = {str(i): 0 for i in range(1, PLAYABLE_MAX_COLPI + 1)}
-                self.playable_cost_units = 0.0
-                self.playable_gross_units = 0.0
-                self.playable_terno_total = 0
-                self.playable_hit_terno = 0
-                self.playable_hit_terno_colpi = {str(i): 0 for i in range(1, PLAYABLE_MAX_COLPI + 1)}
-                self.playable_terno_cost_units = 0.0
-                self.playable_terno_gross_units = 0.0
-                self.playable_cooldown = 0
-                self.playable_score_buckets = {b: {"play": 0, "hit": 0, "stop": 0, "aborted": 0, "cost": 0.0, "gross": 0.0} for b in ("0-59", "60-69", "70-79", "80-89", "90-100")}
-                self.playable_last_pair_e = {}
-                self.playable_score_sum = 0.0
-                self.playable_aborted = 0
-                self.playable_pair_lab_sessions = old_pair_sessions
-                self.playable_pair_lab_stats = old_pair_stats
-                self.playable_pair_lab_last_open_e = old_pair_last
-                self.playable_pair_lab_aborted = old_pair_aborted
-                # Versioni precedenti: TRAIN/FORWARD verranno inizializzati dal replay storico v3.4.
-                self.playable_strict_sessions = []
-                self.playable_strict_train_stats = {}
-                self.playable_strict_forward_stats = {}
-                self.playable_strict_stats = {}
-                self.playable_strict_last_open_e = {}
-                self.playable_strict_aborted = 0
-                self.playable_strict_forward_started_at = None
-                self.historical_warmup_version = 0
-                self.historical_warmup_summary = {}
-                if preserve_v2_pair_lab:
-                    print("ℹ️ PLAYABILITY ONLY v3.4: PAIR-LAB precedente preservato; TRAIN/FORWARD verranno inizializzati dal replay storico.")
-                else:
-                    print("ℹ️ PLAYABILITY ONLY v3.4: storico SPIE/LAB preservato; PAIR-LAB e TRAIN/FORWARD verranno inizializzati dal replay storico.")
-            self.cottone_uid = int(data.get("cottone_uid", 0))
-            self.cottone_sessions = data.get("cottone_sessions", []) if isinstance(data.get("cottone_sessions", []), list) else []
-            self.cottone_horizon_stats = self._load_cottone_stat_map(data.get("cottone_horizon_stats", {}))
-            self.cottone_game_total = int(data.get("cottone_game_total", 0))
-            self.cottone_game_fissi_win = int(data.get("cottone_game_fissi_win", 0))
-            self.cottone_game_fissi_lose = int(data.get("cottone_game_fissi_lose", 0))
-            self.cottone_game_t1_win = int(data.get("cottone_game_t1_win", 0))
-            self.cottone_game_t1_lose = int(data.get("cottone_game_t1_lose", 0))
-            self.cottone_game_fissi_gross_eur = float(data.get("cottone_game_fissi_gross_eur", 0.0))
-            self.cottone_game_t1_gross_eur = float(data.get("cottone_game_t1_gross_eur", 0.0))
-            self.cottone_game_fissi_win_colpi = {str(i): int((data.get("cottone_game_fissi_win_colpi", {}) or {}).get(str(i), 0)) for i in range(1, COTTONE_GAME_MAX_COLPI + 1)}
-            self.cottone_game_t1_win_colpi = {str(i): int((data.get("cottone_game_t1_win_colpi", {}) or {}).get(str(i), 0)) for i in range(1, COTTONE_GAME_MAX_COLPI + 1)}
-            self.cottone_game_closed_ids = [int(x) for x in (data.get("cottone_game_closed_ids", []) or []) if str(x).isdigit()][-5000:]
-            self.cottone_game_t1_last_open_e = {str(k): int(v) for k, v in (data.get("cottone_game_t1_last_open_e", {}) or {}).items() if str(k).isdigit()}
-            self.cottone_game_fissi_win_numbers = {str(k): int(v) for k, v in (data.get("cottone_game_fissi_win_numbers", {}) or {}).items()}
-            self.cottone_game_t1_win_numbers = {str(k): int(v) for k, v in (data.get("cottone_game_t1_win_numbers", {}) or {}).items()}
-            self.cottone_game_fissi_best_numbers = {str(k): int(v) for k, v in (data.get("cottone_game_fissi_best_numbers", {}) or {}).items()}
-            self.cottone_game_t1_best_numbers = {str(k): int(v) for k, v in (data.get("cottone_game_t1_best_numbers", {}) or {}).items()}
-            self.cottone_game_fissi_row_stats = data.get("cottone_game_fissi_row_stats", {}) if isinstance(data.get("cottone_game_fissi_row_stats", {}), dict) else {}
-            self.cottone_game_t1_row_stats = data.get("cottone_game_t1_row_stats", {}) if isinstance(data.get("cottone_game_t1_row_stats", {}), dict) else {}
-            stored_sum_logic = int(data.get("sum9091_logic_version", 0) or 0)
-            if stored_sum_logic == SUM9091_LOGIC_VERSION:
-                self.sum9091_logic_version = SUM9091_LOGIC_VERSION
-                self.sum9091_uid = int(data.get("sum9091_uid", 0))
-                self.sum9091_sessions = data.get("sum9091_sessions", []) if isinstance(data.get("sum9091_sessions", []), list) else []
-                self.sum9091_horizon_stats = self._load_sum9091_stat_map(data.get("sum9091_horizon_stats", {}))
-                self.sum9091_a_stats = data.get("sum9091_a_stats", {}) if isinstance(data.get("sum9091_a_stats", {}), dict) else {}
-                self.sum9091_raw_stats = data.get("sum9091_raw_stats", {}) if isinstance(data.get("sum9091_raw_stats", {}), dict) else {}
-                raw_seen = data.get("sum9091_seen_raw", {}) if isinstance(data.get("sum9091_seen_raw", {}), dict) else {}
-                self.sum9091_seen_raw = {}
-                for k, v in raw_seen.items():
-                    if not isinstance(v, dict):
-                        continue
-                    try:
-                        total = int(k)
-                        self.sum9091_seen_raw[str(total)] = {
-                            "count": max(1, int(v.get("count", 1))),
-                            "first_e": int(v.get("first_e", 0) or 0),
-                            "prev_e": int(v.get("prev_e", 0) or 0),
-                            "last_e": int(v.get("last_e", 0) or 0),
-                        }
-                    except Exception:
-                        continue
-            else:
-                # Migrazione v26 -> v27: le vecchie statistiche erano basate su A ripetuta
-                # consecutivamente, quindi NON sono confrontabili con il trigger originale
-                # sulla somma totale esatta. Resettiamo SOLO questo LAB, preservando T1/v48/spie.
-                self.sum9091_logic_version = SUM9091_LOGIC_VERSION
-                self.sum9091_uid = 0
-                self.sum9091_sessions = []
-                self.sum9091_horizon_stats = {str(h): self.new_sum9091_stats() for h in LAB_SUM9091_TRACK_HORIZONS}
-                self.sum9091_a_stats = {}
-                self.sum9091_raw_stats = {}
-                self.sum9091_seen_raw = {}
-                self.rebuild_sum9091_seen_from_loaded_history()
-                print("ℹ️ SOMMA 90/91: migrazione a trigger SOMMA TOTALE ESATTA; vecchio LAB v26 azzerato.")
-            self.scheduled_reports_sent = data.get("scheduled_reports_sent", {}) if isinstance(data.get("scheduled_reports_sent", {}), dict) else {}
-        except Exception as ex:
-            print(f"⚠️ Stato non caricato: {ex}")
+            self.warmup_done = bool(d.get("warmup_done", False))
+            self.warmup_completed_at = d.get("warmup_completed_at")
+            self.warmup_draws = int(d.get("warmup_draws", 0) or 0)
+            self.warmup_sources = list(d.get("warmup_sources", []) or [])
 
-    def _load_stat_map(self, src, horizons):
-        out = {str(h): self.new_spy_stats() for h in horizons}
-        for h in horizons:
-            hkey = str(h)
-            old = src.get(hkey, {}) if isinstance(src, dict) else {}
-            for k, default in out[hkey].items():
-                value = old.get(k, default)
-                out[hkey][k] = float(value) if isinstance(default, float) else int(value)
-        return out
+            self.processed = list(d.get("processed", []) or [])[-12000:]
+            self.processed_set = set(self.processed)
+            self.last_draw_key = d.get("last_draw_key")
+            self.seq = int(d.get("seq", 0) or 0)
 
-    def _load_sum9091_stat_map(self, src):
-        out = {str(h): self.new_sum9091_stats() for h in LAB_SUM9091_TRACK_HORIZONS}
-        if not isinstance(src, dict):
-            return out
-        for h in LAB_SUM9091_TRACK_HORIZONS:
-            hk = str(h)
-            old = src.get(hk, {}) if isinstance(src.get(hk, {}), dict) else {}
-            st = out[hk]
-            st["sessions"] = int(old.get("sessions", 0))
-            st["closed"] = int(old.get("closed", 0))
-            st["exact_k_counts"] = {str(i): int((old.get("exact_k_counts", {}) or {}).get(str(i), 0)) for i in range(0, 4)}
-            st["best_k_counts"] = {str(i): int((old.get("best_k_counts", {}) or {}).get(str(i), 0)) for i in range(0, 4)}
-            st["k2plus"] = int(old.get("k2plus", 0))
-            st["k3"] = int(old.get("k3", 0))
-        return out
+            self.origins = []
+            for raw in d.get("origins", []) or []:
+                o = self._deserialize_origin(raw)
+                if o:
+                    self.origins.append(o)
+            self.next_origin_id = int(d.get("next_origin_id", 1) or 1)
 
-    def _load_cottone_stat_map(self, src):
-        out = {str(h): self.new_cottone_stats() for h in LAB_COTTONE_TRACK_HORIZONS}
-        if not isinstance(src, dict):
-            return out
-        for h in LAB_COTTONE_TRACK_HORIZONS:
-            hkey = str(h)
-            old = src.get(hkey, {}) if isinstance(src.get(hkey, {}), dict) else {}
-            st = out[hkey]
-            st["sessions"] = int(old.get("sessions", 0))
-            st["closed"] = int(old.get("closed", 0))
-            st["fissi_k_counts"] = {str(i): int((old.get("fissi_k_counts", {}) or {}).get(str(i), 0)) for i in range(0, 9)}
-            st["t1_k_counts"] = {str(i): int((old.get("t1_k_counts", {}) or {}).get(str(i), 0)) for i in range(0, 4)}
-            st["fissi_target_hits"] = {str(k): int(v) for k, v in (old.get("fissi_target_hits", {}) or {}).items()}
-            st["t1_target_hits"] = {str(k): int(v) for k, v in (old.get("t1_target_hits", {}) or {}).items()}
-            st["row_sessions"] = {str(k): int(v) for k, v in (old.get("row_sessions", {}) or {}).items()}
-            st["row_closed"] = {str(k): int(v) for k, v in (old.get("row_closed", {}) or {}).items()}
-            st["row_fissi_k_counts"] = {
-                str(r): {str(i): int((d or {}).get(str(i), 0)) for i in range(0, 9)}
-                for r, d in (old.get("row_fissi_k_counts", {}) or {}).items()
-                if isinstance(d, dict)
-            }
-            st["row_t1_k_counts"] = {
-                str(r): {str(i): int((d or {}).get(str(i), 0)) for i in range(0, 4)}
-                for r, d in (old.get("row_t1_k_counts", {}) or {}).items()
-                if isinstance(d, dict)
-            }
-            st["row_fissi_target_hits"] = {
-                str(r): {str(n): int(c) for n, c in (d or {}).items()}
-                for r, d in (old.get("row_fissi_target_hits", {}) or {}).items()
-                if isinstance(d, dict)
-            }
-            st["row_t1_target_hits"] = {
-                str(r): {str(n): int(c) for n, c in (d or {}).items()}
-                for r, d in (old.get("row_t1_target_hits", {}) or {}).items()
-                if isinstance(d, dict)
-            }
-        return out
+            self.seen_baskets = list(d.get("seen_baskets", []) or [])
+            self.seen_basket_set = set(self.seen_baskets)
 
-    def reset_for_new_day(self, new_day):
-        # v3: un PLAY aperto non puo' sparire al reset. Viene classificato ABORTED_RESET
-        # e viene contabilizzato il costo dei colpi realmente eseguiti.
-        if getattr(self, "playable_active", False) and getattr(self, "playable_snapshot", None):
-            snap = self.playable_snapshot
-            cost = float(max(0, int(getattr(self, "playable_colpi", 0))))  # 1 solo ambo in v3
-            self.playable_aborted = int(getattr(self, "playable_aborted", 0)) + 1
-            self.playable_cost_units = float(getattr(self, "playable_cost_units", 0.0)) + cost
-            self._score_bucket_touch(snap.get("score",0.0), "ABORTED", cost=cost, gross=0.0)
-            try:
-                self.append_csv_event("PLAYABILITY_ABORTED_RESET", e=self.max_e, playable_id=snap.get("playable_id"), playable_colpo=self.playable_colpi, playable_ambi=self._playable_ambi_text(snap), playable_outcome="ABORTED_RESET", playable_score=f"{snap.get('score',0):.2f}")
-            except Exception:
-                pass
-        self.playable_pair_lab_aborted = int(getattr(self, "playable_pair_lab_aborted",0)) + len(getattr(self, "playable_pair_lab_sessions",[]) or [])
-        self.playable_strict_aborted = int(getattr(self, "playable_strict_aborted",0)) + len(getattr(self, "playable_strict_sessions",[]) or [])
-        self.day = new_day
-        self.max_e = 0
-        self.last_fp = None
-        self.processed_ids = []
-        self.processed_fps = []
-        self.watch = {}
-        self.hot_confirmed = {}
-        self.active = False
-        self.colpi = 0
-        self.cooldown = 0
-        self.active_snapshot = None
-        self.last_cluster_numbers = []
-        self.last_cluster_e = 0
-        self.spy_sessions = []
-        self.playable_active = False
-        self.playable_snapshot = None
-        self.playable_colpi = 0
-        self.playable_cooldown = 0
-        self.playable_core_stop_streak = 0
-        self.playable_core_zone_lock = 0
-        self.playable_last_pair_e = {}
-        self.playable_pair_lab_sessions = []
-        self.playable_pair_lab_last_open_e = {}
-        self.playable_strict_sessions = []
-        self.playable_strict_last_open_e = {}
-        self.draws_since_spy_report = 0
-        # Le sessioni LAB aperte non attraversano il cambio giorno; le statistiche aggregate restano.
-        # Le SOMME TOTALI viste sono invece giornaliere: una ripetizione deve avvenire nello stesso giorno.
-        self.sum9091_sessions = []
-        self.sum9091_seen_raw = {}
-        self.save_state()
+            self.candidates = list(d.get("candidates", []) or [])
+            self.next_candidate_id = int(d.get("next_candidate_id", 1) or 1)
 
-    def append_csv_event(self, event, **kwargs):
-        if self.replay_mode:
-            return
-        ensure_csv()
-        v48_net, v48_roi = roi_text(self.v48_gross_units, self.v48_cost_units)
-        row = {
-            "time": now_txt(),
-            "day": self.day,
-            "event": event,
-            "estrazione": kwargs.get("e", ""),
-            "play_id": kwargs.get("play_id", ""),
-            "colpo": kwargs.get("colpo", ""),
-            "ambata": kwargs.get("ambata", ""),
-            "ambi": kwargs.get("ambi", ""),
-            "cluster": kwargs.get("cluster", ""),
-            "outcome": kwargs.get("outcome", ""),
-            "hit_ambi": kwargs.get("hit_ambi", ""),
-            "hit_ranks": kwargs.get("hit_ranks", ""),
-            "v48_play": self.total_play,
-            "v48_hit": self.total_hit_ambo,
-            "v48_stop": self.total_stop,
-            "v48_cost": f"{self.v48_cost_units:.2f}",
-            "v48_gross": f"{self.v48_gross_units:.2f}",
-            "v48_net": f"{v48_net:.2f}",
-            "v48_roi": f"{v48_roi:.4f}",
-            "spy_id": kwargs.get("spy_id", ""),
-            "spy": kwargs.get("spy", ""),
-            "spy_condition": kwargs.get("spy_condition", ""),
-            "spy_followers": kwargs.get("spy_followers", ""),
-            "spy_network": kwargs.get("spy_network", ""),
-            "spy_level": kwargs.get("spy_level", ""),
-            "spy_horizon": kwargs.get("spy_horizon", ""),
-            "spy_k1": kwargs.get("spy_k1", ""),
-            "spy_k2": kwargs.get("spy_k2", ""),
-            "spy_k3": kwargs.get("spy_k3", ""),
-            "spy_hit_nums": kwargs.get("spy_hit_nums", ""),
-            "spy_cost": kwargs.get("spy_cost", ""),
-            "spy_gross": kwargs.get("spy_gross", ""),
-            "spy_net": kwargs.get("spy_net", ""),
-            "spy_roi": kwargs.get("spy_roi", ""),
-            "playable_id": kwargs.get("playable_id", ""),
-            "playable_colpo": kwargs.get("playable_colpo", ""),
-            "playable_ambata": kwargs.get("playable_ambata", ""),
-            "playable_ambi": kwargs.get("playable_ambi", ""),
-            "playable_outcome": kwargs.get("playable_outcome", ""),
-            "playable_hit_ambata": kwargs.get("playable_hit_ambata", ""),
-            "playable_hit_ambi": kwargs.get("playable_hit_ambi", ""),
-            "playable_support": kwargs.get("playable_support", ""),
-            "playable_terno": kwargs.get("playable_terno", ""),
-            "playable_hit_terno": kwargs.get("playable_hit_terno", ""),
-            "playable_terno_cost": kwargs.get("playable_terno_cost", ""),
-            "playable_terno_gross": kwargs.get("playable_terno_gross", ""),
+            self.stats_warmup.update(d.get("stats_warmup") or {})
+            self.stats_live.update(d.get("stats_live") or {})
+        except Exception as exc:
+            print(f"⚠️ state non caricato: {exc}")
+
+    def save_state(self, git=False, force_git=False):
+        data = {
+            "logic_version": LOGIC_VERSION,
+            "saved_at": now_txt(),
+            "warmup_done": self.warmup_done,
+            "warmup_completed_at": self.warmup_completed_at,
+            "warmup_draws": self.warmup_draws,
+            "warmup_sources": self.warmup_sources,
+            "processed": self.processed[-12000:],
+            "last_draw_key": self.last_draw_key,
+            "seq": self.seq,
+            "origins": [self._serialize_origin(o) for o in self.origins],
+            "next_origin_id": self.next_origin_id,
+            "seen_baskets": self.seen_baskets,
+            "candidates": self.candidates,
+            "next_candidate_id": self.next_candidate_id,
+            "stats_warmup": self.stats_warmup,
+            "stats_live": self.stats_live,
         }
-        with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
-            writer.writerow(row)
-
-    # --------------------------------------------------------
-    # Dedup/history
-    # --------------------------------------------------------
-    def already_processed(self, e, nums):
-        fp = fingerprint(e, nums)
-        return e in self.processed_ids or fp in self.processed_fps
-
-    def remember_processed(self, e, nums):
-        fp = fingerprint(e, nums)
-        self.max_e = max(self.max_e, int(e))
-        self.last_fp = fp
-        self.processed_ids.append(int(e))
-        self.processed_fps.append(fp)
-        self.processed_ids = self.processed_ids[-PROCESSED_MAX:]
-        self.processed_fps = self.processed_fps[-PROCESSED_MAX:]
-
-    def _remember_sum9091_raw(self, e, nums):
-        """Registra la SOMMA TOTALE esatta di una estrazione senza aprire sessioni.
-
-        Serve sia al live sia al preload/rebuild. La chiave e' la somma grezza
-        dei 20 estratti (es. 1048), NON il valore A ridotto fuori 90.
-        """
-        if not LAB_SUM9091_ENABLED:
-            return None
-        sm = sum9091_from_nums(nums)
-        total = int(sm.get("sum", 0) or 0)
-        if total <= 0:
-            return None
-        key = str(total)
-        old = self.sum9091_seen_raw.get(key, {}) if isinstance(self.sum9091_seen_raw.get(key, {}), dict) else {}
-        old_count = int(old.get("count", 0) or 0)
-        old_last_e = int(old.get("last_e", 0) or 0)
-        first_e = int(old.get("first_e", 0) or 0) or int(e)
-        entry = {
-            "count": old_count + 1,
-            "first_e": first_e,
-            "prev_e": old_last_e if old_count > 0 else 0,
-            "last_e": int(e),
-        }
-        self.sum9091_seen_raw[key] = entry
-        return {
-            "sm": sm,
-            "was_seen": old_count > 0,
-            "previous_e": old_last_e,
-            "occurrence": old_count + 1,
-            "entry": entry,
-        }
-
-    def rebuild_sum9091_seen_from_loaded_history(self):
-        """Ricostruisce le somme raw dal tratto di storico gia' persistito.
-
-        E' usato soprattutto nella migrazione dalla v26, cosi' la nuova logica
-        puo' riconoscere subito una futura somma totale gia' uscita oggi.
-        """
-        self.sum9091_seen_raw = {}
-        if not self.last_draws:
-            return
-        ids = list(self.processed_ids[-len(self.last_draws):])
-        if len(ids) != len(self.last_draws):
-            return
-        for e, nums in zip(ids, self.last_draws):
-            if len(set(nums or [])) == 20:
-                self._remember_sum9091_raw(e, nums)
-
-    def preload_today_as_processed(self, es):
-        # Il preload non apre sessioni retroattive, ma costruisce la memoria delle
-        # SOMME TOTALI esatte gia' viste oggi. Cosi' una futura ripetizione viene
-        # riconosciuta anche se il bot e' stato avviato a giornata iniziata.
-        self.sum9091_seen_raw = {}
-        for e, nums in es:
-            if len(set(nums)) != 20:
-                continue
-            self.last_draws.append(nums)
-            self.processed_ids.append(e)
-            self.processed_fps.append(fingerprint(e, nums))
-            self._remember_sum9091_raw(e, nums)
-        self.last_draws = self.last_draws[-HISTORY_MAX:]
-        self.processed_ids = self.processed_ids[-PROCESSED_MAX:]
-        self.processed_fps = self.processed_fps[-PROCESSED_MAX:]
-        if es:
-            last_e, last_nums = es[-1]
-            self.max_e = last_e
-            self.last_fp = fingerprint(last_e, last_nums)
-        self.save_state()
-
-    # --------------------------------------------------------
-    # v48 core features
-    # --------------------------------------------------------
-    def lag(self, n):
-        lag = 0
-        for d in reversed(self.last_draws[:-1]):
-            lag += 1
-            if n in d:
-                return lag
-        return lag
-
-    def heat(self, n):
-        weights = [5, 4, 3, 2, 1]
-        return sum(w for i, w in enumerate(weights) if i < len(self.last_draws) and n in self.last_draws[-(i + 1)])
-
-    def dominance(self, n, window=6):
-        return sum(1 for d in self.last_draws[-window:] if n in d)
-
-    def pressure(self, n):
-        weights = [5, 4, 3, 2, 1]
-        return sum(w for i, w in enumerate(weights) if i < len(self.last_draws) and n in self.last_draws[-(i + 1)])
-
-    def top_ritardatari(self):
-        data = [{"number": n, "lag": self.lag(n)} for n in range(1, 91)]
-        data.sort(key=lambda x: (-x["lag"], x["number"]))
-        return data[:TOP_RITARDATARI]
-
-    def selected_ritardatari(self):
-        top10 = self.top_ritardatari()
-        selected = []
-        for pos in PLAY_POSITIONS:
-            idx = pos - 1
-            if idx < len(top10):
-                selected.append({"position": pos, "number": top10[idx]["number"], "lag": top10[idx]["lag"]})
-        return top10, selected
-
-    def clean_old_watch(self, current_e):
-        for key in [k for k, d in self.watch.items() if current_e - int(d["first_e"]) > WATCH_WINDOW]:
-            self.watch.pop(key, None)
-
-    def clean_old_hot(self, current_e):
-        for key in [k for k, d in self.hot_confirmed.items() if current_e - int(d["confirmed_e"]) > HOT_TTL]:
-            self.hot_confirmed.pop(key, None)
-
-    def update_watch_and_confirmed(self, e, nums, selected):
-        s = set(nums)
-        for item in selected:
-            n = int(item["number"])
-            key = str(n)
-            if n not in s:
-                continue
-            if key not in self.watch:
-                self.watch[key] = {
-                    "number": n,
-                    "first_e": e,
-                    "last_e": e,
-                    "hits": 1,
-                    "position": item["position"],
-                    "initial_lag": item["lag"],
-                }
-            else:
-                self.watch[key]["hits"] += 1
-                self.watch[key]["last_e"] = e
-                if self.watch[key]["hits"] >= 2:
-                    self.hot_confirmed[key] = {**self.watch[key], "confirmed_e": e}
-                    self.watch.pop(key, None)
-        self.clean_old_watch(e)
-        self.clean_old_hot(e)
-
-    def confirmed_score(self, item, e):
-        n = int(item["number"])
-        age = e - int(item["confirmed_e"])
-        return (
-            item["hits"] * 20
-            - age * 2
-            + item["initial_lag"]
-            + self.heat(n)
-            + self.dominance(n, 6) * 3
-            + self.pressure(n)
-        )
-
-    def number_score(self, n, e):
-        hot = self.hot_confirmed.get(str(n))
-        hot_score = self.confirmed_score(hot, e) if hot else 0
-        return hot_score + self.heat(n) * 2 + self.dominance(n, 6) * 3 + self.pressure(n) - self.lag(n)
-
-    def duplicate_cluster(self, cluster_numbers, e):
-        if not self.last_cluster_numbers:
-            return False
-        if e - int(self.last_cluster_e) >= CLUSTER_REUSE_AFTER:
-            return False
-        return len(set(cluster_numbers) & set(self.last_cluster_numbers)) >= 2
-
-    def build_play(self, e):
-        hot_items = [x for x in self.hot_confirmed.values() if 0 <= e - int(x["confirmed_e"]) <= HOT_TTL]
-        if len(hot_items) < MIN_HOT_ACTIVE:
-            return None
-
-        pair_candidates = []
-        for a, b in combinations(hot_items, 2):
-            pair = tuple(sorted((int(a["number"]), int(b["number"]))))
-            score = self.confirmed_score(a, e) + self.confirmed_score(b, e)
-            pair_candidates.append({"ambo": pair, "score": round(score, 2)})
-
-        pair_candidates.sort(key=lambda x: -x["score"])
-        ambi = pair_candidates[:MAX_AMBI_PER_PLAY]
-        if not ambi:
-            return None
-
-        all_numbers = []
-        for item in ambi:
-            all_numbers.extend(item["ambo"])
-        cluster_numbers = sorted(set(all_numbers))
-
-        if self.duplicate_cluster(cluster_numbers, e):
-            return None
-
-        freq = Counter(all_numbers)
-        ambata = freq.most_common(1)[0][0]
-        return {"ambata": ambata, "ambi": ambi, "cluster_numbers": cluster_numbers}
-
-    def check_v48_hit(self, nums):
-        s = set(nums)
-        snap = self.active_snapshot or {}
-        ambata_hit = snap.get("ambata") in s
-        ambi_hit = []
-        for item in snap.get("ambi", []):
-            a, b = item["ambo"]
-            if a in s and b in s:
-                ambi_hit.append(item)
-        return {"ambata_hit": ambata_hit, "ambi_hit": ambi_hit}
-
-    # --------------------------------------------------------
-    # Spy conditions
-    # --------------------------------------------------------
-    def condition_active(self, n, condition):
-        n = int(n)
-        hist = self.last_draws
-        if not hist:
-            return False
-
-        def present(offset):
-            # offset 1 = ultimo colpo
-            return len(hist) >= offset and n in hist[-offset]
-
-        if condition == "C1_exact":
-            return present(1) and not present(2)
-        if condition == "C2_exact":
-            return present(1) and present(2) and not present(3)
-        if condition == "C3plus":
-            return present(1) and present(2) and present(3)
-        if condition == "NC2_W3_gap":
-            return present(1) and (not present(2)) and present(3)
-        if condition == "NC2_W5":
-            if len(hist) < 5:
-                return False
-            w = hist[-5:]
-            count = sum(1 for d in w if n in d)
-            return count == 2 and max_consecutive_presence(w, n) < 2
-        if condition == "NC3_W5_gap":
-            if len(hist) < 5:
-                return False
-            w = hist[-5:]
-            count = sum(1 for d in w if n in d)
-            return count == 3 and max_consecutive_presence(w, n) < 3
-        return False
-
-    def detect_spy_rules(self):
-        active = []
-        for rule in self.spy_model.values():
-            if self.condition_active(rule["spy"], rule["condition"]):
-                r = dict(rule)
-                r["network"] = classify_network(r["spy"], r["followers"])
-                active.append(r)
-
-        network_counts = Counter(r["network"] for r in active)
-        for r in active:
-            related = network_counts[r["network"]]
-            if related >= 2:
-                level = "MULTIPLA"
-            elif r["network"] in {"CATENA_5", "PONTE_55", "ZONA_40"} or r["condition"] == "C3plus":
-                level = "FORTE"
-            else:
-                level = "NORMALE"
-            r["level"] = level
-            r["active_related"] = related
-            r["active_total"] = len(active)
-
-        # Ordine: segnali con rete multipla/extra storico piu' forte in alto.
-        active.sort(key=lambda r: (-(r["level"] == "MULTIPLA"), -r.get("k2_extra_pp", 0.0), -r.get("events", 0), r["spy"]))
-        return active
-
-    def add_session_to_stat_buckets(self, rule):
-        # Conta le sessioni aperte.
-        # L'atteso K2/K3 viene aggiunto SOLO quando l'orizzonte chiude,
-        # cosi' il confronto atteso/reale e' calcolato sulle stesse sessioni chiuse.
-        for h in SPY_HORIZONS:
-            hkey = str(h)
-            for st in (
-                self.spy_horizon_stats[hkey],
-                self.get_nested_stat(self.spy_candidate_horizon_stats, rule["key"], hkey),
-                self.get_nested_stat(self.spy_network_horizon_stats, rule["network"], hkey),
-                self.get_nested_stat(self.spy_level_horizon_stats, rule["level"], hkey),
-            ):
-                st["sessions"] += 1
-
-    def update_stat_on_close(self, st, horizon, max_k, k3_colpo, exp_k2=None, exp_k3=None):
-        horizon = int(horizon)
-        st["closed"] += 1
-        if max_k >= 1:
-            st["k1_hits"] += 1
-        if max_k >= 2:
-            st["k2_hits"] += 1
-        if max_k >= 3:
-            st["k3_hits"] += 1
-        cost = float(k3_colpo if k3_colpo else horizon)
-        gross = TERNO_PAYOUT if k3_colpo else 0.0
-        st["k3_cost_units"] += cost
-        st["k3_gross_units"] += gross
-        st["expected_k2_sum"] += max(0.0, min(1.0, float(exp_k2 or 0.0)))
-        st["expected_k3_sum"] += max(0.0, min(1.0, float(exp_k3 or 0.0)))
-        return cost, gross
-
-    async def maybe_open_spy_sessions(self, app, e):
-        rules = self.detect_spy_rules()
-        if not rules:
-            return
-
-        opened = []
-        for r in rules:
-            self.spy_uid += 1
-            session = {
-                "id": self.spy_uid,
-                "opened_e": e,
-                "spy": int(r["spy"]),
-                "condition": r["condition"],
-                "followers": list(r["followers"]),
-                "key": r["key"],
-                "label": r["label"],
-                "network": r["network"],
-                "level": r["level"],
-                "base_k2_pct": float(r.get("base_k2_pct", 0.0)),
-                "base_k3_pct": float(r.get("base_k3_pct", 0.0)),
-                "active_related": int(r["active_related"]),
-                "active_total": int(r["active_total"]),
-                "colpi": 0,
-                "k_by_colpo": [],
-                "hit_nums_by_colpo": [],
-                "closed_horizons": [],
-                "notified_k2": False,
-                "notified_k3": False,
-            }
-            self.spy_sessions.append(session)
-            self.add_session_to_stat_buckets(r)
-            opened.append(session)
-            self.append_csv_event(
-                "SPY_OPEN",
-                e=e,
-                spy_id=session["id"],
-                spy=session["spy"],
-                spy_condition=session["condition"],
-                spy_followers=fmt_nums(session["followers"]),
-                spy_network=session["network"],
-                spy_level=session["level"],
-            )
-
-        if SPY_NOTIFY_OPEN:
-            lines = [
-                "🕵️ NUMERI SPIA LAB — SEGNALI APERTI",
-                f"• estrazione origine = {e}",
-                f"• segnali attivi = {len(opened)}",
-                "• osservazione parallela = H1 / H2 / H3",
-            ]
-            for s in opened[:SPY_OPEN_NOTIFY_MAX_LINES]:
-                label_net = SPY_NETWORK_DEFS.get(s["network"], {}).get("label", s["network"])
-                lines.append(
-                    f"• id {s['id']} | {s['spy']} {condition_clean_label(s['condition'])} → {fmt_nums(s['followers'])}\n"
-                    f"  🧬 {label_net} | {s['level']} | rete/tot = {s['active_related']}/{s['active_total']}"
-                )
-            if len(opened) > SPY_OPEN_NOTIFY_MAX_LINES:
-                lines.append(f"• altri segnali non mostrati = {len(opened) - SPY_OPEN_NOTIFY_MAX_LINES}")
-            lines.append("\nTocca /spie per il quadro completo.")
-            await self.tg(app, "\n".join(lines))
-
-    async def process_spy_sessions(self, app, e, nums):
-        if not self.spy_sessions:
-            return
-
-        still_open = []
-        nums_set = set(nums)
-        for s in self.spy_sessions:
-            s["colpi"] = int(s.get("colpi", 0)) + 1
-            followers = [int(x) for x in s.get("followers", [])]
-            hit_nums = sorted([n for n in followers if n in nums_set])
-            k = len(hit_nums)
-            s.setdefault("k_by_colpo", []).append(k)
-            s.setdefault("hit_nums_by_colpo", []).append(hit_nums)
-
-            if k >= 2 and not s.get("notified_k2") and SPY_NOTIFY_HIT_K2:
-                s["notified_k2"] = True
-                await self.tg(
-                    app,
-                    "💥 NUMERI SPIA LAB — ALMENO 2/3\n"
-                    f"• signal_id = {s['id']}\n"
-                    f"• spia = {s['spy']} | condizione = {s['condition']}\n"
-                    f"• rete = {s['network']} | livello = {s['level']}\n"
-                    f"• TOP3 accompagnatori = {fmt_nums(followers)}\n"
-                    f"• usciti = {fmt_nums(hit_nums)}\n"
-                    f"• colpo = {s['colpi']}"
-                )
-
-            if k >= 3 and not s.get("notified_k3") and SPY_NOTIFY_HIT_K3:
-                s["notified_k3"] = True
-                await self.tg(
-                    app,
-                    "💥 NUMERI SPIA LAB — TRIS 3/3\n"
-                    f"• signal_id = {s['id']}\n"
-                    f"• spia = {s['spy']} | condizione = {s['condition']}\n"
-                    f"• rete = {s['network']} | livello = {s['level']}\n"
-                    f"• TERNO = {fmt_nums(followers)}\n"
-                    f"• colpo = {s['colpi']}"
-                )
-
-            closed_h = set(map(str, s.get("closed_horizons", [])))
-            for h in SPY_HORIZONS:
-                hkey = str(h)
-                if hkey in closed_h or s["colpi"] < h:
-                    continue
-
-                k_values = s.get("k_by_colpo", [])[:h]
-                max_k = max(k_values) if k_values else 0
-                k3_colpo = None
-                for idx, kval in enumerate(k_values, start=1):
-                    if kval >= 3:
-                        k3_colpo = idx
-                        break
-                best_idx = max(range(len(k_values)), key=lambda i: k_values[i]) if k_values else None
-                best_nums = s.get("hit_nums_by_colpo", [])[best_idx] if best_idx is not None else []
-
-                # atteso storico relativo SOLO a questa sessione chiusa e a questo orizzonte
-                rule_info = self.spy_model.get(s.get("key"), {})
-                base_k2 = float(s.get("base_k2_pct", rule_info.get("base_k2_pct", 0.0)) or 0.0)
-                base_k3 = float(s.get("base_k3_pct", rule_info.get("base_k3_pct", 0.0)) or 0.0)
-                exp_k2 = expected_within_h(base_k2, h)
-                exp_k3 = expected_within_h(base_k3, h)
-
-                # aggiorna globale, candidato, rete, livello
-                for st in (
-                    self.spy_horizon_stats[hkey],
-                    self.get_nested_stat(self.spy_candidate_horizon_stats, s["key"], hkey),
-                    self.get_nested_stat(self.spy_network_horizon_stats, s["network"], hkey),
-                    self.get_nested_stat(self.spy_level_horizon_stats, s["level"], hkey),
-                ):
-                    cost, gross = self.update_stat_on_close(st, h, max_k, k3_colpo, exp_k2, exp_k3)
-
-                cost = float(k3_colpo if k3_colpo else h)
-                gross = TERNO_PAYOUT if k3_colpo else 0.0
-                net, roi = roi_text(gross, cost)
-                s.setdefault("closed_horizons", []).append(hkey)
-                self.append_csv_event(
-                    f"SPY_CLOSE_H{h}",
-                    e=e,
-                    colpo=s["colpi"],
-                    spy_id=s["id"],
-                    spy=s["spy"],
-                    spy_condition=s["condition"],
-                    spy_followers=fmt_nums(followers),
-                    spy_network=s["network"],
-                    spy_level=s["level"],
-                    spy_horizon=h,
-                    spy_k1=int(max_k >= 1),
-                    spy_k2=int(max_k >= 2),
-                    spy_k3=int(max_k >= 3),
-                    spy_hit_nums=fmt_nums(best_nums),
-                    spy_cost=f"{cost:.2f}",
-                    spy_gross=f"{gross:.2f}",
-                    spy_net=f"{net:.2f}",
-                    spy_roi=f"{roi:.4f}",
-                )
-
-            if len(set(map(str, s.get("closed_horizons", [])))) < len(SPY_HORIZONS):
-                still_open.append(s)
-
-        self.spy_sessions = still_open
-
-    # --------------------------------------------------------
-    # Report
-    # --------------------------------------------------------
-    def v48_stats_text(self):
-        net, roi = roi_text(self.v48_gross_units, self.v48_cost_units)
-        hit_rate = pct(self.total_hit_ambo, self.total_play)
-        stop_rate = pct(self.total_stop, self.total_play)
-        active_txt = "SI" if self.active else "NO"
-        open_txt = ""
-        if self.active_snapshot:
-            open_txt = (
-                f"\n\n🎯 PLAY ATTIVO\n"
-                f"• play_id = {self.active_snapshot.get('play_id')}\n"
-                f"• colpo corrente = {self.colpi}/{MAX_COLPI}\n"
-                f"• ambata = {self.active_snapshot.get('ambata')}\n"
-                f"• ambi = {fmt_ambi(self.active_snapshot.get('ambi'))}"
-            )
-        by_colpo = ", ".join(f"C{i}:{self.v48_hit_colpi[str(i)]}" for i in range(1, MAX_COLPI + 1))
-        return (
-            "🎯 QUADRO v48 BASE\n"
-            "• solo 3 ambi classici, core invariato\n"
-            f"• play = {self.total_play}\n"
-            f"• HIT AMBO = {self.total_hit_ambo} ({hit_rate:.2f}%)\n"
-            f"• STOP = {self.total_stop} ({stop_rate:.2f}%)\n"
-            f"• hit ambata eventi = {self.total_hit_ambata}\n"
-            f"• attivo ora = {active_txt}\n"
-            f"• hit per colpo = {by_colpo}\n\n"
-            "📌 RANK AMBO VINCENTE\n"
-            f"• rank 1 = {self.v48_rank_hits['1']}\n"
-            f"• rank 2 = {self.v48_rank_hits['2']}\n"
-            f"• rank 3 = {self.v48_rank_hits['3']}\n"
-            f"• colpi con 2+ ambi insieme = {self.v48_multi_ambo_hit_draws}\n\n"
-            f"💰 Economia teorica ambo {AMBO_PAYOUT:.0f}x\n"
-            f"• costo = {self.v48_cost_units:.2f}u\n"
-            f"• lordo = {self.v48_gross_units:.2f}u\n"
-            f"• netto = {net:+.2f}u\n"
-            f"• ROI = {roi:+.2f}%"
-            f"{open_txt}"
-        )
-
-    def spy_summary_text(self):
-        lines = [
-            "🕵️ QUADRO NUMERI SPIA — LIVE",
-            f"• modello storico caricato = {len(self.spy_model)} regole",
-            f"• sessioni aperte ora = {len(self.spy_sessions)}",
-            "• orizzonti = H1 / H2 / H3",
-            "",
-            "📍 RISULTATO GENERALE",
-        ]
-        h3_k2 = 0.0
-        h3_extra = 0.0
-        h3_closed = 0
-        h3_k3 = 0
-
-        for h in SPY_HORIZONS:
-            hkey = str(h)
-            st = self.spy_horizon_stats[hkey]
-            closed = int(st["closed"])
-            k1 = int(st["k1_hits"])
-            k2 = int(st["k2_hits"])
-            k3 = int(st["k3_hits"])
-            cost = float(st["k3_cost_units"])
-            gross = float(st["k3_gross_units"])
-            net, roi = roi_text(gross, cost)
-            exp_k2_pct = expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed)
-            exp_k3_pct = expected_pct_from_sum(st.get("expected_k3_sum", 0.0), closed)
-            extra_k2 = pct(k2, closed) - exp_k2_pct
-            if h == 3:
-                h3_k2 = pct(k2, closed)
-                h3_extra = extra_k2
-                h3_closed = closed
-                h3_k3 = k3
-            colpo_label = "colpi" if h > 1 else "colpo"
-            lines.extend([
-                "",
-                f"H{h} — entro {h} {colpo_label}",
-                f"• chiuse = {closed} / sessioni = {st['sessions']}",
-                f"• K1 = {k1}/{closed} = {pct(k1, closed):.2f}%",
-                f"• K2 = {k2}/{closed} = {pct(k2, closed):.2f}% | atteso≈{exp_k2_pct:.2f}% | extra={extra_k2:+.2f} pp",
-                f"• K3 = {k3}/{closed} = {pct(k3, closed):.2f}% | atteso≈{exp_k3_pct:.2f}%",
-                f"• terno 45x: costo={cost:.2f}u | lordo={gross:.2f}u | netto={net:+.2f}u | ROI={roi:+.2f}%",
-            ])
-
-        st3 = self.spy_horizon_stats.get("3", self.new_spy_stats())
-        _, h3_roi = roi_text(float(st3.get("k3_gross_units", 0.0)), float(st3.get("k3_cost_units", 0.0)))
-        if h3_closed < 50:
-            verdict = "🟡 campione piccolo: osservazione"
-        elif h3_extra >= 5 and h3_roi >= 0:
-            verdict = "🟢 K2 positivo e K3 profittevole nel periodo"
-        elif h3_extra >= 5:
-            verdict = "🟡 K2 positivo, terno K3 non profittevole"
-        elif h3_extra > 0:
-            verdict = "🟡 leggermente sopra atteso"
-        else:
-            verdict = "🔴 non confermato"
-        lines.extend([
-            "",
-            "🚦 VERDETTO SPIE",
-            f"• H3 K2 = {h3_k2:.2f}% | extra≈{h3_extra:+.2f} pp | chiuse={h3_closed}",
-            f"• H3 K3 = {h3_k3}",
-            f"• stato = {verdict}",
-        ])
-        return "\n".join(lines)
-
-    def _h3_extra_for_network(self, network):
-        st = self.spy_network_horizon_stats.get(network, {}).get("3", self.new_spy_stats())
-        closed = int(st.get("closed", 0))
-        k2 = int(st.get("k2_hits", 0))
-        exp = expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed)
-        return pct(k2, closed) - exp, closed, k2, exp
-
-    def _h3_extra_for_level(self, level):
-        st = self.spy_level_horizon_stats.get(level, {}).get("3", self.new_spy_stats())
-        closed = int(st.get("closed", 0))
-        k2 = int(st.get("k2_hits", 0))
-        exp = expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed)
-        return pct(k2, closed) - exp, closed, k2, exp
-
-    def playable_signal_snapshot(self):
-        """Snapshot PLAYABILITY ONLY sui segnali aperti DECINA + MULTIPLA.
-
-        A differenza del vecchio CORE, considera QUALSIASI ambo contenuto nei TOP3
-        dei segnali contemporaneamente attivi. CORE/SATELLITE restano solo etichette.
-        """
-        raw_signals = [
-            s for s in self.spy_sessions
-            if s.get("network") == PLAYABLE_NETWORK and s.get("level") == PLAYABLE_LEVEL
-        ]
-
-        num_counter = Counter()
-        pair_counter = Counter()
-        trio_counter = Counter()
-        pair_signals = defaultdict(list)
-        for s in raw_signals:
-            followers = tuple(sorted(map(int, s.get("followers", []))))
-            if len(followers) != 3:
-                continue
-            trio_counter[followers] += 1
-            num_counter.update(followers)
-            for pair in combinations(followers, 2):
-                pair = norm_pair(pair)
-                pair_counter[pair] += 1
-                pair_signals[pair].append(s)
-
-        top_nums = num_counter.most_common(PLAYABLE_MAX_NUMBERS)
-        top_num_set = {n for n, _ in top_nums[:PLAYABLE_TOP_NUMBERS_FOR_CONFIRM]}
-        top_pairs = pair_counter.most_common(40)
-        supported_pairs = []
-        for pair, support in top_pairs:
-            if int(support) < PLAYABLE_MIN_PAIR_SUPPORT:
-                continue
-            # evita coppie sostenute solo da numeri marginali se il quadro e' molto largo
-            a, b = pair
-            if top_num_set and not (a in top_num_set and b in top_num_set):
-                continue
-            supported_pairs.append((pair, int(support), playable_pair_group(pair)))
-
-        # In questa versione i segnali focus sono quelli che contribuiscono ad almeno un ambo supportato.
-        supported_set = {p for p, _, _ in supported_pairs}
-        focused = []
-        for s in raw_signals:
-            followers = tuple(sorted(map(int, s.get("followers", []))))
-            fpairs = {norm_pair(p) for p in combinations(followers, 2)} if len(followers) == 3 else set()
-            if fpairs & supported_set:
-                focused.append(s)
-        focused.sort(key=lambda s: (int(s.get("colpi", 0)), -int(s.get("active_related", 0)), s.get("label", "")))
-
-        dec_extra, dec_closed, dec_k2, dec_exp = self._h3_extra_for_network(PLAYABLE_NETWORK)
-        mult_extra, mult_closed, mult_k2, mult_exp = self._h3_extra_for_level(PLAYABLE_LEVEL)
-        return {
-            "raw_signals": raw_signals,
-            "signals": focused,
-            "num_counter": num_counter,
-            "pair_counter": pair_counter,
-            "pair_signals": pair_signals,
-            "trio_counter": trio_counter,
-            "top_nums": top_nums,
-            "top_num_set": top_num_set,
-            "top_pairs": top_pairs,
-            "supported_pairs": supported_pairs,
-            "dec_extra": dec_extra,
-            "dec_closed": dec_closed,
-            "dec_k2": dec_k2,
-            "dec_exp": dec_exp,
-            "mult_extra": mult_extra,
-            "mult_closed": mult_closed,
-            "mult_k2": mult_k2,
-            "mult_exp": mult_exp,
-        }
-
-    def _candidate_rule_live_extra(self, key, h):
-        st = self.spy_candidate_horizon_stats.get(str(key), {}).get(str(h), self.new_spy_stats())
-        closed = int(st.get("closed", 0))
-        if closed <= 0:
-            return None
-        k2 = int(st.get("k2_hits", 0))
-        exp = expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed)
-        return {
-            "closed": closed,
-            "obs": pct(k2, closed),
-            "exp": exp,
-            "extra": pct(k2, closed) - exp,
-        }
-
-    def _pair_confirmations(self, pair):
-        """Conferme indipendenti: non generano mai da sole un PLAY."""
-        pair = set(map(int, pair))
-        src = []
-
-        # T1: vale sia un trigger appena nato sia una sessione Cottone ancora aperta H1-H10.
-        cott = self.cottone_fissi_t1_snapshot()
-        t1_live = any(pair.issubset(set(map(int, row.get("t1", [])))) for row in cott.get("rows", []))
-        if not t1_live:
-            t1_live = any(
-                int(s.get("colpi",0)) < LAB_COTTONE_TRACK_MAX_COLPI and pair.issubset(set(map(int, s.get("t1", []))))
-                for s in self.cottone_sessions
-            )
-        if t1_live:
-            src.append("T1")
-
-        # SOMMA 90/91: conferma anche durante la finestra H1-H10 di una somma raw gia' ripetuta.
-        sm = self.somma_9091_snapshot()
-        sum_live = bool(sm.get("repeated_raw") and pair.issubset(set(map(int, sm.get("nums", [])))))
-        if not sum_live:
-            sum_live = any(
-                int(ss.get("colpi",0)) < LAB_SUM9091_MAX_COLPI and pair.issubset(set(map(int, ss.get("nums", []))))
-                for ss in self.sum9091_sessions
-            )
-        if sum_live:
-            src.append("SOMMA90/91")
-
-        # +5: solo coppie storicamente watch/TOP.
-        if any(pair == set(map(int, p.get("pair", []))) for p in self.plus5_distance_snapshot().get("pairs", []) if p.get("watch")):
-            src.append("+5")
-
-        # +4: la coppia deve essere interna alla terzina watch prodotta dal metodo.
-        if any(pair.issubset(set(map(int, x.get("triad", [])))) for x in self.conteggio_plus4_snapshot().get("signals", []) if x.get("watch")):
-            src.append("+4")
-
-        # v48 solo bonus: coppia presente in uno degli ambi v48 attivi.
-        if self.active_snapshot:
-            v48_pairs = {norm_pair(item.get("ambo", [])) for item in self.active_snapshot.get("ambi", []) if len(item.get("ambo", [])) == 2}
-            if norm_pair(tuple(pair)) in v48_pairs:
-                src.append("v48")
-
-        return src
+        atomic_write_json(STATE_FILE, data)
+        if git:
+            git_commit_state_if_needed(force=force_git)
+
+    def already_processed(self, day, e):
+        return draw_key(day, e) in self.processed_set
+
+    def remember_processed(self, day, e):
+        k = draw_key(day, e)
+        if k not in self.processed_set:
+            self.processed.append(k)
+            self.processed = self.processed[-12000:]
+            self.processed_set = set(self.processed)
+        self.last_draw_key = k
+        self.seq += 1
+        return k
+
+    # ----------------------------
+    # Bitmask ambi
+    # ----------------------------
 
     @staticmethod
-    def new_pair_lab_stats():
-        return {
-            "sessions": 0, "closed": 0, "hit": 0, "stop": 0,
-            "hit_colpi": {"1": 0, "2": 0, "3": 0},
-            "cost": 0.0, "gross": 0.0,
-        }
-
-    def _pair_key(self, pair):
-        a, b = norm_pair(pair)
-        return f"{a}-{b}"
-
-    def _pair_independent_support(self, pair, snap):
-        contributing = snap.get("pair_signals", {}).get(norm_pair(pair), [])
-        spies = sorted({int(x.get("spy", 0)) for x in contributing if int(x.get("spy", 0) or 0) > 0})
-        # Anche le condizioni vengono mostrate, ma il voto indipendente principale e' la SPIA distinta.
-        conditions = sorted({str(x.get("condition", "")) for x in contributing if x.get("condition")})
-        trios = sorted({tuple(sorted(map(int, x.get("followers", [])))) for x in contributing if len(x.get("followers", [])) == 3})
-        return {"count": len(spies), "spies": spies, "conditions": conditions, "trios": trios}
-
-    def _pair_lab_metrics(self, pair):
-        key = self._pair_key(pair)
-        raw = self.playable_pair_lab_stats.get(key, {}) if isinstance(self.playable_pair_lab_stats, dict) else {}
-        st = self.new_pair_lab_stats()
-        for k in ("sessions", "closed", "hit", "stop"):
-            st[k] = int(raw.get(k, st[k]))
-        st["hit_colpi"] = {str(h): int((raw.get("hit_colpi", {}) or {}).get(str(h), 0)) for h in (1,2,3)}
-        st["cost"] = float(raw.get("cost", 0.0))
-        st["gross"] = float(raw.get("gross", 0.0))
-        closed = st["closed"]
-        h1 = st["hit_colpi"]["1"]
-        h2 = st["hit_colpi"]["2"]
-        h3 = st["hit_colpi"]["3"]
-        cum = {1: h1, 2: h1+h2, 3: h1+h2+h3}
-        rates = {h: pct(cum[h], closed) if closed else 0.0 for h in (1,2,3)}
-        random = {h: pair_expected_within_h(h)*100.0 for h in (1,2,3)}
-        edges = {h: rates[h]-random[h] for h in (1,2,3)}
-        # ROI ipotetico stop-on-hit per H1/H2/H3 sulle stesse sessioni chiuse.
-        costs = {
-            1: float(closed),
-            2: float(closed + max(0, closed-h1)),
-            3: float(st["cost"]),
-        }
-        gross = {h: float(cum[h] * AMBO_PAYOUT) for h in (1,2,3)}
-        rois = {h: roi_text(gross[h], costs[h])[1] if costs[h] > 0 else 0.0 for h in (1,2,3)}
-        return {"key": key, "stats": st, "rates": rates, "edges": edges, "rois": rois, "costs": costs, "gross_h": gross}
-
-    async def process_pair_lab_sessions(self, app, e, nums):
-        if not self.playable_pair_lab_sessions:
-            return
-        draw = set(map(int, nums))
-        keep = []
-        for ses in self.playable_pair_lab_sessions:
-            ses["colpi"] = int(ses.get("colpi", 0)) + 1
-            h = int(ses["colpi"])
-            pair = norm_pair(ses.get("pair", []))
-            key = self._pair_key(pair)
-            st = self.playable_pair_lab_stats.setdefault(key, self.new_pair_lab_stats())
-            hit = set(pair).issubset(draw)
-            if hit:
-                st["closed"] = int(st.get("closed",0)) + 1
-                st["hit"] = int(st.get("hit",0)) + 1
-                hc = st.setdefault("hit_colpi", {"1":0,"2":0,"3":0})
-                hc[str(h)] = int(hc.get(str(h),0)) + 1
-                st["cost"] = float(st.get("cost",0.0)) + h
-                st["gross"] = float(st.get("gross",0.0)) + AMBO_PAYOUT
-                self.append_csv_event("PAIRLAB_HIT", e=e, playable_colpo=h, playable_ambi=key, playable_outcome=f"HIT_H{h}")
-                continue
-            if h >= PLAYABLE_MAX_COLPI:
-                st["closed"] = int(st.get("closed",0)) + 1
-                st["stop"] = int(st.get("stop",0)) + 1
-                st["cost"] = float(st.get("cost",0.0)) + PLAYABLE_MAX_COLPI
-                self.append_csv_event("PAIRLAB_STOP", e=e, playable_colpo=h, playable_ambi=key, playable_outcome="STOP_H3")
-                continue
-            keep.append(ses)
-        self.playable_pair_lab_sessions = keep
-
-    async def maybe_open_pair_lab_sessions(self, app, e):
-        snap = self.playable_signal_snapshot()
-        # Il LAB deve campionare la STESSA zona in cui il bot potrebbe giocare,
-        # altrimenti diluirebbe le statistiche pair-specific con contesti deboli.
-        if len(snap.get("raw_signals", [])) < PLAYABLE_MIN_SIGNALS:
-            return
-        if float(snap.get("dec_extra", 0.0)) < PLAYABLE_MIN_DECINA_EXTRA:
-            return
-        if float(snap.get("mult_extra", 0.0)) < PLAYABLE_MIN_MULTIPLA_EXTRA:
-            return
-        active_keys = {self._pair_key(x.get("pair", [])) for x in self.playable_pair_lab_sessions if len(x.get("pair", [])) == 2}
-        for pair, support in snap.get("top_pairs", []):
-            support = int(support)
-            if support < PLAYABLE_PAIR_LAB_MIN_RAW_SUPPORT:
-                continue
-            indep = self._pair_independent_support(pair, snap)
-            if indep["count"] < PLAYABLE_PAIR_LAB_MIN_INDEPENDENT:
-                continue
-            key = self._pair_key(pair)
-            if key in active_keys:
-                continue
-            last_e = int(self.playable_pair_lab_last_open_e.get(key, 0) or 0)
-            if last_e and (int(e)-last_e) < PLAYABLE_PAIR_LAB_REOPEN_AFTER:
-                continue
-            self.playable_pair_lab_sessions.append({
-                "pair": list(norm_pair(pair)), "opened_e": int(e), "colpi": 0,
-                "raw_support": support, "independent": indep["count"],
-            })
-            st = self.playable_pair_lab_stats.setdefault(key, self.new_pair_lab_stats())
-            st["sessions"] = int(st.get("sessions",0)) + 1
-            self.playable_pair_lab_last_open_e[key] = int(e)
-            active_keys.add(key)
-            self.append_csv_event("PAIRLAB_OPEN", e=e, playable_ambi=key, playable_outcome="SHADOW_OPEN", playable_support=f"raw={support}|ind={indep['count']}")
-
-    def _base_pair_gate_metrics(self, pair, support, snap):
-        """Gate v2 usati SOLO per definire la popolazione STRICT.
-
-        Questi dati NON bastano piu' per aprire un PLAY reale in v3.
-        """
-        pair = norm_pair(pair)
-        indep = self._pair_independent_support(pair, snap)
-        lab = self._pair_lab_metrics(pair)
-        closed = int(lab["stats"].get("closed", 0))
-        edge_h3 = float(lab["edges"][3])
-        roi_h3 = float(lab["rois"][3])
-        confirmations = self._pair_confirmations(pair)
-
-        contributing = snap.get("pair_signals", {}).get(pair, [])
-        keys=[]; seen=set()
-        for ses in contributing:
-            k=str(ses.get("key", ""))
-            if k and k not in seen:
-                seen.add(k); keys.append(k)
-        hist_vals=[float(self.spy_model.get(k,{}).get("k2_extra_pp",0.0))*100.0 for k in keys]
-        rule_hist_extra=sum(hist_vals)/len(hist_vals) if hist_vals else 0.0
-
-        independent_score = linear_score(indep["count"], 0, 6, 25)
-        pair_edge_score = linear_score(edge_h3, 0, 8, 30) if closed else 0.0
-        pair_roi_score = linear_score(roi_h3, -20, 20, 25) if closed else 0.0
-        convergence_score = min(15.0, len(confirmations) * 5.0)
-        context_score = 0.0
-        if float(snap.get("dec_extra",0.0)) >= PLAYABLE_MIN_DECINA_EXTRA:
-            context_score += 2.5
-        if float(snap.get("mult_extra",0.0)) >= PLAYABLE_MIN_MULTIPLA_EXTRA:
-            context_score += 2.5
-        base_score = min(100.0, independent_score + pair_edge_score + pair_roi_score + convergence_score + context_score)
-
-        reasons=[]
-        if int(support) < PLAYABLE_MIN_PAIR_SUPPORT:
-            reasons.append(f"supporto grezzo {support}<{PLAYABLE_MIN_PAIR_SUPPORT}")
-        if indep["count"] < PLAYABLE_MIN_INDEPENDENT_SPIES:
-            reasons.append(f"spie indipendenti {indep['count']}<{PLAYABLE_MIN_INDEPENDENT_SPIES}")
-        if len(snap.get("raw_signals", [])) < PLAYABLE_MIN_SIGNALS:
-            reasons.append(f"segnali {len(snap.get('raw_signals', []))}<{PLAYABLE_MIN_SIGNALS}")
-        if float(snap.get("dec_extra",0.0)) < PLAYABLE_MIN_DECINA_EXTRA:
-            reasons.append("DEC sotto soglia")
-        if float(snap.get("mult_extra",0.0)) < PLAYABLE_MIN_MULTIPLA_EXTRA:
-            reasons.append("MULT sotto soglia")
-        if closed < PLAYABLE_PAIR_LAB_MIN_CLOSED:
-            reasons.append(f"pair-LAB {closed}<{PLAYABLE_PAIR_LAB_MIN_CLOSED}")
-        else:
-            if edge_h3 < PLAYABLE_PAIR_MIN_EDGE_H3:
-                reasons.append(f"edge ambo H3 {edge_h3:+.1f}<{PLAYABLE_PAIR_MIN_EDGE_H3:+.1f}pp")
-            if roi_h3 < PLAYABLE_PAIR_MIN_ROI_H3:
-                reasons.append(f"ROI ambo H3 {roi_h3:+.1f}%<{PLAYABLE_PAIR_MIN_ROI_H3:+.1f}%")
-        if PLAYABLE_REQUIRE_CONFIRMATION and not confirmations:
-            if not (closed >= PLAYABLE_PAIR_LAB_MIN_CLOSED and edge_h3 >= PLAYABLE_NO_CONFIRM_MIN_EDGE and roi_h3 >= PLAYABLE_NO_CONFIRM_MIN_ROI):
-                reasons.append("nessuna conferma indipendente e pair-edge generale non STRONG")
-
-        return {
-            "pair": pair, "support": int(support), "indep": indep, "lab": lab,
-            "closed": closed, "edge_h3": edge_h3, "roi_h3": roi_h3,
-            "confirmations": confirmations, "contributing": contributing, "keys": keys,
-            "rule_hist_extra": rule_hist_extra, "base_score": base_score,
-            "base_reasons": reasons, "base_eligible": not reasons,
-            "base_score_parts": {"independent": independent_score, "pair_edge": pair_edge_score,
-                                 "pair_roi": pair_roi_score, "convergence": convergence_score,
-                                 "context": context_score},
-        }
-
-    def _strict_lab_gate_metrics(self, pair, support, snap):
-        """Gate di RACCOLTA STRICT-LAB v3.3.
-
-        Scopo: creare un campione osservativo abbastanza ampio e realistico.
-        Richiede il contesto operativo forte (raw/ind/DEC/MULT + pairLAB maturo),
-        ma NON richiede edge/ROI positivi e NON richiede conferme esterne.
-        Queste ultime condizioni restano gate del PLAY reale.
-        """
-        pair = norm_pair(pair)
-        indep = self._pair_independent_support(pair, snap)
-        lab = self._pair_lab_metrics(pair)
-        closed = int(lab["stats"].get("closed", 0))
-
-        reasons = []
-        if int(support) < PLAYABLE_STRICT_LAB_MIN_RAW_SUPPORT:
-            reasons.append(f"raw {support}<{PLAYABLE_STRICT_LAB_MIN_RAW_SUPPORT}")
-        if indep["count"] < PLAYABLE_STRICT_LAB_MIN_INDEPENDENT:
-            reasons.append(f"ind {indep['count']}<{PLAYABLE_STRICT_LAB_MIN_INDEPENDENT}")
-        if len(snap.get("raw_signals", [])) < PLAYABLE_MIN_SIGNALS:
-            reasons.append(f"segnali {len(snap.get('raw_signals', []))}<{PLAYABLE_MIN_SIGNALS}")
-        if float(snap.get("dec_extra", 0.0)) < PLAYABLE_MIN_DECINA_EXTRA:
-            reasons.append("DEC sotto soglia")
-        if float(snap.get("mult_extra", 0.0)) < PLAYABLE_MIN_MULTIPLA_EXTRA:
-            reasons.append("MULT sotto soglia")
-        if closed < PLAYABLE_STRICT_LAB_MIN_PAIR_CLOSED:
-            reasons.append(f"pair-LAB {closed}<{PLAYABLE_STRICT_LAB_MIN_PAIR_CLOSED}")
-
-        # Ranking neutrale rispetto alla redditivita': evita di preselezionare il LAB
-        # proprio sull'edge/ROI che poi vogliamo misurare.
-        independent_score = linear_score(indep["count"], PLAYABLE_STRICT_LAB_MIN_INDEPENDENT - 1, 7, 40)
-        raw_score = linear_score(int(support), PLAYABLE_STRICT_LAB_MIN_RAW_SUPPORT - 1, 14, 30)
-        maturity_score = linear_score(closed, PLAYABLE_STRICT_LAB_MIN_PAIR_CLOSED - 1, 180, 15)
-        dec_score = linear_score(float(snap.get("dec_extra", 0.0)), PLAYABLE_MIN_DECINA_EXTRA, PLAYABLE_MIN_DECINA_EXTRA + 10.0, 7.5)
-        mult_score = linear_score(float(snap.get("mult_extra", 0.0)), PLAYABLE_MIN_MULTIPLA_EXTRA, PLAYABLE_MIN_MULTIPLA_EXTRA + 6.0, 7.5)
-        lab_score = min(100.0, independent_score + raw_score + maturity_score + dec_score + mult_score)
-
-        return {
-            "pair": pair, "support": int(support), "indep": indep, "lab": lab, "closed": closed,
-            "lab_score": float(lab_score), "reasons": reasons, "eligible": not reasons,
-        }
+    def hit_masks_for_draw(nums):
+        numset = set(map(int, nums))
+        masks = []
+        for i, (_, decade_nums) in enumerate(DECADES):
+            inside = [n for n in decade_nums if n in numset]
+            mask = 0
+            for pair in combinations(inside, 2):
+                idx = PAIR_INDEX[i][tuple(sorted(pair))]
+                mask |= 1 << idx
+            masks.append(mask)
+        return masks
 
     @staticmethod
-    def _strict_stats_from_counts(closed, h1_only, h2_only, h3_only, sessions=None):
-        """Costruisce uno stat STRICT coerente partendo dai conteggi per colpo."""
-        closed = max(0, int(closed or 0))
-        h1_only = max(0, int(h1_only or 0))
-        h2_only = max(0, int(h2_only or 0))
-        h3_only = max(0, int(h3_only or 0))
-        if h1_only > closed:
-            h1_only = closed
-        if h1_only + h2_only > closed:
-            h2_only = max(0, closed - h1_only)
-        if h1_only + h2_only + h3_only > closed:
-            h3_only = max(0, closed - h1_only - h2_only)
-        cum2 = h1_only + h2_only
-        cum3 = cum2 + h3_only
-        cost = float(closed + max(0, closed - h1_only) + max(0, closed - cum2))
-        return {
-            "sessions": max(closed, int(sessions if sessions is not None else closed)),
-            "closed": closed,
-            "hit": cum3,
-            "stop": max(0, closed - cum3),
-            "hit_colpi": {"1": h1_only, "2": h2_only, "3": h3_only},
-            "cost": cost,
-            "gross": float(cum3 * AMBO_PAYOUT),
-        }
-
-    def _strict_normalize_stat(self, raw):
-        raw = raw if isinstance(raw, dict) else {}
-        closed = int(raw.get("closed", 0) or 0)
-        hc = raw.get("hit_colpi", {}) or {}
-        h1 = int(hc.get("1", 0) or 0)
-        h2 = int(hc.get("2", 0) or 0)
-        h3 = int(hc.get("3", 0) or 0)
-        sessions = int(raw.get("sessions", closed) or closed)
-        return self._strict_stats_from_counts(closed, h1, h2, h3, sessions=sessions)
-
-    def _strict_merge_stat_maps(self, *maps):
-        out = {}
-        keys = set()
-        for mp in maps:
-            if isinstance(mp, dict):
-                keys.update(mp.keys())
-        for key in keys:
-            sessions = closed = h1 = h2 = h3 = 0
-            for mp in maps:
-                if not isinstance(mp, dict):
-                    continue
-                st = self._strict_normalize_stat(mp.get(key, {}))
-                sessions += int(st.get("sessions", 0))
-                closed += int(st.get("closed", 0))
-                hc = st.get("hit_colpi", {}) or {}
-                h1 += int(hc.get("1", 0)); h2 += int(hc.get("2", 0)); h3 += int(hc.get("3", 0))
-            out[str(key)] = self._strict_stats_from_counts(closed, h1, h2, h3, sessions=sessions)
-        return out
-
-    def _strict_subtract_stat_maps(self, total_map, train_map):
-        """Ricava FORWARD = totale v3.3 - TRAIN storico. Clampa a zero per sicurezza."""
-        out = {}
-        keys = set((total_map or {}).keys()) | set((train_map or {}).keys())
-        for key in keys:
-            tot = self._strict_normalize_stat((total_map or {}).get(key, {}))
-            trn = self._strict_normalize_stat((train_map or {}).get(key, {}))
-            t_hc = tot.get("hit_colpi", {}) or {}; r_hc = trn.get("hit_colpi", {}) or {}
-            closed = max(0, int(tot.get("closed",0)) - int(trn.get("closed",0)))
-            sessions = max(closed, int(tot.get("sessions",0)) - int(trn.get("sessions",0)))
-            h1 = max(0, int(t_hc.get("1",0)) - int(r_hc.get("1",0)))
-            h2 = max(0, int(t_hc.get("2",0)) - int(r_hc.get("2",0)))
-            h3 = max(0, int(t_hc.get("3",0)) - int(r_hc.get("3",0)))
-            st = self._strict_stats_from_counts(closed, h1, h2, h3, sessions=sessions)
-            if int(st.get("closed",0)) > 0 or int(st.get("sessions",0)) > 0:
-                out[str(key)] = st
-        return out
-
-    def _strict_train_stats_from_warmup_summary(self, summary):
-        """Ricostruisce i conteggi TRAIN dal riepilogo v3.3/v3.4 senza rifare il replay.
-
-        Serve soprattutto nella migrazione v3.3 -> v3.4 per mantenere intatti i casi FORWARD
-        gia' raccolti dopo il warmup originale.
-        """
-        out = {}
-        pairs = (summary or {}).get("strict_pairs", {}) or {}
-        for key, d in pairs.items():
-            if not isinstance(d, dict):
-                continue
-            closed = int(d.get("closed", 0) or 0)
-            if closed <= 0:
-                continue
-            cum = {}
-            prev = 0
-            for h in (1,2,3):
-                edge = float(d.get(f"edge_h{h}", 0.0) or 0.0)
-                rate = pair_expected_within_h(h) * 100.0 + edge
-                hits = int(round((rate / 100.0) * closed))
-                hits = max(prev, min(closed, hits))
-                cum[h] = hits
-                prev = hits
-            h1 = cum[1]
-            h2 = max(0, cum[2] - cum[1])
-            h3 = max(0, cum[3] - cum[2])
-            out[str(key)] = self._strict_stats_from_counts(closed, h1, h2, h3, sessions=closed)
-        return out
-
-    def _sync_strict_combined_stats(self):
-        self.playable_strict_stats = self._strict_merge_stat_maps(
-            getattr(self, "playable_strict_train_stats", {}) or {},
-            getattr(self, "playable_strict_forward_stats", {}) or {},
-        )
-
-    def _strict_pair_metrics(self, pair, source="combined"):
-        key = self._pair_key(pair)
-        if source == "train":
-            stat_map = getattr(self, "playable_strict_train_stats", {}) or {}
-        elif source == "forward":
-            stat_map = getattr(self, "playable_strict_forward_stats", {}) or {}
-        else:
-            stat_map = self._strict_merge_stat_maps(
-                getattr(self, "playable_strict_train_stats", {}) or {},
-                getattr(self, "playable_strict_forward_stats", {}) or {},
-            )
-        raw = stat_map.get(key, {}) if isinstance(stat_map, dict) else {}
-        st = self.new_pair_lab_stats()
-        for k in ("sessions", "closed", "hit", "stop"):
-            st[k] = int(raw.get(k, st[k]))
-        st["hit_colpi"] = {str(h): int((raw.get("hit_colpi", {}) or {}).get(str(h), 0)) for h in (1,2,3)}
-        st["cost"] = float(raw.get("cost", 0.0))
-        st["gross"] = float(raw.get("gross", 0.0))
-        closed = st["closed"]
-        h1 = st["hit_colpi"]["1"]
-        h2 = st["hit_colpi"]["2"]
-        h3 = st["hit_colpi"]["3"]
-        cum = {1: h1, 2: h1+h2, 3: h1+h2+h3}
-        rates = {h: pct(cum[h], closed) if closed else 0.0 for h in (1,2,3)}
-        random = {h: pair_expected_within_h(h)*100.0 for h in (1,2,3)}
-        edges = {h: rates[h]-random[h] for h in (1,2,3)}
-        costs = {
-            1: float(closed),
-            2: float(closed + max(0, closed-h1)),
-            3: float(st["cost"]),
-        }
-        gross = {h: float(cum[h] * AMBO_PAYOUT) for h in (1,2,3)}
-        rois = {h: roi_text(gross[h], costs[h])[1] if costs[h] > 0 else 0.0 for h in (1,2,3)}
-        return {"key": key, "stats": st, "rates": rates, "edges": edges, "rois": rois, "costs": costs, "gross_h": gross}
-
-    def _select_strict_horizon(self, strict):
-        """Sceglie H1/H2/H3 dal ROI STRICT; a ROI quasi pari preferisce il colpo piu' corto."""
-        closed = int(strict.get("stats", {}).get("closed", 0))
-        if closed < PLAYABLE_STRICT_MIN_CLOSED:
-            return 0
-        rois = strict.get("rois", {})
-        best_roi = max(float(rois.get(h, -999.0)) for h in (1,2,3))
-        near = [h for h in (1,2,3) if float(rois.get(h, -999.0)) >= best_roi - PLAYABLE_STRICT_SHORTER_TOLERANCE]
-        return min(near) if near else max((1,2,3), key=lambda h: float(rois.get(h, -999.0)))
-
-    def _select_train_forward_horizon(self, train, forward):
-        """Seleziona lo STESSO H che supera i gate sia nel TRAIN sia nel FORWARD.
-
-        Ranking robusto: massimizza prima il ROI peggiore tra i due campioni; a quasi parita'
-        preferisce l'orizzonte piu' corto. Se nessun H e' valido, ritorna 0.
-        """
-        train_n = int((train.get("stats", {}) or {}).get("closed", 0) or 0)
-        fwd_n = int((forward.get("stats", {}) or {}).get("closed", 0) or 0)
-        if train_n < PLAYABLE_STRICT_TRAIN_MIN_CLOSED or fwd_n < PLAYABLE_STRICT_FORWARD_MIN_CLOSED:
-            return 0
-        valid = []
-        for h in (1,2,3):
-            te = float(train.get("edges", {}).get(h, 0.0)); tr = float(train.get("rois", {}).get(h, 0.0))
-            fe = float(forward.get("edges", {}).get(h, 0.0)); fr = float(forward.get("rois", {}).get(h, 0.0))
-            if te >= PLAYABLE_STRICT_MIN_EDGE and tr >= PLAYABLE_STRICT_MIN_ROI and fe >= PLAYABLE_STRICT_MIN_EDGE and fr >= PLAYABLE_STRICT_MIN_ROI:
-                valid.append((h, min(tr, fr), min(te, fe), (tr + fr) / 2.0))
-        if not valid:
-            return 0
-        best_floor = max(x[1] for x in valid)
-        near = [x for x in valid if x[1] >= best_floor - PLAYABLE_STRICT_SHORTER_TOLERANCE]
-        near.sort(key=lambda x: (x[0], -x[2], -x[3]))
-        return int(near[0][0])
-
-    async def process_strict_shadow_sessions(self, app, e, nums):
-        if not self.playable_strict_sessions:
-            return
-        draw = set(map(int, nums))
-        keep=[]
-        for ses in self.playable_strict_sessions:
-            ses["colpi"] = int(ses.get("colpi",0)) + 1
-            h = int(ses["colpi"])
-            pair = norm_pair(ses.get("pair", []))
-            key = self._pair_key(pair)
-            # Ogni sessione aperta dopo il warmup appartiene SOLO al FORWARD.
-            st = self.playable_strict_forward_stats.setdefault(key, self.new_pair_lab_stats())
-            hit = set(pair).issubset(draw)
-            if hit:
-                st["closed"] = int(st.get("closed",0)) + 1
-                st["hit"] = int(st.get("hit",0)) + 1
-                hc = st.setdefault("hit_colpi", {"1":0,"2":0,"3":0})
-                hc[str(h)] = int(hc.get(str(h),0)) + 1
-                st["cost"] = float(st.get("cost",0.0)) + h
-                st["gross"] = float(st.get("gross",0.0)) + AMBO_PAYOUT
-                self.append_csv_event("STRICTLAB_FORWARD_HIT", e=e, playable_colpo=h, playable_ambi=key,
-                                      playable_outcome=f"FORWARD_HIT_H{h}", playable_score=f"{float(ses.get('base_score',0)):.2f}")
-                continue
-            if h >= PLAYABLE_MAX_COLPI:
-                st["closed"] = int(st.get("closed",0)) + 1
-                st["stop"] = int(st.get("stop",0)) + 1
-                st["cost"] = float(st.get("cost",0.0)) + PLAYABLE_MAX_COLPI
-                self.append_csv_event("STRICTLAB_FORWARD_STOP", e=e, playable_colpo=h, playable_ambi=key,
-                                      playable_outcome="FORWARD_STOP_H3", playable_score=f"{float(ses.get('base_score',0)):.2f}")
-                continue
-            keep.append(ses)
-        self.playable_strict_sessions = keep
-        self._sync_strict_combined_stats()
-
-    async def maybe_open_strict_shadow_sessions(self, app, e):
-        """Apre UNA sessione STRICT-LAB sul miglior contesto operativo disponibile.
-
-        Diversamente dalla v3.2.x, la raccolta NON richiede che PAIR-LAB edge/ROI siano
-        gia' positivi e NON richiede conferme. Questo evita il paradosso di usare la
-        redditivita' come prerequisito della stessa statistica che deve misurarla.
-
-        Il PLAY reale resta invariato/severo: in _pair_candidate_metrics dovra' superare
-        sia i gate BASE correnti sia i gate edge/ROI sullo STRICT-LAB.
-        """
-        if not getattr(self, "strict_collection_enabled", True):
-            return
-
-        snap = self.playable_signal_snapshot()
-        lab_candidates = []
-        for pair, support in snap.get("top_pairs", []):
-            m = self._strict_lab_gate_metrics(pair, support, snap)
-            if m.get("eligible"):
-                lab_candidates.append(m)
-
-        # Un solo ambo per condizione: ranking basato su forza del contesto, NON su edge/ROI.
-        lab_candidates.sort(
-            key=lambda r: (
-                -float(r.get("lab_score", 0.0)),
-                -int((r.get("indep") or {}).get("count", 0)),
-                -int(r.get("support", 0)),
-                -int(r.get("closed", 0)),
-                r.get("pair"),
-            )
-        )
-        active_keys = {self._pair_key(x.get("pair", [])) for x in self.playable_strict_sessions if len(x.get("pair", [])) == 2}
-
-        chosen = None
-        for r in lab_candidates:
-            key = self._pair_key(r["pair"])
-            if key in active_keys:
-                continue
-            last_e = int(self.playable_strict_last_open_e.get(key, 0) or 0)
-            if last_e and (int(e) - last_e) < PLAYABLE_STRICT_REOPEN_AFTER:
-                continue
-            chosen = r
-            break
-        if not chosen:
-            return
-
-        r = chosen
-        pair = r["pair"]
-        key = self._pair_key(pair)
-        confirmations = self._pair_confirmations(pair)
-        self.playable_strict_sessions.append({
-            "pair": list(pair), "opened_e": int(e), "colpi": 0,
-            "base_score": float(r.get("lab_score", 0.0)),
-            "lab_score": float(r.get("lab_score", 0.0)),
-            "raw_support": int(r.get("support", 0)),
-            "independent": int((r.get("indep") or {}).get("count", 0)),
-            "confirmations": list(confirmations),
-        })
-        st = self.playable_strict_forward_stats.setdefault(key, self.new_pair_lab_stats())
-        st["sessions"] = int(st.get("sessions", 0)) + 1
-        self._sync_strict_combined_stats()
-        self.playable_strict_last_open_e[key] = int(e)
-        self.append_csv_event(
-            "STRICTLAB_FORWARD_OPEN", e=e, playable_ambi=key, playable_outcome="STRICT_FORWARD_OPEN",
-            playable_support=f"raw={r.get('support',0)}|ind={(r.get('indep') or {}).get('count',0)}|pairlab={r.get('closed',0)}",
-            playable_score=f"{float(r.get('lab_score',0)):.2f}",
-            playable_confirmations=",".join(confirmations),
-        )
-
-    def _pair_candidate_metrics(self, pair, support, snap):
-        pair = norm_pair(pair)
-        base = self._base_pair_gate_metrics(pair, support, snap)
-        indep = base["indep"]
-        lab = base["lab"]
-        confirmations = base["confirmations"]
-
-        train = self._strict_pair_metrics(pair, source="train")
-        forward = self._strict_pair_metrics(pair, source="forward")
-        combined = self._strict_pair_metrics(pair, source="combined")
-        train_closed = int(train["stats"].get("closed",0))
-        forward_closed = int(forward["stats"].get("closed",0))
-        strict_closed = int(combined["stats"].get("closed",0))
-        selected_h = self._select_train_forward_horizon(train, forward) if PLAYABLE_STRICT_REQUIRE_SAME_H else self._select_strict_horizon(combined)
-
-        if selected_h:
-            train_rate = float(train["rates"].get(selected_h,0.0)); train_edge = float(train["edges"].get(selected_h,0.0)); train_roi = float(train["rois"].get(selected_h,0.0))
-            forward_rate = float(forward["rates"].get(selected_h,0.0)); forward_edge = float(forward["edges"].get(selected_h,0.0)); forward_roi = float(forward["rois"].get(selected_h,0.0))
-            strict_rate = float(combined["rates"].get(selected_h,0.0)); strict_edge = min(train_edge, forward_edge); strict_roi = min(train_roi, forward_roi)
-        else:
-            train_rate = train_edge = train_roi = 0.0
-            forward_rate = forward_edge = forward_roi = 0.0
-            strict_rate = strict_edge = strict_roi = 0.0
-
-        # SCORE v3.4: usa la FORZA PEGGIORE tra TRAIN e FORWARD sullo stesso H.
-        # In questo modo un ottimo storico non puo' compensare un FORWARD debole.
-        independent_score = linear_score(indep["count"], 0, 6, 25)
-        strict_edge_score = linear_score(strict_edge, 0, 8, 30) if selected_h else 0.0
-        strict_roi_score = linear_score(strict_roi, -20, 20, 25) if selected_h else 0.0
-        convergence_score = min(15.0, len(confirmations) * 5.0)
-        context_score = 0.0
-        if float(snap.get("dec_extra",0.0)) >= PLAYABLE_MIN_DECINA_EXTRA:
-            context_score += 2.5
-        if float(snap.get("mult_extra",0.0)) >= PLAYABLE_MIN_MULTIPLA_EXTRA:
-            context_score += 2.5
-        score = min(100.0, independent_score + strict_edge_score + strict_roi_score + convergence_score + context_score)
-
-        strict_reasons=[]
-        if train_closed < PLAYABLE_STRICT_TRAIN_MIN_CLOSED:
-            strict_reasons.append(f"TRAIN {train_closed}<{PLAYABLE_STRICT_TRAIN_MIN_CLOSED}")
-        if forward_closed < PLAYABLE_STRICT_FORWARD_MIN_CLOSED:
-            strict_reasons.append(f"FORWARD {forward_closed}<{PLAYABLE_STRICT_FORWARD_MIN_CLOSED}")
-        if train_closed >= PLAYABLE_STRICT_TRAIN_MIN_CLOSED and forward_closed >= PLAYABLE_STRICT_FORWARD_MIN_CLOSED:
-            if not selected_h:
-                strict_reasons.append("nessun H1/H2/H3 positivo nello stesso H in TRAIN+FORWARD")
-            else:
-                # Ridondante ma esplicito nei log/report.
-                if train_edge < PLAYABLE_STRICT_MIN_EDGE or train_roi < PLAYABLE_STRICT_MIN_ROI:
-                    strict_reasons.append(f"TRAIN H{selected_h} sotto gate edge/ROI")
-                if forward_edge < PLAYABLE_STRICT_MIN_EDGE or forward_roi < PLAYABLE_STRICT_MIN_ROI:
-                    strict_reasons.append(f"FORWARD H{selected_h} sotto gate edge/ROI")
-                if PLAYABLE_REQUIRE_CONFIRMATION and not confirmations:
-                    if (train_edge < PLAYABLE_STRICT_NO_CONFIRM_MIN_EDGE or train_roi < PLAYABLE_STRICT_NO_CONFIRM_MIN_ROI or
-                            forward_edge < PLAYABLE_STRICT_NO_CONFIRM_MIN_EDGE or forward_roi < PLAYABLE_STRICT_NO_CONFIRM_MIN_ROI):
-                        strict_reasons.append(
-                            f"senza conf TRAIN+FORWARD devono essere >= {PLAYABLE_STRICT_NO_CONFIRM_MIN_EDGE:+.1f}pp/{PLAYABLE_STRICT_NO_CONFIRM_MIN_ROI:+.1f}%"
-                        )
-
-        hard_reasons = list(base["base_reasons"]) + strict_reasons
-        eligible = not hard_reasons
-        strong_pair = (
-            eligible and selected_h and strict_edge >= PLAYABLE_PAIR_STRONG_EDGE_H3
-            and strict_roi >= max(PLAYABLE_PAIR_STRONG_ROI_H3, PLAYABLE_STRICT_MIN_ROI)
-            and indep["count"] >= max(5, PLAYABLE_MIN_INDEPENDENT_SPIES)
-        )
-        if eligible and score >= PLAYABLE_STRONG_SCORE and strong_pair:
-            state="🔥 PLAY STRONG"
-        elif eligible and score >= PLAYABLE_PLAY_SCORE:
-            state="🟢 PLAY"
-        elif train_closed < PLAYABLE_STRICT_TRAIN_MIN_CLOSED:
-            state="🧪 TRAIN"
-        elif forward_closed < PLAYABLE_STRICT_FORWARD_MIN_CLOSED:
-            state="🧪 FORWARD"
-        elif base["base_eligible"] and not selected_h:
-            state="🟡 WATCH"
-        elif int(lab["stats"].get("closed",0)) < PLAYABLE_PAIR_LAB_MIN_CLOSED:
-            state="🧪 PAIR SHADOW"
-        elif score >= PLAYABLE_WATCH_SCORE or base["base_eligible"]:
-            state="🟡 WATCH"
-        else:
-            state="🔴 NO PLAY"
-
-        return {
-            "pair": pair, "support": int(support), "independent_support": indep["count"],
-            "independent_spies": indep["spies"], "unique_trios": len(indep["trios"]),
-            "score": score, "state": state, "eligible": eligible, "hard_reasons": hard_reasons,
-            "base_eligible": bool(base["base_eligible"]), "base_reasons": list(base["base_reasons"]),
-            "base_score": float(base["base_score"]),
-            "pair_lab_closed": int(lab["stats"].get("closed",0)), "pair_hit_rate_h3": lab["rates"][3],
-            "pair_edge_h3": float(lab["edges"][3]), "pair_roi_h3": float(lab["rois"][3]), "pair_lab": lab,
-            "strict_closed": strict_closed, "strict_horizon": int(selected_h or 0),
-            "strict_rate": strict_rate, "strict_edge": strict_edge, "strict_roi": strict_roi, "strict_lab": combined,
-            "strict_train_closed": train_closed, "strict_forward_closed": forward_closed,
-            "strict_train_rate": train_rate, "strict_train_edge": train_edge, "strict_train_roi": train_roi,
-            "strict_forward_rate": forward_rate, "strict_forward_edge": forward_edge, "strict_forward_roi": forward_roi,
-            "strict_train_lab": train, "strict_forward_lab": forward,
-            "confirmations": confirmations, "rule_hist_extra": base["rule_hist_extra"],
-            "score_parts": {"independent":independent_score,"pair_edge":strict_edge_score,"pair_roi":strict_roi_score,
-                            "convergence":convergence_score,"context":context_score},
-            "random_h": {h: pair_expected_within_h(h)*100.0 for h in (1,2,3)},
-            "hist_extra": base["rule_hist_extra"], "live_h3_extra": float(lab["edges"][3]),
-            "live_h3_closed": int(lab["stats"].get("closed",0)),
-            "early": {h:{"extra":lab["edges"][h],"closed":int(lab["stats"].get("closed",0)),"rules":1} for h in (1,2,3)},
-            "strict_early": {h:{"extra":combined["edges"][h],"roi":combined["rois"][h],"rate":combined["rates"][h],"closed":strict_closed} for h in (1,2,3)},
-            "strict_train_early": {h:{"extra":train["edges"][h],"roi":train["rois"][h],"rate":train["rates"][h],"closed":train_closed} for h in (1,2,3)},
-            "strict_forward_early": {h:{"extra":forward["edges"][h],"roi":forward["rois"][h],"rate":forward["rates"][h],"closed":forward_closed} for h in (1,2,3)},
-            "contributors": len(base["contributing"]), "unique_rules": len(base["keys"]),
-        }
-
-    def playability_rankings(self, snap=None):
-        snap = snap or self.playable_signal_snapshot()
-        rows = []
-        for pair, support in snap.get("top_pairs", []):
-            if int(support) < max(2, PLAYABLE_MIN_PAIR_SUPPORT - 3):
-                continue
-            rows.append(self._pair_candidate_metrics(pair, support, snap))
-        rows.sort(key=lambda r: (-int(r["eligible"]), -int(r.get("base_eligible",False)), -float(r["score"]), -int(r["support"]), r["pair"]))
-        return rows
-
-    def core_spalle_1_19_snapshot(self, snap=None):
-        """v15: lettura LAB delle spalle 1-19 associate al triangolo CORE 88-89-90.
-
-        Non cambia il play automatico. Conta nei segnali DECINA/MULTIPLA aperti:
-        - quante volte una spalla 1-19 compare con almeno 2 numeri CORE;
-        - quali terni pair CORE + spalla sono vivi adesso;
-        - quali spalle storiche sono coerenti con gli ambi scelti.
-        """
-        if snap is None:
-            snap = self.playable_signal_snapshot()
-        raw_signals = snap.get("raw_signals", [])
-        core_nums = set(PLAYABLE_CORE_FULL_NUMS)
-        shoulder_nums = set(PLAYABLE_CORE_SPALLE_RANGE)
-
-        shoulder_counter = Counter()
-        pair_shoulder_counter = Counter()
-        core_pair_counter = Counter()
-        core_signal_count = 0
-        triangle_signal_count = 0
-
-        for s in raw_signals:
-            followers = tuple(sorted(map(int, s.get("followers", []))))
-            if len(followers) != 3:
-                continue
-            fs = set(followers)
-            core_in = sorted(fs & core_nums)
-            shoulders = sorted(fs & shoulder_nums)
-            if len(core_in) >= 2:
-                core_signal_count += 1
-                for sp in shoulders:
-                    shoulder_counter[sp] += 1
-                for pair in combinations(core_in, 2):
-                    pair = tuple(sorted(pair))
-                    core_pair_counter[pair] += 1
-                    for sp in shoulders:
-                        pair_shoulder_counter[(pair, sp)] += 1
-            if core_nums.issubset(fs):
-                triangle_signal_count += 1
-
-        primary_live = [(n, shoulder_counter.get(n, 0)) for n in PLAYABLE_CORE_SPALLE_PRIMARY]
-        watch_live = [(n, shoulder_counter.get(n, 0)) for n in PLAYABLE_CORE_SPALLE_WATCH]
-        top_live = shoulder_counter.most_common(PLAYABLE_CORE_SPALLE_TOP_N)
-        top_pair_live = sorted(pair_shoulder_counter.items(), key=lambda kv: (-kv[1], kv[0][0], kv[0][1]))[:PLAYABLE_CORE_SPALLE_TOP_N]
-
-        return {
-            "enabled": PLAYABLE_CORE_SPALLE_ENABLED,
-            "core_signal_count": core_signal_count,
-            "triangle_signal_count": triangle_signal_count,
-            "shoulder_counter": shoulder_counter,
-            "pair_shoulder_counter": pair_shoulder_counter,
-            "core_pair_counter": core_pair_counter,
-            "primary_live": primary_live,
-            "watch_live": watch_live,
-            "top_live": top_live,
-            "top_pair_live": top_pair_live,
-        }
-
-    def _core_spalle_short_text(self, selected_pairs=None, snap=None):
-        if not PLAYABLE_CORE_SPALLE_ENABLED:
-            return "OFF"
-        if snap is None:
-            snap = self.playable_signal_snapshot()
-        ss = self.core_spalle_1_19_snapshot(snap)
-        bits = []
-        for n, c in ss.get("primary_live", []):
-            if c > 0:
-                bits.append(f"{n}({c})")
-        for n, c in ss.get("top_live", []):
-            label = f"{n}({c})"
-            if c > 0 and label not in bits:
-                bits.append(label)
-            if len(bits) >= 5:
-                break
-        if not bits:
-            bits = [str(n) for n in PLAYABLE_CORE_SPALLE_PRIMARY]
-        return ", ".join(bits[:5])
-
-    def core_spalle_1_19_text(self):
-        snap = self.playable_signal_snapshot()
-        ss = self.core_spalle_1_19_snapshot(snap)
-
-        def fmt_hist(rows):
-            return ", ".join(f"{n}({p:.2f}%)" for n, _, p in rows)
-
-        primary_txt = ", ".join(f"{n}({c})" for n, c in ss["primary_live"]) or "n/d"
-        watch_txt = ", ".join(f"{n}({c})" for n, c in ss["watch_live"]) or "n/d"
-        top_live_txt = ", ".join(f"{n}({c})" for n, c in ss["top_live"]) or "nessuna spalla 1-19 viva"
-        if ss["top_pair_live"]:
-            pair_live_txt = ", ".join(
-                f"{pair[0]}-{pair[1]}+{sp}({cnt})" for ((pair, sp), cnt) in ss["top_pair_live"]
-            )
-        else:
-            pair_live_txt = "nessun terno CORE+spalla vivo"
-
-        pair_lines = []
-        for pair in sorted(CORE_SPALLE_HISTORIC_PAIR):
-            pair_lines.append(f"• {pair[0]}-{pair[1]} → {fmt_hist(CORE_SPALLE_HISTORIC_PAIR[pair])}")
-
-        lines = [
-            "🧩 SPALLE 1-19 CORE — LAB",
-            "• cosa misura: se i CORE 88/89/90 stanno chiamando una spalla tra 1 e 19",
-            "• uso = report/laboratorio; NON apre giocate automatiche",
-            "• sintesi storico: tutta la fascia 1-19 non basta; guardare solo spalle mirate",
-            "",
-            "📌 SPALLE STORICHE MIGLIORI",
-            *pair_lines,
-            f"• 88-89-90 completo → {fmt_hist(CORE_SPALLE_HISTORIC_TRIANGLE)}",
-            "",
-            "📡 LETTURA LIVE ORA",
-            f"• segnali CORE con almeno 2 numeri tra 88/89/90 = {ss['core_signal_count']}",
-            f"• segnali con triangolo completo 88-89-90 = {ss['triangle_signal_count']}",
-            f"• spalle principali 17/10/8 = {primary_txt}",
-            f"• watch 7/9/19 = {watch_txt}",
-            f"• top spalle vive = {top_live_txt}",
-            f"• terni CORE+spalla vivi = {pair_live_txt}",
-            "",
-            "🧾 LETTURA",
-            "• 17 = spalla migliore del triangolo completo nello storico",
-            "• 10 = migliore su 88-89 e forte su 88-90",
-            "• 8 = migliore su 89-90",
-            "• se le spalle live sono a 0, non aggiungere numeri 1-19 al play",
-        ]
-        return "\n".join(lines)
-
-    # --------------------------------------------------------
-    # v17 LAB: Cottone/fissi/T1, distanza +5, conteggio +4, somma 90/91
-    # --------------------------------------------------------
-    def _latest_draw(self):
-        return list(map(int, self.last_draws[-1])) if self.last_draws else []
-
-    def _previous_draw(self):
-        return list(map(int, self.last_draws[-2])) if len(self.last_draws) >= 2 else []
-
-    def cottone_fissi_t1_snapshot(self):
-        """Metodo Cottone su estratto ripetuto: fissi in uscita + T1.
-
-        Trigger live: un numero della riga 90/1..19 e' presente sia nell'ultima
-        estrazione sia nella precedente. Il modulo mostra gli 8 fissi e la T1.
-        """
-        cur = self._latest_draw()
-        prev = self._previous_draw()
-        cur_set, prev_set = set(cur), set(prev)
-        repeated = [r for r in LAB_COTTONE_VISIBLE_ROWS if r in cur_set and r in prev_set]
-        rows = []
-        for r in repeated:
-            fissi = cottone_fissi_for_row(r)
-            t1 = cottone_t1_for_row(r)
-            rows.append({
-                "row": r,
-                "fissi": fissi,
-                "t1": t1,
-                "fissi_in_ultima": sorted(cur_set & set(fissi)),
-                "t1_in_ultima": sorted(cur_set & set(t1)),
-                "is_top_fissi": r in LAB_COTTONE_TOP_FISSI_ROWS,
-                "is_t1_watch": r in LAB_COTTONE_T1_WATCH_ROWS,
-            })
-        return {"latest": cur, "previous": prev, "rows": rows}
-
-    def plus5_distance_snapshot(self):
-        """Distanza +5 nella stessa estrazione.
-
-        Non fa conteggio: guarda le coppie N/N+5 presenti nell'ultimo concorso.
-        Evidenzia le coppie basse che nel backtest hanno mostrato replay H3 migliore.
-        """
-        cur = self._latest_draw()
-        s = set(cur)
-        pairs = []
-        for a in range(1, 86):
-            b = a + 5
-            if a in s and b in s:
-                meta = LAB_PLUS5_TOP_PAIRS.get((a, b))
-                pairs.append({
-                    "pair": (a, b),
-                    "decina": number_decina(a),
-                    "watch": bool(meta),
-                    "tag": meta.get("tag") if meta else "",
-                    "h3": meta.get("h3", 0.0) if meta else 0.0,
-                    "roi": meta.get("roi", 0.0) if meta else 0.0,
-                })
-        pairs.sort(key=lambda x: (not x["watch"], -x["roi"], x["pair"][0]))
-        return {"pairs": pairs}
-
-    def conteggio_plus4_snapshot(self):
-        """Metodo conteggio +4 corretto.
-
-        Se N e N+4 sono presenti, conta N+4 posizioni da N compreso
-        dentro i 20 numeri ordinati. Il numero raggiunto e' l'ambata LAB.
-        """
-        cur = sorted(self._latest_draw())
-        s = set(cur)
-        out = []
-        for n in range(1, 87):
-            conf = n + 4
-            if n not in s or conf not in s:
-                continue
-            tail = [x for x in cur if x >= n]
-            count_to = conf
-            if len(tail) < count_to:
-                continue
-            target = tail[count_to - 1]
-            triad = [num90(target - 1), target, num90(target + 1)]
-            meta = LAB_CONTEGGIO_PLUS4_TOP.get(n)
-            out.append({
-                "base": n,
-                "confirm": conf,
-                "count_to": count_to,
-                "target": target,
-                "triad": triad,
-                "watch": bool(meta),
-                "tag": meta.get("tag") if meta else "",
-                "h1": meta.get("h1", 0.0) if meta else 0.0,
-                "h3": meta.get("h3", 0.0) if meta else 0.0,
-                "extra": meta.get("extra", 0.0) if meta else 0.0,
-            })
-        out.sort(key=lambda x: (not x["watch"], -x["extra"], x["base"]))
-        return {"signals": out}
-
-    def somma_9091_snapshot(self):
-        """Snapshot live del metodo SOMMA 90/91 con trigger sulla somma totale esatta."""
-        cur = self._latest_draw()
-        if not cur:
-            return {
-                "sum": 0, "a": 0, "b": 0, "c": 0, "nums": [], "valid_triad": False,
-                "raw_occurrences": 0, "previous_e": 0, "repeated_raw": False, "gap": None,
-            }
-        sm = sum9091_from_nums(cur)
-        total = int(sm.get("sum", 0) or 0)
-        entry = self.sum9091_seen_raw.get(str(total), {}) if total else {}
-        count = int(entry.get("count", 0) or 0) if isinstance(entry, dict) else 0
-        previous_e = int(entry.get("prev_e", 0) or 0) if isinstance(entry, dict) else 0
-        last_e = int(entry.get("last_e", 0) or 0) if isinstance(entry, dict) else 0
-        # Se lo snapshot viene chiesto prima che la draw corrente sia stata registrata
-        # nella mappa, facciamo comunque un controllo sullo storico caricato.
-        repeated_raw = count >= 2 and last_e == int(self.max_e or 0)
-        gap = (last_e - previous_e) if repeated_raw and previous_e and last_e else None
-        sm["raw_occurrences"] = count
-        sm["previous_e"] = previous_e
-        sm["repeated_raw"] = repeated_raw
-        sm["gap"] = gap
-        return sm
-
-    def _record_sum9091_horizon(self, session, h, exact_k):
-        hk = str(int(h))
-        st = self.sum9091_horizon_stats.setdefault(hk, self.new_sum9091_stats())
-        st["closed"] = int(st.get("closed", 0)) + 1
-        exact_k = max(0, min(3, int(exact_k)))
-        best_k = max(0, min(3, int(session.get("best_k", 0))))
-        ex = st.setdefault("exact_k_counts", {str(i): 0 for i in range(0, 4)})
-        bk = st.setdefault("best_k_counts", {str(i): 0 for i in range(0, 4)})
-        ex[str(exact_k)] = int(ex.get(str(exact_k), 0)) + 1
-        bk[str(best_k)] = int(bk.get(str(best_k), 0)) + 1
-        if best_k >= 2:
-            st["k2plus"] = int(st.get("k2plus", 0)) + 1
-        if best_k >= 3:
-            st["k3"] = int(st.get("k3", 0)) + 1
-
-    @staticmethod
-    def _bump_sum9091_result_stat(mp, key, best_k):
-        key = str(key)
-        st = mp.setdefault(key, {"closed": 0, "best0": 0, "best1": 0, "best2": 0, "best3": 0})
-        st["closed"] = int(st.get("closed", 0)) + 1
-        best_k = max(0, min(3, int(best_k)))
-        st[f"best{best_k}"] = int(st.get(f"best{best_k}", 0)) + 1
-
-    async def process_sum9091_sessions(self, app, e, nums):
-        """Processa i monitor SOMMA 90/91 gia' aperti.
-
-        Ogni H e' una singola estrazione. Il best entro H e' il miglior 0/3, 1/3,
-        2/3 o 3/3 ottenuto in UNA delle estrazioni H1..H; i numeri non si cumulano.
-        """
-        if not LAB_SUM9091_ENABLED or not self.sum9091_sessions:
-            return
-        nums_set = set(map(int, nums or []))
-        still_open = []
-        for s in self.sum9091_sessions:
-            s["colpi"] = int(s.get("colpi", 0)) + 1
-            h = int(s["colpi"])
-            target = set(map(int, s.get("nums", [])))
-            hits = sorted(target & nums_set)
-            k = len(hits)
-            s.setdefault("draws_by_colpo", []).append({
-                "h": h,
-                "e": int(e),
-                "hits": hits,
-                "k": k,
-            })
-            s["draws_by_colpo"] = s.get("draws_by_colpo", [])[-LAB_SUM9091_MAX_COLPI:]
-            if k > int(s.get("best_k", 0)):
-                s["best_k"] = k
-                s["best_hits"] = hits
-                s["best_h"] = h
-                s["best_e"] = int(e)
-
-            if 1 <= h <= LAB_SUM9091_MAX_COLPI:
-                self._record_sum9091_horizon(s, h, k)
-
-            if h >= LAB_SUM9091_MAX_COLPI:
-                best_k = max(0, min(3, int(s.get("best_k", 0))))
-                self._bump_sum9091_result_stat(self.sum9091_a_stats, s.get("a", 0), best_k)
-                self._bump_sum9091_result_stat(self.sum9091_raw_stats, s.get("sum", 0), best_k)
-                self.append_csv_event(
-                    "SUM9091_LAB_CLOSE",
-                    e=e,
-                    play_id=s.get("id", ""),
-                    colpo=h,
-                    ambata=s.get("a", ""),
-                    cluster=fmt_nums(s.get("nums", [])),
-                    outcome=(
-                        f"RAW_SUM_{s.get('sum')}_REPEAT_FROM_E{s.get('previous_e')}_"
-                        f"GAP_{s.get('repeat_gap')}_BEST_{best_k}_3_H{s.get('best_h') or '-'}"
-                    ),
-                )
-            else:
-                still_open.append(s)
-        self.sum9091_sessions = still_open[-LAB_SUM9091_MAX_OPEN_SESSIONS:]
-
-    async def maybe_open_sum9091_session(self, app, e):
-        """Apre il LAB quando la SOMMA TOTALE ESATTA della draw corrente era gia' uscita oggi.
-
-        La ripetizione puo' essere non consecutiva. Due somme diverse che producono
-        lo stesso A fuori 90 NON costituiscono un segnale.
-        """
-        if not LAB_SUM9091_ENABLED or not self.last_draws:
-            return
-
-        cur = sum9091_from_nums(self.last_draws[-1])
-        total = int(cur.get("sum", 0) or 0)
-        if total <= 0:
-            return
-
-        # Leggiamo la memoria PRIMA di registrare la draw corrente.
-        old = self.sum9091_seen_raw.get(str(total), {}) if isinstance(self.sum9091_seen_raw.get(str(total), {}), dict) else {}
-        old_count = int(old.get("count", 0) or 0)
-        previous_e = int(old.get("last_e", 0) or 0)
-
-        # Registriamo SEMPRE la somma corrente, anche se e' la prima volta o la terzina e' degenere.
-        remembered = self._remember_sum9091_raw(e, self.last_draws[-1])
-        if not remembered or old_count <= 0:
-            return
-
-        # Questo e' il vero trigger Cottone: stessa SOMMA TOTALE esatta gia' vista.
-        # 2/3 e 3/3 hanno senso solo con tre numeri distinti.
-        if not bool(cur.get("valid_triad", False)):
-            self.append_csv_event(
-                "SUM9091_RAW_REPEAT_DEGENERATE",
-                e=e,
-                ambata=cur.get("a", ""),
-                cluster=fmt_nums(cur.get("nums", [])),
-                outcome=f"RAW_SUM_{total}_REPEAT_FROM_E{previous_e}_NO_TRIAD",
-            )
-            return
-
-        occurrence = int(remembered.get("occurrence", old_count + 1))
-        repeat_gap = int(e) - previous_e if previous_e else None
-
-        self.sum9091_uid += 1
-        s = {
-            "id": self.sum9091_uid,
-            "signal_e": int(e),
-            "sum": total,
-            "previous_e": previous_e,
-            "repeat_gap": repeat_gap,
-            "occurrence": occurrence,
-            "a": int(cur["a"]),
-            "b": int(cur["b"]),
-            "c": int(cur["c"]),
-            "nums": list(map(int, cur["nums"])),
-            "colpi": 0,
-            "best_k": 0,
-            "best_hits": [],
-            "best_h": None,
-            "best_e": None,
-            "draws_by_colpo": [],
-        }
-        self.sum9091_sessions.append(s)
-        self.sum9091_sessions = self.sum9091_sessions[-LAB_SUM9091_MAX_OPEN_SESSIONS:]
-        for h in LAB_SUM9091_TRACK_HORIZONS:
-            st = self.sum9091_horizon_stats.setdefault(str(h), self.new_sum9091_stats())
-            st["sessions"] = int(st.get("sessions", 0)) + 1
-
-        self.append_csv_event(
-            "SUM9091_LAB_OPEN",
-            e=e,
-            play_id=s["id"],
-            colpo=0,
-            ambata=s["a"],
-            cluster=fmt_nums(s["nums"]),
-            outcome=f"REPEAT_RAW_SUM_{total}_FROM_E{previous_e}_GAP_{repeat_gap}_OCC_{occurrence}",
-        )
-        if LAB_SUM9091_NOTIFY_OPEN:
-            await self.tg(
-                app,
-                "🧮 SOMMA 90/91 — LAB APERTO\n"
-                f"• id = {s['id']} | SOMMA TOTALE RIPETUTA = {total}\n"
-                f"• precedente = E{previous_e} | nuova = E{e} | distanza = {repeat_gap if repeat_gap is not None else '-'} estrazioni\n"
-                f"• fuori 90: A={s['a']} | 90-A={s['b']} | 91-A={s['c']}\n"
-                f"• numeri = {fmt_nums(s['nums'])}\n"
-                f"• segnale = estrazione {e}; H1 parte dalla prossima estrazione\n"
-                f"• monitor = H1-H{LAB_SUM9091_MAX_COLPI}, singola estrazione, solo LAB"
-            )
-
-    def sum9091_lab_text(self, compact=False):
-        if not LAB_SUM9091_ENABLED:
-            return "🧮 SOMMA 90/91 — LAB OFF"
-        sm = self.somma_9091_snapshot()
-        if not sm.get("a"):
-            return "🧮 SOMMA 90/91 — LAB | dati non disponibili"
-
-        repeat_txt = "SI" if sm.get("repeated_raw") else "NO"
-        valid_txt = "OK 3 distinti" if sm.get("valid_triad") else "DEGENERE: meno di 3 distinti, nessun monitor"
-        open_sessions = [s for s in self.sum9091_sessions if int(s.get("colpi", 0)) < LAB_SUM9091_MAX_COLPI]
-        seen_repeated = sum(1 for v in self.sum9091_seen_raw.values() if isinstance(v, dict) and int(v.get("count", 0) or 0) >= 2)
-        lines = [
-            "🧮 SOMMA 90/91 — LAB SOMMA TOTALE RIPETUTA",
-            f"• ultima: somma totale={sm['sum']} → A={sm['a']} | 90-A={sm['b']} | 91-A={sm['c']} | numeri={fmt_nums(sm['nums'])}",
-            f"• stessa somma totale gia' vista={repeat_txt} | occorrenze oggi={sm.get('raw_occurrences', 0)} | precedente E={sm.get('previous_e') or '-'} | gap={sm.get('gap') if sm.get('gap') is not None else '-'} | terzina={valid_txt}",
-            "• trigger LAB = la STESSA SOMMA GREZZA dei 20 estratti ricompare nello stesso giorno, anche NON consecutivamente",
-            "• NON trigger = due somme totali diverse che danno lo stesso A fuori 90",
-            "• verifica = ogni H e' una singola estrazione; NON cumulativo; 2/3=possibile ambo, 3/3=possibile terno",
-            f"• somme raw distinte ripetute oggi = {seen_repeated} | sessioni aperte = {len(open_sessions)}",
-        ]
-
-        # In versione compatta mostriamo H1/H3/H5/H10; il comando dedicato mostra tutti gli H.
-        hs = (1, 3, 5, 10) if compact else LAB_SUM9091_TRACK_HORIZONS
-        lines.append("• risultati entro H (miglior singola estrazione):")
-        for h in hs:
-            st = self.sum9091_horizon_stats.get(str(h), self.new_sum9091_stats())
-            closed = int(st.get("closed", 0))
-            bk = st.get("best_k_counts", {}) or {}
-            k1 = int(bk.get("1", 0)); k2 = int(bk.get("2", 0)); k3 = int(bk.get("3", 0))
-            if closed:
-                lines.append(
-                    f"  H{h}: casi={closed} | 1/3={k1} ({pct(k1, closed):.1f}%) | "
-                    f"2/3={k2} ({pct(k2, closed):.1f}%) | 3/3={k3} ({pct(k3, closed):.1f}%) | "
-                    f">=2/3={pct(k2 + k3, closed):.1f}%"
-                )
-            else:
-                lines.append(f"  H{h}: casi=0 | 1/3=0 | 2/3=0 | 3/3=0")
-
-        if not compact and open_sessions:
-            lines.append("• monitor aperti:")
-            for s in open_sessions[-6:]:
-                shots = ", ".join(f"H{d['h']}={d['k']}/3" for d in (s.get("draws_by_colpo", []) or [])) or "H1 non ancora giocato"
-                lines.append(
-                    f"  #{s.get('id')} SUM={s.get('sum')} (gia' E{s.get('previous_e')}, gap {s.get('repeat_gap')}) → "
-                    f"A={s.get('a')} {fmt_nums(s.get('nums', []))} | segnale E{s.get('signal_e')} | {shots} | best={s.get('best_k', 0)}/3"
-                )
-        if not compact:
-            ranked_a = []
-            for a, st in (self.sum9091_a_stats or {}).items():
-                closed = int(st.get("closed", 0))
-                if not closed:
-                    continue
-                k2 = int(st.get("best2", 0)); k3 = int(st.get("best3", 0))
-                ranked_a.append((pct(k2 + k3, closed), int(a), closed, k2, k3))
-            ranked_a.sort(reverse=True)
-            if ranked_a:
-                lines.append("• migliori A dopo trigger RAW a H10 (>=2/3): " + "; ".join(
-                    f"A{a}: {k2+k3}/{closed}={rate:.1f}% (3/3={k3})" for rate, a, closed, k2, k3 in ranked_a[:8]
-                ))
-
-            ranked_raw = []
-            for raw, st in (self.sum9091_raw_stats or {}).items():
-                closed = int(st.get("closed", 0))
-                if not closed:
-                    continue
-                k2 = int(st.get("best2", 0)); k3 = int(st.get("best3", 0))
-                ranked_raw.append((pct(k2 + k3, closed), int(raw), closed, k2, k3))
-            ranked_raw.sort(reverse=True)
-            if ranked_raw:
-                lines.append("• migliori SOMME TOTALI ripetute a H10 (>=2/3): " + "; ".join(
-                    f"Σ{raw}: {k2+k3}/{closed}={rate:.1f}% (3/3={k3})" for rate, raw, closed, k2, k3 in ranked_raw[:8]
-                ))
-        return "\n".join(lines)
-
-    def _record_cottone_horizon(self, session, h):
-        hkey = str(h)
-        st = self.cottone_horizon_stats.setdefault(hkey, self.new_cottone_stats())
-        st["closed"] = int(st.get("closed", 0)) + 1
-        row_key = str(session.get("row"))
-        st.setdefault("row_closed", {})[row_key] = int(st.setdefault("row_closed", {}).get(row_key, 0)) + 1
-
-        fissi_seen = sorted({int(x) for x in session.get("fissi_seen", [])})
-        t1_seen = sorted({int(x) for x in session.get("t1_seen", [])})
-        kf = max(0, min(8, len(fissi_seen)))
-        kt = max(0, min(3, len(t1_seen)))
-        st.setdefault("fissi_k_counts", {str(i): 0 for i in range(0, 9)})[str(kf)] = int(st.setdefault("fissi_k_counts", {}).get(str(kf), 0)) + 1
-        st.setdefault("t1_k_counts", {str(i): 0 for i in range(0, 4)})[str(kt)] = int(st.setdefault("t1_k_counts", {}).get(str(kt), 0)) + 1
-
-        # v21: contatori separati per ogni riga/estratto ripetuto.
-        # Cosi' il report puo' dire: riga 90, H10, media 7.20/8, top fissi, ecc.
-        row_fkc_all = st.setdefault("row_fissi_k_counts", {})
-        row_tkc_all = st.setdefault("row_t1_k_counts", {})
-        row_fkc = row_fkc_all.setdefault(row_key, {str(i): 0 for i in range(0, 9)})
-        row_tkc = row_tkc_all.setdefault(row_key, {str(i): 0 for i in range(0, 4)})
-        row_fkc[str(kf)] = int(row_fkc.get(str(kf), 0)) + 1
-        row_tkc[str(kt)] = int(row_tkc.get(str(kt), 0)) + 1
-
-        target_f = st.setdefault("fissi_target_hits", {})
-        row_target_f = st.setdefault("row_fissi_target_hits", {}).setdefault(row_key, {})
-        for n in fissi_seen:
-            sk = str(n)
-            target_f[sk] = int(target_f.get(sk, 0)) + 1
-            row_target_f[sk] = int(row_target_f.get(sk, 0)) + 1
-        target_t = st.setdefault("t1_target_hits", {})
-        row_target_t = st.setdefault("row_t1_target_hits", {}).setdefault(row_key, {})
-        for n in t1_seen:
-            sk = str(n)
-            target_t[sk] = int(target_t.get(sk, 0)) + 1
-            row_target_t[sk] = int(row_target_t.get(sk, 0)) + 1
-
-    async def process_cottone_sessions(self, app, e, nums):
-        """Aggiorna le sessioni Cottone a ogni nuova estrazione.
-
-        LAB COTTONE:
-        - rimane cumulativo entro H1/H2/.../H10 per studiare quanti fissi/T1 si vedono nel tempo.
-
-        v23 GIOCO REALE:
-        - FISSI: premio solo se 5/8, 6/8, 7/8 oppure 8/8 escono nella STESSA estrazione H1...H10.
-        - T1: premio solo se 2/3 oppure 3/3 escono nella STESSA estrazione H1...H10.
-        - NON somma numeri usciti in colpi diversi per decidere WIN/LOSE.
-        - Chiude e scrive il risultato finale al termine dei 10 colpi, usando il miglior colpo singolo.
-        """
-        if not self.cottone_sessions:
-            return
-        nums_set = set(map(int, nums or []))
-        still_open = []
-        closed_ids_set = set(map(int, self.cottone_game_closed_ids or []))
-
-        for s in self.cottone_sessions:
-            s["colpi"] = int(s.get("colpi", 0)) + 1
-            colpo = int(s.get("colpi", 0))
-            fissi = set(map(int, s.get("fissi", [])))
-            t1 = set(map(int, s.get("t1", [])))
-
-            # LAB: visto cumulativo, utile solo per statistica H1-H10, non per pagare il gioco reale.
-            fissi_seen = set(map(int, s.get("fissi_seen", []))) | (fissi & nums_set)
-            t1_seen = set(map(int, s.get("t1_seen", []))) | (t1 & nums_set)
-            s["fissi_seen"] = sorted(fissi_seen)
-            s["t1_seen"] = sorted(t1_seen)
-
-            # GIOCO REALE: hit della singola estrazione corrente.
-            fissi_hit_this = sorted(fissi & nums_set)
-            t1_hit_this = sorted(t1 & nums_set)
-            s.setdefault("hit_fissi_by_colpo", []).append(fissi_hit_this)
-            s.setdefault("hit_t1_by_colpo", []).append(t1_hit_this)
-            s.setdefault("draws_by_colpo", []).append({
-                "h": colpo,
-                "e": int(e),
-                "nums": list(map(int, nums or [])),
-                "fissi_hit": fissi_hit_this,
-                "t1_hit": t1_hit_this,
-            })
-            s["draws_by_colpo"] = s.get("draws_by_colpo", [])[-COTTONE_GAME_MAX_COLPI:]
-
-            # Miglior colpo singolo visto finora, per report provvisorio e chiusura reale.
-            if len(fissi_hit_this) > int(s.get("game_best_fissi_k", 0)):
-                s["game_best_fissi_k"] = len(fissi_hit_this)
-                s["game_best_fissi_hits"] = list(fissi_hit_this)
-                s["game_best_fissi_colpo"] = colpo
-                s["game_best_fissi_e"] = int(e)
-                s["game_best_fissi_nums"] = list(map(int, nums or []))
-            if len(t1_hit_this) > int(s.get("game_best_t1_k", 0)):
-                s["game_best_t1_k"] = len(t1_hit_this)
-                s["game_best_t1_hits"] = list(t1_hit_this)
-                s["game_best_t1_colpo"] = colpo
-                s["game_best_t1_e"] = int(e)
-                s["game_best_t1_nums"] = list(map(int, nums or []))
-
-            # Statistica LAB H1-H10, invariata.
-            closed = set(map(str, s.get("closed_horizons", [])))
-            for h in LAB_COTTONE_TRACK_HORIZONS:
-                hkey = str(h)
-                if int(s["colpi"]) >= int(h) and hkey not in closed:
-                    self._record_cottone_horizon(s, h)
-                    closed.add(hkey)
-            s["closed_horizons"] = sorted(closed, key=lambda x: int(x))
-
-            # v23 — gioco Cottone FISSI/T1, separato dal LAB.
-            if COTTONE_GAME_ENABLED and bool(s.get("game_enabled", True)):
-                row = int(s.get("row", 0))
-                gid = int(s.get("game_id", s.get("id", 0)))
-                if bool(s.get("game_closed", False)) or gid in closed_ids_set:
-                    continue
-
-                # A H10 chiudo con il MIGLIOR COLPO SINGOLO, non cumulativo.
-                if colpo >= COTTONE_GAME_MAX_COLPI:
-                    bf = best_single_draw_from_session(s, "fissi_hit")
-                    bt = best_single_draw_from_session(s, "t1_hit")
-                    kf = int(bf.get("k", 0))
-                    kt = int(bt.get("k", 0))
-                    fissi_best_hits = sorted({int(x) for x in (bf.get("hits", []) or [])})
-                    t1_best_hits = sorted({int(x) for x in (bt.get("hits", []) or [])})
-                    fissi_best_h = int(bf.get("h") or colpo)
-                    t1_best_h = int(bt.get("h") or colpo)
-                    fissi_best_e = bf.get("e", "")
-                    t1_best_e = bt.get("e", "")
-
-                    close_lines = [
-                        f"🏁 CHIUSURA GIOCO COTTONE | {COTTONE_GAME_MAX_COLPI} colpi",
-                        f"• game_id = {gid}",
-                        f"• riga ripetuta = {row}",
-                        f"• conteggio = SINGOLA ESTRAZIONE: non sommo numeri usciti in colpi diversi",
-                    ]
-
-                    # FISSI: premio sul massimo uscito in una singola estrazione, solo se il filtro v25 lo abilita.
-                    fissi_enabled = bool(s.get("game_fissi_enabled", True))
-                    if fissi_enabled:
-                        fissi_prize = cottone_game_fissi_prize_eur(kf)
-                        bump_counter_map(self.cottone_game_fissi_best_numbers, fissi_best_hits)
-                        if fissi_prize > 0:
-                            s["game_fissi_done"] = True
-                            s["game_fissi_result"] = "WIN"
-                            s["game_fissi_win_colpo"] = fissi_best_h
-                            self.cottone_game_fissi_win += 1
-                            self.cottone_game_fissi_gross_eur += fissi_prize
-                            bump_counter_map(self.cottone_game_fissi_win_numbers, fissi_best_hits)
-                            bump_cottone_row_stat(self.cottone_game_fissi_row_stats, row, "WIN", fissi_prize)
-                            self.cottone_game_fissi_win_colpi[str(min(fissi_best_h, COTTONE_GAME_MAX_COLPI))] = int(self.cottone_game_fissi_win_colpi.get(str(min(fissi_best_h, COTTONE_GAME_MAX_COLPI)), 0)) + 1
-                            self.append_csv_event("COTTONE_FISSI_WIN_REAL_FILTER", e=e, play_id=gid, colpo=fissi_best_h, outcome=f"WIN_FISSI_SINGOLA_{kf}_8_ROW_{row}", gross_eur=fissi_prize)
-                            close_lines.append(
-                                f"✅ FISSI = WIN | miglior singola H{fissi_best_h} estr. {fissi_best_e} | "
-                                f"usciti {kf}/8: {fmt_nums(fissi_best_hits)} | premio lordo = {fissi_prize:.2f}€"
-                            )
-                        else:
-                            s["game_fissi_done"] = True
-                            s["game_fissi_result"] = "LOSE"
-                            self.cottone_game_fissi_lose += 1
-                            bump_cottone_row_stat(self.cottone_game_fissi_row_stats, row, "LOSE", 0.0)
-                            self.append_csv_event("COTTONE_FISSI_LOSE_REAL_FILTER", e=e, play_id=gid, colpo=colpo, outcome=f"LOSE_FISSI_BEST_{kf}_8_ROW_{row}", gross_eur=0.0)
-                            close_lines.append(
-                                f"❌ FISSI = LOSE | miglior singola {kf}/8: {fmt_nums(fissi_best_hits) or '-'} | "
-                                f"servivano almeno {COTTONE_GAME_FISSI_MIN_HITS}/8 nella stessa estrazione"
-                            )
-                    else:
-                        s["game_fissi_done"] = True
-                        s["game_fissi_result"] = "OFF_FILTRO"
-                        close_lines.append("⏭️ FISSI = OFF v25 | modulo solo report/lab")
-
-                    # T1: premio sul massimo uscito in una singola estrazione, solo se il filtro v25 lo abilita.
-                    t1_enabled = bool(s.get("game_t1_enabled", True))
-                    if t1_enabled:
-                        t1_prize = cottone_game_t1_prize_eur(kt)
-                        bump_counter_map(self.cottone_game_t1_best_numbers, t1_best_hits)
-                        if t1_prize > 0:
-                            s["game_t1_done"] = True
-                            s["game_t1_result"] = "WIN"
-                            s["game_t1_win_colpo"] = t1_best_h
-                            self.cottone_game_t1_win += 1
-                            self.cottone_game_t1_gross_eur += t1_prize
-                            bump_counter_map(self.cottone_game_t1_win_numbers, t1_best_hits)
-                            bump_cottone_row_stat(self.cottone_game_t1_row_stats, row, "WIN", t1_prize)
-                            self.cottone_game_t1_win_colpi[str(min(t1_best_h, COTTONE_GAME_MAX_COLPI))] = int(self.cottone_game_t1_win_colpi.get(str(min(t1_best_h, COTTONE_GAME_MAX_COLPI)), 0)) + 1
-                            self.append_csv_event("COTTONE_T1_WIN_REAL_FILTER", e=e, play_id=gid, colpo=t1_best_h, outcome=f"WIN_T1_SINGOLA_{kt}_3_ROW_{row}", gross_eur=t1_prize)
-                            close_lines.append(
-                                f"✅ T1 = WIN | miglior singola H{t1_best_h} estr. {t1_best_e} | "
-                                f"usciti {kt}/3: {fmt_nums(t1_best_hits)} | premio lordo = {t1_prize:.2f}€"
-                            )
-                        else:
-                            s["game_t1_done"] = True
-                            s["game_t1_result"] = "LOSE"
-                            self.cottone_game_t1_lose += 1
-                            bump_cottone_row_stat(self.cottone_game_t1_row_stats, row, "LOSE", 0.0)
-                            self.append_csv_event("COTTONE_T1_LOSE_REAL_FILTER", e=e, play_id=gid, colpo=colpo, outcome=f"LOSE_T1_BEST_{kt}_3_ROW_{row}", gross_eur=0.0)
-                            close_lines.append(
-                                f"❌ T1 = LOSE | miglior singola {kt}/3: {fmt_nums(t1_best_hits) or '-'} | "
-                                f"servivano almeno {COTTONE_GAME_T1_MIN_HITS}/3 nella stessa estrazione"
-                            )
-                    else:
-                        s["game_t1_done"] = True
-                        s["game_t1_result"] = "OFF_FILTRO"
-                        close_lines.append("⏭️ T1 = OFF FILTRO v25 | riga non nella scrematura T1")
-
-                    s["game_closed"] = True
-                    if gid not in closed_ids_set:
-                        self.cottone_game_closed_ids.append(gid)
-                        self.cottone_game_closed_ids = self.cottone_game_closed_ids[-5000:]
-                        closed_ids_set.add(gid)
-                    close_lines.append("")
-                    close_lines.append(self.cottone_game_audit_text(s))
-                    close_lines.append("")
-                    close_lines.append(self.cottone_game_stats_text())
-                    if COTTONE_GAME_NOTIFY_LOSE:
-                        await self.tg(app, "\n".join(close_lines))
-
-            if int(s.get("colpi", 0)) < LAB_COTTONE_TRACK_MAX_COLPI:
-                still_open.append(s)
-        self.cottone_sessions = still_open[-LAB_COTTONE_MAX_OPEN_SESSIONS:]
-    def _cottone_t1_row_is_open(self, row):
-        """v25: evita doppioni T1 sulla stessa riga mentre una sessione e' aperta."""
-        try:
-            row = int(row)
-        except Exception:
+    def basket_signature(origin, survivor_indexes):
+        # Firma volutamente SENZA origin_id e SENZA eta':
+        # stesse 5 decine + stessi 5 ambi = identico basket globale.
+        parts = []
+        for i in survivor_indexes:
+            mask = int(origin["remaining"][i])
+            idx = bit_index(mask)
+            parts.append(f"{i}:{idx}")
+        raw = "|".join(parts)
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20], raw
+
+    def mark_basket_seen(self, fingerprint):
+        if fingerprint in self.seen_basket_set:
             return False
-        for s in self.cottone_sessions:
-            try:
-                if int(s.get("row", 0)) != row:
-                    continue
-                if not bool(s.get("game_t1_enabled", False)):
-                    continue
-                if bool(s.get("game_closed", False)):
-                    continue
-                if int(s.get("colpi", 0)) >= COTTONE_GAME_MAX_COLPI:
-                    continue
-                return True
-            except Exception:
-                continue
-        return False
-
-    def _cottone_t1_row_in_cooldown(self, row, current_e):
-        """v25: dopo un'apertura T1, aspetta almeno N estrazioni prima di riaprire la stessa riga."""
-        try:
-            row = int(row)
-            current_e = int(current_e)
-            last_e = int((self.cottone_game_t1_last_open_e or {}).get(str(row), 0))
-        except Exception:
-            return False
-        if last_e <= 0:
-            return False
-        return (current_e - last_e) < COTTONE_GAME_T1_ROW_COOLDOWN_DRAWS
-
-    async def maybe_open_cottone_sessions(self, app, e):
-        if not LAB_METHODS_ENABLED or len(self.last_draws) < 2:
-            return
-        cur = self._latest_draw()
-        prev = self._previous_draw()
-        cur_set, prev_set = set(cur), set(prev)
-        repeated = [r for r in LAB_COTTONE_VISIBLE_ROWS if r in cur_set and r in prev_set]
-        opened_messages = []
-        for r in repeated:
-            self.cottone_uid += 1
-            fissi = cottone_fissi_for_row(r)
-            t1 = cottone_t1_for_row(r)
-            # v25: FISSI automatici OFF di default; T1 filtrata + anti-doppio + cooldown riga.
-            game_fissi_enabled = bool(COTTONE_GAME_ENABLED and cottone_game_fissi_allowed(r, fissi))
-            raw_t1_enabled = bool(COTTONE_GAME_ENABLED and cottone_game_t1_allowed(r, t1))
-            t1_block_reason = ""
-            if raw_t1_enabled and self._cottone_t1_row_is_open(r):
-                raw_t1_enabled = False
-                t1_block_reason = "OFF doppio: stessa riga gia' aperta"
-            elif raw_t1_enabled and self._cottone_t1_row_in_cooldown(r, e):
-                raw_t1_enabled = False
-                t1_block_reason = f"OFF cooldown riga {COTTONE_GAME_T1_ROW_COOLDOWN_DRAWS}"
-            game_t1_enabled = bool(raw_t1_enabled)
-            game_enabled = bool(game_fissi_enabled or game_t1_enabled)
-            fissi_hot = cottone_hot_overlap(fissi, COTTONE_GAME_FISSI_HOT_NUMBERS)
-            t1_hot = cottone_hot_overlap(t1, COTTONE_GAME_T1_HOT_NUMBERS)
-
-            session = {
-                "id": self.cottone_uid,
-                "game_id": self.cottone_uid,
-                "origin_e": int(e),
-                "start_e": int(e),
-                "start_nums": list(map(int, cur)),
-                "prev_nums": list(map(int, prev)),
-                "row": int(r),
-                "fissi": list(map(int, fissi)),
-                "t1": list(map(int, t1)),
-                "fissi_hot_overlap": list(map(int, fissi_hot)),
-                "t1_hot_overlap": list(map(int, t1_hot)),
-                "colpi": 0,
-                "fissi_seen": [],
-                "t1_seen": [],
-                "hit_fissi_by_colpo": [],
-                "hit_t1_by_colpo": [],
-                "draws_by_colpo": [],
-                # v23 — migliori colpi SINGOLI per il gioco reale
-                "game_best_fissi_k": 0,
-                "game_best_fissi_hits": [],
-                "game_best_fissi_colpo": 0,
-                "game_best_fissi_e": "",
-                "game_best_fissi_nums": [],
-                "game_best_t1_k": 0,
-                "game_best_t1_hits": [],
-                "game_best_t1_colpo": 0,
-                "game_best_t1_e": "",
-                "game_best_t1_nums": [],
-                "closed_horizons": [],
-                # v25 — stato gioco WIN/LOSE filtrato per righe/numeri caldi.
-                "game_enabled": game_enabled,
-                "game_fissi_enabled": game_fissi_enabled,
-                "game_t1_enabled": game_t1_enabled,
-                "game_t1_block_reason": t1_block_reason,
-                "game_fissi_done": False,
-                "game_t1_done": False,
-                "game_fissi_result": "OPEN",
-                "game_t1_result": "OPEN",
-                "game_closed": False,
-            }
-            self.cottone_sessions.append(session)
-            self.cottone_sessions = self.cottone_sessions[-LAB_COTTONE_MAX_OPEN_SESSIONS:]
-            for h in LAB_COTTONE_TRACK_HORIZONS:
-                st = self.cottone_horizon_stats.setdefault(str(h), self.new_cottone_stats())
-                st["sessions"] = int(st.get("sessions", 0)) + 1
-                rk = str(r)
-                st.setdefault("row_sessions", {})[rk] = int(st.setdefault("row_sessions", {}).get(rk, 0)) + 1
-
-            if game_enabled:
-                self.cottone_game_total += 1
-                if game_t1_enabled:
-                    self.cottone_game_t1_last_open_e[str(int(r))] = int(e)
-                fissi_mod = "ON" if game_fissi_enabled else "OFF report"
-                if game_t1_enabled:
-                    t1_mod = "ON"
-                elif t1_block_reason:
-                    t1_mod = t1_block_reason
-                else:
-                    t1_mod = "OFF filtro"
-                opened_messages.append(
-                    f"🎮 GIOCO COTTONE APERTO — v25 T1 ONLY SMART\n"
-                    f"• game_id = {self.cottone_uid}\n"
-                    f"• estratto ripetuto = {r}\n"
-                    f"• estrazione segnale = {e}\n"
-                    f"• 20 numeri estrazione segnale = {fmt_nums(cur)}\n"
-                    f"• nota = il segnale NON è H1; H1 parte dalla prossima estrazione\n"
-                    f"• durata = max {COTTONE_GAME_MAX_COLPI} colpi\n"
-                    f"• regola = conta SOLO la singola estrazione, NON cumulativo\n"
-                    f"• filtro v25 = FISSI {fissi_mod} | T1 {t1_mod}\n"
-                    f"• FISSI = {fmt_nums(fissi)}\n"
-                    f"• numeri caldi FISSI in riga = {fmt_nums(fissi_hot) or 'nessuno'}\n"
-                    f"• WIN FISSI = in UNA estrazione: 5/8→20€, 6/8→200€, 7/8→800€, 8/8→10000€\n"
-                    f"• T1 = {fmt_nums(t1)}\n"
-                    f"• numeri caldi T1 in riga = {fmt_nums(t1_hot) or 'nessuno'}\n"
-                    f"• WIN T1 = in UNA estrazione: 2/3→2€, 3/3→45€\n"
-                    f"• sotto soglia = LOSE"
-                )
-        if COTTONE_GAME_ENABLED and COTTONE_GAME_NOTIFY_OPEN and opened_messages:
-            await self.tg(app, "\n\n".join(opened_messages))
-    def _top_cottone_targets(self, h, key, limit=6):
-        st = self.cottone_horizon_stats.get(str(h), self.new_cottone_stats())
-        data = st.get(key, {}) or {}
-        rows = sorted(((int(k), int(v)) for k, v in data.items()), key=lambda x: (-x[1], x[0]))[:limit]
-        return ", ".join(f"{n}({c})" for n, c in rows) or "n/d"
-
-    def _top_cottone_row_targets(self, row, h, key, limit=6):
-        st = self.cottone_horizon_stats.get(str(h), self.new_cottone_stats())
-        all_rows = st.get(key, {}) or {}
-        data = all_rows.get(str(row), {}) or {}
-        rows = sorted(((int(k), int(v)) for k, v in data.items()), key=lambda x: (-x[1], x[0]))[:limit]
-        return ", ".join(f"{n}({c})" for n, c in rows) or "n/d"
-
-    def _cottone_row_metrics(self, row, h):
-        st = self.cottone_horizon_stats.get(str(h), self.new_cottone_stats())
-        rk = str(row)
-        closed = int((st.get("row_closed", {}) or {}).get(rk, 0))
-        if closed <= 0:
-            return {"closed": 0}
-        fk = {str(i): int(((st.get("row_fissi_k_counts", {}) or {}).get(rk, {}) or {}).get(str(i), 0)) for i in range(0, 9)}
-        tk = {str(i): int(((st.get("row_t1_k_counts", {}) or {}).get(rk, {}) or {}).get(str(i), 0)) for i in range(0, 4)}
-        avg_f = sum(i * fk[str(i)] for i in range(0, 9)) / closed
-        avg_t = sum(i * tk[str(i)] for i in range(0, 4)) / closed
-        f_ge7 = sum(fk[str(i)] for i in range(7, 9))
-        f_eq8 = fk["8"]
-        t_ge2 = sum(tk[str(i)] for i in range(2, 4))
-        t_eq3 = tk["3"]
-        return {
-            "closed": closed,
-            "avg_f": avg_f,
-            "f_ge7": f_ge7,
-            "f_eq8": f_eq8,
-            "avg_t": avg_t,
-            "t_ge2": t_ge2,
-            "t_eq3": t_eq3,
-        }
-
-    def cottone_row_inline_h10(self, row):
-        m = self._cottone_row_metrics(row, 10)
-        if int(m.get("closed", 0)) <= 0:
-            return "H10 riga: n/d"
-        c = int(m["closed"])
-        return (
-            f"H10 riga: {c} casi | fissi {m['avg_f']:.2f}/8 "
-            f"| 7+/8 {pct(m['f_ge7'], c):.1f}% | 8/8 {pct(m['f_eq8'], c):.1f}% "
-            f"| T1 {m['avg_t']:.2f}/3 | 3/3 {pct(m['t_eq3'], c):.1f}%"
-        )
-
-    def cottone_game_audit_text(self, s):
-        """Audit leggibile: dettaglio H1-H10 e miglior colpo singolo.
-
-        v23: il gioco reale NON usa il cumulativo; usa il massimo uscito in una singola estrazione.
-        """
-        fissi = sorted({int(x) for x in s.get("fissi", [])})
-        t1 = sorted({int(x) for x in s.get("t1", [])})
-        bf = best_single_draw_from_session(s, "fissi_hit")
-        bt = best_single_draw_from_session(s, "t1_hit")
-        bf_hits = sorted({int(x) for x in (bf.get("hits", []) or [])})
-        bt_hits = sorted({int(x) for x in (bt.get("hits", []) or [])})
-        bf_miss = sorted(set(fissi) - set(bf_hits))
-        bt_miss = sorted(set(t1) - set(bt_hits))
-        start_e = s.get("start_e", s.get("origin_e", ""))
-        start_nums = s.get("start_nums", []) or []
-        lines = [
-            "🔎 AUDIT VERIFICA CONTEGGIO REALE",
-            f"• estrazione segnale = {start_e}",
-            f"• 20 numeri segnale = {fmt_nums(start_nums)}",
-            "• nota: il segnale NON è H1; H1 parte dalla prima estrazione successiva",
-            "• regola reale = vale SOLO il colpo singolo migliore, non la somma dei 10 colpi",
-            f"• FISSI giocati = {fmt_nums(fissi)} | modulo {'ON' if bool(s.get('game_fissi_enabled', True)) else 'OFF filtro'}",
-            f"• T1 giocata = {fmt_nums(t1)} | modulo {'ON' if bool(s.get('game_t1_enabled', True)) else 'OFF filtro'}",
-            f"• hot FISSI in riga = {fmt_nums(s.get('fissi_hot_overlap', [])) or 'nessuno'}",
-            f"• hot T1 in riga = {fmt_nums(s.get('t1_hot_overlap', [])) or 'nessuno'}",
-            f"• miglior FISSI singolo = H{bf.get('h') or '-'} estr. {bf.get('e') or '-'} | {int(bf.get('k', 0))}/8 = {fmt_nums(bf_hits) or '-'}",
-            f"• FISSI mancanti nel miglior colpo = {fmt_nums(bf_miss) or 'nessuno'}",
-            f"• miglior T1 singolo = H{bt.get('h') or '-'} estr. {bt.get('e') or '-'} | {int(bt.get('k', 0))}/3 = {fmt_nums(bt_hits) or '-'}",
-            f"• T1 mancanti nel miglior colpo = {fmt_nums(bt_miss) or 'nessuno'}",
-            "",
-            "📌 Dettaglio H1-H10 — ogni riga è una singola estrazione",
-        ]
-        draws = s.get("draws_by_colpo", []) or []
-        if not draws:
-            hf = s.get("hit_fissi_by_colpo", []) or []
-            ht = s.get("hit_t1_by_colpo", []) or []
-            for i in range(max(len(hf), len(ht))):
-                fh = sorted({int(x) for x in (hf[i] if i < len(hf) else [])})
-                th = sorted({int(x) for x in (ht[i] if i < len(ht) else [])})
-                lines.append(f"H{i+1}: FISSI singola {len(fh)} = {fmt_nums(fh) or '-'} | T1 singola {len(th)} = {fmt_nums(th) or '-'}")
-            return "\n".join(lines)
-
-        for d in draws[:COTTONE_GAME_MAX_COLPI]:
-            try:
-                h = int(d.get("h", 0))
-            except Exception:
-                h = 0
-            de = d.get("e", "")
-            nums = d.get("nums", []) or []
-            fh = sorted({int(x) for x in (d.get("fissi_hit", []) or [])})
-            th = sorted({int(x) for x in (d.get("t1_hit", []) or [])})
-            f_pr = cottone_game_fissi_prize_eur(len(fh))
-            t_pr = cottone_game_t1_prize_eur(len(th))
-            f_tag = f" WIN {f_pr:.0f}€" if f_pr > 0 else ""
-            t_tag = f" WIN {t_pr:.0f}€" if t_pr > 0 else ""
-            lines.append(
-                f"H{h} estr. {de}: FISSI singola {len(fh)}/8 = {fmt_nums(fh) or '-'}{f_tag} | "
-                f"T1 singola {len(th)}/3 = {fmt_nums(th) or '-'}{t_tag} | 20 numeri = {fmt_nums(nums)}"
-            )
-        return "\n".join(lines)
-
-    def _top_counter_text(self, mp, limit=10):
-        if not isinstance(mp, dict) or not mp:
-            return "n/d"
-        rows = []
-        for k, v in mp.items():
-            try:
-                rows.append((int(k), int(v)))
-            except Exception:
-                continue
-        rows.sort(key=lambda x: (-x[1], x[0]))
-        return ", ".join(f"{n}({c})" for n, c in rows[:limit]) or "n/d"
-
-    def _row_stat_text(self, mp, limit=8):
-        if not isinstance(mp, dict) or not mp:
-            return "n/d"
-        rows = []
-        for r, d in mp.items():
-            if not isinstance(d, dict):
-                continue
-            try:
-                row = int(r)
-                w = int(d.get("win", 0))
-                l = int(d.get("lose", 0))
-                g = float(d.get("gross", 0.0))
-            except Exception:
-                continue
-            tot = w + l
-            rows.append((row, w, l, tot, g, pct(w, tot)))
-        rows.sort(key=lambda x: (-x[5], -x[1], x[0]))
-        return ", ".join(f"r{row}: {w}/{tot} {wr:.0f}%" for row, w, l, tot, g, wr in rows[:limit]) or "n/d"
-
-    def cottone_game_stats_text(self):
-        open_games = [s for s in self.cottone_sessions if bool(s.get("game_enabled", False)) and not bool(s.get("game_closed", False)) and int(s.get("colpi", 0)) < COTTONE_GAME_MAX_COLPI]
-        f_total = self.cottone_game_fissi_win + self.cottone_game_fissi_lose
-        t_total = self.cottone_game_t1_win + self.cottone_game_t1_lose
-        gross = self.cottone_game_fissi_gross_eur + self.cottone_game_t1_gross_eur
-        active_lines = []
-        for s in open_games[:8]:
-            row = int(s.get("row", 0))
-            gid = int(s.get("game_id", s.get("id", 0)))
-            colpi = int(s.get("colpi", 0))
-            bf = best_single_draw_from_session(s, "fissi_hit")
-            bt = best_single_draw_from_session(s, "t1_hit")
-            bf_k = int(bf.get("k", 0))
-            bt_k = int(bt.get("k", 0))
-            bf_h = bf.get("h") or "-"
-            bt_h = bt.get("h") or "-"
-            f_prv = cottone_game_fissi_prize_eur(bf_k)
-            t_prv = cottone_game_t1_prize_eur(bt_k)
-            f_mod = "ON" if bool(s.get("game_fissi_enabled", True)) else "OFF"
-            t_mod = "ON" if bool(s.get("game_t1_enabled", True)) else "OFF"
-            active_lines.append(
-                f"• #{gid} riga {row} | colpo {colpi}/{COTTONE_GAME_MAX_COLPI} | moduli FISSI {f_mod}/T1 {t_mod} | "
-                f"FISSI best singola {bf_k}/8 H{bf_h} (provv. {f_prv:.0f}€) | "
-                f"T1 best singola {bt_k}/3 H{bt_h} (provv. {t_prv:.0f}€)"
-            )
-        if len(open_games) > 8:
-            active_lines.append(f"• altri giochi aperti = {len(open_games) - 8}")
-        if not active_lines:
-            active_lines.append("• nessun gioco Cottone aperto ora")
-
-        return "\n".join([
-            "🎮 COTTONE GIOCO REALE v25 — T1 ONLY SMART",
-            f"• regola FISSI = SINGOLA estrazione H1-H10: 5/8→20€, 6/8→200€, 7/8→800€, 8/8→10000€; sotto 5 = LOSE",
-            f"• regola T1 = SINGOLA estrazione H1-H10: 2/3→2€, 3/3→45€; sotto 2 = LOSE",
-            f"• nota = NON cumulativo: non sommo numeri usciti in colpi diversi",
-            f"• filtro v25 = {'ON' if COTTONE_GAME_HOT_FILTER_ENABLED else 'OFF'} | FISSI auto {'ON' if COTTONE_GAME_FISSI_AUTO_ENABLED else 'OFF'} | T1 righe {fmt_nums(COTTONE_GAME_T1_FILTER_ROWS)} | cooldown riga {COTTONE_GAME_T1_ROW_COOLDOWN_DRAWS}",
-            f"• hot FISSI osservati/report = {fmt_nums(COTTONE_GAME_FISSI_HOT_NUMBERS)}",
-            f"• hot T1 osservati = {fmt_nums(COTTONE_GAME_T1_HOT_NUMBERS)}",
-            f"• giochi aperti = {len(open_games)} | giochi totali aperti = {self.cottone_game_total}",
-            f"• FISSI: WIN {self.cottone_game_fissi_win} / LOSE {self.cottone_game_fissi_lose} | win rate {pct(self.cottone_game_fissi_win, f_total):.1f}% | lordo {self.cottone_game_fissi_gross_eur:.2f}€",
-            f"• T1: WIN {self.cottone_game_t1_win} / LOSE {self.cottone_game_t1_lose} | win rate {pct(self.cottone_game_t1_win, t_total):.1f}% | lordo {self.cottone_game_t1_gross_eur:.2f}€",
-            f"• lordo totale = {gross:.2f}€",
-            f"• WIN FISSI per colpo reale = {', '.join(f'H{i}:{self.cottone_game_fissi_win_colpi.get(str(i), 0)}' for i in range(1, COTTONE_GAME_MAX_COLPI + 1))}",
-            f"• WIN T1 per colpo reale = {', '.join(f'H{i}:{self.cottone_game_t1_win_colpi.get(str(i), 0)}' for i in range(1, COTTONE_GAME_MAX_COLPI + 1))}",
-            "",
-            "🔥 NUMERI PIÙ RIPETUTI NEI WIN REALI",
-            f"• FISSI WIN = {self._top_counter_text(self.cottone_game_fissi_win_numbers, 12)}",
-            f"• T1 WIN = {self._top_counter_text(self.cottone_game_t1_win_numbers, 12)}",
-            f"• FISSI best anche nei lose = {self._top_counter_text(self.cottone_game_fissi_best_numbers, 12)}",
-            f"• T1 best anche nei lose = {self._top_counter_text(self.cottone_game_t1_best_numbers, 12)}",
-            "",
-            "📋 RIGHE FILTRATE — RISULTATO REALE / REPORT",
-            f"• FISSI righe = {self._row_stat_text(self.cottone_game_fissi_row_stats, 8)}  (auto OFF se COTTONE_GAME_FISSI_AUTO_ENABLED=0)",
-            f"• T1 righe = {self._row_stat_text(self.cottone_game_t1_row_stats, 8)}",
-            "",
-            "📌 GIOCHI APERTI ORA",
-            *active_lines,
-        ])
-
-    def cottone_by_row_h10_text(self):
-        """v21: riepilogo separato per ogni estratto ripetuto/riga Cottone.
-
-        Esempio riga 90: fissi 90-12-24-36-48-60-72-84.
-        Qui misuriamo entro H10 quanti degli 8 sono usciti, e quali escono di piu'.
-        """
-        h = 10
-        st = self.cottone_horizon_stats.get(str(h), self.new_cottone_stats())
-        row_closed = st.get("row_closed", {}) or {}
-        lines = [
-            "📋 COTTONE PER RIGA — H1-H10",
-            "• misura: per ogni estratto ripetuto, quanti degli 8 fissi e quanti della T1 escono; nel riepilogo mostro H3/H5/H10",
-        ]
-        any_row = False
-        for r in LAB_COTTONE_VISIBLE_ROWS:
-            m10 = self._cottone_row_metrics(r, 10)
-            c10 = int(m10.get("closed", 0))
-            if c10 <= 0:
-                continue
-            any_row = True
-            m3 = self._cottone_row_metrics(r, 3)
-            m5 = self._cottone_row_metrics(r, 5)
-            c3 = int(m3.get("closed", 0))
-            c5 = int(m5.get("closed", 0))
-            avg3 = m3.get("avg_f", 0.0) if c3 > 0 else 0.0
-            avg5 = m5.get("avg_f", 0.0) if c5 > 0 else 0.0
-            top_f = self._top_cottone_row_targets(r, 10, "row_fissi_target_hits", 5)
-            top_t = self._top_cottone_row_targets(r, 10, "row_t1_target_hits", 4)
-            lines.append(
-                f"• {r}: casi H10={c10} | fissi H3 {avg3:.2f}/8, H5 {avg5:.2f}/8, H10 {m10['avg_f']:.2f}/8 "
-                f"| 7+/8 H10 {pct(m10['f_ge7'], c10):.1f}% | 8/8 {pct(m10['f_eq8'], c10):.1f}% "
-                f"| T1 H10 {m10['avg_t']:.2f}/3 | 3/3 {pct(m10['t_eq3'], c10):.1f}%"
-            )
-            lines.append(f"  top fissi H10: {top_f} | top T1 H10: {top_t}")
-        if not any_row:
-            lines.append("• nessuna riga chiusa a H10")
-        return "\n".join(lines)
-
-    def cottone_live_h10_text(self):
-        if not LAB_METHODS_ENABLED:
-            return "📊 COTTONE LIVE H1-H10 — OFF"
-        if not hasattr(self, "cottone_horizon_stats"):
-            return "📊 COTTONE LIVE H1-H10 — dati non disponibili"
-
-        f_lines = []
-        t_lines = []
-        for h in LAB_COTTONE_TRACK_HORIZONS:
-            st = self.cottone_horizon_stats.get(str(h), self.new_cottone_stats())
-            closed = int(st.get("closed", 0))
-            if closed <= 0:
-                f_lines.append(f"H{h}: chiuse 0")
-                t_lines.append(f"H{h}: chiuse 0")
-                continue
-            fk = {str(i): int((st.get("fissi_k_counts", {}) or {}).get(str(i), 0)) for i in range(0, 9)}
-            tk = {str(i): int((st.get("t1_k_counts", {}) or {}).get(str(i), 0)) for i in range(0, 4)}
-            avg_f = sum(i * fk[str(i)] for i in range(0, 9)) / closed
-            avg_t = sum(i * tk[str(i)] for i in range(0, 4)) / closed
-            f_ge3 = sum(fk[str(i)] for i in range(3, 9))
-            f_ge4 = sum(fk[str(i)] for i in range(4, 9))
-            f_ge5 = sum(fk[str(i)] for i in range(5, 9))
-            t_ge1 = sum(tk[str(i)] for i in range(1, 4))
-            t_ge2 = sum(tk[str(i)] for i in range(2, 4))
-            t_eq3 = tk["3"]
-            f_lines.append(
-                f"H{h}: {closed} chiuse | media {avg_f:.2f}/8 | ≥3 {pct(f_ge3, closed):.1f}% | ≥4 {pct(f_ge4, closed):.1f}% | ≥5 {pct(f_ge5, closed):.1f}%"
-            )
-            t_lines.append(
-                f"H{h}: {closed} chiuse | media {avg_t:.2f}/3 | 1+ {pct(t_ge1, closed):.1f}% | 2+ {pct(t_ge2, closed):.1f}% | 3/3 {pct(t_eq3, closed):.1f}%"
-            )
-
-        open_txt = str(len(self.cottone_sessions))
-        top_f10 = self._top_cottone_targets(10, "fissi_target_hits", 8)
-        top_t10 = self._top_cottone_targets(10, "t1_target_hits", 8)
-        return "\n".join([
-            "📊 COTTONE LIVE H1-H10 — FISSI/T1",
-            f"• sessioni Cottone aperte ora = {open_txt}",
-            "• lettura = cumulativa: H5 significa usciti entro i primi 5 colpi dopo il segnale",
-            "",
-            "🎯 FISSI IN USCITA — quanti degli 8 escono",
-            *f_lines,
-            f"• top numeri fissi usciti entro H10 = {top_f10}",
-            "",
-            "🔺 TERNA T1 — quanti dei 3 escono",
-            *t_lines,
-            f"• top numeri T1 usciti entro H10 = {top_t10}",
-            "",
-            self.cottone_by_row_h10_text(),
-        ])
-
-    def lab_methods_text(self):
-        if not LAB_METHODS_ENABLED:
-            return "🧪 LAB METODI — OFF"
-
-        cur = self._latest_draw()
-        if not cur:
-            return "🧪 LAB METODI — nessuna estrazione caricata"
-
-        # Cottone fissi/T1
-        cott = self.cottone_fissi_t1_snapshot()
-        cott_lines = []
-        if cott["rows"]:
-            for row in cott["rows"][:6]:
-                mark = " ⭐" if row["is_top_fissi"] else ""
-                tmark = " T1" if row["is_t1_watch"] else ""
-                cott_lines.append(
-                    f"• {row['row']}{mark}{tmark}: fissi {fmt_nums(row['fissi'])} | T1 {fmt_nums(row['t1'])} | gia' in ultima {fmt_nums(row['fissi_in_ultima']) or '-'} | {self.cottone_row_inline_h10(row['row'])}"
-                )
-            if len(cott["rows"]) > 6:
-                cott_lines.append(f"• altri ripetuti Cottone = {len(cott['rows']) - 6}")
-        else:
-            cott_lines.append("• nessun estratto ripetuto 90/1-19 tra ultime 2 estrazioni")
-
-        # Distanza +5
-        p5 = self.plus5_distance_snapshot()["pairs"]
-        p5_watch = [p for p in p5 if p["watch"]]
-        if p5_watch:
-            plus5_txt = ", ".join(
-                f"{a}-{b}({p['tag']}{' ROI '+format(p['roi'], '+.1f')+'%' if p['roi'] else ''})"
-                for p in p5_watch[:8]
-                for a, b in [p["pair"]]
-            )
-        elif p5:
-            plus5_txt = ", ".join(f"{a}-{b}" for p in p5[:10] for a, b in [p["pair"]])
-        else:
-            plus5_txt = "nessuna coppia +5 nell'ultima estrazione"
-
-        # Conteggio +4
-        c4 = self.conteggio_plus4_snapshot()["signals"]
-        c4_watch = [x for x in c4 if x["watch"]]
-        if c4_watch:
-            c4_txt = "; ".join(
-                f"{x['base']}→{x['confirm']} = ambata {x['target']} | terzina {fmt_nums(x['triad'])} | {x['tag']} H3 {x['h3']:.2f}%"
-                for x in c4_watch[:5]
-            )
-        elif c4:
-            c4_txt = "; ".join(
-                f"{x['base']}→{x['confirm']} = {x['target']} ({fmt_nums(x['triad'])})"
-                for x in c4[:5]
-            )
-        else:
-            c4_txt = "nessuna coppia N/N+4 valida nell'ultima estrazione"
-
-        # Somma 90/91
-        sm = self.somma_9091_snapshot()
-
-        # Convergenze tra moduli LAB
-        conv = Counter()
-        conv_src = defaultdict(list)
-        for row in cott["rows"]:
-            for n in row["fissi"]:
-                conv[n] += 1
-                conv_src[n].append(f"fissi {row['row']}")
-            for n in row["t1"]:
-                conv[n] += 1
-                conv_src[n].append(f"T1 {row['row']}")
-        for p in p5_watch[:8]:
-            for n in p["pair"]:
-                conv[n] += 1
-                conv_src[n].append("+5")
-        for x in c4_watch[:5]:
-            for n in [x["target"], *x["triad"]]:
-                conv[n] += 1
-                conv_src[n].append("+4")
-        for n in set(sm.get("nums", [])):
-            conv[n] += 1
-            conv_src[n].append("somma")
-        strong = [(n, c) for n, c in conv.items() if c >= 2]
-        strong.sort(key=lambda kv: (-kv[1], kv[0]))
-        if strong:
-            conv_txt = "; ".join(f"{n}({c}: {', '.join(conv_src[n][:3])})" for n, c in strong[:8])
-        else:
-            conv_txt = "nessuna convergenza 2+ metodi"
-
-        return "\n".join([
-            "🧪 LAB METODI — COTTONE H1-H10 / +5 / +4 / SOMMA 90/91 RIPETUTA",
-            "• uso = conferme del PLAYABILITY ONLY; nessuno di questi metodi apre il play da solo",
-            "• moduli attivi: FISSI/T1 Cottone H1-H10, distanza +5, conteggio +4, SOMMA 90/91 su SOMMA TOTALE ESATTA ripetuta",
-            "",
-            "📌 COTTONE — FISSI IN USCITA + T1",
-            *cott_lines,
-            "",
-            self.cottone_live_h10_text(),
-            "",
-            "📏 DISTANZA +5",
-            f"• coppie +5 live = {plus5_txt}",
-            "• top storico +5: 15-20, 10-15, 5-10; più forte nelle prime due decine",
-            "",
-            "📐 CONTEGGIO +4",
-            f"• segnali live = {c4_txt}",
-            "• top storico +4: 2→6, 3→7, 4→8, 9→13",
-            "",
-            self.sum9091_lab_text(compact=True),
-            "",
-            "🔗 CONVERGENZE LAB",
-            f"• numeri usciti da 2+ metodi = {conv_txt}",
-            "• lettura = la convergenza serve solo come filtro/attenzione, non come previsione certa",
-        ])
-
-    def _v48_accel_active(self):
-        """v17: v48 di default NON accelera il play.
-        Se PLAYABLE_V48_ACCEL_ENABLED=1, accelera solo quando il cluster v48 conferma davvero
-        il triangolo CORE 88/89/90 con almeno PLAYABLE_V48_CORE_OVERLAP_MIN numeri.
-        """
-        if not PLAYABLE_V48_ACCEL_ENABLED or not self.active_snapshot:
-            return False
-        cluster = set(map(int, self.active_snapshot.get("cluster_numbers", []) or []))
-        core_nums = set(PLAYABLE_CORE_FULL_NUMS)
-        return len(cluster & core_nums) >= PLAYABLE_V48_CORE_OVERLAP_MIN
-
-    def build_playable_candidate(self, e):
-        if not PLAYABLE_AUTO_ENABLED or self.playable_active:
-            return None, "play gia' attivo o auto off"
-        if self.playable_cooldown > 0:
-            return None, f"cooldown {self.playable_cooldown} estrazioni"
-        snap=self.playable_signal_snapshot()
-        ranked=self.playability_rankings(snap)
-        playable=[r for r in ranked if r.get("eligible") and float(r.get("score",0.0)) >= PLAYABLE_PLAY_SCORE]
-        if not playable:
-            best=ranked[0] if ranked else None
-            if best:
-                reasons=", ".join(best.get("hard_reasons",[])[:4])
-                return None, f"{best['state']} {best['pair'][0]}-{best['pair'][1]} score {best['score']:.1f} | {reasons}"
-            return None, "nessun ambo candidato"
-        filtered=[]
-        for r in playable:
-            key=self._pair_key(r["pair"])
-            last_e=int(self.playable_last_pair_e.get(key,0) or 0)
-            if last_e and (int(e)-last_e) < PLAYABLE_PAIR_REUSE_AFTER:
-                continue
-            if int(r.get("strict_horizon",0)) not in (1,2,3):
-                continue
-            filtered.append(r)
-        if not filtered:
-            return None, "miglior ambo ancora in finestra anti-riuso o senza orizzonte STRICT valido"
-        primary=filtered[0]
-        pair=primary["pair"]
-        max_h=int(primary.get("strict_horizon",0))
-        support_text=(f"{pair[0]}-{pair[1]} raw={primary['support']} | spie_ind={primary['independent_support']} | "
-                      f"pairLAB={primary['pair_lab_closed']} | TRAIN={primary['strict_train_closed']} | FORWARD={primary['strict_forward_closed']} | "
-                      f"stable=H{max_h} floor_edge={primary['strict_edge']:+.1f}pp floor_ROI={primary['strict_roi']:+.1f}%")
-        return {
-            "origin_e":int(e), "opened_at":now_txt(), "max_colpi":max_h,
-            "ambi":[{"ambo":list(pair),"support":primary["support"],"independent_support":primary["independent_support"],
-                     "score":primary["score"],"state":primary["state"],"confirmations":list(primary["confirmations"]),
-                     "pair_edge_h3":primary["pair_edge_h3"],"pair_roi_h3":primary["pair_roi_h3"],"pair_lab_closed":primary["pair_lab_closed"],
-                     "strict_closed":primary["strict_closed"],"strict_horizon":max_h,"strict_edge":primary["strict_edge"],"strict_roi":primary["strict_roi"],
-                     "strict_train_closed":primary["strict_train_closed"],"strict_forward_closed":primary["strict_forward_closed"],
-                     "strict_train_edge":primary["strict_train_edge"],"strict_train_roi":primary["strict_train_roi"],
-                     "strict_forward_edge":primary["strict_forward_edge"],"strict_forward_roi":primary["strict_forward_roi"],
-                     "group":playable_pair_group(pair)}],
-            "score":float(primary["score"]), "state":str(primary["state"]), "primary_pair":list(pair),
-            "signals_count":len(snap.get("raw_signals",[])), "dec_extra":float(snap.get("dec_extra",0.0)), "mult_extra":float(snap.get("mult_extra",0.0)),
-            "confirmations":list(primary.get("confirmations",[])), "hist_extra":float(primary.get("rule_hist_extra",0.0)),
-            "live_h3_extra":float(primary.get("pair_edge_h3",0.0)), "live_h3_closed":int(primary.get("pair_lab_closed",0)),
-            "pair_roi_h3":float(primary.get("pair_roi_h3",0.0)), "pair_hit_rate_h3":float(primary.get("pair_hit_rate_h3",0.0)),
-            "strict_closed":int(primary.get("strict_closed",0)), "strict_horizon":max_h,
-            "strict_rate":float(primary.get("strict_rate",0.0)), "strict_edge":float(primary.get("strict_edge",0.0)), "strict_roi":float(primary.get("strict_roi",0.0)),
-            "strict_train_closed":int(primary.get("strict_train_closed",0)), "strict_forward_closed":int(primary.get("strict_forward_closed",0)),
-            "strict_train_edge":float(primary.get("strict_train_edge",0.0)), "strict_train_roi":float(primary.get("strict_train_roi",0.0)),
-            "strict_forward_edge":float(primary.get("strict_forward_edge",0.0)), "strict_forward_roi":float(primary.get("strict_forward_roi",0.0)),
-            "independent_support":int(primary.get("independent_support",0)), "independent_spies":list(primary.get("independent_spies",[])),
-            "early":primary.get("early",{}), "strict_early":primary.get("strict_early",{}),
-            "score_parts":primary.get("score_parts",{}), "support_text":support_text,
-            "random_h":primary.get("random_h",{}), "ambata":None,"terno_active":False,"terno":[],"v48_confirmed":False,
-        }, "ok"
-
-    def _playable_ambi_text(self, snapshot=None):
-        snapshot = snapshot or self.playable_snapshot or {}
-        out = []
-        for item in snapshot.get("ambi", []):
-            pair = item.get("ambo", [])
-            if len(pair) != 2:
-                continue
-            a, b = map(int, pair)
-            out.append(f"{a}-{b}(S{float(item.get('score', 0)):.0f}|ind {int(item.get('independent_support', 0))}|raw {int(item.get('support', 0))})")
-        return ", ".join(out) or "n/d"
-
-    def _playable_terno_text(self, snapshot=None):
-        return "NO — AMBO ONLY"
-
-    def _score_bucket_touch(self, score, result=None, cost=0.0, gross=0.0):
-        b = score_bucket(score)
-        st = self.playable_score_buckets.setdefault(b, {"play": 0, "hit": 0, "stop": 0, "aborted": 0, "cost": 0.0, "gross": 0.0})
-        if result == "OPEN":
-            st["play"] = int(st.get("play", 0)) + 1
-        elif result == "HIT":
-            st["hit"] = int(st.get("hit", 0)) + 1
-        elif result == "STOP":
-            st["stop"] = int(st.get("stop", 0)) + 1
-        elif result == "ABORTED":
-            st["aborted"] = int(st.get("aborted", 0)) + 1
-        st["cost"] = float(st.get("cost", 0.0)) + float(cost or 0.0)
-        st["gross"] = float(st.get("gross", 0.0)) + float(gross or 0.0)
-
-    def _close_playable(self):
-        self.playable_active = False
-        self.playable_snapshot = None
-        self.playable_colpi = 0
-
-    async def maybe_open_playable_play(self, app, e):
-        candidate, reason = self.build_playable_candidate(e)
-        if not candidate:
-            return False
-        self.playable_uid += 1
-        candidate["playable_id"] = self.playable_uid
-        self.playable_snapshot = candidate
-        self.playable_active = True
-        self.playable_colpi = 0
-        self.playable_total += 1
-        self.playable_score_sum += float(candidate.get("score", 0.0))
-        self._score_bucket_touch(candidate.get("score", 0.0), "OPEN")
-        for item in candidate.get("ambi", []):
-            pair = item.get("ambo", [])
-            if len(pair) == 2:
-                self.playable_last_pair_e[f"{min(pair)}-{max(pair)}"] = int(e)
-
-        early = candidate.get("early", {})
-        self.append_csv_event(
-            "PLAYABILITY_OPEN",
-            e=e,
-            playable_id=self.playable_uid,
-            playable_colpo=0,
-            playable_ambi=self._playable_ambi_text(candidate),
-            playable_outcome="OPEN",
-            playable_support=candidate.get("support_text", ""),
-            playable_score=f"{candidate.get('score', 0):.2f}",
-            playable_state=candidate.get("state", ""),
-            playable_edge=f"STRICT H{candidate.get('strict_horizon',0)} {candidate.get('strict_edge',0):+.2f}pp ROI {candidate.get('strict_roi',0):+.2f}%",
-            playable_confirmations=",".join(candidate.get("confirmations", [])),
-        )
-        if PLAYABLE_NOTIFY_OPEN:
-            parts = candidate.get("score_parts", {})
-            conf = ", ".join(candidate.get("confirmations", [])) or "nessuna"
-            await self.tg(
-                app,
-                f"{candidate.get('state')} — AMBO ONLY\n"
-                f"• play_id = {candidate['playable_id']} | origine E={e}\n"
-                f"• AMBI = {self._playable_ambi_text(candidate)}\n"
-                f"• durata = H1-H{int(candidate.get('max_colpi',PLAYABLE_MAX_COLPI))} DINAMICA | una sola unita' per colpo\n"
-                f"• SCORE principale = {candidate.get('score',0):.1f}/100\n"
-                f"• supporto = {candidate.get('support_text','')}\n"
-                f"• DECINA extra = {candidate.get('dec_extra',0):+.2f} pp | MULTIPLA = {candidate.get('mult_extra',0):+.2f} pp\n"
-                f"• pair-LAB generale = {candidate.get('live_h3_closed',0)} chiuse | H3 edge={candidate.get('live_h3_extra',0):+.2f} pp | ROI={candidate.get('pair_roi_h3',0):+.2f}%\n"
-                f"• TRAIN/FORWARD = {candidate.get('strict_train_closed',0)}/{candidate.get('strict_forward_closed',0)} | STABLE H{candidate.get('strict_horizon',0)} | floor edge={candidate.get('strict_edge',0):+.2f} pp | floor ROI={candidate.get('strict_roi',0):+.2f}%\n"
-                f"• STRICT H1/H2/H3 ROI = {candidate.get('strict_early',{}).get(1,{}).get('roi',0):+.1f}% / {candidate.get('strict_early',{}).get(2,{}).get('roi',0):+.1f}% / {candidate.get('strict_early',{}).get(3,{}).get('roi',0):+.1f}%\n"
-                f"• spie indipendenti = {candidate.get('independent_support',0)} ({fmt_nums(candidate.get('independent_spies',[]))}) | conferme = {conf}\n"
-                f"• score parti = indipendenza {parts.get('independent',0):.1f}/25 | edge ambo {parts.get('pair_edge',0):.1f}/30 | ROI ambo {parts.get('pair_roi',0):.1f}/25 | conferme {parts.get('convergence',0):.1f}/15 | contesto {parts.get('context',0):.1f}/5\n"
-                f"• controllo casuale ambo: H1 {pair_expected_within_h(1)*100:.2f}% | H2 {pair_expected_within_h(2)*100:.2f}% | H3 {pair_expected_within_h(3)*100:.2f}% | ROI casuale H3≈{pair_random_roi_stop_on_hit(3):+.1f}%\n"
-                "• T1 / SOMMA / +5 / +4 non possono aprire il play da soli"
-            )
-        self.save_state()
+        self.seen_baskets.append(fingerprint)
+        self.seen_basket_set.add(fingerprint)
         return True
 
-    async def process_playable_play(self, app, e, nums):
-        if not self.playable_active or not self.playable_snapshot:
-            return False
-        self.playable_colpi += 1
-        snap = self.playable_snapshot
-        max_h = int(snap.get("max_colpi", PLAYABLE_MAX_COLPI) or PLAYABLE_MAX_COLPI)
-        max_h = max(1, min(PLAYABLE_MAX_COLPI, max_h))
-        nums_set = set(map(int, nums))
-        hit_pairs = []
-        for item in snap.get("ambi", []):
-            pair = list(map(int, item.get("ambo", [])))
-            if len(pair) == 2 and set(pair).issubset(nums_set):
-                hit_pairs.append(tuple(sorted(pair)))
+    # ----------------------------
+    # Telegram
+    # ----------------------------
 
-        if hit_pairs:
-            self.playable_hit_ambo += 1
-            self.playable_hit_colpi[str(self.playable_colpi)] += 1
-            cost = len(snap.get("ambi", [])) * self.playable_colpi
-            gross = AMBO_PAYOUT * len(hit_pairs)
-            self.playable_cost_units += cost
-            self.playable_gross_units += gross
-            self._score_bucket_touch(snap.get("score", 0.0), "HIT", cost=cost, gross=gross)
-            hit_txt = ", ".join(f"{a}-{b}" for a, b in hit_pairs)
-            self.append_csv_event(
-                "PLAYABILITY_HIT",
-                e=e,
-                playable_id=snap.get("playable_id"),
-                playable_colpo=self.playable_colpi,
-                playable_ambi=self._playable_ambi_text(snap),
-                playable_outcome="HIT_AMBO",
-                playable_hit_ambi=hit_txt,
-                playable_support=snap.get("support_text", ""),
-                playable_score=f"{snap.get('score',0):.2f}",
-                playable_state=snap.get("state", ""),
-                playable_edge=f"STRICT H{snap.get('strict_horizon',0)} {snap.get('strict_edge',0):+.2f}pp ROI {snap.get('strict_roi',0):+.2f}%",
-                playable_confirmations=",".join(snap.get("confirmations", [])),
-            )
-            play_id = snap.get("playable_id")
-            colpo = self.playable_colpi
-            self.playable_cooldown = PLAYABLE_COOLDOWN_AFTER_PLAY
-            self._close_playable()
-            if PLAYABLE_NOTIFY_HIT:
-                await self.tg(
-                    app,
-                    f"🔥 HIT AMBO PLAYABILITY | H{colpo}\n"
-                    f"• play_id = {play_id}\n"
-                    f"• preso = {hit_txt}\n"
-                    f"• score apertura = {snap.get('score',0):.1f}/100\n"
-                    f"• costo teorico = {cost:.2f}u | lordo = {gross:.2f}u\n\n"
-                    f"{self.playable_stats_text()}"
-                )
-            self.save_state()
-            return True
+    async def tg(self, app, text):
+        if not app or not CHAT_ID:
+            print(text)
+            return
+        try:
+            await app.bot.send_message(chat_id=CHAT_ID, text=text)
+        except Exception as exc:
+            print(f"⚠️ Telegram: {exc}")
 
-        if self.playable_colpi >= max_h:
-            self.playable_stop += 1
-            cost = len(snap.get("ambi", [])) * max_h
-            self.playable_cost_units += cost
-            self._score_bucket_touch(snap.get("score", 0.0), "STOP", cost=cost, gross=0.0)
-            self.append_csv_event(
-                "PLAYABILITY_STOP",
-                e=e,
-                playable_id=snap.get("playable_id"),
-                playable_colpo=self.playable_colpi,
-                playable_ambi=self._playable_ambi_text(snap),
-                playable_outcome="STOP",
-                playable_support=snap.get("support_text", ""),
-                playable_score=f"{snap.get('score',0):.2f}",
-                playable_state=snap.get("state", ""),
-                playable_edge=f"STRICT H{snap.get('strict_horizon',0)} {snap.get('strict_edge',0):+.2f}pp ROI {snap.get('strict_roi',0):+.2f}%",
-                playable_confirmations=",".join(snap.get("confirmations", [])),
-            )
-            play_id = snap.get("playable_id")
-            ambi_txt = self._playable_ambi_text(snap)
-            self.playable_cooldown = PLAYABLE_COOLDOWN_AFTER_PLAY
-            self._close_playable()
-            if PLAYABLE_NOTIFY_STOP:
-                await self.tg(
-                    app,
-                    f"🛑 STOP PLAYABILITY | H{max_h}\n"
-                    f"• play_id = {play_id}\n"
-                    f"• ambi = {ambi_txt}\n"
-                    f"• score apertura = {snap.get('score',0):.1f}/100\n"
-                    f"• costo teorico = {cost:.2f}u\n\n"
-                    f"{self.playable_stats_text()}"
-                )
-            self.save_state()
-            return True
-
-        self.save_state()
-        return False
-
-    def playable_stats_text(self):
-        net, roi = roi_text(self.playable_gross_units, self.playable_cost_units)
-        active = "SI" if self.playable_active else "NO"
-        avg_score = self.playable_score_sum / self.playable_total if self.playable_total else 0.0
-        lines = [
-            "🎯 PLAYABILITY ONLY — RISULTATI AMBO",
-            f"• play = {self.playable_total} | HIT = {self.playable_hit_ambo} ({pct(self.playable_hit_ambo, self.playable_total):.2f}%) | STOP = {self.playable_stop} | ABORTED = {self.playable_aborted}",
-            f"• HIT per colpo = {', '.join(f'H{i}:{self.playable_hit_colpi.get(str(i),0)}' for i in range(1, PLAYABLE_MAX_COLPI+1))}",
-            f"• score medio apertura = {avg_score:.1f}/100 | attivo ora = {active}",
-            f"• chiusi = {self.playable_hit_ambo + self.playable_stop + self.playable_aborted} | open = {1 if self.playable_active else 0} | controllo: play = chiusi + open",
-            f"• economia ambo {AMBO_PAYOUT:.0f}x = costo {self.playable_cost_units:.2f}u | lordo {self.playable_gross_units:.2f}u | netto {net:+.2f}u | ROI {roi:+.2f}%",
-            "",
-            "📊 CALIBRAZIONE SCORE",
-        ]
-        for b in ("60-69", "70-79", "80-89", "90-100"):
-            st = self.playable_score_buckets.get(b, {})
-            p = int(st.get("play", 0)); h = int(st.get("hit", 0)); s = int(st.get("stop", 0)); a = int(st.get("aborted",0))
-            cost = float(st.get("cost", 0.0)); gross = float(st.get("gross", 0.0))
-            _, broi = roi_text(gross, cost)
-            lines.append(f"• {b}: play={p} | HIT={h} ({pct(h,p):.1f}%) | STOP={s} | ABORT={a} | ROI={broi:+.1f}%")
-        if self.playable_snapshot:
-            lines.extend([
-                "",
-                "🟢 PLAY ATTIVO",
-                f"• id={self.playable_snapshot.get('playable_id')} | colpo={self.playable_colpi}/{int(self.playable_snapshot.get('max_colpi',PLAYABLE_MAX_COLPI))}",
-                f"• ambi={self._playable_ambi_text(self.playable_snapshot)}",
-                f"• score={self.playable_snapshot.get('score',0):.1f}/100 | {self.playable_snapshot.get('state','')}",
-            ])
-        lines.extend([
-            "",
-            f"• controllo casuale ambo fisso: H1={pair_expected_within_h(1)*100:.2f}% | H2={pair_expected_within_h(2)*100:.2f}% | H3={pair_expected_within_h(3)*100:.2f}% | ROI casuale H3≈{pair_random_roi_stop_on_hit(3):+.1f}%",
-            "• il confronto decisivo resta il ROI, non il solo hit-rate",
-        ])
-        return "\n".join(lines)
-
-    def pair_lab_summary_text(self, limit=8):
-        rows=[]
-        for key in self.playable_pair_lab_stats.keys():
-            try:
-                a,b=map(int,key.split("-"))
-            except Exception:
-                continue
-            m=self._pair_lab_metrics((a,b))
-            if int(m["stats"].get("closed",0)) <= 0:
-                continue
-            rows.append((int(m["stats"]["closed"]), m["edges"][3], m["rois"][3], key, m))
-        rows.sort(key=lambda x:(-x[0],-x[1],-x[2]))
-        lines=["🧪 PAIR-LAB GENERALE H1-H3 — DIAGNOSTICA", f"• sessioni aperte = {len(self.playable_pair_lab_sessions)} | incomplete cambio giorno = {self.playable_pair_lab_aborted}", "• NON autorizza da solo un PLAY v3.4: servono TRAIN + FORWARD"]
-        if not rows:
-            lines.append("• nessuna coppia chiusa")
-            return "\n".join(lines)
-        for _,_,_,key,m in rows[:limit]:
-            st=m["stats"]; c=int(st["closed"])
-            lines.append(f"• {key}: n={c} | H1 {m['rates'][1]:.1f}% ({m['edges'][1]:+.1f}pp, ROI {m['rois'][1]:+.1f}%) | H2 {m['rates'][2]:.1f}% ({m['edges'][2]:+.1f}pp, ROI {m['rois'][2]:+.1f}%) | H3 {m['rates'][3]:.1f}% ({m['edges'][3]:+.1f}pp, ROI {m['rois'][3]:+.1f}%)")
-        return "\n".join(lines)
-
-    def strict_shadow_summary_text(self, limit=8):
-        keys = set((getattr(self, "playable_strict_train_stats", {}) or {}).keys()) | set((getattr(self, "playable_strict_forward_stats", {}) or {}).keys())
-        rows=[]
-        for key in keys:
-            try:
-                a,b=map(int,key.split("-"))
-            except Exception:
-                continue
-            train=self._strict_pair_metrics((a,b), source="train")
-            fwd=self._strict_pair_metrics((a,b), source="forward")
-            comb=self._strict_pair_metrics((a,b), source="combined")
-            tn=int(train["stats"].get("closed",0)); fn=int(fwd["stats"].get("closed",0)); cn=int(comb["stats"].get("closed",0))
-            if cn <= 0:
-                continue
-            h=self._select_train_forward_horizon(train,fwd)
-            floor_roi=min(float(train["rois"].get(h,0.0)),float(fwd["rois"].get(h,0.0))) if h else -999.0
-            rows.append((tn+fn, floor_roi, key, train, fwd, comb, h))
-        rows.sort(key=lambda x:(-x[0],-x[1],x[2]))
-        lines=[
-            "🧪 STRICT-LAB v3.4 — TRAIN vs FORWARD",
-            f"• aperte FORWARD ora = {len(self.playable_strict_sessions)} | incomplete cambio giorno = {self.playable_strict_aborted}",
-            f"• min TRAIN/FORWARD = {PLAYABLE_STRICT_TRAIN_MIN_CLOSED}/{PLAYABLE_STRICT_FORWARD_MIN_CLOSED} chiuse per coppia",
-            "• PLAY: lo STESSO H deve superare edge/ROI sia nel TRAIN sia nel FORWARD",
-            f"• FORWARD iniziato = {self.playable_strict_forward_started_at or '-'}",
-        ]
-        if not rows:
-            lines.append("• nessun caso STRICT-LAB chiuso: PLAY reale bloccato")
-            return "\n".join(lines)
-        for _,_,key,tr,fw,co,h in rows[:limit]:
-            tn=int(tr["stats"].get("closed",0)); fn=int(fw["stats"].get("closed",0))
-            stable=(f"STABLE H{h} | TRAIN {tr['edges'][h]:+.1f}pp/{tr['rois'][h]:+.1f}% | FORWARD {fw['edges'][h]:+.1f}pp/{fw['rois'][h]:+.1f}%" if h else "STABLE=NO")
-            lines.append(
-                f"• {key}: TRAIN n={tn} ROI H1/H2/H3={tr['rois'][1]:+.1f}/{tr['rois'][2]:+.1f}/{tr['rois'][3]:+.1f}% | "
-                f"FORWARD n={fn} ROI H1/H2/H3={fw['rois'][1]:+.1f}/{fw['rois'][2]:+.1f}/{fw['rois'][3]:+.1f}% | {stable}"
-            )
-        return "\n".join(lines)
-
-    def decina_multipla_playability_text(self):
-        snap=self.playable_signal_snapshot(); ranked=self.playability_rankings(snap)
-        lines=[
-            "🎯 GIOCABILITÀ v3.4 — TRAIN + FORWARD + PLAY-STRICT",
-            "• PAIR-LAB generale = filtro/diagnostica; NON basta per giocare",
-            "• TRAIN = STRICT-LAB del replay storico; FORWARD = casi nati dopo il warmup",
-            "• PLAY-STRICT = gate BASE + STESSO H positivo in TRAIN e FORWARD",
-            "• max colpi = H stabile TRAIN/FORWARD; a quasi-parita' robusta preferisce il piu' corto",
-            "• T1 / SOMMA 90-91 / +5 / +4 / v48 = conferme del PLAY; non filtrano l'apertura STRICT-LAB",
-            f"• gate BASE = raw>={PLAYABLE_MIN_PAIR_SUPPORT} | ind>={PLAYABLE_MIN_INDEPENDENT_SPIES} | pairLAB>={PLAYABLE_PAIR_LAB_MIN_CLOSED} | edgeH3>={PLAYABLE_PAIR_MIN_EDGE_H3:+.1f}pp | ROI H3>={PLAYABLE_PAIR_MIN_ROI_H3:+.1f}%",
-            f"• gate PLAY-STRICT = TRAIN/FORWARD n>={PLAYABLE_STRICT_TRAIN_MIN_CLOSED}/{PLAYABLE_STRICT_FORWARD_MIN_CLOSED} | stesso H edge>={PLAYABLE_STRICT_MIN_EDGE:+.1f}pp ROI>={PLAYABLE_STRICT_MIN_ROI:+.1f}% | senza conf entrambi >={PLAYABLE_STRICT_NO_CONFIRM_MIN_EDGE:+.1f}pp/{PLAYABLE_STRICT_NO_CONFIRM_MIN_ROI:+.1f}%",
-            f"• DEC>={PLAYABLE_MIN_DECINA_EXTRA:+.0f}pp | MULT>={PLAYABLE_MIN_MULTIPLA_EXTRA:+.0f}pp | anti-riuso reale={PLAYABLE_PAIR_REUSE_AFTER} | anti-ripetizione STRICT-LAB={PLAYABLE_STRICT_REOPEN_AFTER}",
-            "",
-            f"• segnali DECINA/MULTIPLA aperti = {len(snap.get('raw_signals',[]))}",
-            f"• DECINA extra H3 = {snap.get('dec_extra',0):+.2f} pp | MULTIPLA extra H3 = {snap.get('mult_extra',0):+.2f} pp",
-        ]
-        if not ranked:
-            lines.extend(["", "🔴 NO PLAY — nessun ambo candidato", "", self.strict_shadow_summary_text(limit=6), "", self.pair_lab_summary_text(limit=6)])
-            return "\n".join(lines)
-        lines.extend(["", "🏆 CLASSIFICA AMBI v3"])
-        for i,r in enumerate(ranked[:8],1):
-            a,b=r["pair"]; conf=",".join(r.get("confirmations",[])) or "-"; blocks=""
-            if r.get("hard_reasons"):
-                blocks=" | blocco: "+"; ".join(r["hard_reasons"][:4])
-            sh=int(r.get("strict_horizon",0) or 0)
-            strict_txt=(
-                f"TRAIN/FWD {r.get('strict_train_closed',0)}/{r.get('strict_forward_closed',0)} | H{sh} "
-                f"T {r.get('strict_train_roi',0):+.1f}% / F {r.get('strict_forward_roi',0):+.1f}%"
-                if sh else f"TRAIN/FWD {r.get('strict_train_closed',0)}/{r.get('strict_forward_closed',0)} | STABLE=NO"
-            )
-            lines.append(
-                f"{i}) {a}-{b} | {r['state']} | S{r['score']:.1f} | raw {r['support']} | ind {r['independent_support']} | "
-                f"pairLAB {r['pair_lab_closed']} H3 {r['pair_edge_h3']:+.1f}pp/{r['pair_roi_h3']:+.1f}% | {strict_txt} | conf {conf}{blocks}"
-            )
-        best=ranked[0]
-        lines.extend(["", "🚦 VERDETTO"])
-        if best.get("eligible") and best.get("score",0) >= PLAYABLE_STRONG_SCORE:
-            lines.append(f"• 🔥 PLAY STRONG {best['pair'][0]}-{best['pair'][1]} | H1-H{best.get('strict_horizon',0)}")
-        elif best.get("eligible") and best.get("score",0) >= PLAYABLE_PLAY_SCORE:
-            lines.append(f"• 🟢 PLAY {best['pair'][0]}-{best['pair'][1]} | H1-H{best.get('strict_horizon',0)}")
-        elif best.get("strict_train_closed",0) < PLAYABLE_STRICT_TRAIN_MIN_CLOSED or best.get("strict_forward_closed",0) < PLAYABLE_STRICT_FORWARD_MIN_CLOSED:
-            lines.append(
-                f"• 🧪 TRAIN/FORWARD {best['pair'][0]}-{best['pair'][1]} — "
-                f"{best.get('strict_train_closed',0)}/{best.get('strict_forward_closed',0)} vs min {PLAYABLE_STRICT_TRAIN_MIN_CLOSED}/{PLAYABLE_STRICT_FORWARD_MIN_CLOSED}, nessuna giocata"
-            )
-        elif best.get("pair_lab_closed",0) < PLAYABLE_PAIR_LAB_MIN_CLOSED:
-            lines.append(f"• 🧪 PAIR SHADOW {best['pair'][0]}-{best['pair'][1]} — {best.get('pair_lab_closed',0)}/{PLAYABLE_PAIR_LAB_MIN_CLOSED}")
-        else:
-            lines.append(f"• {best['state']} {best['pair'][0]}-{best['pair'][1]} — nessuna giocata")
-        lines.append(f"• casuale: H1={pair_expected_within_h(1)*100:.2f}% | H2={pair_expected_within_h(2)*100:.2f}% | H3={pair_expected_within_h(3)*100:.2f}%")
-        lines.extend(["", self.strict_shadow_summary_text(limit=6), "", self.pair_lab_summary_text(limit=6)])
-        return "\n".join(lines)
-
-    def spy_elite_text(self):
-        def read_stats(key):
-            st = self.spy_candidate_horizon_stats.get(key, {}).get("3", self.new_spy_stats())
-            closed = int(st.get("closed", 0))
-            k2 = int(st.get("k2_hits", 0))
-            k3 = int(st.get("k3_hits", 0))
-            cost = float(st.get("k3_cost_units", 0.0))
-            gross = float(st.get("k3_gross_units", 0.0))
-            _, roi = roi_text(gross, cost)
-            active_now = sum(1 for s in self.spy_sessions if s.get("key") == key)
-            return st, closed, k2, k3, roi, active_now
-
-        def aggregate(keys):
-            out = self.new_spy_stats()
-            active_now = 0
-            for key in keys:
-                st, _, _, _, _, open_count = read_stats(key)
-                active_now += open_count
-                for field in out:
-                    out[field] += st.get(field, 0)
-            return out, active_now
-
-        lines = [
-            "⭐ SPIE ELITE STORICHE — LIVE H3",
-            f"• elite monitorate = {len(SPY_ELITE_ALL_KEYS)} | TOP3 = {len(SPY_ELITE_TOP3_KEYS)}",
-            "• confronto = storico H3 vs live del giorno/versione corrente",
-            "• uso = filtro laboratorio, non giocata automatica",
-            "",
-        ]
-
-        for title, keys in (("NUCLEO TOP3", SPY_ELITE_TOP3_KEYS), ("ELITE COMPLETE", SPY_ELITE_ALL_KEYS)):
-            agg, active_now = aggregate(keys)
-            closed = int(agg.get("closed", 0))
-            k2 = int(agg.get("k2_hits", 0))
-            k3 = int(agg.get("k3_hits", 0))
-            _, roi = roi_text(float(agg.get("k3_gross_units", 0.0)), float(agg.get("k3_cost_units", 0.0)))
-            exp = expected_pct_from_sum(agg.get("expected_k2_sum", 0.0), closed)
-            if closed < SPY_ELITE_MIN_CLOSED:
-                stato = "campione piccolo"
-            elif roi >= 0:
-                stato = "K3 positivo nel live"
-            elif pct(k2, closed) - exp >= 5:
-                stato = "K2 positivo, K3 negativo"
-            else:
-                stato = "non confermato"
-            lines.extend([
-                f"📌 {title}",
-                f"• live chiuse = {closed} | aperte ora = {active_now}",
-                f"• K2 H3 = {k2}/{closed} = {pct(k2, closed):.2f}% | atteso≈{exp:.2f}% | extra={pct(k2, closed)-exp:+.2f} pp",
-                f"• K3 H3 = {k3}/{closed} | ROI={roi:+.2f}%",
-                f"• stato = {stato}",
-                "",
-            ])
-
-        lines.append("📋 DETTAGLIO ELITE")
-        for key in SPY_ELITE_ALL_KEYS:
-            meta = SPY_ELITE_HISTORIC[key]
-            st, closed, k2, k3, roi, active_now = read_stats(key)
-            k2_live = pct(k2, closed)
-            exp = expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed)
-            sample = "OK" if closed >= SPY_ELITE_MIN_CLOSED else "piccolo"
-            if closed <= 0:
-                live_line = "live: nessun caso chiuso"
-            else:
-                live_line = (
-                    f"live: chiuse={closed} | K2={k2_live:.2f}% | extra={k2_live-exp:+.2f} pp | "
-                    f"K3={k3} | ROI={roi:+.2f}% | sample={sample}"
-                )
-            lines.append(
-                f"{meta['rank']}) [{meta['tier']}] {meta['label']}\n"
-                f"• storico H3: K2={meta['hist_k2_pct']:.2f}% | K3={meta['hist_k3_pct']:.2f}% | ROI={meta['hist_roi_pct']:+.2f}% | rete={meta['network']}\n"
-                f"• {live_line} | aperte ora={active_now}"
-            )
-
-        lines.append("")
-        lines.append("🔎 LETTURA")
-        lines.append("• Coincide quando le elite storiche fanno almeno 20 chiuse e restano sopra atteso nel live.")
-        lines.append("• Se DECINA/MULTIPLA vola ma le elite storiche no, il periodo live è caldo su altra zona.")
-        return "\n\n".join(lines)
-
-    def spy_top_text(self, limit=12, min_closed=SPY_TOP_MIN_CLOSED):
-        rows = []
-        low_sample = 0
-        for key, hstats in self.spy_candidate_horizon_stats.items():
-            st = hstats.get("3") or {}
-            closed = int(st.get("closed", 0))
-            if closed <= 0:
-                continue
-            if closed < min_closed:
-                low_sample += 1
-                continue
-            rule = self.spy_model.get(key, {})
-            rows.append({
-                "key": key,
-                "label": rule.get("label", key),
-                "closed": closed,
-                "k2": int(st.get("k2_hits", 0)),
-                "k3": int(st.get("k3_hits", 0)),
-                "roi": roi_text(float(st.get("k3_gross_units", 0.0)), float(st.get("k3_cost_units", 0.0)))[1],
-                "extra": pct(int(st.get("k2_hits", 0)), closed) - expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed),
-            })
-        rows.sort(key=lambda r: (-r["extra"], -r["k2"], -r["closed"]))
-        lines = [
-            "🏆 MIGLIORI SPIE LIVE — H3",
-            f"ordinate per extra K2 sopra atteso | minimo casi chiusi = {min_closed}",
-            "",
-        ]
-        if not rows:
-            if low_sample:
-                lines.append(f"Nessuna spia con almeno {min_closed} casi chiusi. Regole con campione piccolo escluse = {low_sample}.")
-            else:
-                lines.append("Nessuna spia chiusa ancora.")
-            return "\n".join(lines)
-        if low_sample:
-            lines.append(f"Regole escluse per campione piccolo (<{min_closed}) = {low_sample}")
-            lines.append("")
-        for i, r in enumerate(rows[:limit], start=1):
-            lines.append(
-                f"{i}) {r['label']}\n"
-                f"• chiuse = {r['closed']} | K2 H3 = {r['k2']}/{r['closed']} ({pct(r['k2'], r['closed']):.2f}%) | extra≈{r['extra']:+.2f} pp\n"
-                f"• K3 H3 = {r['k3']} | ROI K3 = {r['roi']:+.2f}%"
-            )
-        return "\n\n".join(lines)
-
-    def spy_network_text(self):
-        lines = ["🧬 NETWORK NUMERI SPIA — H3", ""]
-        networks = sorted(self.spy_network_horizon_stats.keys())
-        if not networks:
-            return "🧬 NETWORK NUMERI SPIA\nNessuna rete chiusa ancora."
-        for net in networks:
-            st = self.spy_network_horizon_stats.get(net, {}).get("3", self.new_spy_stats())
-            closed = int(st.get("closed", 0))
-            if closed <= 0:
-                continue
-            k2 = int(st.get("k2_hits", 0))
-            k3 = int(st.get("k3_hits", 0))
-            cost = float(st.get("k3_cost_units", 0.0))
-            gross = float(st.get("k3_gross_units", 0.0))
-            _, roi = roi_text(gross, cost)
-            exp_k2_pct = expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed)
-            label = SPY_NETWORK_DEFS.get(net, {}).get("label", net)
-            lines.extend([
-                f"{label}",
-                f"• chiuse = {closed}",
-                f"• K2 H3 = {k2}/{closed} = {pct(k2, closed):.2f}% | atteso≈{exp_k2_pct:.2f}% | extra={pct(k2, closed)-exp_k2_pct:+.2f} pp",
-                f"• K3 H3 = {k3} | ROI K3 = {roi:+.2f}%",
-                "",
-            ])
-        lines.append("📶 LIVELLI RETE — H3")
-        for level in SPY_LEVELS:
-            st = self.spy_level_horizon_stats.get(level, {}).get("3", self.new_spy_stats())
-            closed = int(st.get("closed", 0))
-            if closed <= 0:
-                continue
-            k2 = int(st.get("k2_hits", 0))
-            exp_k2_pct = expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed)
-            lines.append(f"• {level}: K2 {k2}/{closed} = {pct(k2, closed):.2f}% | extra={pct(k2, closed)-exp_k2_pct:+.2f} pp")
-        return "\n".join(lines).strip()
-
-    def focus_h3_text(self):
-        h3 = self.spy_horizon_stats.get("3", self.new_spy_stats())
-        closed = int(h3.get("closed", 0))
-        k2 = int(h3.get("k2_hits", 0))
-        k3 = int(h3.get("k3_hits", 0))
-        exp = expected_pct_from_sum(h3.get("expected_k2_sum", 0.0), closed)
-        k2p = pct(k2, closed)
-        _, roi = roi_text(float(h3.get("k3_gross_units", 0.0)), float(h3.get("k3_cost_units", 0.0)))
-
-        dec = self.spy_network_horizon_stats.get("DECINA", {}).get("3", self.new_spy_stats())
-        dec_closed = int(dec.get("closed", 0))
-        dec_k2 = int(dec.get("k2_hits", 0))
-        dec_exp = expected_pct_from_sum(dec.get("expected_k2_sum", 0.0), dec_closed)
-
-        mult = self.spy_level_horizon_stats.get("MULTIPLA", {}).get("3", self.new_spy_stats())
-        mult_closed = int(mult.get("closed", 0))
-        mult_k2 = int(mult.get("k2_hits", 0))
-        mult_exp = expected_pct_from_sum(mult.get("expected_k2_sum", 0.0), mult_closed)
-
-        return (
-            "🔎 FOCUS LETTURA RAPIDA — H3\n"
-            f"• Spie globali: K2={k2}/{closed} = {k2p:.2f}% | extra={k2p-exp:+.2f} pp\n"
-            f"• K3 terno 45x: {k3}/{closed} | ROI={roi:+.2f}%\n"
-            f"• Rete DECINA: K2={dec_k2}/{dec_closed} = {pct(dec_k2, dec_closed):.2f}% | extra={pct(dec_k2, dec_closed)-dec_exp:+.2f} pp\n"
-            f"• Livello MULTIPLA: K2={mult_k2}/{mult_closed} = {pct(mult_k2, mult_closed):.2f}% | extra={pct(mult_k2, mult_closed)-mult_exp:+.2f} pp\n"
-            "• lettura: K2 misura la forza statistica; K3/ROI decide se il terno è sostenibile"
-        )
-
-    def full_report_text(self):
-        return "\n\n".join([
-            self.playable_stats_text(),
-            self.historical_warmup_report_text(),
-            self.decina_multipla_playability_text(),
-            self.focus_h3_text(),
-        ])
-
-    def operational_verdict_text(self):
-        st = self.spy_horizon_stats.get("3", self.new_spy_stats())
-        closed = int(st.get("closed", 0))
-        k2 = int(st.get("k2_hits", 0))
-        k3 = int(st.get("k3_hits", 0))
-        cost = float(st.get("k3_cost_units", 0.0))
-        gross = float(st.get("k3_gross_units", 0.0))
-        _, roi = roi_text(gross, cost)
-        exp_k2_pct = expected_pct_from_sum(st.get("expected_k2_sum", 0.0), closed)
-        k2_pct = pct(k2, closed)
-        extra = k2_pct - exp_k2_pct
-        if closed < 50:
-            stato = "campione piccolo: raccogliere dati"
-        elif extra >= 5 and roi > -15:
-            stato = "spie interessanti: K2 forte, K3 da verificare"
-        elif extra >= 5:
-            stato = "K2 positivo, terno K3 non ancora profittevole"
-        elif extra > 0:
-            stato = "leggero vantaggio, non sufficiente"
-        else:
-            stato = "spie non confermate nel periodo"
-        return (
-            "🧾 LETTURA OPERATIVA\n"
-            f"• H3 K2 = {k2_pct:.2f}% | extra≈{extra:+.2f} pp\n"
-            f"• H3 K3 = {k3}/{closed} | ROI terno={roi:+.2f}%\n"
-            f"• v48: HIT={self.total_hit_ambo}, STOP={self.total_stop}, play={self.total_play}\n"
-            f"• verdetto = {stato}\n"
-            "• nota = uso statistico/laboratorio, non previsione certa"
-        )
-
-    def scheduled_report_header(self, slot, reason=None):
-        label = {
-            "14:00": "TRANCHE 1 — metà giornata",
-            "23:50": "TRANCHE 2 — fine giornata",
-            "DAY_CHANGE": "REPORT FINE GIORNATA — cambio giorno",
-        }.get(slot, f"REPORT {slot}")
-        txt = [
-            f"📊 REPORT AUTOMATICO — {label}",
-            f"• giorno statistiche = {self.day}",
-            f"• generato = {now_txt()}",
-            "• modalità = report-only: niente messaggi spie aperte/K2/K3",
-        ]
-        if reason:
-            txt.append(f"• motivo = {reason}")
-        return "\n".join(txt)
-
-    def scheduled_report_text(self, slot, reason=None):
-        return f"{self.scheduled_report_header(slot, reason)}\n\n{self.full_report_text()}"
+    # ----------------------------
+    # Candidati +30 / H1-H2
+    # ----------------------------
 
     @staticmethod
-    def _slot_to_minutes(slot):
-        hh, mm = str(slot).split(":", 1)
-        return int(hh) * 60 + int(mm)
+    def candidate_pair(candidate):
+        return PAIR_LISTS[TARGET_DECADE_INDEX][int(candidate["pair_index"])]
 
-    def has_reportable_data(self):
-        # Per i comandi manuali: mostra sempre cio' che esiste, anche se poco.
-        has_spy_data = any(
-            int(v.get("sessions", 0)) or int(v.get("closed", 0))
-            for v in self.spy_horizon_stats.values()
-        )
-        has_sum9091_data = bool(
-            self.sum9091_sessions
-            or any(int(v.get("closed", 0)) for v in self.sum9091_horizon_stats.values())
-        )
-        return bool(
-            self.total_play
-            or self.total_hit_ambo
-            or self.total_stop
-            or self.playable_total
-            or self.playable_active
-            or self.spy_sessions
-            or has_spy_data
-            or has_sum9091_data
-        )
-
-    def has_scheduled_reportable_data(self):
-        # Per i report automatici: evita report vuoti/giovani da istanze appena avviate.
-        h3_closed = int(self.spy_horizon_stats.get("3", {}).get("closed", 0))
-        meaningful_v48 = bool(
-            self.total_play
-            or self.total_hit_ambo
-            or self.total_stop
-            or self.playable_total
-            or self.playable_active
-            or (self.active and self.colpi >= AUTO_REPORT_ALLOW_ACTIVE_V48_AFTER_COLPO)
-        )
-        sum9091_closed = int(self.sum9091_horizon_stats.get(str(LAB_SUM9091_MAX_COLPI), {}).get("closed", 0))
-        return meaningful_v48 or h3_closed >= AUTO_REPORT_MIN_H3_CLOSED or sum9091_closed > 0
-
-    async def maybe_send_scheduled_report(self, app):
-        if not AUTO_REPORT_ENABLED:
+    async def advance_candidates(self, app, day, e, nums, mode="live", notify=True):
+        if not self.candidates:
             return
-        if not self.has_scheduled_reportable_data():
-            return
-        now = now_dt()
-        current = now.hour * 60 + now.minute
-        today = day_key()
-        if len(self.scheduled_reports_sent) > 40:
-            self.scheduled_reports_sent = dict(list(self.scheduled_reports_sent.items())[-25:])
-        for slot in AUTO_REPORT_TIMES:
-            target = self._slot_to_minutes(slot)
-            key = f"{today}_{slot}"
-            if key in self.scheduled_reports_sent:
+
+        st = self._stats(mode)
+        numset = set(map(int, nums))
+        keep = []
+
+        for c in self.candidates:
+            pair = self.candidate_pair(c)
+            hit = pair[0] in numset and pair[1] in numset
+            phase = c.get("phase")
+
+            if phase == "WAIT30":
+                if hit:
+                    st["canceled_wait30"] = int(st.get("canceled_wait30", 0)) + 1
+                    if notify and mode == "live":
+                        await self.tg(
+                            app,
+                            "♻️ CANDIDATO 70-79 ANNULLATO\n\n"
+                            f"Ambo: {fmt_pair(pair)}\n"
+                            f"Attesa raggiunta: {int(c.get('wait_count', 0))}/{EXTRA_WAIT}\n"
+                            f"Uscito all'estrazione {e} | {day}.\n"
+                            "Nessun H1/H2."
+                        )
+                    continue
+
+                c["wait_count"] = int(c.get("wait_count", 0)) + 1
+                if c["wait_count"] >= EXTRA_WAIT:
+                    c["phase"] = "H1"
+                    st["armed_h1"] = int(st.get("armed_h1", 0)) + 1
+                    if notify and mode == "live":
+                        await self.tg(
+                            app,
+                            f"🎯 {signal_word()} H1 ARMATO — 70-79\n\n"
+                            f"Ambo: {fmt_pair(pair)}\n"
+                            f"Origine: {c.get('origin_anchor_key', '-')}\n"
+                            f"Basket da {BASKET_SIZE}: {c.get('basket_text', '-')}\n"
+                            f"Completate altre {EXTRA_WAIT} assenze.\n"
+                            f"Ultima osservata: {e} | {day}\n\n"
+                            f"➡️ PROSSIMA ESTRAZIONE: {STAKE_H1:.2f}€ H1 su {fmt_pair(pair)}.\n"
+                            "Se H1 perde, il bot arma H2."
+                        )
+                elif notify and mode == "live" and c["wait_count"] in {10, 20, 25}:
+                    await self.tg(
+                        app,
+                        f"⏳ CANDIDATO {fmt_pair(pair)} — attesa "
+                        f"{c['wait_count']}/{EXTRA_WAIT}\nNessun H1 ancora."
+                    )
+                keep.append(c)
                 continue
-            if target <= current <= target + AUTO_REPORT_WINDOW_MINUTES:
-                self.scheduled_reports_sent[key] = now_txt()
-                self.save_state()
-                await self.tg(app, self.scheduled_report_text(slot), inline_menu=True)
 
-    async def send_day_change_report_if_needed(self, app):
-        # Fallback: se la tranche serale non è partita, prima del reset invia un report finale.
-        key = f"{self.day}_DAY_CHANGE"
-        if key in self.scheduled_reports_sent:
+            if phase == "H1":
+                st["h1_plays"] = int(st.get("h1_plays", 0)) + 1
+                st["cost"] = float(st.get("cost", 0.0)) + STAKE_H1
+                if hit:
+                    st["h1_hits"] = int(st.get("h1_hits", 0)) + 1
+                    st["gross"] = float(st.get("gross", 0.0)) + AMBO_PAYOUT * STAKE_H1
+                    if notify and mode == "live":
+                        await self.tg(
+                            app,
+                            f"✅ {signal_word()} H1 HIT\n\n"
+                            f"Ambo: {fmt_pair(pair)}\n"
+                            f"Estrazione: {e} | {day}\n"
+                            f"Puntata teorica: {STAKE_H1:.2f}€\n"
+                            f"Lordo teorico: {AMBO_PAYOUT * STAKE_H1:.2f}€\n\n"
+                            f"{self.stats_text(live_only=True)}"
+                        )
+                    continue
+
+                st["h1_misses"] = int(st.get("h1_misses", 0)) + 1
+                c["phase"] = "H2"
+                if notify and mode == "live":
+                    await self.tg(
+                        app,
+                        f"➡️ {signal_word()} H1 MISS — H2 ARMATO\n\n"
+                        f"Ambo: {fmt_pair(pair)}\n"
+                        f"H1: estrazione {e} | {day}\n"
+                        f"➡️ PROSSIMA ESTRAZIONE: {STAKE_H2:.2f}€ H2 su {fmt_pair(pair)}.\n"
+                        "Dopo H2 si chiude comunque."
+                    )
+                keep.append(c)
+                continue
+
+            if phase == "H2":
+                st["h2_plays"] = int(st.get("h2_plays", 0)) + 1
+                st["cost"] = float(st.get("cost", 0.0)) + STAKE_H2
+                if hit:
+                    st["h2_hits"] = int(st.get("h2_hits", 0)) + 1
+                    st["gross"] = float(st.get("gross", 0.0)) + AMBO_PAYOUT * STAKE_H2
+                else:
+                    st["stops_h2"] = int(st.get("stops_h2", 0)) + 1
+
+                if notify and mode == "live":
+                    icon = "✅" if hit else "❌"
+                    label = "H2 HIT" if hit else "STOP H2"
+                    await self.tg(
+                        app,
+                        f"{icon} {signal_word()} {label}\n\n"
+                        f"Ambo: {fmt_pair(pair)}\n"
+                        f"Estrazione: {e} | {day}\n\n"
+                        f"{self.stats_text(live_only=True)}"
+                    )
+                continue
+
+        self.candidates = keep
+
+    # ----------------------------
+    # Origini / superstiti / basket
+    # ----------------------------
+
+    def start_new_origin(self, current_key, mode):
+        self.origins.append({
+            "id": int(self.next_origin_id),
+            "anchor_seq": int(self.seq),
+            "anchor_key": current_key,
+            "remaining": [FULL_MASK] * 9,
+            "survivor_since": [None] * 9,
+            "survivor_since_key": [None] * 9,
+        })
+        self.next_origin_id += 1
+        st = self._stats(mode)
+        st["origins_started"] = int(st.get("origins_started", 0)) + 1
+
+    async def advance_origins(self, app, day, e, nums, hit_masks, current_key,
+                              mode="live", notify=True):
+        st = self._stats(mode)
+        keep = []
+
+        for origin in self.origins:
+            rem = origin["remaining"]
+            since = origin["survivor_since"]
+            since_key = origin["survivor_since_key"]
+
+            for i in range(9):
+                prev = int(rem[i])
+                new = prev & ~int(hit_masks[i])
+                if new == prev:
+                    continue
+
+                rem[i] = new
+                prev_count = prev.bit_count()
+                new_count = new.bit_count()
+
+                if new_count == 1 and prev_count != 1:
+                    since[i] = int(self.seq)
+                    since_key[i] = current_key
+                elif new_count != 1:
+                    since[i] = None
+                    since_key[i] = None
+
+            survivors = [i for i in range(9) if int(rem[i]).bit_count() == 1]
+
+            if len(survivors) == BASKET_SIZE:
+                fingerprint, raw_sig = self.basket_signature(origin, survivors)
+                if self.mark_basket_seen(fingerprint):
+                    st["baskets5"] = int(st.get("baskets5", 0)) + 1
+
+                    oldest = min(
+                        survivors,
+                        key=lambda i: (
+                            int(since[i]) if since[i] is not None else 10**18,
+                            i,
+                        ),
+                    )
+
+                    if oldest == TARGET_DECADE_INDEX:
+                        st["baskets5_oldest_target"] = int(st.get("baskets5_oldest_target", 0)) + 1
+                        pair_index = bit_index(int(rem[oldest]))
+                        basket_text = ", ".join(
+                            f"{DECADE_NAMES[i]}:{fmt_pair(pair_from_mask(i, rem[i]))}"
+                            for i in survivors
+                        )
+
+                        self.candidates.append({
+                            "id": int(self.next_candidate_id),
+                            "phase": "WAIT30",
+                            "pair_index": int(pair_index),
+                            "wait_count": 0,
+                            "origin_id": int(origin["id"]),
+                            "origin_anchor_key": origin.get("anchor_key"),
+                            "basket_created_key": current_key,
+                            "basket_created_seq": int(self.seq),
+                            "basket_fingerprint": fingerprint,
+                            "basket_raw": raw_sig,
+                            "basket_text": basket_text,
+                            "target_survivor_since_key": since_key[oldest],
+                            "target_age_at_basket": int(self.seq) - int(since[oldest]),
+                        })
+                        self.next_candidate_id += 1
+                        st["candidates"] = int(st.get("candidates", 0)) + 1
+
+                        if notify and mode == "live":
+                            target_pair = pair_from_mask(oldest, rem[oldest])
+                            await self.tg(
+                                app,
+                                "🧩 NUOVO BASKET DA 5 — CANDIDATO 70-79\n\n"
+                                f"Origine: {origin.get('anchor_key', '-')}\n"
+                                f"Basket: {basket_text}\n\n"
+                                f"✅ Piu' vecchio: {fmt_pair(target_pair)} della 70-79\n"
+                                f"Era superstite da {int(self.seq) - int(since[oldest])} estrazioni.\n"
+                                f"Ora deve restare assente per ALTRE {EXTRA_WAIT}.\n"
+                                "⚠️ NON E' ANCORA H1."
+                            )
+
+            # Un'origine puo' ancora arrivare a 5 superstiti solo se almeno
+            # 5 decine hanno ancora almeno un ambo mancante.
+            nonzero_decades = sum(1 for mask in rem if int(mask) != 0)
+            age = int(self.seq) - int(origin["anchor_seq"])
+            if nonzero_decades >= BASKET_SIZE and age <= ORIGIN_MAX_AGE:
+                keep.append(origin)
+            else:
+                st["origins_pruned"] = int(st.get("origins_pruned", 0)) + 1
+
+        self.origins = keep
+
+    async def process_draw(self, app, day, e, nums, mode="live", notify=True):
+        if len(nums) != 20 or len(set(nums)) != 20:
             return
-        if not self.has_scheduled_reportable_data():
+        if self.already_processed(day, e):
             return
-        self.scheduled_reports_sent[key] = now_txt()
-        self.save_state()
-        await self.tg(app, self.scheduled_report_text("DAY_CHANGE", reason="reset nuovo giorno"), inline_menu=True)
+
+        current_key = self.remember_processed(day, e)
+
+        # 1) I candidati gia' esistenti usano il draw corrente per WAIT/H1/H2.
+        await self.advance_candidates(app, day, e, nums, mode=mode, notify=notify)
+
+        # 2) Le origini gia' esistenti eliminano gli ambi usciti nel draw corrente.
+        hit_masks = self.hit_masks_for_draw(nums)
+        await self.advance_origins(
+            app, day, e, nums, hit_masks, current_key,
+            mode=mode, notify=notify,
+        )
+
+        # 3) SOLO ORA il draw corrente diventa una nuova origine.
+        #    Quindi il suo conteggio partira' dalla prossima estrazione.
+        self.start_new_origin(current_key, mode)
+
+        self.save_state(git=(mode == "live"))
+
+    # ----------------------------
+    # Warmup
+    # ----------------------------
+
+    async def run_initial_warmup(self, app=None):
+        if self.warmup_done:
+            return {
+                "already_done": True,
+                "ok": True,
+                "draws": self.warmup_draws,
+                "sources": self.warmup_sources,
+            }
+
+        records, sources = fetch_warmup_records(WARMUP_DAYS)
+        if len(records) < WARMUP_MIN_DRAWS:
+            return {
+                "already_done": False,
+                "ok": False,
+                "draws": len(records),
+                "sources": sources,
+                "reason": f"warmup insufficiente: {len(records)}<{WARMUP_MIN_DRAWS}",
+            }
+
+        # Stato completamente pulito.
+        self.processed = []
+        self.processed_set = set()
+        self.last_draw_key = None
+        self.seq = 0
+        self.origins = []
+        self.next_origin_id = 1
+        self.seen_baskets = []
+        self.seen_basket_set = set()
+        self.candidates = []
+        self.next_candidate_id = 1
+        self.stats_warmup = self._new_stats()
+        self.stats_live = self._new_stats()
+
+        for d, e, nums in records:
+            await self.process_draw(
+                app=None, day=d, e=e, nums=nums,
+                mode="warmup", notify=False,
+            )
+
+        self.warmup_done = True
+        self.warmup_completed_at = now_txt()
+        self.warmup_draws = len(records)
+        self.warmup_sources = sources
+        self.save_state(git=True, force_git=True)
+
+        return {
+            "already_done": False,
+            "ok": True,
+            "draws": len(records),
+            "sources": sources,
+        }
+
+    # ----------------------------
+    # Testi stato/stats
+    # ----------------------------
+
+    def candidate_lines(self, max_rows=12):
+        if not self.candidates:
+            return ["• nessun candidato attivo"]
+        out = []
+        for c in self.candidates[:max_rows]:
+            pair = self.candidate_pair(c)
+            phase = c.get("phase")
+            if phase == "WAIT30":
+                desc = f"WAIT {int(c.get('wait_count', 0))}/{EXTRA_WAIT}"
+            elif phase == "H1":
+                desc = "🎯 H1 PROSSIMA"
+            elif phase == "H2":
+                desc = "🎯 H2 PROSSIMA"
+            else:
+                desc = str(phase)
+            out.append(
+                f"• #{c.get('id')} {fmt_pair(pair)} | {desc} | origine {c.get('origin_anchor_key', '-')}"
+            )
+        if len(self.candidates) > max_rows:
+            out.append(f"• ... +{len(self.candidates) - max_rows} altri")
+        return out
+
+    def stats_text(self, live_only=False):
+        s = self.stats_live
+        h1p = int(s.get("h1_plays", 0))
+        h1h = int(s.get("h1_hits", 0))
+        h2p = int(s.get("h2_plays", 0))
+        h2h = int(s.get("h2_hits", 0))
+        stops = int(s.get("stops_h2", 0))
+        closed = h1h + h2h + stops
+        hits = h1h + h2h
+        cost = float(s.get("cost", 0.0))
+        gross = float(s.get("gross", 0.0))
+        net = gross - cost
+
+        lines = [
+            "📊 FORWARD LIVE — 5 SURV / 70-79 / +30 / H1-H2",
+            f"• origini attive = {len(self.origins)} | basket unici storici = {len(self.seen_basket_set)}",
+            f"• nuovi basket5 live = {int(s.get('baskets5', 0))}",
+            f"• oldest70-79 live = {int(s.get('baskets5_oldest_target', 0))}",
+            f"• candidati live = {int(s.get('candidates', 0))} | annullati WAIT30 = {int(s.get('canceled_wait30', 0))}",
+            f"• chiusi = {closed} | HIT = {hits} | STOP = {stops} | HIT H1-H2 = {safe_pct(hits, closed):.2f}%",
+            f"• H1 = {h1h}/{h1p} | H2 = {h2h}/{h2p}",
+            f"• costo = {cost:.2f}€ | lordo = {gross:.2f}€ | netto = {net:+.2f}€ | ROI = {safe_pct(net, cost):+.2f}%",
+        ]
+
+        if not live_only:
+            w = self.stats_warmup
+            wh1p = int(w.get("h1_plays", 0))
+            wh1h = int(w.get("h1_hits", 0))
+            wh2p = int(w.get("h2_plays", 0))
+            wh2h = int(w.get("h2_hits", 0))
+            wstops = int(w.get("stops_h2", 0))
+            wclosed = wh1h + wh2h + wstops
+            whits = wh1h + wh2h
+            wc = float(w.get("cost", 0.0))
+            wg = float(w.get("gross", 0.0))
+            lines.extend([
+                "",
+                "🕰️ WARMUP DIAGNOSTICO",
+                f"• draw = {self.warmup_draws}",
+                f"• origini create = {int(w.get('origins_started', 0))}",
+                f"• basket5 unici = {int(w.get('baskets5', 0))}",
+                f"• oldest70-79 = {int(w.get('baskets5_oldest_target', 0))}",
+                f"• candidati = {int(w.get('candidates', 0))} | annullati WAIT30 = {int(w.get('canceled_wait30', 0))}",
+                f"• chiusi H1-H2 = {wclosed} | HIT = {whits} ({safe_pct(whits, wclosed):.2f}%)",
+                f"• H1 = {wh1h}/{wh1p} | H2 = {wh2h}/{wh2p}",
+                f"• ROI warmup = {safe_pct(wg - wc, wc):+.2f}%",
+            ])
+
+        return "\n".join(lines)
+
+    def status_text(self):
+        lines = [
+            "🎯 5 SUPERSTITI → OLDEST 70-79 → +30 → H1/H2",
+            f"• modalita' = {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}",
+            f"• ultimo draw = {self.last_draw_key or '-'} | seq = {self.seq}",
+            f"• origini ancora attive = {len(self.origins)}",
+            f"• basket globali gia' deduplicati = {len(self.seen_basket_set)}",
+            f"• candidati attivi = {len(self.candidates)}",
+            f"• warmup = {'OK' if self.warmup_done else 'NO'} | {self.warmup_draws} draw",
+            "",
+            "🧩 CANDIDATI ATTUALI",
+            *self.candidate_lines(),
+            "",
+            self.stats_text(),
+        ]
+        return "\n".join(lines)
 
     def menu_text(self):
         return (
-            "🎯 PLAYABILITY ONLY v3.4 — TRAIN/FORWARD + PRE-ROLL\n"
-            "Bot focalizzato su 1 solo AMBO, TRAIN/FORWARD separati e H1/H2/H3 stabile.\n\n"
-            "/play — classifica live + PLAY/WATCH/NO PLAY\n"
-            "/report — risultati, ROI, score e quadro live\n"
-            "/spie — statistiche base SPIE\n"
-            "/spie_top — migliori regole live H3\n"
-            "/lab_metodi — T1 / +5 / +4 / SOMMA usati come conferme\n"
-            "/somma_9091 — dettaglio SOMMA 90/91 LAB\n"
-            "/menu — mostra questo menu\n\n"
-            "Regola: T1/SOMMA/+5/+4 non aprono mai un PLAY da soli."
+            "🎯 SUPERAMBO — STRATEGIA UNICA\n\n"
+            "Ogni estrazione crea una nuova origine. Dalla successiva, per quella origine, "
+            "seguo i 45 ambi di tutte le 9 decine.\n"
+            "Quando ci sono esattamente 5 superstiti, il basket viene deduplicato globalmente.\n"
+            "Scelgo il superstite rimasto unico da piu' tempo.\n"
+            f"Valido SOLO se e' della {TARGET_DECADE}.\n"
+            f"Poi altre {EXTRA_WAIT} assenze; quindi {STAKE_H1:.2f}€ H1 e, se perde, {STAKE_H2:.2f}€ H2.\n\n"
+            f"Modalita': {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}.\n"
+            "Warmup iniziale attivo; nessun reset giornaliero.\n\n"
+            "/status — stato origini/candidati\n"
+            "/stats — risultati forward + warmup\n"
+            "/menu — questa schermata"
         )
 
-    # --------------------------------------------------------
-    # v3.2 — HISTORICAL WARMUP / REPLAY
-    # --------------------------------------------------------
-    @staticmethod
-    def _sum_closed_pairlab_stats(stats_map):
-        total = 0
-        if isinstance(stats_map, dict):
-            for st in stats_map.values():
-                if isinstance(st, dict):
-                    total += int(st.get("closed", 0) or 0)
-        return total
-
-    async def run_historical_warmup_if_needed(self, app=None):
-        """v3.4: PRE-ROLL + TRAIN storico fisso, poi FORWARD live.
-
-        1) PRE-ROLL: costruisce SPIE/PAIR-LAB e contesto, senza STRICT.
-        2) TEST storico: diventa TRAIN e resta congelato.
-        3) Dopo il warmup ogni nuova sessione STRICT entra soltanto nel FORWARD.
-        Il motore replay e' isolato: niente Telegram, niente state/csv, nessun PLAY reale.
-        """
-        if not HISTORICAL_WARMUP_ENABLED:
-            self.historical_warmup_version = HISTORICAL_WARMUP_VERSION
-            self.historical_warmup_summary = {"enabled": False, "reason": "disabled"}
-            self.save_state()
-            return {"ok": False, "disabled": True, "draws": 0}
-
-        if int(getattr(self, "historical_warmup_version", 0) or 0) >= HISTORICAL_WARMUP_VERSION:
-            return {"ok": True, "already_done": True, **(self.historical_warmup_summary or {})}
-
-        pre_records, test_records, day_summary, errors = fetch_historical_warmup_records()
-        pre_days = len({d for d, _, _ in pre_records})
-        test_days = len({d for d, _, _ in test_records})
-        enough_pre = len(pre_records) >= HISTORICAL_PREROLL_MIN_DRAWS
-        enough_test = len(test_records) >= HISTORICAL_TEST_MIN_DRAWS
-
-        if not (enough_pre and enough_test):
-            # Non marchiare come completato: al prossimo riavvio riprovera'.
-            self.historical_warmup_summary = {
-                "enabled": True, "ok": False,
-                "pre_draws": len(pre_records), "test_draws": len(test_records),
-                "pre_days": pre_days, "test_days": test_days,
-                "pre_minimum": HISTORICAL_PREROLL_MIN_DRAWS,
-                "test_minimum": HISTORICAL_TEST_MIN_DRAWS,
-                "days": day_summary, "errors": errors,
-            }
-            self.save_state()
-            return {"ok": False, **self.historical_warmup_summary}
-
-        replay = SniperV48BaseFullSpy(load_persisted=False, replay_mode=True)
-        replay_day = None
-        processed_pre = 0
-        processed_test = 0
-
-        async def feed_record(d, e, nums):
-            nonlocal replay_day
-            if replay_day != d:
-                if replay_day is None:
-                    replay.day = d
-                    replay.max_e = 0
-                    replay.last_fp = None
-                    replay.processed_ids = []
-                    replay.processed_fps = []
-                    replay.sum9091_seen_raw = {}
-                else:
-                    replay.reset_for_new_day(d)
-                replay_day = d
-            await replay.on_new(None, int(e), list(nums), allow_open_playable=False)
-
-        # FASE 1 — PRE-ROLL: costruisce il passato, ma STRICT-LAB resta completamente spento.
-        replay.strict_collection_enabled = False
-        replay.playable_strict_sessions = []
-        replay.playable_strict_train_stats = {}
-        replay.playable_strict_forward_stats = {}
-        replay.playable_strict_stats = {}
-        replay.playable_strict_last_open_e = {}
-        replay.playable_strict_aborted = 0
-        for d, e, nums in pre_records:
-            await feed_record(d, e, nums)
-            processed_pre += 1
-
-        pair_closed_at_test_start = replay._sum_closed_pairlab_stats(replay.playable_pair_lab_stats)
-        pair_at_start = {}
-        for key in sorted(replay.playable_pair_lab_stats):
-            st = replay.playable_pair_lab_stats.get(key, {}) or {}
-            closed = int(st.get("closed", 0) or 0)
-            if closed <= 0:
-                continue
-            try:
-                pair = tuple(map(int, key.split("-")))
-                m = replay._pair_lab_metrics(pair)
-            except Exception:
-                continue
-            pair_at_start[key] = {
-                "closed": closed,
-                "edge_h3": round(float(m["edges"][3]), 4),
-                "roi_h3": round(float(m["rois"][3]), 4),
-            }
-
-        # FASE 2 — STRICT-LAB TEST: da qui in poi ogni apertura usa SOLO informazioni precedenti.
-        replay.strict_collection_enabled = True
-        replay.playable_strict_sessions = []
-        replay.playable_strict_train_stats = {}
-        replay.playable_strict_forward_stats = {}
-        replay.playable_strict_stats = {}
-        replay.playable_strict_last_open_e = {}
-        replay.playable_strict_aborted = 0
-        for d, e, nums in test_records:
-            await feed_record(d, e, nums)
-            processed_test += 1
-
-        # Nel replay v3.4 le sessioni del TEST sono raccolte nel contenitore FORWARD del replay,
-        # ma una volta promosse nel motore live diventano il TRAIN storico congelato.
-        strict_stats = json.loads(json.dumps(replay.playable_strict_forward_stats))
-        pair_stats = json.loads(json.dumps(replay.playable_pair_lab_stats))
-        strict_opened = sum(int((st or {}).get("sessions", 0) or 0) for st in strict_stats.values())
-        # Sessioni ancora aperte sul bordo finale non diventano risultati chiusi.
-        for _mp in (strict_stats, pair_stats):
-            for _st in (_mp or {}).values():
-                if isinstance(_st, dict):
-                    _st["sessions"] = int(_st.get("closed", 0) or 0)
-        strict_closed = replay._sum_closed_pairlab_stats(strict_stats)
-        pair_closed = replay._sum_closed_pairlab_stats(pair_stats)
-
-        # Il TEST storico diventa TRAIN fisso. FORWARD parte vuoto solo su una nuova installazione/warmup.
-        self.playable_strict_sessions = []
-        self.playable_strict_train_stats = strict_stats
-        self.playable_strict_forward_stats = {}
-        self.playable_strict_last_open_e = {}
-        self.playable_strict_aborted = int(replay.playable_strict_aborted)
-        self.playable_strict_forward_started_at = now_txt()
-        self._sync_strict_combined_stats()
-
-        # PAIR-LAB live viene copiato solo se l'installazione non ne possiede gia' uno utile.
-        existing_pair_closed = self._sum_closed_pairlab_stats(self.playable_pair_lab_stats)
-        pairlab_copied = False
-        if HISTORICAL_WARMUP_COPY_PAIRLAB_IF_EMPTY and existing_pair_closed < PLAYABLE_PAIR_LAB_MIN_CLOSED:
-            self.playable_pair_lab_sessions = []
-            self.playable_pair_lab_stats = pair_stats
-            self.playable_pair_lab_last_open_e = {}
-            self.playable_pair_lab_aborted = int(replay.playable_pair_lab_aborted)
-            pairlab_copied = True
-
-        per_pair = {}
-        for key in sorted(strict_stats):
-            st = strict_stats.get(key, {}) or {}
-            if int(st.get("closed", 0) or 0) <= 0:
-                continue
-            pair = tuple(map(int, key.split("-")))
-            m = replay._strict_pair_metrics(pair, source="forward")
-            h = replay._select_strict_horizon(m)
-            per_pair[key] = {
-                "closed": int(st.get("closed", 0) or 0),
-                "best_h": int(h or 0),
-                "roi_h1": round(float(m["rois"][1]), 4),
-                "roi_h2": round(float(m["rois"][2]), 4),
-                "roi_h3": round(float(m["rois"][3]), 4),
-                "edge_h1": round(float(m["edges"][1]), 4),
-                "edge_h2": round(float(m["edges"][2]), 4),
-                "edge_h3": round(float(m["edges"][3]), 4),
-            }
-
-        top_pair_start = dict(sorted(pair_at_start.items(), key=lambda kv: int((kv[1] or {}).get("closed", 0)), reverse=True)[:8])
-        self.historical_warmup_version = HISTORICAL_WARMUP_VERSION
-        self.historical_warmup_summary = {
-            "enabled": True, "ok": True,
-            "draws": processed_pre + processed_test,
-            "pre_draws": processed_pre, "test_draws": processed_test,
-            "pre_days": pre_days, "test_days": test_days,
-            "days": day_summary, "errors": errors,
-            "pairlab_closed_at_test_start": pair_closed_at_test_start,
-            "pairlab_at_test_start": top_pair_start,
-            "strict_opened_total": strict_opened,
-            "strict_closed_total": strict_closed,
-            "pairlab_closed_total_replay": pair_closed,
-            "pairlab_copied": pairlab_copied,
-            "strict_pairs": per_pair,
-            "completed_at": now_txt(),
-            "forward_started_at": self.playable_strict_forward_started_at,
-        }
-        self.save_state()
-        return {"ok": True, **self.historical_warmup_summary}
-
-    def historical_warmup_report_text(self):
-        sm = self.historical_warmup_summary or {}
-        if not sm:
-            return "🕰️ WARMUP STORICO — non ancora eseguito"
-        if not sm.get("ok"):
-            days = ", ".join(f"{x.get('zone')} {x.get('day')}={x.get('draws')}[{x.get('source','?')}]" for x in sm.get("days",[]) or [])
-            return (
-                "⚠️ WARMUP PRE-ROLL v3.4 NON COMPLETATO\n"
-                f"• PRE-ROLL = {sm.get('pre_draws',0)}/{sm.get('pre_minimum',HISTORICAL_PREROLL_MIN_DRAWS)} estrazioni su {sm.get('pre_days',0)} giorni\n"
-                f"• STRICT TEST = {sm.get('test_draws',0)}/{sm.get('test_minimum',HISTORICAL_TEST_MIN_DRAWS)} estrazioni su {sm.get('test_days',0)} giorni\n"
-                f"• fonti valide = {days or '-'}\n"
-                f"• errori = {'; '.join(sm.get('errors',[]) or []) or '-'}\n"
-                "• nessun dato parziale viene promosso a STRICT; il bot riprovera' al prossimo avvio"
-            )
-
-        days_pre = ", ".join(f"{x.get('day')}={x.get('draws')}[{x.get('source','?')}]" for x in sm.get("days",[]) or [] if x.get("zone") == "PRE")
-        days_test = ", ".join(f"{x.get('day')}={x.get('draws')}[{x.get('source','?')}]" for x in sm.get("days",[]) or [] if x.get("zone") == "TEST")
-        pairs = sm.get("strict_pairs", {}) or {}
-        lines = [
-            "🕰️ WARMUP PRE-ROLL v3.4 — COMPLETATO",
-            f"• PRE-ROLL = {sm.get('pre_draws',0)} estrazioni / {sm.get('pre_days',0)} giorni",
-            f"• fonti PRE = {days_pre or '-'}",
-            f"• PAIR-LAB gia' costruite all'inizio del TEST = {sm.get('pairlab_closed_at_test_start',0)}",
-            f"• TRAIN storico = {sm.get('test_draws',0)} estrazioni / {sm.get('test_days',0)} giorni",
-            f"• fonti TEST = {days_test or '-'}",
-            f"• STRICT TRAIN aperte/chiuse = {sm.get('strict_opened_total',0)}/{sm.get('strict_closed_total',0)}",
-            f"• PAIR-LAB replay finali = {sm.get('pairlab_closed_total_replay',0)} | copiato nel live = {'SI' if sm.get('pairlab_copied') else 'NO, storico precedente preservato'}",
-        ]
-        start_pairs = sm.get("pairlab_at_test_start", {}) or {}
-        if start_pairs:
-            lines.append("• PAIR-LAB al confine PRE→TEST:")
-            for key, d in list(start_pairs.items())[:6]:
-                lines.append(f"  - {key}: n={d.get('closed',0)} | H3 edge {d.get('edge_h3',0):+.1f}pp | ROI {d.get('roi_h3',0):+.1f}%")
-        if pairs:
-            lines.append("• STRICT TRAIN per coppia:")
-            for key, d in sorted(pairs.items(), key=lambda kv: int((kv[1] or {}).get("closed",0)), reverse=True)[:8]:
-                lines.append(
-                    f"  - {key}: n={d.get('closed',0)} | BEST H{d.get('best_h',0)} | "
-                    f"ROI H1/H2/H3={d.get('roi_h1',0):+.1f}%/{d.get('roi_h2',0):+.1f}%/{d.get('roi_h3',0):+.1f}%"
-                )
-        else:
-            lines.append("• nessuna STRICT chiusa nel TRAIN storico")
-        if sm.get("errors"):
-            lines.append("• avvisi fonti: " + "; ".join(sm.get("errors") or []))
-        return "\n".join(lines)
-
-    # --------------------------------------------------------
-    # Main draw logic
-    # --------------------------------------------------------
-    async def on_new(self, app, e, nums, allow_open_playable=True):
-        if len(set(nums)) != 20:
-            return
-        if self.already_processed(e, nums):
-            return
-
-        self.remember_processed(e, nums)
-        self.last_draws.append(nums)
-        self.last_draws = self.last_draws[-HISTORY_MAX:]
-        self.draws_since_spy_report += 1
-        if self.playable_cooldown > 0:
-            self.playable_cooldown = max(0, self.playable_cooldown - 1)
-        if self.playable_core_zone_lock > 0:
-            self.playable_core_zone_lock = max(0, self.playable_core_zone_lock - 1)
-
-        if DRAW_NOTIFY:
-            await self.tg(app, f"📌 Estrazione {e}\n🎱 {', '.join(map(str, nums))}")
-
-        # 1) aggiorna sessioni spia, Cottone H1-H10, SOMMA 90/91 e play operativo gia' aperti.
-        await self.process_spy_sessions(app, e, nums)
-        await self.process_cottone_sessions(app, e, nums)
-        await self.process_sum9091_sessions(app, e, nums)
-        await self.process_pair_lab_sessions(app, e, nums)
-        await self.process_strict_shadow_sessions(app, e, nums)
-        await self.process_playable_play(app, e, nums)
-
-        # 2) apre nuove spie/LAB dalla condizione appena creata.
-        await self.maybe_open_spy_sessions(app, e)
-        await self.maybe_open_cottone_sessions(app, e)
-        await self.maybe_open_sum9091_session(app, e)
-        # v3: PAIR-LAB generale + STRICT-LAB prima della valutazione del PLAY reale.
-        await self.maybe_open_pair_lab_sessions(app, e)
-        await self.maybe_open_strict_shadow_sessions(app, e)
-
-        # PLAYABILITY ONLY v3: il PLAY puo' partire solo dopo validazione STRICT.
-        # v48 non e' piu' un prerequisito.
-        if allow_open_playable:
-            await self.maybe_open_playable_play(app, e)
-
-        # 3) processa v48 attivo. v48 resta core/struttura; le notifiche singole sono opzionali.
-        skip_new_play = False
-        if self.active:
-            self.colpi += 1
-            hit_data = self.check_v48_hit(nums)
-
-            if hit_data["ambata_hit"]:
-                self.total_hit_ambata += 1
-                self.append_csv_event("V48_HIT_AMBATA", e=e, play_id=self.active_snapshot.get("play_id"), colpo=self.colpi, outcome="HIT_AMBATA")
-                if V48_NOTIFY_EVENTS:
-                    await self.tg(app, f"🎯 AMBATA PRESA v48 | colpo {self.colpi}\n• ambata = {self.active_snapshot['ambata']}")
-
-            if hit_data["ambi_hit"]:
-                self.total_hit_ambo += 1
-                self.v48_hit_colpi[str(self.colpi)] += 1
-                hit_ranks = []
-                hit_pairs = []
-                for hit_item in hit_data["ambi_hit"]:
-                    hp = tuple(map(int, hit_item["ambo"]))
-                    hit_pairs.append(f"{hp[0]}-{hp[1]}")
-                    for idx, item in enumerate(self.active_snapshot.get("ambi", []), start=1):
-                        if tuple(map(int, item["ambo"])) == hp:
-                            self.v48_rank_hits[str(idx)] += 1
-                            hit_ranks.append(idx)
-                            break
-                if len(set(hit_ranks)) >= 2:
-                    self.v48_multi_ambo_hit_draws += 1
-
-                self.v48_cost_units += MAX_AMBI_PER_PLAY * self.colpi
-                self.v48_gross_units += AMBO_PAYOUT * max(1, len(hit_data["ambi_hit"]))
-                self.append_csv_event(
-                    "V48_HIT_AMBO",
-                    e=e,
-                    play_id=self.active_snapshot.get("play_id"),
-                    colpo=self.colpi,
-                    ambata=self.active_snapshot.get("ambata"),
-                    ambi=fmt_ambi(self.active_snapshot.get("ambi")),
-                    cluster=fmt_nums(self.active_snapshot.get("cluster_numbers")),
-                    outcome="HIT_AMBO",
-                    hit_ambi=", ".join(hit_pairs),
-                    hit_ranks=", ".join(map(str, sorted(set(hit_ranks)))),
-                )
-                hit_colpo = self.colpi
-                closed_snapshot = self.active_snapshot
-                self.last_cluster_numbers = closed_snapshot["cluster_numbers"]
-                self.last_cluster_e = e
-                self.active = False
-                self.colpi = 0
-                self.cooldown = COOLDOWN_AFTER_PLAY
-                self.active_snapshot = None
-                if V48_NOTIFY_EVENTS:
-                    await self.tg(
-                        app,
-                        f"🔥 HIT AMBO v48 | colpo {hit_colpo}\n"
-                        f"• ambi = {', '.join(hit_pairs)}\n"
-                        f"• rank vincenti = {', '.join(map(str, sorted(set(hit_ranks)))) or 'n/d'}\n\n"
-                        f"{self.v48_stats_text()}"
-                    )
-                skip_new_play = True
-
-            elif self.colpi >= MAX_COLPI:
-                self.total_stop += 1
-                self.v48_cost_units += MAX_AMBI_PER_PLAY * MAX_COLPI
-                self.append_csv_event(
-                    "V48_STOP",
-                    e=e,
-                    play_id=self.active_snapshot.get("play_id"),
-                    colpo=self.colpi,
-                    ambata=self.active_snapshot.get("ambata"),
-                    ambi=fmt_ambi(self.active_snapshot.get("ambi")),
-                    cluster=fmt_nums(self.active_snapshot.get("cluster_numbers")),
-                    outcome="STOP",
-                )
-                closed_snapshot = self.active_snapshot
-                self.last_cluster_numbers = closed_snapshot["cluster_numbers"]
-                self.last_cluster_e = e
-                self.active = False
-                self.colpi = 0
-                self.cooldown = COOLDOWN_AFTER_PLAY
-                self.active_snapshot = None
-                if V48_NOTIFY_EVENTS:
-                    await self.tg(app, f"🛑 STOP v48 | {MAX_COLPI} colpi\n\n{self.v48_stats_text()}")
-                skip_new_play = True
-            else:
-                # v48 resta solo laboratorio/conferma; nessuna apertura extra qui.
-                self.save_state()
-                return
-
-        # 4) se v48 era attivo e ha chiuso, non apre un nuovo play nello stesso colpo.
-        if skip_new_play:
-            self.save_state()
-            return
-
-        # 5) cooldown/history/hot/build v48.
-        if self.cooldown > 0:
-            self.cooldown -= 1
-            self.save_state()
-            return
-
-        if len(self.last_draws) >= 30:
-            _, selected = self.selected_ritardatari()
-            self.update_watch_and_confirmed(e, nums, selected)
-            play = self.build_play(e)
-            if play and not self.active:
-                self.active = True
-                self.colpi = 0
-                self.play_uid += 1
-                play["play_id"] = self.play_uid
-                self.active_snapshot = play
-                self.total_play += 1
-                self.append_csv_event(
-                    "V48_PLAY",
-                    e=e,
-                    play_id=play["play_id"],
-                    colpo=0,
-                    ambata=play["ambata"],
-                    ambi=fmt_ambi(play["ambi"]),
-                    cluster=fmt_nums(play["cluster_numbers"]),
-                    outcome="OPEN",
-                )
-                if V48_NOTIFY_EVENTS:
-                    await self.tg(
-                        app,
-                        "🎯 PLAY v48 BASE\n"
-                        f"• play_id = {play['play_id']}\n"
-                        f"• ambata = {play['ambata']}\n"
-                        f"• ambi = {fmt_ambi(play['ambi'])}\n"
-                        f"• cluster = {fmt_nums(play['cluster_numbers'])}\n"
-                        f"• max colpi = {MAX_COLPI}\n"
-                        "• modulo attivo = solo 3 ambi classici"
-                    )
-                # v48 resta laboratorio/conferma; il motore playability e' gia' stato valutato sopra.
-
-        if SPY_REPORT_EVERY_DRAWS and self.draws_since_spy_report >= SPY_REPORT_EVERY_DRAWS:
-            self.draws_since_spy_report = 0
-            await self.tg(app, self.spy_summary_text())
-
-        self.save_state()
-
 
 # ============================================================
-# TELEGRAM COMMAND HANDLERS
+# TELEGRAM COMMANDS
 # ============================================================
 
-async def reply(update: Update, text: str, inline_menu=False):
-    if update.message:
-        for part in chunks(text, 3000):
-            await update.message.reply_text(part, reply_markup=INLINE_MENU if inline_menu else MENU_KEYBOARD)
+async def reply(update, text):
+    if update and update.message:
+        await update.message.reply_text(text)
 
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine = context.application.bot_data["engine"]
-    await reply(update, engine.menu_text(), inline_menu=True)
+    await reply(update, engine.status_text())
+
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.stats_text())
 
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine = context.application.bot_data["engine"]
-    await reply(update, engine.menu_text(), inline_menu=True)
+    await reply(update, engine.menu_text())
 
 
-async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.full_report_text())
-
-
-async def cmd_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.decina_multipla_playability_text() + "\n\n" + engine.playable_stats_text())
-
-
-async def cmd_gioco_cottone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.cottone_game_stats_text())
-
-
-async def cmd_spalle_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.core_spalle_1_19_text())
-
-
-async def cmd_lab_metodi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.lab_methods_text())
-
-
-async def cmd_somma_9091(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.sum9091_lab_text(compact=False))
-
-
-async def cmd_v48(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.v48_stats_text())
-
-
-async def cmd_spie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.spy_summary_text())
-
-
-async def cmd_spie_elite(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.spy_elite_text())
-
-
-async def cmd_spie_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.decina_multipla_playability_text())
-
-
-async def cmd_spie_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.spy_top_text())
-
-
-async def cmd_spie_network(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.spy_network_text())
-
-
-async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer()
-    engine = context.application.bot_data["engine"]
-    data = query.data
-    if data == "report":
-        text = engine.full_report_text()
-    elif data == "play":
-        text = engine.decina_multipla_playability_text() + "\n\n" + engine.playable_stats_text()
-    elif data == "gioco_cottone":
-        text = engine.cottone_game_stats_text()
-    elif data == "v48":
-        text = engine.v48_stats_text()
-    elif data == "spie":
-        text = engine.spy_summary_text()
-    elif data == "spie_elite":
-        text = engine.spy_elite_text()
-    elif data == "spie_play":
-        text = engine.decina_multipla_playability_text()
-    elif data == "spalle_core":
-        text = engine.core_spalle_1_19_text()
-    elif data == "lab_metodi":
-        text = engine.lab_methods_text()
-    elif data == "somma_9091":
-        text = engine.sum9091_lab_text(compact=False)
-    elif data == "spie_top":
-        text = engine.spy_top_text()
-    elif data == "spie_network":
-        text = engine.spy_network_text()
-    else:
-        text = engine.menu_text()
-    for part in chunks(text, 3000):
-        await query.message.reply_text(part, reply_markup=INLINE_MENU)
+async def setup_commands(app):
+    await app.bot.set_my_commands([
+        BotCommand("status", "Stato origini e candidati"),
+        BotCommand("stats", "Statistiche forward e warmup"),
+        BotCommand("menu", "Mostra la strategia"),
+    ])
 
 
 # ============================================================
@@ -5778,18 +1156,9 @@ def acquire_single_instance_lock():
         try:
             fcntl.flock(_LOCK_HANDLE, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            print("⚠️ Un'altra istanza SNIPER v48 BASE + FULL SPY è già attiva. Avvio bloccato.")
+            print("⚠️ Un'altra istanza di questo bot e' gia' attiva.")
             sys.exit(1)
-    else:
-        _LOCK_HANDLE.seek(0)
-        old = _LOCK_HANDLE.read().strip()
-        if old.isdigit():
-            try:
-                os.kill(int(old), 0)
-                print("⚠️ Un'altra istanza sembra già attiva. Avvio bloccato.")
-                sys.exit(1)
-            except OSError:
-                pass
+
     _LOCK_HANDLE.seek(0)
     _LOCK_HANDLE.truncate()
     _LOCK_HANDLE.write(str(os.getpid()))
@@ -5807,144 +1176,258 @@ def acquire_single_instance_lock():
 
 
 # ============================================================
-# LIVE LOOP + POLLING COMMANDS
+# STARTUP / CATCH-UP / LIVE LOOP
 # ============================================================
 
-async def setup_commands(app):
-    await app.bot.set_my_commands([
-        BotCommand("play", "Giocabilità TRAIN/FORWARD + warmup"),
-        BotCommand("report", "Risultati, ROI e quadro live"),
-        BotCommand("spie", "Statistiche numeri spia"),
-        BotCommand("spie_top", "Migliori regole live H3"),
-        BotCommand("lab_metodi", "Conferme T1 +5 +4 SOMMA"),
-        BotCommand("somma_9091", "SOMMA 90/91 LAB"),
-        BotCommand("menu", "Mostra menu"),
-    ])
+async def notify_actionable_state(engine, app):
+    actionable = [c for c in engine.candidates if c.get("phase") in {"H1", "H2"}]
+    for c in actionable:
+        pair = engine.candidate_pair(c)
+        phase = c.get("phase")
+        stake = STAKE_H1 if phase == "H1" else STAKE_H2
+        await engine.tg(
+            app,
+            f"🎯 {signal_word()} {phase} GIA' ARMATO DALLO STATO CORRENTE\n\n"
+            f"Ambo: {fmt_pair(pair)}\n"
+            f"Origine: {c.get('origin_anchor_key', '-')}\n"
+            f"➡️ PROSSIMA estrazione: {stake:.2f}€ {phase}."
+        )
 
 
 async def startup(engine, app):
-    current_day = day_key()
-    if engine.day != current_day:
-        await engine.send_day_change_report_if_needed(app)
-        engine.reset_for_new_day(current_day)
-        await engine.tg(app, "🗓️ Nuovo giorno: reset operativo PLAYABILITY/SPIE. Statistiche aggregate conservate.")
-
-    # v3.4: warmup una sola volta; sui riavvii non reinvia lo stesso riepilogo Telegram.
-    warm = await engine.run_historical_warmup_if_needed(app)
-    if not warm.get("already_done"):
-        await engine.tg(app, engine.historical_warmup_report_text())
-
-    es = parse_site()
-    if not es:
-        await engine.tg(app, "⚠️ parser vuoto")
-        return
-
-    if not engine.last_draws:
-        engine.preload_today_as_processed(es)
+    warm = await engine.run_initial_warmup(app)
+    if not warm.get("already_done") and not warm.get("ok"):
         await engine.tg(
             app,
-            "🚀 SNIPER PLAYABILITY ONLY v3.4 — TRAIN + FORWARD + PLAY-STRICT AVVIATO\n"
-            "✅ 1 solo AMBO\n"
-            f"✅ warmup storico = {warm.get('draws',0)} estrazioni | STRICT-LAB TEST chiuse = {engine.historical_warmup_summary.get('strict_closed_total',0)}\n"
-            "✅ PAIR-LAB generale preservato dalla v2 e usato solo come filtro/diagnostica\n"
-            f"✅ TRAIN/FORWARD min = {PLAYABLE_STRICT_TRAIN_MIN_CLOSED}/{PLAYABLE_STRICT_FORWARD_MIN_CLOSED} chiuse per coppia\n"
-            "✅ TRAIN = replay storico congelato; FORWARD = solo casi successivi al warmup\n"
-            "✅ durata PLAY = stesso H stabile e positivo in TRAIN + FORWARD\n"
-            f"✅ gate PLAY-STRICT: edge>={PLAYABLE_STRICT_MIN_EDGE:+.1f}pp | ROI>={PLAYABLE_STRICT_MIN_ROI:+.1f}%\n"
-            f"✅ senza conferma: edge>={PLAYABLE_STRICT_NO_CONFIRM_MIN_EDGE:+.1f}pp | ROI>={PLAYABLE_STRICT_NO_CONFIRM_MIN_ROI:+.1f}%\n"
-            f"✅ anti-ripetizione STRICT-LAB = {PLAYABLE_STRICT_REOPEN_AFTER} estrazioni | anti-riuso reale = {PLAYABLE_PAIR_REUSE_AFTER}\n"
-            "✅ T1 / SOMMA 90-91 / +5 / +4 / v48 = solo conferme\n"
-            "✅ nessun terno, nessuna progressione, nessun secondo ambo\n"
-            "✅ retry HTTP silenzioso x3 per errori temporanei/gzip\n"
-            f"✅ orario bot = {BOT_TZ_NAME}\n"
-            f"✅ persistenza GitHub state/csv = {'ON' if PERSIST_GIT_STATE else 'OFF'}\n"
-            f"✅ report automatici: {', '.join(AUTO_REPORT_TIMES)} + cambio giorno\n"
-            "✅ warmup storico: PRE-ROLL -> TRAIN storico -> FORWARD live, senza leakage\n\n"
-            "Tocca /menu per vedere i pulsanti."
+            "⚠️ WARMUP INIZIALE NON COMPLETATO\n"
+            f"Scaricate {warm.get('draws', 0)} estrazioni; minimo richiesto {WARMUP_MIN_DRAWS}.\n"
+            "Il bot non entra in live finche' il warmup non e' sufficiente."
         )
-        await engine.tg(app, engine.menu_text(), inline_menu=True)
+        return False
+
+    # Recupera eventuali draw di oggi successivi all'ultimo draw nello state.
+    try:
+        rows = parse_site_today()
+    except Exception as exc:
+        await engine.tg(app, f"⚠️ Parser live iniziale fallito: {exc}")
+        rows = []
+
+    unseen = [(d, e, nums) for d, e, nums in rows if not engine.already_processed(d, e)]
+    for d, e, nums in unseen:
+        # Catch-up silenzioso: mai inviare un segnale scaduto.
+        await engine.process_draw(app=None, day=d, e=e, nums=nums, mode="live", notify=False)
+
+    engine.save_state(git=True, force_git=True)
+
+    if not warm.get("already_done"):
+        source_txt = ", ".join(
+            f"{x['day']}={x['draws']}[{x['source']}]"
+            for x in warm.get("sources", []) if x.get("draws")
+        )
+        await engine.tg(
+            app,
+            "🕰️ WARMUP INIZIALE COMPLETATO\n\n"
+            f"• estrazioni = {warm.get('draws', 0)}\n"
+            f"• giorni = {WARMUP_DAYS}\n"
+            f"• fonti = {source_txt or '-'}\n"
+            f"• origini ancora attive = {len(engine.origins)}\n"
+            f"• basket unici ricostruiti = {len(engine.seen_basket_set)}\n"
+            f"• candidati ancora attivi = {len(engine.candidates)}\n\n"
+            f"{engine.stats_text()}"
+        )
+
+    await engine.tg(
+        app,
+        "🚀 BOT 5 SUPERSTITI / 70-79 AVVIATO\n\n"
+        "✅ nuova origine a ogni estrazione\n"
+        "✅ 9 decine x 45 ambi seguite in parallelo\n"
+        "✅ basket valido = esattamente 5 superstiti\n"
+        "✅ basket identici deduplicati globalmente\n"
+        "✅ scelgo il piu' vecchio\n"
+        "✅ valido solo se e' 70-79\n"
+        f"✅ +{EXTRA_WAIT} assenze\n"
+        f"✅ H1 {STAKE_H1:.2f}€ + eventuale H2 {STAKE_H2:.2f}€\n"
+        f"✅ modalita' = {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}\n"
+        "✅ warmup iniziale + state persistente\n\n"
+        f"Candidati attivi: {len(engine.candidates)}"
+    )
+    await notify_actionable_state(engine, app)
+    return True
 
 
 async def live_loop(engine, app):
-    # Anti-spam errori: lo stesso errore viene notificato al massimo ogni 15 minuti.
-    last_error_text = ""
-    last_error_notify_ts = 0.0
+    last_error = ""
+    last_error_ts = 0.0
+
     while True:
         try:
-            current_day = day_key()
-            if engine.day != current_day:
-                await engine.send_day_change_report_if_needed(app)
-                engine.reset_for_new_day(current_day)
-                await engine.tg(app, "🗓️ Nuovo giorno: reset operativo PLAYABILITY/SPIE. Statistiche aggregate conservate.")
-                es = parse_site()
-                if es:
-                    engine.preload_today_as_processed(es)
-                    await engine.tg(app, "✅ nuovo giorno inizializzato: estrazioni già uscite oggi marcate come storico/processate")
-                await asyncio.sleep(LOOP_SEC)
-                continue
+            rows = parse_site_today()
+            unseen = [(d, e, nums) for d, e, nums in rows if not engine.already_processed(d, e)]
 
-            es = parse_site()
-            new_items = [(e, nums) for e, nums in es if not engine.already_processed(e, nums)]
-            for idx, (e, nums) in enumerate(new_items):
-                # Protezione catch-up: se GitHub/hosting recupera piu' estrazioni insieme,
-                # aggiorna statistiche e v48 su tutte, ma consenti l'apertura del PLAY operativo
-                # solo sull'ultima estrazione realmente nuova del polling.
-                await engine.on_new(app, e, nums, allow_open_playable=(idx == len(new_items) - 1))
-            await engine.maybe_send_scheduled_report(app)
-        except Exception as ex:
-            print(f"Errore loop: {ex}")
-            err_txt = str(ex)
-            now_err = time.time()
-            should_notify = (err_txt != last_error_text) or (now_err - last_error_notify_ts >= 900)
-            if should_notify:
-                try:
-                    await engine.tg(app, f"⚠️ errore PLAYABILITY ONLY v3.4: {ex}")
-                    last_error_text = err_txt
-                    last_error_notify_ts = now_err
-                except Exception:
-                    pass
-        await asyncio.sleep(LOOP_SEC)
+            if unseen:
+                unseen.sort(key=lambda x: (x[0], x[1]))
 
+                if len(unseen) == 1:
+                    d, e, nums = unseen[0]
+                    await engine.process_draw(app=app, day=d, e=e, nums=nums, mode="live", notify=True)
+                else:
+                    for d, e, nums in unseen:
+                        await engine.process_draw(app=None, day=d, e=e, nums=nums, mode="live", notify=False)
+                    engine.save_state(git=True, force_git=True)
+                    await notify_actionable_state(engine, app)
+
+            await asyncio.sleep(LOOP_SEC)
+
+        except Exception as exc:
+            txt = f"{type(exc).__name__}: {exc}"
+            now = time.time()
+            print(f"⚠️ loop: {txt}")
+            if txt != last_error or now - last_error_ts >= 900:
+                await engine.tg(app, f"⚠️ ERRORE BOT\n{txt}\nRiprovo automaticamente.")
+                last_error = txt
+                last_error_ts = now
+            await asyncio.sleep(max(30, LOOP_SEC))
+
+
+# ============================================================
+# SELF TEST
+# ============================================================
+
+def _draw_without(pair):
+    excluded = set(pair)
+    return [n for n in range(1, 91) if n not in excluded][:20]
+
+
+def _draw_with(pair):
+    out = [pair[0], pair[1]]
+    for n in range(1, 91):
+        if n not in out:
+            out.append(n)
+        if len(out) == 20:
+            break
+    return out
+
+
+async def run_self_test():
+    eng = FiveSurvivorsEngine(load=False)
+    eng.save_state = lambda *a, **k: None
+
+    # Test 1: una nuova origine NON usa il proprio draw, ma parte dal successivo.
+    nums0 = list(range(1, 21))
+    await eng.process_draw(None, "2099-01-01", 1, nums0, mode="warmup", notify=False)
+    assert len(eng.origins) == 1
+    assert all(mask == FULL_MASK for mask in eng.origins[0]["remaining"])
+
+    # Test 2: costruiamo direttamente un'origine con 5 superstiti e 70-79 oldest.
+    origin = {
+        "id": 999,
+        "anchor_seq": 1,
+        "anchor_key": "2099-01-01#001",
+        "remaining": [0] * 9,
+        "survivor_since": [None] * 9,
+        "survivor_since_key": [None] * 9,
+    }
+    setup = {
+        1: ((10, 11), 80),
+        2: ((20, 21), 85),
+        4: ((40, 41), 90),
+        7: ((70, 71), 50),
+        8: ((80, 81), 95),
+    }
+    eng.seq = 100
+    for i, (pair, since) in setup.items():
+        idx = PAIR_INDEX[i][tuple(sorted(pair))]
+        origin["remaining"][i] = 1 << idx
+        origin["survivor_since"][i] = since
+        origin["survivor_since_key"][i] = f"T#{since}"
+    eng.origins = [origin]
+
+    # Nessun hit mask: il basket viene rilevato e crea candidato.
+    await eng.advance_origins(
+        None, "2099-01-01", 2, _draw_without((70, 71)), [0] * 9,
+        "2099-01-01#002", mode="warmup", notify=False,
+    )
+    assert len(eng.candidates) == 1
+    assert eng.candidate_pair(eng.candidates[0]) == (70, 71)
+    assert eng.candidates[0]["phase"] == "WAIT30"
+
+    # Lo stesso basket, anche se ritrovato da un'altra origine, NON deve duplicarsi.
+    clone = json.loads(json.dumps(eng._serialize_origin(origin)))
+    clone = eng._deserialize_origin(clone)
+    clone["id"] = 1000
+    eng.origins = [origin, clone]
+    old_candidates = len(eng.candidates)
+    await eng.advance_origins(
+        None, "2099-01-01", 3, _draw_without((70, 71)), [0] * 9,
+        "2099-01-01#003", mode="warmup", notify=False,
+    )
+    assert len(eng.candidates) == old_candidates, "deduplica globale basket fallita"
+
+    # 30 draw assenti -> H1 armato.
+    eng.origins = []
+    nohit = _draw_without((70, 71))
+    for k in range(EXTRA_WAIT):
+        await eng.advance_candidates(None, "2099-01-02", 10 + k, nohit, mode="warmup", notify=False)
+    assert len(eng.candidates) == 1 and eng.candidates[0]["phase"] == "H1"
+
+    # H1 miss -> H2; H2 hit -> chiusura.
+    await eng.advance_candidates(None, "2099-01-02", 50, nohit, mode="warmup", notify=False)
+    assert eng.candidates[0]["phase"] == "H2"
+    await eng.advance_candidates(None, "2099-01-02", 51, _draw_with((70, 71)), mode="warmup", notify=False)
+    assert len(eng.candidates) == 0
+
+    s = eng.stats_warmup
+    assert s["h1_plays"] == 1
+    assert s["h2_plays"] == 1
+    assert s["h2_hits"] == 1
+    assert abs(float(s["cost"]) - (STAKE_H1 + STAKE_H2)) < 1e-9
+    assert abs(float(s["gross"]) - AMBO_PAYOUT * STAKE_H2) < 1e-9
+
+    print("SELF-TEST OK: multi-origin + dedup basket + oldest70-79 + WAIT30 + H1/H2")
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 async def main():
-    global CHAT_ID
-    CHAT_ID = validate_env()
+    if "--self-test" in sys.argv:
+        await run_self_test()
+        return
+
     acquire_single_instance_lock()
 
-    engine = SniperV48BaseFullSpy()
+    if not TOKEN:
+        raise RuntimeError("BOT_TOKEN mancante nelle variabili ambiente")
+    if CHAT_ID is None:
+        raise RuntimeError("CHAT_ID mancante/non valido nelle variabili ambiente")
+
     app = ApplicationBuilder().token(TOKEN).build()
+    engine = FiveSurvivorsEngine()
     app.bot_data["engine"] = engine
 
-    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("menu", cmd_menu))
-    app.add_handler(CommandHandler("report", cmd_report))
-    app.add_handler(CommandHandler("play", cmd_play))
-    app.add_handler(CommandHandler("gioco_cottone", cmd_gioco_cottone))
-    app.add_handler(CommandHandler("v48", cmd_v48))
-    app.add_handler(CommandHandler("spie", cmd_spie))
-    app.add_handler(CommandHandler("spie_elite", cmd_spie_elite))
-    app.add_handler(CommandHandler("spie_play", cmd_spie_play))
-    app.add_handler(CommandHandler("spalle_core", cmd_spalle_core))
-    app.add_handler(CommandHandler("lab_metodi", cmd_lab_metodi))
-    app.add_handler(CommandHandler("somma_9091", cmd_somma_9091))
-    app.add_handler(CommandHandler("spie_top", cmd_spie_top))
-    app.add_handler(CommandHandler("spie_network", cmd_spie_network))
-    app.add_handler(CallbackQueryHandler(on_button))
 
     await app.initialize()
-    await setup_commands(app)
     await app.start()
-    await app.updater.start_polling()
+    await setup_commands(app)
 
-    await startup(engine, app)
+    ok = await startup(engine, app)
+    if not ok:
+        await app.stop()
+        await app.shutdown()
+        return
+
+    await app.updater.start_polling(drop_pending_updates=True)
     try:
         await live_loop(engine, app)
     finally:
         try:
-            engine.save_state()
-            maybe_git_commit_state("shutdown", force=True)
-        except Exception as ex:
-            print(f"Salvataggio finale saltato: {ex}")
+            engine.save_state(git=True, force_git=True)
+        except Exception:
+            pass
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
