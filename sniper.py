@@ -39,6 +39,9 @@
 #
 # WARMUP INIZIALE:
 #   • al primo avvio scarica gli ultimi WARMUP_DAYS giorni
+#   • ogni giorno GIA' CONCLUSO deve avere esattamente 288 estrazioni
+#   • se una fonte e' incompleta prova automaticamente le altre e integra
+#   • se restano buchi/conflitti il warmup viene BLOCCATO, non ricostruito male
 #   • crea retroattivamente tutte le origini storiche necessarie
 #   • ricostruisce basket, superstiti e candidati ancora vivi
 #   • NON manda segnali retroattivi
@@ -110,10 +113,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE_DIR, "superambo_5survivors_70_79_wait30_state.json")
 LOCK_FILE = "/tmp/superambo_5survivors_70_79_wait30.lock"
 
-LOGIC_VERSION = 2
+LOGIC_VERSION = 3
 LOOP_SEC = int(os.getenv("LOOP_SEC", "60"))
 WARMUP_DAYS = int(os.getenv("WARMUP_DAYS", "7"))
 WARMUP_MIN_DRAWS = int(os.getenv("WARMUP_MIN_DRAWS", "900"))
+WARMUP_FULL_DAY_DRAWS = int(os.getenv("WARMUP_FULL_DAY_DRAWS", "288"))
+WARMUP_REQUIRE_COMPLETE_PAST_DAYS = os.getenv("WARMUP_REQUIRE_COMPLETE_PAST_DAYS", "1") != "0"
 ORIGIN_MAX_AGE = int(os.getenv("ORIGIN_MAX_AGE", "1000"))
 
 BASKET_SIZE = 5
@@ -392,47 +397,250 @@ def _annual_archive_by_day(target_days):
     return out
 
 
+def _normalize_day_rows(rows, expected_day):
+    """Normalizza una sorgente: un solo record per numero estrazione."""
+    out = {}
+    for row in rows or []:
+        try:
+            d, e, nums = row
+            d = str(d)
+            e = int(e)
+            clean = list(map(int, nums))
+        except Exception:
+            continue
+        if d != str(expected_day):
+            continue
+        if e < 1 or e > WARMUP_FULL_DAY_DRAWS:
+            continue
+        if len(clean) != 20 or len(set(clean)) != 20 or any(n < 1 or n > 90 for n in clean):
+            continue
+        out[e] = (d, e, clean)
+    return out
+
+
+def _merge_day_sources(expected_day, source_rows):
+    """
+    Unisce piu' fonti SENZA sovrascrivere in silenzio.
+
+    - i record mancanti vengono integrati dalla fonte successiva;
+    - se due fonti danno numeri diversi per lo stesso id, il conflitto viene
+      segnalato e il giorno non puo' essere considerato affidabile;
+    - l'ordine dei 20 numeri non conta: per il motore conta l'insieme estratto.
+    """
+    merged = {}
+    owner = {}
+    conflicts = []
+    added_by_source = {}
+    fetched_by_source = {}
+
+    for source_name, rows in source_rows:
+        clean_map = _normalize_day_rows(rows, expected_day)
+        fetched_by_source[source_name] = len(clean_map)
+        added = 0
+        for e in sorted(clean_map):
+            row = clean_map[e]
+            if e not in merged:
+                merged[e] = row
+                owner[e] = source_name
+                added += 1
+                continue
+
+            old_nums = tuple(sorted(merged[e][2]))
+            new_nums = tuple(sorted(row[2]))
+            if old_nums != new_nums:
+                conflicts.append({
+                    "draw": int(e),
+                    "source_a": owner.get(e, "?"),
+                    "source_b": source_name,
+                })
+        added_by_source[source_name] = added_by_source.get(source_name, 0) + added
+
+    ordered = [merged[e] for e in sorted(merged)]
+    return ordered, added_by_source, fetched_by_source, conflicts
+
+
+def _day_continuity_info(rows, full_day=False):
+    ids = sorted({int(e) for _, e, _ in (rows or [])})
+    if not ids:
+        return {
+            "count": 0,
+            "min_id": None,
+            "max_id": None,
+            "missing_ids": [],
+            "continuous": True,
+            "complete": False,
+        }
+
+    if full_day:
+        expected = set(range(1, WARMUP_FULL_DAY_DRAWS + 1))
+        missing = sorted(expected - set(ids))
+        extra = sorted(set(ids) - expected)
+        continuous = not missing and not extra and len(ids) == WARMUP_FULL_DAY_DRAWS
+        complete = continuous
+    else:
+        # Per il giorno corrente non pretendiamo 288 perche' e' ancora in corso,
+        # ma non accettiamo buchi interni tra #1 e l'ultimo id disponibile.
+        expected = set(range(1, max(ids) + 1))
+        missing = sorted(expected - set(ids))
+        continuous = not missing and ids[0] == 1
+        complete = continuous
+
+    return {
+        "count": len(ids),
+        "min_id": ids[0],
+        "max_id": ids[-1],
+        "missing_ids": missing,
+        "continuous": bool(continuous),
+        "complete": bool(complete),
+    }
+
+
+def _source_label(added_by_source, fetched_by_source):
+    parts = []
+    for name in ("10elotto5minuti", "lottologia", "10elotto5minuti-year"):
+        fetched = int((fetched_by_source or {}).get(name, 0) or 0)
+        added = int((added_by_source or {}).get(name, 0) or 0)
+        if fetched or added:
+            if fetched == added:
+                parts.append(f"{name}:{added}")
+            else:
+                parts.append(f"{name}:{added}aggiunte/{fetched}lette")
+    for name in sorted(set(fetched_by_source or {}) - {"10elotto5minuti", "lottologia", "10elotto5minuti-year"}):
+        fetched = int((fetched_by_source or {}).get(name, 0) or 0)
+        added = int((added_by_source or {}).get(name, 0) or 0)
+        if fetched or added:
+            parts.append(f"{name}:{added}aggiunte/{fetched}lette")
+    return "+".join(parts) if parts else "MISSING"
+
+
+def _warmup_integrity_problems(summary, today_iso=None):
+    today_iso = str(today_iso or now_dt().date().isoformat())
+    problems = []
+    for x in summary or []:
+        day = str(x.get("day"))
+        conflicts = int(x.get("conflicts", 0) or 0)
+        if conflicts:
+            problems.append(f"{day}: {conflicts} conflitti tra fonti")
+            continue
+
+        if day < today_iso and WARMUP_REQUIRE_COMPLETE_PAST_DAYS:
+            if not bool(x.get("complete", False)):
+                missing = list(x.get("missing_ids", []) or [])
+                tail = ",".join(map(str, missing[:12]))
+                more = "..." if len(missing) > 12 else ""
+                problems.append(
+                    f"{day}: giorno concluso incompleto "
+                    f"({int(x.get('draws', 0) or 0)}/{WARMUP_FULL_DAY_DRAWS}; "
+                    f"mancano [{tail}{more}])"
+                )
+        elif day == today_iso and int(x.get("draws", 0) or 0) > 0:
+            if not bool(x.get("continuous", False)):
+                missing = list(x.get("missing_ids", []) or [])
+                tail = ",".join(map(str, missing[:12]))
+                more = "..." if len(missing) > 12 else ""
+                problems.append(f"{day}: buchi interni nel giorno corrente [{tail}{more}]")
+    return problems
+
+
+def format_warmup_sources(summary):
+    parts = []
+    for x in summary or []:
+        day = x.get("day", "?")
+        draws = int(x.get("draws", 0) or 0)
+        src = x.get("source", "?")
+        if x.get("is_today"):
+            if draws <= 0:
+                status = "VUOTO"
+            else:
+                status = "LIVE" if x.get("continuous") else "INCOMPLETO"
+        else:
+            status = "OK" if x.get("complete") else "INCOMPLETO"
+        parts.append(f"{day}={draws}[{src}|{status}]")
+    return ", ".join(parts)
+
+
 def fetch_warmup_records(days=WARMUP_DAYS):
-    """Scarica gli ultimi N giorni e restituisce le estrazioni in ordine cronologico."""
+    """
+    Scarica gli ultimi N giorni in ordine cronologico.
+
+    Regola di integrita' v3:
+      • i giorni gia' conclusi devono coprire #1..#288 senza buchi;
+      • se la prima fonte e' incompleta viene provata la fonte alternativa;
+      • se ancora incompleto viene usato l'archivio annuale per integrare;
+      • eventuali conflitti sullo stesso numero estrazione vengono segnalati;
+      • oggi puo' essere parziale, ma non puo' avere buchi interni #1..#max.
+    """
     today_date = now_dt().date()
     primary_by_offset = {0: URL, 1: URL_YESTERDAY, 2: URL_DAY_BEFORE_YESTERDAY}
-    records = []
-    summary = []
-    missing = []
+    day_candidates = {}
 
+    # Prima passata: fonte principale + Lottologia quando serve.
     for offset in range(max(1, int(days))):
         expected_day = (today_date - timedelta(days=offset)).isoformat()
-        recs = []
-        source = None
+        is_today = offset == 0
+        candidates = []
 
+        primary_rows = []
         if offset in primary_by_offset:
             try:
-                recs = parse_site_records(primary_by_offset[offset], expected_day=expected_day)
-                source = "10elotto5minuti"
+                primary_rows = parse_site_records(primary_by_offset[offset], expected_day=expected_day)
             except Exception:
-                recs = []
+                primary_rows = []
+            candidates.append(("10elotto5minuti", primary_rows))
 
-        if not recs:
+        primary_info = _day_continuity_info(primary_rows, full_day=not is_today)
+        need_alt = (not primary_rows) or (not is_today and not primary_info["complete"]) or (is_today and not primary_info["continuous"])
+
+        # Per gli offset >2 Lottologia e' la prima fonte storica disponibile.
+        if offset > 2 or need_alt:
             try:
-                recs = parse_lottologia_records(_lottologia_url_for_offset(offset), expected_day=expected_day)
-                source = "lottologia"
+                lotto_rows = parse_lottologia_records(
+                    _lottologia_url_for_offset(offset), expected_day=expected_day
+                )
             except Exception:
-                recs = []
+                lotto_rows = []
+            candidates.append(("lottologia", lotto_rows))
 
-        if recs:
-            records.extend(recs)
-            summary.append({"day": expected_day, "draws": len(recs), "source": source})
-        else:
-            missing.append(expected_day)
+        day_candidates[expected_day] = {
+            "offset": offset,
+            "is_today": is_today,
+            "candidates": candidates,
+        }
 
-    annual = _annual_archive_by_day(missing) if missing else {}
-    for expected_day in missing:
-        recs = annual.get(expected_day, [])
-        if recs:
-            records.extend(recs)
-            summary.append({"day": expected_day, "draws": len(recs), "source": "10elotto5minuti-year"})
-        else:
-            summary.append({"day": expected_day, "draws": 0, "source": "MISSING"})
+    # Capisco quali giorni conclusi sono ancora incompleti dopo le prime fonti.
+    need_annual = []
+    for expected_day, info in day_candidates.items():
+        rows, _, _, conflicts = _merge_day_sources(expected_day, info["candidates"])
+        check = _day_continuity_info(rows, full_day=not info["is_today"])
+        if (not info["is_today"]) and (not check["complete"] or conflicts):
+            need_annual.append(expected_day)
+
+    annual = _annual_archive_by_day(need_annual) if need_annual else {}
+
+    records = []
+    summary = []
+    for expected_day, info in day_candidates.items():
+        candidates = list(info["candidates"])
+        if expected_day in need_annual:
+            candidates.append(("10elotto5minuti-year", annual.get(expected_day, [])))
+
+        merged, added_by, fetched_by, conflicts = _merge_day_sources(expected_day, candidates)
+        check = _day_continuity_info(merged, full_day=not info["is_today"])
+        records.extend(merged)
+
+        summary.append({
+            "day": expected_day,
+            "draws": len(merged),
+            "source": _source_label(added_by, fetched_by),
+            "is_today": bool(info["is_today"]),
+            "continuous": bool(check["continuous"]),
+            "complete": bool(check["complete"]),
+            "min_id": check["min_id"],
+            "max_id": check["max_id"],
+            "missing_ids": list(check["missing_ids"]),
+            "conflicts": len(conflicts),
+            "conflict_details": conflicts[:10],
+        })
 
     dedup = {}
     for d, e, nums in records:
@@ -958,6 +1166,16 @@ class FiveSurvivorsEngine:
             }
 
         records, sources = fetch_warmup_records(WARMUP_DAYS)
+        integrity_problems = _warmup_integrity_problems(sources)
+        if integrity_problems:
+            return {
+                "already_done": False,
+                "ok": False,
+                "draws": len(records),
+                "sources": sources,
+                "reason": "warmup bloccato per integrita': " + " | ".join(integrity_problems),
+            }
+
         if len(records) < WARMUP_MIN_DRAWS:
             return {
                 "already_done": False,
@@ -1199,9 +1417,12 @@ async def startup(engine, app):
     if not warm.get("already_done") and not warm.get("ok"):
         await engine.tg(
             app,
-            "⚠️ WARMUP INIZIALE NON COMPLETATO\n"
-            f"Scaricate {warm.get('draws', 0)} estrazioni; minimo richiesto {WARMUP_MIN_DRAWS}.\n"
-            "Il bot non entra in live finche' il warmup non e' sufficiente."
+            "⚠️ WARMUP INIZIALE NON COMPLETATO\n\n"
+            f"• estrazioni raccolte = {warm.get('draws', 0)}\n"
+            f"• motivo = {warm.get('reason', 'non disponibile')}\n"
+            f"• giorni/fonti = {format_warmup_sources(warm.get('sources', [])) or '-'}\n\n"
+            "⛔ Il bot NON entra in live con un buco storico. "
+            "Riprovera' al prossimo riavvio quando una fonte dara' i record mancanti."
         )
         return False
 
@@ -1220,10 +1441,7 @@ async def startup(engine, app):
     engine.save_state(git=True, force_git=True)
 
     if not warm.get("already_done"):
-        source_txt = ", ".join(
-            f"{x['day']}={x['draws']}[{x['source']}]"
-            for x in warm.get("sources", []) if x.get("draws")
-        )
+        source_txt = format_warmup_sources(warm.get("sources", []))
         await engine.tg(
             app,
             "🕰️ WARMUP INIZIALE COMPLETATO\n\n"
@@ -1248,7 +1466,9 @@ async def startup(engine, app):
         f"✅ +{EXTRA_WAIT} assenze\n"
         f"✅ H1 {STAKE_H1:.2f}€ + eventuale H2 {STAKE_H2:.2f}€\n"
         f"✅ modalita' = {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}\n"
-        "✅ warmup iniziale + state persistente\n\n"
+        "✅ warmup iniziale + state persistente\n"
+        f"✅ giorni conclusi richiesti = {WARMUP_FULL_DAY_DRAWS} estrazioni senza buchi\n"
+        "✅ fallback automatico tra fonti + blocco su conflitti\n\n"
         f"Candidati attivi: {len(engine.candidates)}"
     )
     await notify_actionable_state(engine, app)
