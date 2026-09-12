@@ -1,41 +1,31 @@
 # ============================================================
-# 🎯 SUPERAMBO — GAP 4 + GAP 27 / DECINE DIVERSE / SOLO H1
+# 🎯 SUPERAMBO — DUAL ENGINE GAP / DECINE DIVERSE / SOLO H1
 # ============================================================
 #
-# STRATEGIA UNICA, CONGELATA — FORWARD/SHADOW:
+# MOTORE CORE — CONGELATO:
+#   • GAP 4 + GAP 27 esatto
+#   • solo decine diverse
+#   • tutti gli ambi validi, deduplicati
+#   • SOLO H1 sulla prossima estrazione
 #
-#   1) Dopo ogni estrazione aggiorna il GAP (ritardo) dei numeri 1..90.
-#      - numero uscito nell'ultima estrazione -> gap = 0
-#      - se resta assente -> gap aumenta di 1
+# MOTORE FAST LAB — PARALLELO:
+#   • GAP 4 + GAP 24..29
+#   • solo decine diverse
+#   • tutti gli ambi validi, deduplicati
+#   • SOLO H1 sulla prossima estrazione
 #
-#   2) Cerca TUTTI i numeri con gap esattamente 4 e TUTTI quelli
-#      con gap esattamente 27.
-#
-#   3) Forma tutti gli ambi GAP4 x GAP27, ma accetta SOLO coppie
-#      appartenenti a DECINE DIVERSE.
-#
-#      Decine usate (coerenti con il progetto precedente):
-#        90-9, 10-19, 20-29, 30-39, 40-49,
-#        50-59, 60-69, 70-79, 80-89.
-#
-#   4) Tutti gli ambi validi vengono armati per UNA SOLA estrazione:
-#      SOLO H1 sulla prossima estrazione.
-#      - HIT se entrambi i numeri dell'ambo compaiono
-#      - STOP se non compaiono insieme
-#      - nessun H2, nessuna progressione, nessun WAIT30
-#
-#   5) Se nella stessa estrazione esistono piu' ambi validi, vengono
-#      mantenuti TUTTI, come nel test storico. Ogni ambo e' deduplicato.
+# IMPORTANTE:
+#   • FAST include anche i casi CORE (gap 27), ma statistiche e risultati
+#     restano completamente separati.
+#   • Non sommare CORE + FAST come se fossero due portafogli indipendenti:
+#     lo stesso ambo GAP4+27 puo' comparire in entrambi i laboratori.
+#   • Nessun H2, nessuna progressione, nessun WAIT30.
+#   • SHADOW_MODE=1 di default: il bot segnala, NON effettua puntate.
 #
 # WARMUP / PERSISTENZA:
-#   • scarica gli ultimi WARMUP_DAYS giorni e usa solo il segmento
-#     cronologico continuo piu' recente;
-#   • i giorni conclusi devono avere 288 estrazioni senza buchi;
-#   • ricostruisce i gap e l'eventuale H1 gia' valido per la prossima;
-#   • ai riavvii riparte dallo state persistente GitHub;
-#   • se il warmup non e' pronto il processo resta acceso e ritenta.
-#
-# SHADOW_MODE=1 (default): segnala soltanto; NON effettua puntate.
+#   • usa il segmento cronologico continuo piu' recente;
+#   • ricostruisce gap, diagnostica CORE/FAST e gli H1 validi;
+#   • state persistente GitHub, retry warmup senza spegnere il processo.
 # ============================================================
 
 import asyncio
@@ -91,17 +81,17 @@ HEADERS = {
 }
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "superambo_gap4_gap27_h1_state.json")
-LOCK_FILE = "/tmp/superambo_gap4_gap27_h1.lock"
+STATE_FILE = os.path.join(BASE_DIR, "superambo_gap4_core_fast_h1_state.json")
+LOCK_FILE = "/tmp/superambo_gap4_core_fast_h1.lock"
 
-# Nuova strategia = nuovo state. Non riusa lo state del vecchio basket5.
-LOGIC_VERSION = 1
+# Doppio motore = nuovo state pulito.
+LOGIC_VERSION = 2
 
 LOOP_SEC = int(os.getenv("LOOP_SEC", "60"))
 WARMUP_RETRY_SEC = int(os.getenv("WARMUP_RETRY_SEC", "300"))
 WARMUP_FAIL_TG_MIN_SECONDS = int(os.getenv("WARMUP_FAIL_TG_MIN_SECONDS", "900"))
 WARMUP_DAYS = int(os.getenv("WARMUP_DAYS", "7"))
-# Per un gap massimo 27 non servono 900 colpi: 120 colpi continui danno
+# Per un gap massimo 29 non servono 900 colpi: 120 colpi continui danno
 # un margine ampio per inizializzare correttamente tutti i ritardi.
 WARMUP_MIN_DRAWS = int(os.getenv("WARMUP_MIN_DRAWS", "120"))
 WARMUP_FULL_DAY_DRAWS = int(os.getenv("WARMUP_FULL_DAY_DRAWS", "288"))
@@ -109,7 +99,25 @@ WARMUP_REQUIRE_COMPLETE_PAST_DAYS = os.getenv("WARMUP_REQUIRE_COMPLETE_PAST_DAYS
 PROCESSED_MAX = int(os.getenv("PROCESSED_MAX", "12000"))
 
 GAP_A = int(os.getenv("GAP_A", "4"))
-GAP_B = int(os.getenv("GAP_B", "27"))
+CORE_GAP = int(os.getenv("CORE_GAP", "27"))
+FAST_GAP_MIN = int(os.getenv("FAST_GAP_MIN", "24"))
+FAST_GAP_MAX = int(os.getenv("FAST_GAP_MAX", "29"))
+
+STRATEGY_ORDER = ("core", "fast")
+STRATEGIES = {
+    "core": {
+        "label": "CORE",
+        "gap_min": CORE_GAP,
+        "gap_max": CORE_GAP,
+        "description": f"GAP {GAP_A}+{CORE_GAP}",
+    },
+    "fast": {
+        "label": "FAST LAB",
+        "gap_min": FAST_GAP_MIN,
+        "gap_max": FAST_GAP_MAX,
+        "description": f"GAP {GAP_A}+{FAST_GAP_MIN}-{FAST_GAP_MAX}",
+    },
+}
 STAKE_H1 = float(os.getenv("STAKE_H1", "1"))
 AMBO_PAYOUT = float(os.getenv("AMBO_PAYOUT", "14"))
 SHADOW_MODE = os.getenv("SHADOW_MODE", "1") != "0"
@@ -864,10 +872,10 @@ def git_commit_state_if_needed(force=False):
 
 
 # ============================================================
-# MOTORE GAP 4 + GAP 27 / DECINE DIVERSE / SOLO H1
+# MOTORE DUAL GAP — CORE 4+27 + FAST 4+24..29 / SOLO H1
 # ============================================================
 
-class Gap427Engine:
+class DualGapEngine:
     def __init__(self, load=True):
         self.logic_version = LOGIC_VERSION
 
@@ -881,18 +889,15 @@ class Gap427Engine:
         self.last_draw_key = None
         self.seq = 0
 
-        # Ultima sequenza in cui ogni numero e' comparso. None = non ancora noto.
+        # Ultima seq in cui ogni numero e' comparso. None = non ancora noto.
         self.last_seen_seq = {n: None for n in range(1, 91)}
 
-        # Un unico evento H1 per la prossima estrazione; contiene TUTTI gli ambi
-        # validi generati dal draw precedente.
-        self.pending_event = None
+        # Un evento H1 per strategia, valido esclusivamente sul draw successivo.
+        self.pending_events = {name: None for name in STRATEGY_ORDER}
 
-        # Solo diagnostica recente, non influenza mai la logica.
         self.recent_events = []
-
-        self.stats_warmup = self._new_stats()
-        self.stats_live = self._new_stats()
+        self.stats_warmup = {name: self._new_stats() for name in STRATEGY_ORDER}
+        self.stats_live = {name: self._new_stats() for name in STRATEGY_ORDER}
 
         self.state_load_info = {
             "loaded": False,
@@ -923,36 +928,51 @@ class Gap427Engine:
             "max_pairs_signal": 0,
         }
 
-    def _stats(self, mode):
-        return self.stats_warmup if mode == "warmup" else self.stats_live
+    def _stats(self, mode, strategy):
+        bank = self.stats_warmup if mode == "warmup" else self.stats_live
+        return bank[strategy]
+
+    def strategy_gap_values(self, strategy):
+        cfg = STRATEGIES[strategy]
+        return range(int(cfg["gap_min"]), int(cfg["gap_max"]) + 1)
 
     # ----------------------------
     # Stato / serializzazione
     # ----------------------------
 
-    def _sanitize_pending(self, raw):
+    def _sanitize_pending(self, raw, strategy):
         if not isinstance(raw, dict):
             return None
+        allowed = set(self.strategy_gap_values(strategy))
         items = []
         seen = set()
         for x in raw.get("items", []) or []:
             try:
-                g4 = int(x["gap4"])
-                g27 = int(x["gap27"])
-                pair = tuple(sorted((g4, g27)))
+                n4 = int(x.get("gap4"))
+                target = int(x.get("target", x.get("gap27")))
+                target_gap = int(x.get("target_gap", CORE_GAP if strategy == "core" else -1))
+                pair = tuple(sorted((n4, target)))
             except Exception:
                 continue
-            if not (1 <= g4 <= 90 and 1 <= g27 <= 90):
+            if not (1 <= n4 <= 90 and 1 <= target <= 90):
                 continue
-            if not different_decades(g4, g27):
+            if target_gap not in allowed:
+                continue
+            if not different_decades(n4, target):
                 continue
             if pair in seen:
                 continue
             seen.add(pair)
-            items.append({"gap4": g4, "gap27": g27, "pair": list(pair)})
+            items.append({
+                "gap4": n4,
+                "target": target,
+                "target_gap": target_gap,
+                "pair": list(pair),
+            })
         if not items:
             return None
         return {
+            "strategy": strategy,
             "signal_from_key": raw.get("signal_from_key"),
             "armed_at_seq": int(raw.get("armed_at_seq", 0) or 0),
             "created_at": raw.get("created_at"),
@@ -1001,11 +1021,16 @@ class Gap427Engine:
                 v = raw_seen.get(str(n), raw_seen.get(n))
                 self.last_seen_seq[n] = None if v is None else int(v)
 
-            self.pending_event = self._sanitize_pending(d.get("pending_event"))
-            self.recent_events = list(d.get("recent_events", []) or [])[-100:]
+            raw_pending = d.get("pending_events", {}) or {}
+            self.pending_events = {
+                name: self._sanitize_pending(raw_pending.get(name), name)
+                for name in STRATEGY_ORDER
+            }
+            self.recent_events = list(d.get("recent_events", []) or [])[-150:]
 
-            self.stats_warmup.update(d.get("stats_warmup") or {})
-            self.stats_live.update(d.get("stats_live") or {})
+            for name in STRATEGY_ORDER:
+                self.stats_warmup[name].update((d.get("stats_warmup", {}) or {}).get(name, {}) or {})
+                self.stats_live[name].update((d.get("stats_live", {}) or {}).get(name, {}) or {})
 
             self.state_load_info = {
                 "loaded": True,
@@ -1017,7 +1042,8 @@ class Gap427Engine:
                 f"STATE CARICATO | saved_at={d.get('saved_at') or '-'} | "
                 f"warmup={'OK' if self.warmup_done else 'NO'} | seq={self.seq} | "
                 f"last={self.last_draw_key or '-'} | "
-                f"pending_ambi={self.pending_pairs_count()}"
+                f"pending_core={self.pending_pairs_count('core')} | "
+                f"pending_fast={self.pending_pairs_count('fast')}"
             )
             return True
         except Exception as exc:
@@ -1042,8 +1068,8 @@ class Gap427Engine:
             "last_draw_key": self.last_draw_key,
             "seq": self.seq,
             "last_seen_seq": {str(n): self.last_seen_seq.get(n) for n in range(1, 91)},
-            "pending_event": self.pending_event,
-            "recent_events": self.recent_events[-100:],
+            "pending_events": self.pending_events,
+            "recent_events": self.recent_events[-150:],
             "stats_warmup": self.stats_warmup,
             "stats_live": self.stats_live,
         }
@@ -1083,43 +1109,57 @@ class Gap427Engine:
         gap_value = int(gap_value)
         return [n for n in range(1, 91) if self.current_gap(n) == gap_value]
 
+    def numbers_in_gap_range(self, gap_min, gap_max):
+        return [
+            n for n in range(1, 91)
+            if self.current_gap(n) is not None and int(gap_min) <= self.current_gap(n) <= int(gap_max)
+        ]
+
     def update_last_seen(self, nums):
         for n in set(map(int, nums)):
             self.last_seen_seq[n] = int(self.seq)
 
-    def build_signal_items(self):
+    def build_signal_items(self, strategy):
         nums4 = self.numbers_at_gap(GAP_A)
-        nums27 = self.numbers_at_gap(GAP_B)
+        target_nums = self.numbers_in_gap_range(
+            STRATEGIES[strategy]["gap_min"], STRATEGIES[strategy]["gap_max"]
+        )
         items = []
         seen_pairs = set()
 
         for n4 in nums4:
-            for n27 in nums27:
-                if n4 == n27:
+            for target in target_nums:
+                if n4 == target:
                     continue
-                if not different_decades(n4, n27):
+                if not different_decades(n4, target):
                     continue
-                pair = tuple(sorted((int(n4), int(n27))))
+                pair = tuple(sorted((int(n4), int(target))))
                 if pair in seen_pairs:
                     continue
                 seen_pairs.add(pair)
                 items.append({
                     "gap4": int(n4),
-                    "gap27": int(n27),
+                    "target": int(target),
+                    "target_gap": int(self.current_gap(target)),
                     "pair": list(pair),
                 })
 
-        items.sort(key=lambda x: tuple(x["pair"]))
+        items.sort(key=lambda x: (tuple(x["pair"]), x["target_gap"]))
         return items
 
-    def pending_pairs_count(self):
-        return len((self.pending_event or {}).get("items", []) or [])
+    def pending_pairs_count(self, strategy=None):
+        if strategy is None:
+            return sum(self.pending_pairs_count(name) for name in STRATEGY_ORDER)
+        return len((self.pending_events.get(strategy) or {}).get("items", []) or [])
 
-    def pending_pairs(self):
-        return [tuple(map(int, x["pair"])) for x in (self.pending_event or {}).get("items", []) or []]
+    def pending_pairs(self, strategy):
+        return [
+            tuple(map(int, x["pair"]))
+            for x in (self.pending_events.get(strategy) or {}).get("items", []) or []
+        ]
 
     @staticmethod
-    def _format_pairs(items, limit=30):
+    def _format_pairs(items, limit=30, with_gap=False):
         items = list(items or [])
         shown = items[:limit]
         parts = []
@@ -1127,7 +1167,10 @@ class Gap427Engine:
             pair = tuple(x.get("pair", []))
             if len(pair) != 2:
                 continue
-            parts.append(fmt_pair(pair))
+            txt = fmt_pair(pair)
+            if with_gap and x.get("target_gap") is not None:
+                txt += f"(g{x.get('target_gap')})"
+            parts.append(txt)
         if len(items) > limit:
             parts.append(f"... +{len(items)-limit} altri")
         return ", ".join(parts) if parts else "-"
@@ -1142,130 +1185,164 @@ class Gap427Engine:
             console_log(f"⚠️ Telegram: {exc}")
 
     async def settle_pending(self, app, day, e, nums, mode="live", notify=True):
-        event = self.pending_event
-        if not event:
-            return None
-
-        # Consuma l'evento subito: non potra' essere contabilizzato due volte.
-        self.pending_event = None
-        items = list(event.get("items", []) or [])
-        if not items:
-            return None
-
         numset = set(map(int, nums))
-        hits = []
-        misses = []
-        for item in items:
-            pair = tuple(map(int, item.get("pair", [])))
-            if len(pair) != 2:
+        all_results = {}
+        sections = []
+
+        for strategy in STRATEGY_ORDER:
+            event = self.pending_events.get(strategy)
+            if not event:
                 continue
-            if pair[0] in numset and pair[1] in numset:
-                hits.append(item)
+
+            # Consuma subito: mai doppia contabilizzazione.
+            self.pending_events[strategy] = None
+            items = list(event.get("items", []) or [])
+            if not items:
+                continue
+
+            hits, misses = [], []
+            for item in items:
+                pair = tuple(map(int, item.get("pair", [])))
+                if len(pair) != 2:
+                    continue
+                (hits if pair[0] in numset and pair[1] in numset else misses).append(item)
+
+            plays = len(hits) + len(misses)
+            hit_count = len(hits)
+            st = self._stats(mode, strategy)
+            st["result_draws"] = int(st.get("result_draws", 0)) + 1
+            st["h1_plays"] = int(st.get("h1_plays", 0)) + plays
+            st["h1_hits"] = int(st.get("h1_hits", 0)) + hit_count
+            st["h1_misses"] = int(st.get("h1_misses", 0)) + len(misses)
+            st["cost"] = float(st.get("cost", 0.0)) + plays * STAKE_H1
+            st["gross"] = float(st.get("gross", 0.0)) + hit_count * AMBO_PAYOUT * STAKE_H1
+            if hit_count:
+                st["hit_draws"] = int(st.get("hit_draws", 0)) + 1
+                if hit_count > 1:
+                    st["multi_hit_draws"] = int(st.get("multi_hit_draws", 0)) + 1
             else:
-                misses.append(item)
+                st["stop_draws"] = int(st.get("stop_draws", 0)) + 1
 
-        plays = len(hits) + len(misses)
-        hit_count = len(hits)
-        st = self._stats(mode)
-        st["result_draws"] = int(st.get("result_draws", 0)) + 1
-        st["h1_plays"] = int(st.get("h1_plays", 0)) + plays
-        st["h1_hits"] = int(st.get("h1_hits", 0)) + hit_count
-        st["h1_misses"] = int(st.get("h1_misses", 0)) + len(misses)
-        st["cost"] = float(st.get("cost", 0.0)) + plays * STAKE_H1
-        st["gross"] = float(st.get("gross", 0.0)) + hit_count * AMBO_PAYOUT * STAKE_H1
+            draw_cost = plays * STAKE_H1
+            draw_gross = hit_count * AMBO_PAYOUT * STAKE_H1
+            draw_net = draw_gross - draw_cost
+            result = {
+                "strategy": strategy,
+                "signal_from": event.get("signal_from_key"),
+                "plays": plays,
+                "hits": hit_count,
+                "misses": len(misses),
+                "cost": draw_cost,
+                "gross": draw_gross,
+                "net": draw_net,
+                "hit_items": hits,
+                "miss_items": misses,
+            }
+            all_results[strategy] = result
 
-        if hit_count:
-            st["hit_draws"] = int(st.get("hit_draws", 0)) + 1
-            if hit_count > 1:
-                st["multi_hit_draws"] = int(st.get("multi_hit_draws", 0)) + 1
-        else:
-            st["stop_draws"] = int(st.get("stop_draws", 0)) + 1
+            self.recent_events.append({
+                "type": "RESULT",
+                "strategy": strategy,
+                "at": draw_key(day, e),
+                "signal_from": event.get("signal_from_key"),
+                "plays": plays,
+                "hits": hit_count,
+                "net": draw_net,
+            })
 
-        draw_cost = plays * STAKE_H1
-        draw_gross = hit_count * AMBO_PAYOUT * STAKE_H1
-        draw_net = draw_gross - draw_cost
-
-        self.recent_events.append({
-            "type": "RESULT",
-            "at": draw_key(day, e),
-            "signal_from": event.get("signal_from_key"),
-            "plays": plays,
-            "hits": hit_count,
-            "net": draw_net,
-        })
-        self.recent_events = self.recent_events[-100:]
-
-        if notify and mode == "live":
-            hit_txt = self._format_pairs(hits)
-            miss_txt = self._format_pairs(misses)
+            cfg = STRATEGIES[strategy]
             icon = "✅" if hit_count else "❌"
             title = "HIT H1" if hit_count else "STOP H1"
+            sections.extend([
+                f"{icon} {cfg['label']} — {title}",
+                f"Segnale da: {event.get('signal_from_key', '-')}",
+                f"Ambi: {plays} | HIT: {hit_count} | MISS: {len(misses)}",
+                f"✅ {self._format_pairs(hits, with_gap=(strategy == 'fast'))}",
+                f"❌ {self._format_pairs(misses, with_gap=(strategy == 'fast'))}",
+                f"Costo: {draw_cost:.2f}€ | lordo: {draw_gross:.2f}€ | netto: {draw_net:+.2f}€",
+                f"Forward {cfg['label']}: {self.live_summary_one_line(strategy)}",
+                "",
+            ])
+
+        self.recent_events = self.recent_events[-150:]
+
+        if notify and mode == "live" and all_results:
             await self.tg(
                 app,
-                f"{icon} {signal_word()} {title} — GAP {GAP_A}+{GAP_B}\n\n"
-                f"Segnale da: {event.get('signal_from_key', '-')}\n"
-                f"Risultato: {draw_key(day, e)}\n"
-                f"Ambi giocati: {plays} | costo: {draw_cost:.2f}€\n"
-                f"✅ HIT ({hit_count}): {hit_txt}\n"
-                f"❌ MISS ({len(misses)}): {miss_txt}\n\n"
-                f"Lordo draw: {draw_gross:.2f}€ | netto draw: {draw_net:+.2f}€\n"
-                f"Forward: {self.live_summary_one_line()}"
+                f"📌 {signal_word()} RISULTATI H1 — DUAL GAP\n"
+                f"Risultato: {draw_key(day, e)}\n\n" +
+                "\n".join(sections).rstrip() +
+                "\n\nℹ️ FAST include il CORE: non sommare i due costi come portafogli indipendenti."
             )
 
-        return {
-            "plays": plays,
-            "hits": hit_count,
-            "misses": len(misses),
-            "cost": draw_cost,
-            "gross": draw_gross,
-            "net": draw_net,
-        }
+        return all_results or None
 
     async def arm_from_current_gaps(self, app, current_key, mode="live", notify=True):
-        items = self.build_signal_items()
-        if not items:
-            self.pending_event = None
-            return None
+        armed = {}
+        sections = []
+        nums4_all = self.numbers_at_gap(GAP_A)
 
-        nums4 = sorted({int(x["gap4"]) for x in items})
-        nums27 = sorted({int(x["gap27"]) for x in items})
-        self.pending_event = {
-            "signal_from_key": current_key,
-            "armed_at_seq": int(self.seq),
-            "created_at": now_txt(),
-            "items": items,
-        }
+        for strategy in STRATEGY_ORDER:
+            items = self.build_signal_items(strategy)
+            if not items:
+                self.pending_events[strategy] = None
+                continue
 
-        st = self._stats(mode)
-        st["signal_draws"] = int(st.get("signal_draws", 0)) + 1
-        st["pairs_signaled"] = int(st.get("pairs_signaled", 0)) + len(items)
-        st["max_pairs_signal"] = max(int(st.get("max_pairs_signal", 0) or 0), len(items))
+            self.pending_events[strategy] = {
+                "strategy": strategy,
+                "signal_from_key": current_key,
+                "armed_at_seq": int(self.seq),
+                "created_at": now_txt(),
+                "items": items,
+            }
+            armed[strategy] = self.pending_events[strategy]
 
-        self.recent_events.append({
-            "type": "SIGNAL",
-            "at": current_key,
-            "pairs": len(items),
-            "gap4": nums4,
-            "gap27": nums27,
-        })
-        self.recent_events = self.recent_events[-100:]
+            st = self._stats(mode, strategy)
+            st["signal_draws"] = int(st.get("signal_draws", 0)) + 1
+            st["pairs_signaled"] = int(st.get("pairs_signaled", 0)) + len(items)
+            st["max_pairs_signal"] = max(int(st.get("max_pairs_signal", 0) or 0), len(items))
 
-        if notify and mode == "live":
-            potential_cost = len(items) * STAKE_H1
+            target_by_gap = {}
+            for item in items:
+                target_by_gap.setdefault(int(item["target_gap"]), set()).add(int(item["target"]))
+            self.recent_events.append({
+                "type": "SIGNAL",
+                "strategy": strategy,
+                "at": current_key,
+                "pairs": len(items),
+                "gap4": sorted({int(x["gap4"]) for x in items}),
+                "targets": {str(g): sorted(v) for g, v in sorted(target_by_gap.items())},
+            })
+
+            cfg = STRATEGIES[strategy]
+            targets_txt = " | ".join(
+                f"g{g}: {','.join(map(str, sorted(vals)))}"
+                for g, vals in sorted(target_by_gap.items())
+            ) or "-"
+            sections.extend([
+                f"🎯 {cfg['label']} — {cfg['description']}",
+                f"Gap {GAP_A}: {', '.join(map(str, sorted({int(x['gap4']) for x in items}))) or '-'}",
+                f"Target: {targets_txt}",
+                f"Ambi validi ({len(items)}): {self._format_pairs(items, with_gap=(strategy == 'fast'))}",
+                f"Costo teorico H1: {len(items)*STAKE_H1:.2f}€",
+                "",
+            ])
+
+        self.recent_events = self.recent_events[-150:]
+
+        if notify and mode == "live" and armed:
             await self.tg(
                 app,
-                f"🎯 {signal_word()} GAP {GAP_A}+{GAP_B} — H1 ARMATO\n\n"
+                f"🎯 {signal_word()} H1 ARMATO — DUAL GAP\n\n"
                 f"Segnale da: {current_key}\n"
-                f"Gap {GAP_A}: {', '.join(map(str, nums4)) or '-'}\n"
-                f"Gap {GAP_B}: {', '.join(map(str, nums27)) or '-'}\n"
-                f"Regola: SOLO decine diverse\n\n"
-                f"Ambi validi ({len(items)}):\n{self._format_pairs(items)}\n\n"
-                f"➡️ PROSSIMA estrazione: SOLO H1\n"
-                f"Stake: {STAKE_H1:.2f}€ per ambo | costo potenziale: {potential_cost:.2f}€\n"
-                "Nessun H2, nessuna progressione."
+                f"Regola comune: decine diverse / SOLO H1\n\n" +
+                "\n".join(sections).rstrip() +
+                f"\n\n➡️ PROSSIMA estrazione: {STAKE_H1:.2f}€ H1 per ambo in ciascun laboratorio.\n"
+                "Nessun H2, nessuna progressione.\n"
+                "ℹ️ FAST 24-29 include anche gli ambi CORE a gap27: statistiche separate."
             )
 
-        return self.pending_event
+        return armed or None
 
     async def process_draw(self, app, day, e, nums, mode="live", notify=True, persist=True):
         clean = list(map(int, nums))
@@ -1275,24 +1352,21 @@ class Gap427Engine:
             return None
 
         current_key = self.remember_processed(day, e)
-        st = self._stats(mode)
-        st["draws"] = int(st.get("draws", 0)) + 1
+        for strategy in STRATEGY_ORDER:
+            st = self._stats(mode, strategy)
+            st["draws"] = int(st.get("draws", 0)) + 1
 
-        # 1) Il segnale generato dal draw precedente si gioca ORA.
-        result = await self.settle_pending(app, day, e, clean, mode=mode, notify=notify)
-
-        # 2) Aggiorna i gap con il draw corrente.
+        # 1) Chiude gli H1 armati dal draw precedente.
+        results = await self.settle_pending(app, day, e, clean, mode=mode, notify=notify)
+        # 2) Aggiorna i gap col draw corrente.
         self.update_last_seen(clean)
-
-        # 3) Sui gap DOPO il draw corrente arma l'eventuale H1 per il PROSSIMO.
-        signal = await self.arm_from_current_gaps(
-            app, current_key=current_key, mode=mode, notify=notify
-        )
+        # 3) Arma CORE e FAST per il draw successivo.
+        signals = await self.arm_from_current_gaps(app, current_key, mode=mode, notify=notify)
 
         if persist:
             self.save_state(git=(mode == "live"))
 
-        return {"result": result, "signal": signal}
+        return {"results": results, "signals": signals}
 
     # ----------------------------
     # Warmup
@@ -1304,10 +1378,10 @@ class Gap427Engine:
         self.last_draw_key = None
         self.seq = 0
         self.last_seen_seq = {n: None for n in range(1, 91)}
-        self.pending_event = None
+        self.pending_events = {name: None for name in STRATEGY_ORDER}
         self.recent_events = []
-        self.stats_warmup = self._new_stats()
-        self.stats_live = self._new_stats()
+        self.stats_warmup = {name: self._new_stats() for name in STRATEGY_ORDER}
+        self.stats_live = {name: self._new_stats() for name in STRATEGY_ORDER}
 
     async def run_initial_warmup(self, app=None):
         if self.warmup_done:
@@ -1344,19 +1418,12 @@ class Gap427Engine:
             }
 
         self._reset_for_warmup()
-
         for d, e, nums in records:
             await self.process_draw(
-                app=None,
-                day=d,
-                e=e,
-                nums=nums,
-                mode="warmup",
-                notify=False,
-                persist=False,
+                app=None, day=d, e=e, nums=nums,
+                mode="warmup", notify=False, persist=False,
             )
 
-        # Con un warmup ampio tutti i 90 numeri devono essere stati osservati.
         unknown = [n for n in range(1, 91) if self.last_seen_seq.get(n) is None]
         if unknown:
             self._reset_for_warmup()
@@ -1389,24 +1456,41 @@ class Gap427Engine:
     # ----------------------------
 
     def current_gap_lists(self):
-        return self.numbers_at_gap(GAP_A), self.numbers_at_gap(GAP_B)
+        nums4 = self.numbers_at_gap(GAP_A)
+        core = self.numbers_at_gap(CORE_GAP)
+        fast = {g: self.numbers_at_gap(g) for g in range(FAST_GAP_MIN, FAST_GAP_MAX + 1)}
+        return nums4, core, fast
+
+    def fast_targets_text(self):
+        _, _, fast = self.current_gap_lists()
+        parts = [f"g{g}: {','.join(map(str, nums))}" for g, nums in fast.items() if nums]
+        return " | ".join(parts) if parts else "-"
 
     def pending_text(self):
-        if not self.pending_event:
-            return "• nessun H1 armato"
-        items = self.pending_event.get("items", []) or []
-        nums4 = sorted({int(x["gap4"]) for x in items})
-        nums27 = sorted({int(x["gap27"]) for x in items})
-        return (
-            f"• segnale da {self.pending_event.get('signal_from_key', '-')}\n"
-            f"• gap {GAP_A}: {', '.join(map(str, nums4)) or '-'}\n"
-            f"• gap {GAP_B}: {', '.join(map(str, nums27)) or '-'}\n"
-            f"• H1 prossima = {len(items)} ambi | costo potenziale = {len(items)*STAKE_H1:.2f}€\n"
-            f"• ambi: {self._format_pairs(items)}"
-        )
+        blocks = []
+        for strategy in STRATEGY_ORDER:
+            cfg = STRATEGIES[strategy]
+            event = self.pending_events.get(strategy)
+            if not event:
+                blocks.append(f"• {cfg['label']}: nessun H1 armato")
+                continue
+            items = event.get("items", []) or []
+            target_by_gap = {}
+            for x in items:
+                target_by_gap.setdefault(int(x["target_gap"]), set()).add(int(x["target"]))
+            targets_txt = " | ".join(
+                f"g{g}: {','.join(map(str, sorted(vals)))}" for g, vals in sorted(target_by_gap.items())
+            ) or "-"
+            blocks.extend([
+                f"• {cfg['label']}: segnale da {event.get('signal_from_key', '-')}",
+                f"  target = {targets_txt}",
+                f"  H1 prossima = {len(items)} ambi | costo teorico = {len(items)*STAKE_H1:.2f}€",
+                f"  ambi = {self._format_pairs(items, with_gap=(strategy == 'fast'))}",
+            ])
+        return "\n".join(blocks)
 
-    def live_summary_one_line(self):
-        s = self.stats_live
+    def live_summary_one_line(self, strategy):
+        s = self.stats_live[strategy]
         plays = int(s.get("h1_plays", 0))
         hits = int(s.get("h1_hits", 0))
         cost = float(s.get("cost", 0.0))
@@ -1431,63 +1515,75 @@ class Gap427Engine:
         if include_draws:
             lines.append(f"• draw elaborati = {int(s.get('draws', 0))}")
         lines.extend([
-            f"• draw con segnale generato = {int(s.get('signal_draws', 0))} | ambi segnalati = {int(s.get('pairs_signaled', 0))}",
+            f"• draw con segnale = {int(s.get('signal_draws', 0))} | ambi segnalati = {int(s.get('pairs_signaled', 0))}",
             f"• draw H1 chiusi = {result_draws} | con >=1 HIT = {hit_draws} ({safe_pct(hit_draws, result_draws):.2f}%) | senza HIT = {stop_draws}",
             f"• multi-HIT nello stesso draw = {int(s.get('multi_hit_draws', 0))}",
             f"• AMBI H1 = {hits}/{plays} ({safe_pct(hits, plays):.2f}%) | break-even = {break_even:.2f}%",
-            f"• MISS ambo = {misses} | max ambi in un singolo segnale = {int(s.get('max_pairs_signal', 0))}",
+            f"• MISS ambo = {misses} | max ambi/segnale = {int(s.get('max_pairs_signal', 0))}",
             f"• costo = {cost:.2f}€ | lordo = {gross:.2f}€ | netto = {net:+.2f}€ | ROI = {safe_pct(net, cost):+.2f}%",
         ])
         return lines
 
     def stats_text(self):
-        lines = self._stats_block(
-            f"📊 FORWARD LIVE — GAP {GAP_A}+{GAP_B} / DECINE DIVERSE / SOLO H1",
-            self.stats_live,
-        )
-        lines.extend([
-            "",
-            "🎯 H1 ATTUALE",
-            self.pending_text(),
-            "",
-            *self._stats_block("🕰️ WARMUP DIAGNOSTICO", self.stats_warmup),
-        ])
-        return "\n".join(lines)
+        lines = []
+        for strategy in STRATEGY_ORDER:
+            cfg = STRATEGIES[strategy]
+            lines.extend(self._stats_block(
+                f"📊 FORWARD {cfg['label']} — {cfg['description']} / SOLO H1",
+                self.stats_live[strategy],
+            ))
+            lines.append("")
+
+        lines.extend(["🎯 H1 ATTUALI", self.pending_text(), ""])
+
+        for strategy in STRATEGY_ORDER:
+            cfg = STRATEGIES[strategy]
+            lines.extend(self._stats_block(
+                f"🕰️ WARMUP {cfg['label']} — {cfg['description']}",
+                self.stats_warmup[strategy],
+            ))
+            lines.append("")
+
+        lines.append("ℹ️ FAST 24-29 include il CORE gap27: confronta i due laboratori, non sommare i costi.")
+        return "\n".join(lines).rstrip()
 
     def status_text(self):
-        nums4, nums27 = self.current_gap_lists()
+        nums4, core, _ = self.current_gap_lists()
         lines = [
-            f"🎯 GAP {GAP_A} + GAP {GAP_B} → DECINE DIVERSE → SOLO H1",
+            "🎯 DUAL GAP — CORE + FAST LAB — SOLO H1",
             f"• modalita' = {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}",
             f"• ultimo draw = {self.last_draw_key or '-'} | seq = {self.seq}",
             f"• gap {GAP_A} ora = {', '.join(map(str, nums4)) or '-'}",
-            f"• gap {GAP_B} ora = {', '.join(map(str, nums27)) or '-'}",
-            f"• H1 attivi per prossima = {self.pending_pairs_count()} ambi",
+            f"• CORE gap {CORE_GAP} = {', '.join(map(str, core)) or '-'}",
+            f"• FAST gap {FAST_GAP_MIN}-{FAST_GAP_MAX} = {self.fast_targets_text()}",
+            f"• H1 CORE prossima = {self.pending_pairs_count('core')} ambi",
+            f"• H1 FAST prossima = {self.pending_pairs_count('fast')} ambi",
             f"• warmup = {'OK' if self.warmup_done else 'NO'} | {self.warmup_draws} draw",
             f"• state checkout = {'CARICATO' if self.state_load_info.get('loaded') else 'NUOVO'} | saved_at={self.state_load_info.get('saved_at') or '-'}",
             f"• state Git = {'OK' if self.last_git_status.get('ok') else 'ERRORE'} | {self.last_git_status.get('action', '-')} | {self.last_git_status.get('detail', '-')}",
             "",
-            "🎯 EVENTO ATTUALE",
+            "🎯 EVENTI ATTUALI",
             self.pending_text(),
             "",
-            self.live_summary_one_line(),
+            f"CORE: {self.live_summary_one_line('core')}",
+            f"FAST: {self.live_summary_one_line('fast')}",
         ]
         return "\n".join(lines)
 
     def menu_text(self):
         return (
-            "🎯 SUPERAMBO — GAP 4 + GAP 27 / SOLO H1\n\n"
-            f"Dopo ogni estrazione aggiorno i gap 1..90.\n"
-            f"Cerco tutti i numeri con gap esatto {GAP_A} e gap esatto {GAP_B}.\n"
-            "Formo tutti gli ambi tra i due gruppi, ma SOLO se appartengono a decine diverse.\n"
-            "Le decine sono: 90-9, 10-19, 20-29, ..., 80-89.\n"
-            "Tutti gli ambi validi vengono mantenuti e deduplicati.\n\n"
+            "🎯 SUPERAMBO — DUAL GAP / SOLO H1\n\n"
+            f"CORE: GAP {GAP_A}+{CORE_GAP} esatto, decine diverse.\n"
+            f"FAST LAB: GAP {GAP_A}+{FAST_GAP_MIN}-{FAST_GAP_MAX}, decine diverse.\n"
+            "Per entrambi tengo TUTTI gli ambi validi e li deduplico.\n"
             f"➡️ SOLO H1 sulla prossima estrazione: {STAKE_H1:.2f}€ per ambo.\n"
-            "Nessun H2, nessuna progressione, nessun WAIT30.\n"
-            f"Pagamento statistico impostato: {AMBO_PAYOUT:.2f}x.\n"
-            f"Modalita': {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}; il bot non effettua puntate automatiche.\n\n"
-            "/status — gap correnti + H1 armato\n"
-            "/stats — risultati forward + warmup\n"
+            "Nessun H2, nessuna progressione, nessun WAIT30.\n\n"
+            "FAST include anche i casi a gap27 del CORE, ma le statistiche sono separate.\n"
+            "Non sommare CORE e FAST come due sistemi indipendenti.\n"
+            f"Pagamento diagnostico: {AMBO_PAYOUT:.2f}x.\n"
+            f"Modalita': {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}; nessuna puntata automatica.\n\n"
+            "/status — gap correnti + H1 armati\n"
+            "/stats — CORE/FAST forward + warmup\n"
             "/menu — questa schermata"
         )
 
@@ -1518,9 +1614,9 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setup_commands(app):
     await app.bot.set_my_commands([
-        BotCommand("status", "Gap correnti e H1 armato"),
-        BotCommand("stats", "Statistiche forward e warmup"),
-        BotCommand("menu", "Mostra la strategia"),
+        BotCommand("status", "Gap correnti e H1 CORE/FAST"),
+        BotCommand("stats", "Statistiche CORE/FAST forward e warmup"),
+        BotCommand("menu", "Mostra le due strategie"),
     ])
 
 
@@ -1562,21 +1658,27 @@ def acquire_single_instance_lock():
 # ============================================================
 
 async def notify_actionable_state(engine, app):
-    event = engine.pending_event
-    if not event:
+    active = [name for name in STRATEGY_ORDER if engine.pending_events.get(name)]
+    if not active:
         return
-    items = event.get("items", []) or []
-    nums4 = sorted({int(x["gap4"]) for x in items})
-    nums27 = sorted({int(x["gap27"]) for x in items})
+    sections = []
+    for strategy in active:
+        cfg = STRATEGIES[strategy]
+        event = engine.pending_events[strategy]
+        items = event.get("items", []) or []
+        sections.extend([
+            f"🎯 {cfg['label']} — {cfg['description']}",
+            f"Segnale da: {event.get('signal_from_key', '-')}",
+            f"Ambi ({len(items)}): {engine._format_pairs(items, with_gap=(strategy == 'fast'))}",
+            f"Costo teorico H1: {len(items)*STAKE_H1:.2f}€",
+            "",
+        ])
     await engine.tg(
         app,
-        f"🎯 {signal_word()} H1 GIA' ARMATO DALLO STATO CORRENTE\n\n"
-        f"Segnale da: {event.get('signal_from_key', '-')}\n"
-        f"Gap {GAP_A}: {', '.join(map(str, nums4)) or '-'}\n"
-        f"Gap {GAP_B}: {', '.join(map(str, nums27)) or '-'}\n"
-        f"Ambi ({len(items)}): {engine._format_pairs(items)}\n\n"
-        f"➡️ PROSSIMA estrazione: {STAKE_H1:.2f}€ H1 per ambo.\n"
-        "Nessun H2."
+        f"🎯 {signal_word()} H1 GIA' ARMATI DALLO STATO CORRENTE\n\n" +
+        "\n".join(sections).rstrip() +
+        f"\n\n➡️ PROSSIMA estrazione: {STAKE_H1:.2f}€ H1 per ambo.\n"
+        "ℹ️ FAST include il CORE; statistiche separate."
     )
 
 
@@ -1640,7 +1742,7 @@ async def startup(engine, app, warmup_retry_state=None):
     if warm.get("sources"):
         console_log(f"WARMUP SOURCES | {format_warmup_sources(warm.get('sources', []))}")
 
-    # Recupera eventuali draw di oggi successivi allo state/warmup.
+    # Catch-up di eventuali draw successivi allo state/warmup.
     try:
         rows = parse_site_today()
         console_log(f"CATCH-UP iniziale | righe live lette={len(rows)}")
@@ -1653,7 +1755,6 @@ async def startup(engine, app, warmup_retry_state=None):
     unseen.sort(key=lambda x: (x[0], x[1]))
     console_log(f"CATCH-UP iniziale | unseen={len(unseen)}")
     for d, e, nums in unseen:
-        # Catch-up silenzioso: mai inviare segnali o risultati ormai scaduti.
         await engine.process_draw(
             app=None, day=d, e=e, nums=nums,
             mode="live", notify=False, persist=False,
@@ -1667,38 +1768,41 @@ async def startup(engine, app, warmup_retry_state=None):
             f"Azione: {persist.get('action', '-')}\n"
             f"Dettaglio: {persist.get('detail', '-')}\n\n"
             "Il bot resta attivo, ma un riavvio potrebbe perdere lo stato forward. "
-            "Controlla che il workflow abbia `permissions: contents: write`."
+            "Controlla `permissions: contents: write`."
         )
 
     if not warm.get("already_done"):
         source_txt = format_warmup_sources(warm.get("sources", []))
-        nums4, nums27 = engine.current_gap_lists()
+        nums4, core, _ = engine.current_gap_lists()
         await engine.tg(
             app,
-            "🕰️ WARMUP INIZIALE COMPLETATO\n\n"
+            "🕰️ WARMUP INIZIALE COMPLETATO — DUAL GAP\n\n"
             f"• estrazioni = {warm.get('draws', 0)}\n"
             f"• fonti = {source_txt or '-'}\n"
             f"• continuita' = {warm.get('continuity_note') or 'segmento richiesto integro'}\n"
             f"• gap {GAP_A} attuali = {', '.join(map(str, nums4)) or '-'}\n"
-            f"• gap {GAP_B} attuali = {', '.join(map(str, nums27)) or '-'}\n"
-            f"• H1 gia' valido per la prossima = {engine.pending_pairs_count()} ambi\n\n"
+            f"• CORE gap {CORE_GAP} = {', '.join(map(str, core)) or '-'}\n"
+            f"• FAST gap {FAST_GAP_MIN}-{FAST_GAP_MAX} = {engine.fast_targets_text()}\n"
+            f"• H1 CORE prossima = {engine.pending_pairs_count('core')} ambi\n"
+            f"• H1 FAST prossima = {engine.pending_pairs_count('fast')} ambi\n\n"
             f"{engine.stats_text()}"
         )
 
     await engine.tg(
         app,
-        f"🚀 BOT GAP {GAP_A}+{GAP_B} / DECINE DIVERSE / SOLO H1 AVVIATO\n\n"
-        f"✅ gap esatti = {GAP_A} e {GAP_B}\n"
-        "✅ tutte le coppie valide tra i due gruppi\n"
-        "✅ SOLO decine diverse: 90-9, 10-19, ..., 80-89\n"
-        "✅ ogni ambo deduplicato\n"
+        "🚀 BOT DUAL GAP / DECINE DIVERSE / SOLO H1 AVVIATO\n\n"
+        f"✅ CORE = GAP {GAP_A}+{CORE_GAP}\n"
+        f"✅ FAST LAB = GAP {GAP_A}+{FAST_GAP_MIN}-{FAST_GAP_MAX}\n"
+        "✅ tutte le coppie valide, solo decine diverse, dedup per strategia\n"
         f"✅ SOLO H1 = {STAKE_H1:.2f}€ per ambo\n"
         "✅ nessun H2 / progressione / WAIT30\n"
         f"✅ modalita' = {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}\n"
         "✅ warmup continuo + state persistente GitHub\n"
         f"✅ warmup minimo = {WARMUP_MIN_DRAWS} estrazioni continue\n"
-        f"✅ se il warmup fallisce resta acceso e ritenta ogni {WARMUP_RETRY_SEC}s\n\n"
-        f"H1 attivi per la prossima: {engine.pending_pairs_count()} ambi"
+        f"✅ retry warmup ogni {WARMUP_RETRY_SEC}s\n\n"
+        f"H1 CORE prossima: {engine.pending_pairs_count('core')} ambi\n"
+        f"H1 FAST prossima: {engine.pending_pairs_count('fast')} ambi\n\n"
+        "ℹ️ FAST include il CORE a gap27: statistiche separate, costi non sommabili."
     )
     await notify_actionable_state(engine, app)
     console_log("STARTUP COMPLETATO -> entro nel live_loop")
@@ -1729,7 +1833,6 @@ async def live_loop(engine, app):
 
             if unseen:
                 unseen.sort(key=lambda x: (x[0], x[1]))
-
                 if len(unseen) == 1:
                     d, e, nums = unseen[0]
                     await engine.process_draw(
@@ -1737,8 +1840,6 @@ async def live_loop(engine, app):
                         mode="live", notify=True, persist=True,
                     )
                 else:
-                    # Se il processo era rimasto indietro, elabora tutto ma non invia
-                    # messaggi ormai scaduti. Alla fine mostra solo il vero H1 corrente.
                     for d, e, nums in unseen:
                         await engine.process_draw(
                             app=None, day=d, e=e, nums=nums,
@@ -1765,66 +1866,61 @@ async def live_loop(engine, app):
 # ============================================================
 
 async def run_self_test():
-    eng = Gap427Engine(load=False)
+    eng = DualGapEngine(load=False)
     eng.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
 
-    # 1) Gap: se un numero e' uscito alla seq 96 e ora siamo a 100 -> gap 4.
+    # Stato sintetico: 17 gap4, 73 gap27, 62 gap26.
     eng.seq = 100
     eng.last_seen_seq = {n: None for n in range(1, 91)}
     eng.last_seen_seq[17] = 96
     eng.last_seen_seq[73] = 73
+    eng.last_seen_seq[62] = 74
     assert eng.current_gap(17) == 4
     assert eng.current_gap(73) == 27
+    assert eng.current_gap(62) == 26
 
-    # 2) Decine diverse -> ambo valido.
-    items = eng.build_signal_items()
-    assert len(items) == 1
-    assert tuple(items[0]["pair"]) == (17, 73)
+    core = eng.build_signal_items("core")
+    fast = eng.build_signal_items("fast")
+    assert {tuple(x["pair"]) for x in core} == {(17, 73)}
+    assert {tuple(x["pair"]) for x in fast} == {(17, 62), (17, 73)}
 
-    # 3) Stessa decina -> esclusione totale.
-    eng.last_seen_seq = {n: None for n in range(1, 91)}
-    eng.last_seen_seq[72] = 96
-    eng.last_seen_seq[78] = 73
-    assert eng.build_signal_items() == []
+    # Stessa decina esclusa: 72 gap4 e 78 gap27 non possono formare ambo.
+    eng2 = DualGapEngine(load=False)
+    eng2.seq = 100
+    eng2.last_seen_seq = {n: None for n in range(1, 91)}
+    eng2.last_seen_seq[72] = 96
+    eng2.last_seen_seq[78] = 73
+    assert eng2.build_signal_items("core") == []
+    assert eng2.build_signal_items("fast") == []
 
-    # 4) Multipli: 2 gap4 x 2 gap27, uno stesso-decade escluso.
-    eng.last_seen_seq = {n: None for n in range(1, 91)}
-    eng.last_seen_seq[17] = 96   # gap4, decade 10-19
-    eng.last_seen_seq[25] = 96   # gap4, decade 20-29
-    eng.last_seen_seq[73] = 73   # gap27, decade 70-79
-    eng.last_seen_seq[28] = 73   # gap27, decade 20-29
-    items = eng.build_signal_items()
-    pairs = {tuple(x["pair"]) for x in items}
-    assert pairs == {(17, 28), (17, 73), (25, 73)}
-
-    # 5) Arma H1, poi sul draw successivo 17-73 deve essere HIT.
+    # Arma entrambi. CORE=1, FAST=2. Il draw successivo centra 17-73 soltanto.
     await eng.arm_from_current_gaps(None, "2099-01-01#100", mode="live", notify=False)
-    assert eng.pending_pairs_count() == 3
-    result = await eng.settle_pending(
-        None, "2099-01-01", 101,
-        [17, 73] + [n for n in range(1, 91) if n not in {17, 73}][:18],
-        mode="live", notify=False,
+    assert eng.pending_pairs_count("core") == 1
+    assert eng.pending_pairs_count("fast") == 2
+    draw = [17, 73] + [n for n in range(1, 91) if n not in {17, 73}][:18]
+    res = await eng.settle_pending(None, "2099-01-01", 101, draw, mode="live", notify=False)
+    assert res["core"]["plays"] == 1 and res["core"]["hits"] == 1
+    assert res["fast"]["plays"] == 2 and res["fast"]["hits"] == 1
+    assert eng.stats_live["core"]["h1_plays"] == 1
+    assert eng.stats_live["core"]["h1_hits"] == 1
+    assert eng.stats_live["fast"]["h1_plays"] == 2
+    assert eng.stats_live["fast"]["h1_hits"] == 1
+
+    # Il draw corrente aggiorna i gap prima di armare il successivo.
+    eng3 = DualGapEngine(load=False)
+    eng3.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
+    eng3.seq = 99
+    eng3.last_seen_seq = {n: 99 for n in range(1, 91)}
+    eng3.last_seen_seq[17] = 95
+    eng3.last_seen_seq[73] = 72
+    await eng3.process_draw(
+        None, "2099-01-02", 100, list(range(1, 21)),
+        mode="live", notify=False, persist=False,
     )
-    assert result["plays"] == 3
-    assert result["hits"] == 1
-    assert eng.stats_live["h1_plays"] == 3
-    assert eng.stats_live["h1_hits"] == 1
-    assert abs(float(eng.stats_live["cost"]) - 3 * STAKE_H1) < 1e-9
-    assert abs(float(eng.stats_live["gross"]) - AMBO_PAYOUT * STAKE_H1) < 1e-9
+    assert eng3.current_gap(17) == 0
+    assert eng3.pending_events["core"] is None
 
-    # 6) Il draw corrente azzera il gap dei numeri usciti PRIMA di creare il segnale nuovo.
-    eng = Gap427Engine(load=False)
-    eng.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
-    eng.seq = 99
-    eng.last_seen_seq = {n: 99 for n in range(1, 91)}
-    eng.last_seen_seq[17] = 95  # diventerebbe gap5 dopo incremento seq se assente
-    eng.last_seen_seq[73] = 72  # diventerebbe gap28 dopo incremento seq se assente
-    draw = list(range(1, 21))
-    await eng.process_draw(None, "2099-01-02", 100, draw, mode="live", notify=False, persist=False)
-    assert eng.current_gap(17) == 0  # 17 era nel draw corrente
-    assert eng.pending_event is None
-
-    print("SELF-TEST OK: gap4+gap27 + decine diverse + tutti gli ambi + SOLO H1 + contabilita' multi-ambo")
+    print("SELF-TEST OK: CORE gap4+27 + FAST gap4+24-29 + decine diverse + SOLO H1 + stats separate")
 
 
 # ============================================================
@@ -1844,7 +1940,7 @@ async def main():
         raise RuntimeError("CHAT_ID mancante/non valido nelle variabili ambiente")
 
     app = ApplicationBuilder().token(TOKEN).build()
-    engine = Gap427Engine()
+    engine = DualGapEngine()
     app.bot_data["engine"] = engine
 
     console_log(
@@ -1860,8 +1956,6 @@ async def main():
     await app.initialize()
     await app.start()
     await setup_commands(app)
-
-    # Telegram resta disponibile anche durante eventuali retry del warmup.
     await app.updater.start_polling(drop_pending_updates=True)
     console_log("TELEGRAM polling attivo; avvio/ritento warmup fino a successo")
 
