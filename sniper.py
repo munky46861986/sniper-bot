@@ -26,6 +26,9 @@
 #   • segue ogni vera nascita a H1, H2, H3, H5 e H10
 #   • a H5 verifica >=3 uscite nelle 5 successive
 #   • a H10 verifica >=4 uscite nelle 10 successive
+#   • diagnostica anche RITORNO >=1 entro H3/H5/H10
+#   • diagnostica co-uscite nello stesso draw tra candidati FREQ attivi
+#   • contabilizza warmup/forward in base alla NASCITA della sessione
 #
 # IMPORTANTE:
 #   • CORE e FAST NON vengono modificati.
@@ -50,6 +53,7 @@ import re
 import subprocess
 import sys
 import time
+from itertools import combinations
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -141,12 +145,15 @@ FREQ_LAB_ENABLED = os.getenv("FREQ_LAB_ENABLED", "1") != "0"
 FREQ_NOTIFY_SIGNALS = os.getenv("FREQ_NOTIFY_SIGNALS", "1") != "0"
 # I milestone possono diventare frequenti: OFF di default. Tutto resta in /freq e nello state.
 FREQ_NOTIFY_MILESTONES = os.getenv("FREQ_NOTIFY_MILESTONES", "0") != "0"
-# Versione separata: se cambia, viene ricostruito SOLO FREQ; CORE/FAST e relativo forward restano intatti.
+# Versione logica ENTRY-ONLY: resta 2 per preservare le sessioni forward gia' raccolte.
 FREQ_LOGIC_VERSION = 2
+# Versione diagnostica separata: migra le sole statistiche FREQ senza resettare CORE/FAST o le entry live.
+FREQ_DIAG_VERSION = 1
 FREQ_HISTORY_LEN = 20
 # 120 draw permettono snapshot 30/50 + gap precedente senza toccare CORE/FAST.
 FREQ_HISTORY_MAX = int(os.getenv("FREQ_HISTORY_MAX", "120"))
 FREQ_HORIZONS = (1, 2, 3, 5, 10)
+FREQ_RETURN_HORIZONS = (3, 5, 10)
 FREQ_TARGET5_MIN_HITS = 3
 FREQ_TARGET10_MIN_HITS = 4
 FREQ_RECENT_MAX = int(os.getenv("FREQ_RECENT_MAX", "250"))
@@ -946,6 +953,10 @@ class DualGapEngine:
         self.freq_h5_live = []
         self.freq_h10_warmup = []
         self.freq_h10_live = []
+        # Eventi di co-uscita tra DUE numeri con sessione FREQ attiva e stessa origine (warmup/live).
+        self.freq_cohits_warmup = []
+        self.freq_cohits_live = []
+        self.freq_diag_version = FREQ_DIAG_VERSION
 
         self.state_load_info = {
             "loaded": False,
@@ -997,6 +1008,13 @@ class DualGapEngine:
             "target10_success": 0,
             "target10_total_hits": 0,
             "completed_sessions": 0,
+            # Ritorno cumulativo: almeno UNA uscita entro H3/H5/H10.
+            "return_eval": {str(h): 0 for h in FREQ_RETURN_HORIZONS},
+            "return_hits": {str(h): 0 for h in FREQ_RETURN_HORIZONS},
+            # Coppie di numeri FREQ contemporaneamente attivi osservate sullo stesso draw.
+            "co_pair_eval": 0,
+            "co_pair_hits": 0,
+            "cohit_draws": 0,
         }
 
     @staticmethod
@@ -1007,7 +1025,7 @@ class DualGapEngine:
             "signal_draws", "candidates_signaled", "suppressed_repeats", "max_candidates_signal",
             "target5_eval", "target5_success", "target5_total_hits",
             "target10_eval", "target10_success", "target10_total_hits",
-            "completed_sessions",
+            "completed_sessions", "co_pair_eval", "co_pair_hits", "cohit_draws",
         ):
             try:
                 dst[key] = int(raw.get(key, dst.get(key, 0)) or 0)
@@ -1016,6 +1034,13 @@ class DualGapEngine:
         for bucket in ("horizon_eval", "horizon_hits"):
             src = raw.get(bucket, {}) if isinstance(raw.get(bucket, {}), dict) else {}
             for h in FREQ_HORIZONS:
+                try:
+                    dst[bucket][str(h)] = int(src.get(str(h), src.get(h, dst[bucket][str(h)])) or 0)
+                except Exception:
+                    pass
+        for bucket in ("return_eval", "return_hits"):
+            src = raw.get(bucket, {}) if isinstance(raw.get(bucket, {}), dict) else {}
+            for h in FREQ_RETURN_HORIZONS:
                 try:
                     dst[bucket][str(h)] = int(src.get(str(h), src.get(h, dst[bucket][str(h)])) or 0)
                 except Exception:
@@ -1074,6 +1099,7 @@ class DualGapEngine:
                 "snapshot": dict(snap),
                 "h5_hits": row.get("h5_hits"),
                 "h5_success": row.get("h5_success"),
+                "origin_mode": row.get("origin_mode") if row.get("origin_mode") in {"warmup", "live"} else None,
             })
         return out[-1000:]
 
@@ -1093,8 +1119,30 @@ class DualGapEngine:
             clean = dict(row)
             clean["number"] = n
             clean["snapshot"] = dict(snap)
+            if clean.get("origin_mode") not in {"warmup", "live"}:
+                clean["origin_mode"] = None
             out.append(clean)
         return out[-FREQ_RECORD_MAX:]
+
+    @staticmethod
+    def _sanitize_freq_cohits(raw):
+        out = []
+        for row in list(raw or []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                pair = sorted({int(x) for x in (row.get("pair", []) or [])})
+            except Exception:
+                continue
+            if len(pair) != 2 or any(n < 1 or n > 90 for n in pair):
+                continue
+            origin = row.get("origin_mode") if row.get("origin_mode") in {"warmup", "live"} else None
+            out.append({
+                "at": str(row.get("at") or ""),
+                "pair": pair,
+                "origin_mode": origin,
+            })
+        return out[-FREQ_RECENT_MAX:]
 
     # ----------------------------
     # Stato / serializzazione
@@ -1218,11 +1266,21 @@ class DualGapEngine:
                 self.freq_h5_live = self._sanitize_freq_records(d.get("freq_h5_live", []))
                 self.freq_h10_warmup = self._sanitize_freq_records(d.get("freq_h10_warmup", []))
                 self.freq_h10_live = self._sanitize_freq_records(d.get("freq_h10_live", []))
+                self.freq_cohits_warmup = self._sanitize_freq_cohits(d.get("freq_cohits_warmup", []))
+                self.freq_cohits_live = self._sanitize_freq_cohits(d.get("freq_cohits_live", []))
+                self.freq_diag_version = int(d.get("freq_diag_version", 0) or 0)
                 if len(self.freq_history) >= FREQ_HISTORY_LEN:
                     self.freq_bootstrap_done = True
                 # Fallback prudente: con history valida, il set corrente impedisce una falsa nuova entry al riavvio.
                 if not self.freq_condition_active and self.freq_bootstrap_done:
                     self.freq_condition_active = set(self.freq_candidates())
+                # Migrazione NON distruttiva v2 -> diagnostica v1:
+                # corregge l'origine warmup/live delle sessioni gia' esistenti e
+                # ricostruisce i soli contatori di settlement. CORE/FAST e le entry FREQ restano intatti.
+                if self.freq_diag_version != FREQ_DIAG_VERSION:
+                    self._migrate_freq_diagnostics()
+                    self.freq_diag_version = FREQ_DIAG_VERSION
+                    console_log("FREQ DIAGNOSTICS MIGRATED | origin accounting + return/co-hit v1")
 
             self.state_load_info = {
                 "loaded": True,
@@ -1267,6 +1325,7 @@ class DualGapEngine:
             "stats_warmup": self.stats_warmup,
             "stats_live": self.stats_live,
             "freq_logic_version": FREQ_LOGIC_VERSION,
+            "freq_diag_version": FREQ_DIAG_VERSION,
             "freq_bootstrap_done": self.freq_bootstrap_done,
             "freq_history": self.freq_history[-max(FREQ_HISTORY_LEN, FREQ_HISTORY_MAX):],
             "freq_sessions": self.freq_sessions[-1000:],
@@ -1279,6 +1338,8 @@ class DualGapEngine:
             "freq_h5_live": self.freq_h5_live[-FREQ_RECORD_MAX:],
             "freq_h10_warmup": self.freq_h10_warmup[-FREQ_RECORD_MAX:],
             "freq_h10_live": self.freq_h10_live[-FREQ_RECORD_MAX:],
+            "freq_cohits_warmup": self.freq_cohits_warmup[-FREQ_RECENT_MAX:],
+            "freq_cohits_live": self.freq_cohits_live[-FREQ_RECENT_MAX:],
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -1569,6 +1630,9 @@ class DualGapEngine:
         self.freq_h5_live = []
         self.freq_h10_warmup = []
         self.freq_h10_live = []
+        self.freq_cohits_warmup = []
+        self.freq_cohits_live = []
+        self.freq_diag_version = FREQ_DIAG_VERSION
 
     def freq_append_history(self, current_key, nums):
         row = {"key": str(current_key), "nums": sorted(set(map(int, nums)))}
@@ -1648,22 +1712,256 @@ class DualGapEngine:
             "decade": decade_index(n),
         }
 
+    def _freq_origin_for_key(self, signal_key, fallback="live", index_map=None):
+        """Determina dove e' NATA una sessione. La nascita governa tutta la sua contabilita'."""
+        if fallback not in {"warmup", "live"}:
+            fallback = "live"
+        key = str(signal_key or "")
+        if not key:
+            return fallback
+        if index_map is None:
+            index_map = {str(k): i for i, k in enumerate(self.processed)}
+        idx = index_map.get(key)
+        if idx is None:
+            return fallback
+        warm_n = max(0, min(int(self.warmup_draws or 0), len(self.processed)))
+        return "warmup" if idx < warm_n else "live"
+
+    @staticmethod
+    def _freq_reset_settlement_fields(st):
+        st["horizon_eval"] = {str(h): 0 for h in FREQ_HORIZONS}
+        st["horizon_hits"] = {str(h): 0 for h in FREQ_HORIZONS}
+        st["target5_eval"] = 0
+        st["target5_success"] = 0
+        st["target5_total_hits"] = 0
+        st["target10_eval"] = 0
+        st["target10_success"] = 0
+        st["target10_total_hits"] = 0
+        st["completed_sessions"] = 0
+        st["return_eval"] = {str(h): 0 for h in FREQ_RETURN_HORIZONS}
+        st["return_hits"] = {str(h): 0 for h in FREQ_RETURN_HORIZONS}
+        # Le co-uscite non sono ricostruibili perfettamente dal vecchio state aggregato:
+        # ripartono pulite dalla migrazione diagnostica.
+        st["co_pair_eval"] = 0
+        st["co_pair_hits"] = 0
+        st["cohit_draws"] = 0
+
+    def _freq_apply_session_summary(self, origin, age, hit_ages, h5_hits=None, h5_success=None):
+        origin = origin if origin in {"warmup", "live"} else "live"
+        st = self._freq_stats(origin)
+        age = int(age)
+        hits = sorted({int(x) for x in (hit_ages or []) if 1 <= int(x) <= min(10, age)})
+        for h in FREQ_HORIZONS:
+            if age >= h:
+                st["horizon_eval"][str(h)] += 1
+                if h in hits:
+                    st["horizon_hits"][str(h)] += 1
+        for h in FREQ_RETURN_HORIZONS:
+            if age >= h:
+                st["return_eval"][str(h)] += 1
+                if any(x <= h for x in hits):
+                    st["return_hits"][str(h)] += 1
+        if age >= 5:
+            hh5 = int(h5_hits) if h5_hits is not None else len([x for x in hits if x <= 5])
+            suc5 = bool(h5_success) if h5_success is not None else (hh5 >= FREQ_TARGET5_MIN_HITS)
+            st["target5_eval"] += 1
+            st["target5_success"] += int(suc5)
+            st["target5_total_hits"] += hh5
+        if age >= 10:
+            hh10 = len([x for x in hits if x <= 10])
+            st["target10_eval"] += 1
+            st["target10_success"] += int(hh10 >= FREQ_TARGET10_MIN_HITS)
+            st["target10_total_hits"] += hh10
+            st["completed_sessions"] += 1
+
+    def _freq_rebuild_cohits_from_retained_history(self):
+        """Retrofill co-uscite usando lo storico FREQ ancora nello state (max FREQ_HISTORY_MAX draw)."""
+        # Azzera solo la diagnostica coppie: questa funzione viene usata una volta in migrazione.
+        for st in (self.freq_stats_warmup, self.freq_stats_live):
+            st["co_pair_eval"] = 0
+            st["co_pair_hits"] = 0
+            st["cohit_draws"] = 0
+        self.freq_cohits_warmup = []
+        self.freq_cohits_live = []
+
+        hist = list(self.freq_history or [])
+        if not hist:
+            return
+        pos = {str(row.get("key") or ""): i for i, row in enumerate(hist)}
+
+        # Catalogo sessioni uniche: completate H10 + record H5 + attive.
+        catalog = {}
+        def add_row(row, fallback_origin):
+            if not isinstance(row, dict):
+                return
+            sid = str(row.get("id") or "")
+            sig = str(row.get("signal_from_key") or "")
+            try:
+                n = int(row.get("number"))
+            except Exception:
+                return
+            if not sid:
+                sid = f"{sig}|{n}"
+            origin = row.get("origin_mode")
+            if origin not in {"warmup", "live"}:
+                origin = fallback_origin if fallback_origin in {"warmup", "live"} else self._freq_origin_for_key(sig, "live")
+            catalog[sid] = {"id": sid, "number": n, "signal_from_key": sig, "origin_mode": origin}
+
+        for r in self.freq_h10_warmup: add_row(r, "warmup")
+        for r in self.freq_h10_live: add_row(r, "live")
+        for r in self.freq_h5_warmup: add_row(r, "warmup")
+        for r in self.freq_h5_live: add_row(r, "live")
+        for r in self.freq_sessions: add_row(r, r.get("origin_mode") or "live")
+
+        sessions = []
+        for ses in catalog.values():
+            si = pos.get(ses["signal_from_key"])
+            if si is None:
+                continue
+            x = dict(ses)
+            x["signal_pos"] = si
+            sessions.append(x)
+
+        for j, row in enumerate(hist):
+            numset = set(map(int, row.get("nums", []) or []))
+            current_key = str(row.get("key") or "")
+            for origin in ("warmup", "live"):
+                active_nums = sorted({
+                    int(x["number"]) for x in sessions
+                    if x.get("origin_mode") == origin and 1 <= (j - int(x["signal_pos"])) <= 10
+                })
+                if len(active_nums) < 2:
+                    continue
+                st = self._freq_stats(origin)
+                pairs = list(combinations(active_nums, 2))
+                st["co_pair_eval"] += len(pairs)
+                hit_pairs = [pair for pair in pairs if pair[0] in numset and pair[1] in numset]
+                if hit_pairs:
+                    st["co_pair_hits"] += len(hit_pairs)
+                    st["cohit_draws"] += 1
+                    bank = self._freq_cohit_bank(origin)
+                    for a, b in hit_pairs:
+                        bank.append({"at": current_key, "pair": [int(a), int(b)], "origin_mode": origin})
+                    del bank[:-FREQ_RECENT_MAX]
+
+    def _migrate_freq_diagnostics(self):
+        """Migra uno state ENTRY-ONLY precedente senza cancellare il forward FREQ raccolto."""
+        idx_map = {str(k): i for i, k in enumerate(self.processed)}
+
+        # 1) assegna un'origine alle sessioni ancora attive.
+        for ses in self.freq_sessions:
+            if ses.get("origin_mode") not in {"warmup", "live"}:
+                ses["origin_mode"] = self._freq_origin_for_key(ses.get("signal_from_key"), "live", idx_map)
+
+        # 2) riclassifica i record H5/H10 secondo la nascita, non secondo il draw di chiusura.
+        def reclassify(warm_rows, live_rows):
+            seen = {}
+            for fallback, rows in (("warmup", warm_rows), ("live", live_rows)):
+                for r in list(rows or []):
+                    rr = dict(r)
+                    origin = rr.get("origin_mode")
+                    if origin not in {"warmup", "live"}:
+                        origin = self._freq_origin_for_key(rr.get("signal_from_key"), fallback, idx_map)
+                    rr["origin_mode"] = origin
+                    key = str(rr.get("id") or f"{rr.get('signal_from_key')}|{rr.get('number')}|{rr.get('evaluated_at')}")
+                    seen[key] = rr
+            w = [r for r in seen.values() if r.get("origin_mode") == "warmup"][-FREQ_RECORD_MAX:]
+            l = [r for r in seen.values() if r.get("origin_mode") == "live"][-FREQ_RECORD_MAX:]
+            return w, l
+
+        self.freq_h5_warmup, self.freq_h5_live = reclassify(self.freq_h5_warmup, self.freq_h5_live)
+        self.freq_h10_warmup, self.freq_h10_live = reclassify(self.freq_h10_warmup, self.freq_h10_live)
+
+        # 3) ricostruisce SOLO i contatori di settlement. I contatori di entry/condizione restano quelli reali.
+        self._freq_reset_settlement_fields(self.freq_stats_warmup)
+        self._freq_reset_settlement_fields(self.freq_stats_live)
+        self.freq_cohits_warmup = []
+        self.freq_cohits_live = []
+
+        completed_ids = set()
+        for origin, rows in (("warmup", self.freq_h10_warmup), ("live", self.freq_h10_live)):
+            for r in rows:
+                rid = str(r.get("id") or "")
+                if rid:
+                    completed_ids.add(rid)
+                self._freq_apply_session_summary(
+                    origin, 10, r.get("hit_ages10", []),
+                    r.get("h5_hits"), r.get("h5_success"),
+                )
+
+        active_ids = set()
+        for ses in self.freq_sessions:
+            rid = str(ses.get("id") or "")
+            if rid:
+                active_ids.add(rid)
+            self._freq_apply_session_summary(
+                ses.get("origin_mode") or "live", ses.get("age", 0), ses.get("hit_ages", []),
+                ses.get("h5_hits"), ses.get("h5_success"),
+            )
+
+        # Fallback raro: record H5 che non ha ne' H10 ne' sessione attiva nello state.
+        for origin, rows in (("warmup", self.freq_h5_warmup), ("live", self.freq_h5_live)):
+            for r in rows:
+                rid = str(r.get("id") or "")
+                if rid and (rid in completed_ids or rid in active_ids):
+                    continue
+                self._freq_apply_session_summary(
+                    origin, 5, r.get("hit_ages5", []),
+                    r.get("hits5"), r.get("success5"),
+                )
+
+        # 4) retrofill delle co-uscite nella finestra di storico ancora conservata nello state.
+        # Per il forward recente (tipicamente <120 draw) recupera anche eventi gia' avvenuti prima dell'upgrade.
+        self._freq_rebuild_cohits_from_retained_history()
+
     def _freq_record_bank(self, mode, horizon):
         if int(horizon) == 5:
             return self.freq_h5_warmup if mode == "warmup" else self.freq_h5_live
         return self.freq_h10_warmup if mode == "warmup" else self.freq_h10_live
+
+    def _freq_cohit_bank(self, mode):
+        return self.freq_cohits_warmup if mode == "warmup" else self.freq_cohits_live
 
     async def settle_freq_sessions(self, app, day, e, nums, mode="live", notify=True):
         if not FREQ_LAB_ENABLED or not self.freq_sessions:
             return None
 
         numset = set(map(int, nums))
-        st = self._freq_stats(mode)
         survivors = []
         milestone_lines = []
         current_key = draw_key(day, e)
 
+        # CO-USCITE: considero coppie di NUMERI unici con sessioni attive della stessa origine.
+        # In questo modo il forward resta puro: una sessione nata in warmup non sporca le coppie live.
+        for origin in ("warmup", "live"):
+            active_nums = sorted({
+                int(x.get("number")) for x in self.freq_sessions
+                if (x.get("origin_mode") or self._freq_origin_for_key(x.get("signal_from_key"), mode)) == origin
+            })
+            if len(active_nums) >= 2:
+                st_origin = self._freq_stats(origin)
+                pairs = list(combinations(active_nums, 2))
+                st_origin["co_pair_eval"] = int(st_origin.get("co_pair_eval", 0)) + len(pairs)
+                hit_pairs = [p for p in pairs if p[0] in numset and p[1] in numset]
+                if hit_pairs:
+                    st_origin["co_pair_hits"] = int(st_origin.get("co_pair_hits", 0)) + len(hit_pairs)
+                    st_origin["cohit_draws"] = int(st_origin.get("cohit_draws", 0)) + 1
+                    bank = self._freq_cohit_bank(origin)
+                    for a, b in hit_pairs:
+                        bank.append({"at": current_key, "pair": [int(a), int(b)], "origin_mode": origin})
+                    del bank[:-FREQ_RECENT_MAX]
+                    self.freq_recent_events.append({
+                        "type": "FREQ_COHIT", "at": current_key, "origin_mode": origin,
+                        "pairs": [list(p) for p in hit_pairs],
+                    })
+
         for session in list(self.freq_sessions):
+            origin = session.get("origin_mode")
+            if origin not in {"warmup", "live"}:
+                origin = self._freq_origin_for_key(session.get("signal_from_key"), mode)
+                session["origin_mode"] = origin
+            st = self._freq_stats(origin)
+
             age = int(session.get("age", 0) or 0) + 1
             session["age"] = age
             n = int(session["number"])
@@ -1682,6 +1980,13 @@ class DualGapEngine:
 
             hits_so_far = len([x for x in hit_ages if x <= age])
 
+            # RITORNO cumulativo: almeno una ricomparsa entro H3/H5/H10.
+            if age in FREQ_RETURN_HORIZONS:
+                h = str(age)
+                st["return_eval"][h] = int(st["return_eval"].get(h, 0)) + 1
+                if hits_so_far >= 1:
+                    st["return_hits"][h] = int(st["return_hits"].get(h, 0)) + 1
+
             if age == 5:
                 success5 = hits_so_far >= FREQ_TARGET5_MIN_HITS
                 session["h5_hits"] = hits_so_far
@@ -1696,17 +2001,20 @@ class DualGapEngine:
                     "success5": bool(success5),
                     "hit_ages5": [x for x in hit_ages if x <= 5],
                     "snapshot": dict(session.get("snapshot", {}) or {}),
+                    "origin_mode": origin,
                 }
-                bank5 = self._freq_record_bank(mode, 5)
+                bank5 = self._freq_record_bank(origin, 5)
                 bank5.append(rec5)
                 del bank5[:-FREQ_RECORD_MAX]
                 self.freq_recent_events.append({
                     "type": "FREQ_H5", "at": current_key, "id": session.get("id"),
                     "number": n, "hits_5": hits_so_far, "success": bool(success5),
+                    "origin_mode": origin,
                 })
-                if FREQ_NOTIFY_MILESTONES and notify and mode == "live":
+                if FREQ_NOTIFY_MILESTONES and notify and mode == "live" and origin == "live":
                     milestone_lines.append(
                         f"H5 | #{n} | uscite={hits_so_far}/5 | "
+                        f"ritorno={'✅' if hits_so_far >= 1 else '❌'} | "
                         f"target >=3: {'✅' if success5 else '❌'}"
                     )
 
@@ -1726,17 +2034,20 @@ class DualGapEngine:
                     "h5_hits": session.get("h5_hits"),
                     "h5_success": session.get("h5_success"),
                     "snapshot": dict(session.get("snapshot", {}) or {}),
+                    "origin_mode": origin,
                 }
-                bank10 = self._freq_record_bank(mode, 10)
+                bank10 = self._freq_record_bank(origin, 10)
                 bank10.append(rec10)
                 del bank10[:-FREQ_RECORD_MAX]
                 self.freq_recent_events.append({
                     "type": "FREQ_H10", "at": current_key, "id": session.get("id"),
                     "number": n, "hits_10": hits10, "success": bool(success10),
+                    "origin_mode": origin,
                 })
-                if FREQ_NOTIFY_MILESTONES and notify and mode == "live":
+                if FREQ_NOTIFY_MILESTONES and notify and mode == "live" and origin == "live":
                     milestone_lines.append(
                         f"H10 | #{n} | uscite={hits10}/10 | "
+                        f"ritorno={'✅' if hits10 >= 1 else '❌'} | "
                         f"target >=4: {'✅' if success10 else '❌'}"
                     )
             else:
@@ -1793,6 +2104,7 @@ class DualGapEngine:
                 "snapshot": snapshot,
                 "h5_hits": None,
                 "h5_success": None,
+                "origin_mode": mode if mode in {"warmup", "live"} else "live",
             }
             self.freq_sessions.append(session)
             created.append(session)
@@ -1888,7 +2200,7 @@ class DualGapEngine:
             rows.append(
                 f"{s.get('id')} #{s.get('number')} da {s.get('signal_from_key')} "
                 f"| H{s.get('age', 0)}/10 | hit={len(s.get('hit_ages', []) or [])} "
-                f"| p5={snap.get('pattern5','-')}"
+                f"| p5={snap.get('pattern5','-')} | origin={s.get('origin_mode') or '?'}"
             )
         if len(self.freq_sessions) > limit:
             rows.append(f"... +{len(self.freq_sessions)-limit} altri")
@@ -1911,6 +2223,17 @@ class DualGapEngine:
             ev = int(st.get("horizon_eval", {}).get(str(h), 0))
             hi = int(st.get("horizon_hits", {}).get(str(h), 0))
             lines.append(f"• H{h} esatto = {hi}/{ev} ({safe_pct(hi, ev):.2f}%)")
+        lines.append("• RITORNO >=1 cumulativo:")
+        for h in FREQ_RETURN_HORIZONS:
+            ev = int(st.get("return_eval", {}).get(str(h), 0))
+            hi = int(st.get("return_hits", {}).get(str(h), 0))
+            lines.append(f"  H{h}: {hi}/{ev} ({safe_pct(hi, ev):.2f}%)")
+        pair_ev = int(st.get("co_pair_eval", 0))
+        pair_hi = int(st.get("co_pair_hits", 0))
+        lines.append(
+            f"• CO-USCITE coppie FREQ attive = {pair_hi}/{pair_ev} ({safe_pct(pair_hi,pair_ev):.2f}%) "
+            f"| draw con >=1 co-hit={int(st.get('cohit_draws',0))}"
+        )
         e5 = int(st.get("target5_eval", 0))
         s5 = int(st.get("target5_success", 0))
         e10 = int(st.get("target10_eval", 0))
@@ -2033,6 +2356,56 @@ class DualGapEngine:
         ])
         return "\n".join(lines)
 
+    @staticmethod
+    def _freq_return_baseline(h):
+        # Ogni singolo numero ha p=20/90 di apparire in ciascun draw.
+        return 100.0 * (1.0 - (70.0/90.0) ** int(h))
+
+    def freq_cluster_text(self):
+        def ret_line(label, st):
+            chunks = []
+            for h in FREQ_RETURN_HORIZONS:
+                ev = int(st.get("return_eval", {}).get(str(h), 0))
+                hi = int(st.get("return_hits", {}).get(str(h), 0))
+                chunks.append(f"H{h} {hi}/{ev}={safe_pct(hi,ev):.1f}%")
+            return f"• {label}: " + " | ".join(chunks)
+
+        pair_base = 100.0 * (20.0/90.0) * (19.0/89.0)
+        lines = [
+            "🧬 FREQ CLUSTER / RITORNI — SHADOW",
+            "• misura il fenomeno notato nei log: ricomparsa e co-uscita, NON il target severo >=3/5",
+            "",
+            "🔁 RITORNO >=1 ENTRO H",
+            "• baseline teorica: " + " | ".join(
+                f"H{h}≈{self._freq_return_baseline(h):.1f}%" for h in FREQ_RETURN_HORIZONS
+            ),
+            ret_line("WARMUP", self.freq_stats_warmup),
+            ret_line("FORWARD", self.freq_stats_live),
+            "",
+            "🤝 CO-USCITE TRA NUMERI FREQ ATTIVI",
+            f"• baseline teorica coppia nello stesso draw ≈ {pair_base:.2f}%",
+        ]
+        for label, st in (("WARMUP", self.freq_stats_warmup), ("FORWARD", self.freq_stats_live)):
+            ev = int(st.get("co_pair_eval", 0))
+            hi = int(st.get("co_pair_hits", 0))
+            lines.append(
+                f"• {label}: {hi}/{ev} = {safe_pct(hi,ev):.2f}% | "
+                f"draw con co-hit={int(st.get('cohit_draws',0))}"
+            )
+        lines.extend(["", "🧾 CO-HIT FORWARD RECENTI"] )
+        if self.freq_cohits_live:
+            for r in self.freq_cohits_live[-15:]:
+                pair = r.get("pair", [])
+                lines.append(f"• {r.get('at','-')}: {fmt_pair(pair)}")
+        else:
+            lines.append("• nessuno registrato dalla diagnostica attuale")
+        lines.extend([
+            "",
+            f"⚠️ Le coppie sono valutate solo quando ENTRAMBI i numeri hanno sessioni FREQ attive della stessa origine; upgrade retrofill fino agli ultimi {FREQ_HISTORY_MAX} draw disponibili.",
+            "CORE e FAST restano completamente esclusi.",
+        ])
+        return "\n".join(lines)
+
     def freq_stats_text(self):
         if not FREQ_LAB_ENABLED:
             return "🧪 FREQ LAB disabilitato (FREQ_LAB_ENABLED=0)."
@@ -2040,7 +2413,7 @@ class DualGapEngine:
         lines = [
             "🧪 FREQ LAB SHADOW — ENTRY-ONLY 2/5 + 2/20",
             "• zero puntate / nessun impatto su CORE e FAST",
-            f"• FREQ logic = v{FREQ_LOGIC_VERSION} ENTRY-ONLY",
+            f"• FREQ logic = v{FREQ_LOGIC_VERSION} ENTRY-ONLY | diag v{FREQ_DIAG_VERSION}",
             f"• bootstrap = {'OK' if self.freq_bootstrap_done else 'IN COSTRUZIONE'} | storico={len(self.freq_history)}/{FREQ_HISTORY_LEN}+",
             f"• in condizione adesso = {', '.join(map(str, candidates_now)) or '-'}",
             f"• sessioni vere attive = {len(self.freq_sessions)}",
@@ -2054,7 +2427,7 @@ class DualGapEngine:
             self.freq_active_text(),
             "",
             "Baseline teorica singolo H1 = 22.22%; >=3/5 ≈ 7.64%; >=4/10 ≈ 16.32%.",
-            "Usa /freqanalysis per confrontare pattern, pre-gap e split cronologico 60/40.",
+            "Usa /freqanalysis per pattern/pre-gap; /freqcluster per ritorni e co-uscite.",
         ])
         return "\n".join(lines)
 
@@ -2284,7 +2657,9 @@ class DualGapEngine:
                 f"• vere entry={int(fs.get('signal_draws',0))} | candidati={int(fs.get('candidates_signaled',0))} | repliche scartate={int(fs.get('suppressed_repeats',0))} | attivi={len(self.freq_sessions)}",
                 f"• target >=3/5 = {int(fs.get('target5_success',0))}/{int(fs.get('target5_eval',0))} ({safe_pct(fs.get('target5_success',0), fs.get('target5_eval',0)):.2f}%)",
                 f"• target >=4/10 = {int(fs.get('target10_success',0))}/{int(fs.get('target10_eval',0))} ({safe_pct(fs.get('target10_success',0), fs.get('target10_eval',0)):.2f}%)",
-                "• dettagli completi: /freq",
+                f"• ritorno >=1 H5 = {int(fs.get('return_hits',{}).get('5',0))}/{int(fs.get('return_eval',{}).get('5',0))} ({safe_pct(fs.get('return_hits',{}).get('5',0), fs.get('return_eval',{}).get('5',0)):.2f}%)",
+                f"• co-uscite coppie attive = {int(fs.get('co_pair_hits',0))}/{int(fs.get('co_pair_eval',0))} ({safe_pct(fs.get('co_pair_hits',0), fs.get('co_pair_eval',0)):.2f}%)",
+                "• dettagli: /freq | /freqcluster",
             ])
         return "\n".join(lines).rstrip()
 
@@ -2330,6 +2705,7 @@ class DualGapEngine:
             "/stats — CORE/FAST + riepilogo FREQ\n"
             "/freq — dettaglio completo FREQ LAB\n"
             "/freqanalysis — analisi pattern/pre-gap ENTRY-ONLY\n"
+            "/freqcluster — ritorni H3/H5/H10 + co-uscite FREQ attive\n"
             "/menu — questa schermata"
         )
 
@@ -2368,12 +2744,18 @@ async def cmd_freqanalysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, engine.freq_analysis_text())
 
 
+async def cmd_freqcluster(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.freq_cluster_text())
+
+
 async def setup_commands(app):
     await app.bot.set_my_commands([
         BotCommand("status", "Gap correnti, H1 CORE/FAST e stato FREQ"),
         BotCommand("stats", "Statistiche CORE/FAST + riepilogo FREQ"),
         BotCommand("freq", "Statistiche complete FREQ ENTRY-ONLY"),
         BotCommand("freqanalysis", "Analisi pattern/pre-gap FREQ ENTRY-ONLY"),
+        BotCommand("freqcluster", "Ritorni e co-uscite FREQ attive"),
         BotCommand("menu", "Mostra CORE, FAST e FREQ LAB"),
     ])
 
@@ -2576,6 +2958,7 @@ async def startup(engine, app, warmup_retry_state=None):
         f"✅ modalita' CORE/FAST = {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}\n"
         "🧪 FREQ LAB = ENTRY-ONLY 2/5 + 2/20, SEMPRE SHADOW, zero puntate\n"
         "🧪 niente duplicati stesso episodio; snapshot nascita + H1/H2/H3/H5/H10\n"
+        "🧬 diagnostica ritorno >=1 H3/H5/H10 + co-uscite tra FREQ attivi\n"
         "✅ warmup continuo + state persistente GitHub\n"
         f"✅ warmup minimo = {WARMUP_MIN_DRAWS} estrazioni continue\n"
         f"✅ retry warmup ogni {WARMUP_RETRY_SEC}s\n\n"
@@ -2583,7 +2966,7 @@ async def startup(engine, app, warmup_retry_state=None):
         f"H1 FAST prossima: {engine.pending_pairs_count('fast')} ambi\n"
         f"FREQ LAB: {'READY' if engine.freq_bootstrap_done else 'BUILD'} | sessioni={len(engine.freq_sessions)}\n\n"
         "ℹ️ FAST include il CORE a gap27: statistiche separate, costi non sommabili.\n"
-        "ℹ️ /freq mostra il forward; /freqanalysis confronta pattern e pre-gap ENTRY-ONLY."
+        "ℹ️ /freq mostra il forward; /freqanalysis confronta pattern/pre-gap; /freqcluster ritorni e co-uscite."
     )
     await notify_actionable_state(engine, app)
     console_log("STARTUP COMPLETATO -> entro nel live_loop")
@@ -2746,8 +3129,37 @@ async def run_self_test():
         await testfreq.settle_freq_sessions(None, "2099-02-02", i + 1, nums, mode="live", notify=False)
     assert testfreq.freq_stats_live["target5_eval"] == 1
     assert testfreq.freq_stats_live["target5_success"] == 1
+    assert testfreq.freq_stats_live["return_eval"]["3"] == 1
+    assert testfreq.freq_stats_live["return_hits"]["3"] == 1
+    assert testfreq.freq_stats_live["return_eval"]["5"] == 1
+    assert testfreq.freq_stats_live["return_hits"]["5"] == 1
 
-    print("SELF-TEST OK: CORE/FAST invariati + FREQ ENTRY-ONLY + snapshot + H1/H2/H3/H5/H10")
+    # Origin accounting: sessione nata in warmup ma chiusa durante un draw live resta WARMUP.
+    origin = DualGapEngine(load=False)
+    origin.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
+    origin.freq_sessions = [{
+        "id": "FREQ-ORIGIN", "number": 42, "signal_from_key": "2099-03-01#001",
+        "created_at": now_txt(), "age": 4, "hit_ages": [2], "snapshot": {},
+        "h5_hits": None, "h5_success": None, "origin_mode": "warmup",
+    }]
+    await origin.settle_freq_sessions(None, "2099-03-01", 6, list(range(1,21)), mode="live", notify=False)
+    assert origin.freq_stats_warmup["target5_eval"] == 1
+    assert origin.freq_stats_live["target5_eval"] == 0
+
+    # Co-hit: due sessioni LIVE attive, entrambe presenti nello stesso draw.
+    coh = DualGapEngine(load=False)
+    coh.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
+    coh.freq_sessions = [
+        {"id":"A", "number":42, "signal_from_key":"2099-04-01#001", "created_at":now_txt(), "age":0, "hit_ages":[], "snapshot":{}, "h5_hits":None, "h5_success":None, "origin_mode":"live"},
+        {"id":"B", "number":55, "signal_from_key":"2099-04-01#001", "created_at":now_txt(), "age":0, "hit_ages":[], "snapshot":{}, "h5_hits":None, "h5_success":None, "origin_mode":"live"},
+    ]
+    nums = [42,55] + [n for n in range(1,91) if n not in {42,55}][:18]
+    await coh.settle_freq_sessions(None, "2099-04-01", 2, nums, mode="live", notify=False)
+    assert coh.freq_stats_live["co_pair_eval"] == 1
+    assert coh.freq_stats_live["co_pair_hits"] == 1
+    assert coh.freq_cohits_live and coh.freq_cohits_live[-1]["pair"] == [42,55]
+
+    print("SELF-TEST OK: CORE/FAST invariati + FREQ ENTRY-ONLY + origin accounting + return H3/H5/H10 + co-hit")
 
 
 # ============================================================
@@ -2780,6 +3192,7 @@ async def main():
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("freq", cmd_freq))
     app.add_handler(CommandHandler("freqanalysis", cmd_freqanalysis))
+    app.add_handler(CommandHandler("freqcluster", cmd_freqcluster))
     app.add_handler(CommandHandler("menu", cmd_menu))
 
     await app.initialize()
