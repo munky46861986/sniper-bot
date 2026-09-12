@@ -1,30 +1,40 @@
 # ============================================================
-# 🎯 SUPERAMBO — DUAL ENGINE GAP / DECINE DIVERSE / SOLO H1
+# 🎯 SUPERAMBO — CORE + FAST + FREQ LAB SHADOW
 # ============================================================
 #
-# MOTORE CORE — CONGELATO:
+# MOTORE CORE — CONGELATO / INVARIATO:
 #   • GAP 4 + GAP 27 esatto
 #   • solo decine diverse
 #   • tutti gli ambi validi, deduplicati
 #   • SOLO H1 sulla prossima estrazione
 #
-# MOTORE FAST LAB — PARALLELO:
+# MOTORE FAST LAB — INVARIATO:
 #   • GAP 4 + GAP 24..29
 #   • solo decine diverse
 #   • tutti gli ambi validi, deduplicati
 #   • SOLO H1 sulla prossima estrazione
 #
+# NUOVO FREQ LAB — SOLO OSSERVAZIONE:
+#   • FREQ-BIRTH = numero uscito esattamente 2 volte nelle ultime 5
+#                  e 2 volte nelle ultime 20
+#     => quindi 0 uscite nelle 15 precedenti e accelerazione recente 2/5
+#   • NON genera ambi e NON genera puntate
+#   • segue ogni candidato a H1, H2, H3, H5 e H10
+#   • a H5 verifica >=3 uscite nelle 5 successive
+#   • a H10 verifica >=4 uscite nelle 10 successive
+#
 # IMPORTANTE:
+#   • CORE e FAST NON vengono modificati.
 #   • FAST include anche i casi CORE (gap 27), ma statistiche e risultati
 #     restano completamente separati.
-#   • Non sommare CORE + FAST come se fossero due portafogli indipendenti:
-#     lo stesso ambo GAP4+27 puo' comparire in entrambi i laboratori.
-#   • Nessun H2, nessuna progressione, nessun WAIT30.
-#   • SHADOW_MODE=1 di default: il bot segnala, NON effettua puntate.
+#   • FREQ LAB e' sempre SHADOW: zero costo, zero puntate automatiche.
+#   • Nessun H2/progressione/WAIT30 viene aggiunto a CORE o FAST.
 #
 # WARMUP / PERSISTENZA:
 #   • usa il segmento cronologico continuo piu' recente;
-#   • ricostruisce gap, diagnostica CORE/FAST e gli H1 validi;
+#   • conserva lo state CORE/FAST esistente (LOGIC_VERSION invariata);
+#   • se lo state e' precedente al FREQ LAB, ricostruisce SOLO il FREQ LAB
+#     dai draw recenti gia' processati, senza azzerare il forward CORE/FAST;
 #   • state persistente GitHub, retry warmup senza spegnere il processo.
 # ============================================================
 
@@ -121,6 +131,18 @@ STRATEGIES = {
 STAKE_H1 = float(os.getenv("STAKE_H1", "1"))
 AMBO_PAYOUT = float(os.getenv("AMBO_PAYOUT", "14"))
 SHADOW_MODE = os.getenv("SHADOW_MODE", "1") != "0"
+
+# FREQ LAB: laboratorio indipendente, SEMPRE shadow/diagnostico.
+FREQ_LAB_ENABLED = os.getenv("FREQ_LAB_ENABLED", "1") != "0"
+FREQ_NOTIFY_SIGNALS = os.getenv("FREQ_NOTIFY_SIGNALS", "1") != "0"
+# I milestone possono diventare frequenti: OFF di default. Tutto resta in /freq e nello state.
+FREQ_NOTIFY_MILESTONES = os.getenv("FREQ_NOTIFY_MILESTONES", "0") != "0"
+FREQ_HISTORY_LEN = 20
+FREQ_HISTORY_MAX = int(os.getenv("FREQ_HISTORY_MAX", "40"))
+FREQ_HORIZONS = (1, 2, 3, 5, 10)
+FREQ_TARGET5_MIN_HITS = 3
+FREQ_TARGET10_MIN_HITS = 4
+FREQ_RECENT_MAX = int(os.getenv("FREQ_RECENT_MAX", "250"))
 
 PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
@@ -899,6 +921,15 @@ class DualGapEngine:
         self.stats_warmup = {name: self._new_stats() for name in STRATEGY_ORDER}
         self.stats_live = {name: self._new_stats() for name in STRATEGY_ORDER}
 
+        # FREQ LAB e' completamente separato da CORE/FAST.
+        self.freq_bootstrap_done = False
+        self.freq_history = []
+        self.freq_sessions = []
+        self.freq_recent_events = []
+        self.freq_uid = 0
+        self.freq_stats_warmup = self._new_freq_stats()
+        self.freq_stats_live = self._new_freq_stats()
+
         self.state_load_info = {
             "loaded": False,
             "reason": "non ancora controllato",
@@ -928,6 +959,46 @@ class DualGapEngine:
             "max_pairs_signal": 0,
         }
 
+    @staticmethod
+    def _new_freq_stats():
+        return {
+            "draws": 0,
+            "signal_draws": 0,
+            "candidates_signaled": 0,
+            "max_candidates_signal": 0,
+            "horizon_eval": {str(h): 0 for h in FREQ_HORIZONS},
+            "horizon_hits": {str(h): 0 for h in FREQ_HORIZONS},
+            "target5_eval": 0,
+            "target5_success": 0,
+            "target5_total_hits": 0,
+            "target10_eval": 0,
+            "target10_success": 0,
+            "target10_total_hits": 0,
+            "completed_sessions": 0,
+        }
+
+    @staticmethod
+    def _merge_freq_stats(dst, raw):
+        raw = raw if isinstance(raw, dict) else {}
+        for key in (
+            "draws", "signal_draws", "candidates_signaled", "max_candidates_signal",
+            "target5_eval", "target5_success", "target5_total_hits",
+            "target10_eval", "target10_success", "target10_total_hits",
+            "completed_sessions",
+        ):
+            try:
+                dst[key] = int(raw.get(key, dst.get(key, 0)) or 0)
+            except Exception:
+                pass
+        for bucket in ("horizon_eval", "horizon_hits"):
+            src = raw.get(bucket, {}) if isinstance(raw.get(bucket, {}), dict) else {}
+            for h in FREQ_HORIZONS:
+                try:
+                    dst[bucket][str(h)] = int(src.get(str(h), src.get(h, dst[bucket][str(h)])) or 0)
+                except Exception:
+                    pass
+        return dst
+
     def _stats(self, mode, strategy):
         bank = self.stats_warmup if mode == "warmup" else self.stats_live
         return bank[strategy]
@@ -935,6 +1006,49 @@ class DualGapEngine:
     def strategy_gap_values(self, strategy):
         cfg = STRATEGIES[strategy]
         return range(int(cfg["gap_min"]), int(cfg["gap_max"]) + 1)
+
+    def _freq_stats(self, mode):
+        return self.freq_stats_warmup if mode == "warmup" else self.freq_stats_live
+
+    @staticmethod
+    def _sanitize_freq_history(raw):
+        out = []
+        for row in list(raw or []):
+            if not isinstance(row, dict):
+                continue
+            nums = row.get("nums", []) or []
+            try:
+                nums = sorted(set(map(int, nums)))
+            except Exception:
+                continue
+            if len(nums) != 20 or any(n < 1 or n > 90 for n in nums):
+                continue
+            out.append({"key": str(row.get("key") or ""), "nums": nums})
+        return out[-max(FREQ_HISTORY_LEN, FREQ_HISTORY_MAX):]
+
+    @staticmethod
+    def _sanitize_freq_sessions(raw):
+        out = []
+        for row in list(raw or []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                n = int(row.get("number"))
+                age = int(row.get("age", 0) or 0)
+                hit_ages = sorted({int(x) for x in (row.get("hit_ages", []) or []) if 1 <= int(x) <= 10})
+            except Exception:
+                continue
+            if not (1 <= n <= 90 and 0 <= age < 10):
+                continue
+            out.append({
+                "id": str(row.get("id") or ""),
+                "number": n,
+                "signal_from_key": row.get("signal_from_key"),
+                "created_at": row.get("created_at"),
+                "age": age,
+                "hit_ages": hit_ages,
+            })
+        return out[-1000:]
 
     # ----------------------------
     # Stato / serializzazione
@@ -1032,6 +1146,17 @@ class DualGapEngine:
                 self.stats_warmup[name].update((d.get("stats_warmup", {}) or {}).get(name, {}) or {})
                 self.stats_live[name].update((d.get("stats_live", {}) or {}).get(name, {}) or {})
 
+            # Compatibilita' retroattiva: uno state CORE+FAST precedente non viene invalidato.
+            self.freq_bootstrap_done = bool(d.get("freq_bootstrap_done", False))
+            self.freq_history = self._sanitize_freq_history(d.get("freq_history", []))
+            self.freq_sessions = self._sanitize_freq_sessions(d.get("freq_sessions", []))
+            self.freq_recent_events = list(d.get("freq_recent_events", []) or [])[-FREQ_RECENT_MAX:]
+            self.freq_uid = int(d.get("freq_uid", 0) or 0)
+            self._merge_freq_stats(self.freq_stats_warmup, d.get("freq_stats_warmup", {}))
+            self._merge_freq_stats(self.freq_stats_live, d.get("freq_stats_live", {}))
+            if len(self.freq_history) >= FREQ_HISTORY_LEN:
+                self.freq_bootstrap_done = True
+
             self.state_load_info = {
                 "loaded": True,
                 "reason": "OK",
@@ -1043,7 +1168,9 @@ class DualGapEngine:
                 f"warmup={'OK' if self.warmup_done else 'NO'} | seq={self.seq} | "
                 f"last={self.last_draw_key or '-'} | "
                 f"pending_core={self.pending_pairs_count('core')} | "
-                f"pending_fast={self.pending_pairs_count('fast')}"
+                f"pending_fast={self.pending_pairs_count('fast')} | "
+                f"freq_ready={'SI' if self.freq_bootstrap_done else 'NO'} | "
+                f"freq_active={len(self.freq_sessions)}"
             )
             return True
         except Exception as exc:
@@ -1072,6 +1199,13 @@ class DualGapEngine:
             "recent_events": self.recent_events[-150:],
             "stats_warmup": self.stats_warmup,
             "stats_live": self.stats_live,
+            "freq_bootstrap_done": self.freq_bootstrap_done,
+            "freq_history": self.freq_history[-max(FREQ_HISTORY_LEN, FREQ_HISTORY_MAX):],
+            "freq_sessions": self.freq_sessions[-1000:],
+            "freq_recent_events": self.freq_recent_events[-FREQ_RECENT_MAX:],
+            "freq_uid": self.freq_uid,
+            "freq_stats_warmup": self.freq_stats_warmup,
+            "freq_stats_live": self.freq_stats_live,
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -1344,6 +1478,271 @@ class DualGapEngine:
 
         return armed or None
 
+    # ----------------------------
+    # FREQ LAB — FREQ-BIRTH 2/5 e 2/20
+    # ----------------------------
+
+    def _reset_freq_lab(self):
+        self.freq_bootstrap_done = False
+        self.freq_history = []
+        self.freq_sessions = []
+        self.freq_recent_events = []
+        self.freq_uid = 0
+        self.freq_stats_warmup = self._new_freq_stats()
+        self.freq_stats_live = self._new_freq_stats()
+
+    def freq_append_history(self, current_key, nums):
+        row = {"key": str(current_key), "nums": sorted(set(map(int, nums)))}
+        self.freq_history.append(row)
+        self.freq_history = self.freq_history[-max(FREQ_HISTORY_LEN, FREQ_HISTORY_MAX):]
+        if len(self.freq_history) >= FREQ_HISTORY_LEN:
+            self.freq_bootstrap_done = True
+
+    def freq_candidates(self):
+        if not FREQ_LAB_ENABLED or len(self.freq_history) < FREQ_HISTORY_LEN:
+            return []
+        last20 = self.freq_history[-20:]
+        last5 = self.freq_history[-5:]
+        out = []
+        for n in range(1, 91):
+            c20 = sum(1 for row in last20 if n in set(row.get("nums", [])))
+            c5 = sum(1 for row in last5 if n in set(row.get("nums", [])))
+            if c5 == 2 and c20 == 2:
+                out.append(n)
+        return out
+
+    async def settle_freq_sessions(self, app, day, e, nums, mode="live", notify=True):
+        if not FREQ_LAB_ENABLED or not self.freq_sessions:
+            return None
+
+        numset = set(map(int, nums))
+        st = self._freq_stats(mode)
+        survivors = []
+        milestone_lines = []
+        current_key = draw_key(day, e)
+
+        for session in list(self.freq_sessions):
+            age = int(session.get("age", 0) or 0) + 1
+            session["age"] = age
+            n = int(session["number"])
+            hit_now = n in numset
+            hit_ages = list(session.get("hit_ages", []) or [])
+            if hit_now and age not in hit_ages:
+                hit_ages.append(age)
+                hit_ages.sort()
+            session["hit_ages"] = hit_ages
+
+            if age in FREQ_HORIZONS:
+                h = str(age)
+                st["horizon_eval"][h] = int(st["horizon_eval"].get(h, 0)) + 1
+                if hit_now:
+                    st["horizon_hits"][h] = int(st["horizon_hits"].get(h, 0)) + 1
+
+            hits_so_far = len([x for x in hit_ages if x <= age])
+
+            if age == 5:
+                success5 = hits_so_far >= FREQ_TARGET5_MIN_HITS
+                st["target5_eval"] = int(st.get("target5_eval", 0)) + 1
+                st["target5_success"] = int(st.get("target5_success", 0)) + int(success5)
+                st["target5_total_hits"] = int(st.get("target5_total_hits", 0)) + hits_so_far
+                self.freq_recent_events.append({
+                    "type": "FREQ_H5", "at": current_key, "id": session.get("id"),
+                    "number": n, "hits_5": hits_so_far, "success": bool(success5),
+                })
+                if FREQ_NOTIFY_MILESTONES and notify and mode == "live":
+                    milestone_lines.append(
+                        f"H5 | #{n} | uscite={hits_so_far}/5 | "
+                        f"target >=3: {'✅' if success5 else '❌'}"
+                    )
+
+            if age == 10:
+                hits10 = len([x for x in hit_ages if x <= 10])
+                success10 = hits10 >= FREQ_TARGET10_MIN_HITS
+                st["target10_eval"] = int(st.get("target10_eval", 0)) + 1
+                st["target10_success"] = int(st.get("target10_success", 0)) + int(success10)
+                st["target10_total_hits"] = int(st.get("target10_total_hits", 0)) + hits10
+                st["completed_sessions"] = int(st.get("completed_sessions", 0)) + 1
+                self.freq_recent_events.append({
+                    "type": "FREQ_H10", "at": current_key, "id": session.get("id"),
+                    "number": n, "hits_10": hits10, "success": bool(success10),
+                })
+                if FREQ_NOTIFY_MILESTONES and notify and mode == "live":
+                    milestone_lines.append(
+                        f"H10 | #{n} | uscite={hits10}/10 | "
+                        f"target >=4: {'✅' if success10 else '❌'}"
+                    )
+            else:
+                survivors.append(session)
+
+        self.freq_sessions = survivors[-1000:]
+        self.freq_recent_events = self.freq_recent_events[-FREQ_RECENT_MAX:]
+
+        if milestone_lines and notify and mode == "live":
+            await self.tg(
+                app,
+                "🧪 FREQ LAB — MILESTONE SHADOW\n"
+                f"Risultato: {current_key}\n\n" +
+                "\n".join(milestone_lines) +
+                "\n\nZero puntate: laboratorio statistico indipendente da CORE/FAST."
+            )
+        return milestone_lines or None
+
+    async def arm_freq_birth(self, app, current_key, mode="live", notify=True):
+        if not FREQ_LAB_ENABLED:
+            return []
+        candidates = self.freq_candidates()
+        if not candidates:
+            return []
+
+        st = self._freq_stats(mode)
+        st["signal_draws"] = int(st.get("signal_draws", 0)) + 1
+        st["candidates_signaled"] = int(st.get("candidates_signaled", 0)) + len(candidates)
+        st["max_candidates_signal"] = max(int(st.get("max_candidates_signal", 0)), len(candidates))
+
+        created = []
+        for n in candidates:
+            self.freq_uid += 1
+            session = {
+                "id": f"FREQ-{self.freq_uid:07d}",
+                "number": int(n),
+                "signal_from_key": current_key,
+                "created_at": now_txt(),
+                "age": 0,
+                "hit_ages": [],
+            }
+            self.freq_sessions.append(session)
+            created.append(session)
+
+        self.freq_sessions = self.freq_sessions[-1000:]
+        self.freq_recent_events.append({
+            "type": "FREQ_SIGNAL", "at": current_key,
+            "numbers": list(candidates), "count": len(candidates),
+        })
+        self.freq_recent_events = self.freq_recent_events[-FREQ_RECENT_MAX:]
+
+        if notify and mode == "live" and FREQ_NOTIFY_SIGNALS:
+            await self.tg(
+                app,
+                "🧪 FREQ LAB SHADOW — FREQ-BIRTH\n\n"
+                f"Segnale da: {current_key}\n"
+                f"Numeri: {', '.join(map(str, candidates))}\n\n"
+                "Regola: esattamente 2 uscite nelle ultime 5 e 2 nelle ultime 20.\n"
+                "Quindi: 0 uscite nelle 15 precedenti + accelerazione recente 2/5.\n\n"
+                "Osservazione: H1 / H2 / H3 / H5 / H10.\n"
+                "Target H5: >=3 uscite nelle prossime 5.\n"
+                "Target H10: >=4 uscite nelle prossime 10.\n\n"
+                "⚠️ ZERO puntate: non modifica CORE o FAST."
+            )
+        return created
+
+    async def rebuild_freq_lab_from_records(self, records):
+        # Ricostruisce SOLO il laboratorio FREQ; nessuna variabile CORE/FAST viene toccata.
+        self._reset_freq_lab()
+        for d, e, nums in list(records or []):
+            clean = list(map(int, nums))
+            if len(clean) != 20 or len(set(clean)) != 20:
+                continue
+            self.freq_stats_warmup["draws"] = int(self.freq_stats_warmup.get("draws", 0)) + 1
+            await self.settle_freq_sessions(None, d, e, clean, mode="warmup", notify=False)
+            current_key = draw_key(d, e)
+            self.freq_append_history(current_key, clean)
+            await self.arm_freq_birth(None, current_key, mode="warmup", notify=False)
+        self.freq_bootstrap_done = len(self.freq_history) >= FREQ_HISTORY_LEN
+        return self.freq_bootstrap_done
+
+    async def ensure_freq_lab_bootstrap(self):
+        if not FREQ_LAB_ENABLED:
+            return {"ok": True, "disabled": True, "draws": 0}
+        if self.freq_bootstrap_done and len(self.freq_history) >= FREQ_HISTORY_LEN:
+            return {"ok": True, "already_done": True, "draws": len(self.freq_history)}
+
+        try:
+            all_records, sources = fetch_warmup_records(WARMUP_DAYS)
+            records, _, continuity = _select_latest_contiguous_warmup(all_records, sources)
+            # Per uno state CORE/FAST gia' attivo usiamo SOLO draw che risultano gia' processati.
+            if self.processed_set:
+                usable = [
+                    (d, e, nums) for d, e, nums in records
+                    if draw_key(d, e) in self.processed_set
+                ]
+            else:
+                usable = list(records)
+            usable.sort(key=lambda x: (x[0], x[1]))
+            if len(usable) > 800:
+                usable = usable[-800:]
+            ok = await self.rebuild_freq_lab_from_records(usable)
+            return {
+                "ok": bool(ok),
+                "already_done": False,
+                "draws": len(usable),
+                "continuity_note": continuity.get("note"),
+                "reason": None if ok else f"storico FREQ insufficiente: {len(usable)} draw",
+            }
+        except Exception as exc:
+            return {
+                "ok": False, "already_done": False, "draws": 0,
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+
+    def freq_active_text(self, limit=25):
+        if not self.freq_sessions:
+            return "-"
+        rows = []
+        for s in self.freq_sessions[:limit]:
+            rows.append(
+                f"{s.get('id')} #{s.get('number')} da {s.get('signal_from_key')} "
+                f"| H{s.get('age', 0)}/10 | hit={len(s.get('hit_ages', []) or [])}"
+            )
+        if len(self.freq_sessions) > limit:
+            rows.append(f"... +{len(self.freq_sessions)-limit} altri")
+        return "\n".join(rows)
+
+    def _freq_stats_block(self, title, st):
+        lines = [title]
+        lines.append(f"• draw elaborati = {int(st.get('draws', 0))}")
+        lines.append(
+            f"• draw con segnale = {int(st.get('signal_draws', 0))} | "
+            f"candidati = {int(st.get('candidates_signaled', 0))} | "
+            f"max candidati/segnale = {int(st.get('max_candidates_signal', 0))}"
+        )
+        for h in FREQ_HORIZONS:
+            ev = int(st.get("horizon_eval", {}).get(str(h), 0))
+            hi = int(st.get("horizon_hits", {}).get(str(h), 0))
+            lines.append(f"• H{h} esatto = {hi}/{ev} ({safe_pct(hi, ev):.2f}%)")
+        e5 = int(st.get("target5_eval", 0))
+        s5 = int(st.get("target5_success", 0))
+        e10 = int(st.get("target10_eval", 0))
+        s10 = int(st.get("target10_success", 0))
+        lines.extend([
+            f"• TARGET H5 >=3/5 = {s5}/{e5} ({safe_pct(s5, e5):.2f}%) | media uscite={safe_pct(st.get('target5_total_hits', 0), e5)/100.0:.3f}/5",
+            f"• TARGET H10 >=4/10 = {s10}/{e10} ({safe_pct(s10, e10):.2f}%) | media uscite={safe_pct(st.get('target10_total_hits', 0), e10)/100.0:.3f}/10",
+            f"• sessioni completate H10 = {int(st.get('completed_sessions', 0))}",
+        ])
+        return lines
+
+    def freq_stats_text(self):
+        if not FREQ_LAB_ENABLED:
+            return "🧪 FREQ LAB disabilitato (FREQ_LAB_ENABLED=0)."
+        candidates_now = self.freq_candidates()
+        lines = [
+            "🧪 FREQ LAB SHADOW — FREQ-BIRTH 2/5 + 2/20",
+            "• zero puntate / nessun impatto su CORE e FAST",
+            f"• bootstrap = {'OK' if self.freq_bootstrap_done else 'IN COSTRUZIONE'} | storico={len(self.freq_history)}/{FREQ_HISTORY_LEN}+",
+            f"• candidati adesso = {', '.join(map(str, candidates_now)) or '-'}",
+            f"• sessioni attive = {len(self.freq_sessions)}",
+            "",
+        ]
+        lines.extend(self._freq_stats_block("📊 FORWARD FREQ LAB", self.freq_stats_live))
+        lines.extend(["", *self._freq_stats_block("🕰️ WARMUP FREQ LAB", self.freq_stats_warmup)])
+        lines.extend([
+            "",
+            "🎯 SESSIONI ATTIVE",
+            self.freq_active_text(),
+            "",
+            "Baseline teorica singolo H1 = 22.22%. I target 3/5 e 4/10 sono il focus del forward.",
+        ])
+        return "\n".join(lines)
+
     async def process_draw(self, app, day, e, nums, mode="live", notify=True, persist=True):
         clean = list(map(int, nums))
         if len(clean) != 20 or len(set(clean)) != 20 or any(n < 1 or n > 90 for n in clean):
@@ -1355,18 +1754,31 @@ class DualGapEngine:
         for strategy in STRATEGY_ORDER:
             st = self._stats(mode, strategy)
             st["draws"] = int(st.get("draws", 0)) + 1
+        if FREQ_LAB_ENABLED:
+            fst = self._freq_stats(mode)
+            fst["draws"] = int(fst.get("draws", 0)) + 1
 
-        # 1) Chiude gli H1 armati dal draw precedente.
+        # 1) Chiude gli H1 CORE/FAST armati dal draw precedente.
         results = await self.settle_pending(app, day, e, clean, mode=mode, notify=notify)
-        # 2) Aggiorna i gap col draw corrente.
+        # 1b) Avanza e valuta le sessioni FREQ nate nei draw precedenti.
+        freq_results = await self.settle_freq_sessions(app, day, e, clean, mode=mode, notify=notify)
+        # 2) Aggiorna i gap CORE/FAST col draw corrente.
         self.update_last_seen(clean)
-        # 3) Arma CORE e FAST per il draw successivo.
+        # 2b) Aggiorna lo storico FREQ col draw corrente.
+        if FREQ_LAB_ENABLED:
+            self.freq_append_history(current_key, clean)
+        # 3) Arma CORE e FAST per il draw successivo — LOGICA INVARIATA.
         signals = await self.arm_from_current_gaps(app, current_key, mode=mode, notify=notify)
+        # 3b) Apre nuove osservazioni FREQ-BIRTH — solo shadow.
+        freq_signals = await self.arm_freq_birth(app, current_key, mode=mode, notify=notify)
 
         if persist:
             self.save_state(git=(mode == "live"))
 
-        return {"results": results, "signals": signals}
+        return {
+            "results": results, "signals": signals,
+            "freq_results": freq_results, "freq_signals": freq_signals,
+        }
 
     # ----------------------------
     # Warmup
@@ -1382,6 +1794,7 @@ class DualGapEngine:
         self.recent_events = []
         self.stats_warmup = {name: self._new_stats() for name in STRATEGY_ORDER}
         self.stats_live = {name: self._new_stats() for name in STRATEGY_ORDER}
+        self._reset_freq_lab()
 
     async def run_initial_warmup(self, app=None):
         if self.warmup_done:
@@ -1423,6 +1836,9 @@ class DualGapEngine:
                 app=None, day=d, e=e, nums=nums,
                 mode="warmup", notify=False, persist=False,
             )
+
+        if FREQ_LAB_ENABLED:
+            self.freq_bootstrap_done = len(self.freq_history) >= FREQ_HISTORY_LEN
 
         unknown = [n for n in range(1, 91) if self.last_seen_seq.get(n) is None]
         if unknown:
@@ -1545,6 +1961,16 @@ class DualGapEngine:
             lines.append("")
 
         lines.append("ℹ️ FAST 24-29 include il CORE gap27: confronta i due laboratori, non sommare i costi.")
+        if FREQ_LAB_ENABLED:
+            fs = self.freq_stats_live
+            lines.extend([
+                "",
+                "🧪 FREQ LAB SHADOW — riepilogo",
+                f"• segnali={int(fs.get('signal_draws',0))} | candidati={int(fs.get('candidates_signaled',0))} | attivi={len(self.freq_sessions)}",
+                f"• target >=3/5 = {int(fs.get('target5_success',0))}/{int(fs.get('target5_eval',0))} ({safe_pct(fs.get('target5_success',0), fs.get('target5_eval',0)):.2f}%)",
+                f"• target >=4/10 = {int(fs.get('target10_success',0))}/{int(fs.get('target10_eval',0))} ({safe_pct(fs.get('target10_success',0), fs.get('target10_eval',0)):.2f}%)",
+                "• dettagli completi: /freq",
+            ])
         return "\n".join(lines).rstrip()
 
     def status_text(self):
@@ -1558,6 +1984,7 @@ class DualGapEngine:
             f"• FAST gap {FAST_GAP_MIN}-{FAST_GAP_MAX} = {self.fast_targets_text()}",
             f"• H1 CORE prossima = {self.pending_pairs_count('core')} ambi",
             f"• H1 FAST prossima = {self.pending_pairs_count('fast')} ambi",
+            f"• FREQ LAB = {'READY' if self.freq_bootstrap_done else 'BUILD'} | candidati ora={','.join(map(str, self.freq_candidates())) or '-'} | sessioni={len(self.freq_sessions)}",
             f"• warmup = {'OK' if self.warmup_done else 'NO'} | {self.warmup_draws} draw",
             f"• state checkout = {'CARICATO' if self.state_load_info.get('loaded') else 'NUOVO'} | saved_at={self.state_load_info.get('saved_at') or '-'}",
             f"• state Git = {'OK' if self.last_git_status.get('ok') else 'ERRORE'} | {self.last_git_status.get('action', '-')} | {self.last_git_status.get('detail', '-')}",
@@ -1572,18 +1999,20 @@ class DualGapEngine:
 
     def menu_text(self):
         return (
-            "🎯 SUPERAMBO — DUAL GAP / SOLO H1\n\n"
-            f"CORE: GAP {GAP_A}+{CORE_GAP} esatto, decine diverse.\n"
-            f"FAST LAB: GAP {GAP_A}+{FAST_GAP_MIN}-{FAST_GAP_MAX}, decine diverse.\n"
-            "Per entrambi tengo TUTTI gli ambi validi e li deduplico.\n"
-            f"➡️ SOLO H1 sulla prossima estrazione: {STAKE_H1:.2f}€ per ambo.\n"
-            "Nessun H2, nessuna progressione, nessun WAIT30.\n\n"
+            "🎯 SUPERAMBO — CORE + FAST + FREQ LAB\n\n"
+            f"CORE: GAP {GAP_A}+{CORE_GAP} esatto, decine diverse, SOLO H1.\n"
+            f"FAST LAB: GAP {GAP_A}+{FAST_GAP_MIN}-{FAST_GAP_MAX}, decine diverse, SOLO H1.\n"
+            "CORE e FAST restano invariati.\n\n"
+            "🧪 FREQ LAB SHADOW: numero con 2 uscite nelle ultime 5 e 2 nelle ultime 20.\n"
+            "Segue H1/H2/H3/H5/H10; target >=3/5 e >=4/10.\n"
+            "FREQ LAB non genera puntate e non modifica CORE/FAST.\n\n"
             "FAST include anche i casi a gap27 del CORE, ma le statistiche sono separate.\n"
             "Non sommare CORE e FAST come due sistemi indipendenti.\n"
-            f"Pagamento diagnostico: {AMBO_PAYOUT:.2f}x.\n"
-            f"Modalita': {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}; nessuna puntata automatica.\n\n"
-            "/status — gap correnti + H1 armati\n"
-            "/stats — CORE/FAST forward + warmup\n"
+            f"Pagamento diagnostico ambo: {AMBO_PAYOUT:.2f}x.\n"
+            f"Modalita' CORE/FAST: {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}; FREQ sempre SHADOW.\n\n"
+            "/status — gap correnti + H1 + stato FREQ\n"
+            "/stats — CORE/FAST + riepilogo FREQ\n"
+            "/freq — dettaglio completo FREQ LAB\n"
             "/menu — questa schermata"
         )
 
@@ -1612,11 +2041,17 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, engine.menu_text())
 
 
+async def cmd_freq(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.freq_stats_text())
+
+
 async def setup_commands(app):
     await app.bot.set_my_commands([
-        BotCommand("status", "Gap correnti e H1 CORE/FAST"),
-        BotCommand("stats", "Statistiche CORE/FAST forward e warmup"),
-        BotCommand("menu", "Mostra le due strategie"),
+        BotCommand("status", "Gap correnti, H1 CORE/FAST e stato FREQ"),
+        BotCommand("stats", "Statistiche CORE/FAST + riepilogo FREQ"),
+        BotCommand("freq", "Statistiche complete FREQ LAB shadow"),
+        BotCommand("menu", "Mostra CORE, FAST e FREQ LAB"),
     ])
 
 
@@ -1742,6 +2177,24 @@ async def startup(engine, app, warmup_retry_state=None):
     if warm.get("sources"):
         console_log(f"WARMUP SOURCES | {format_warmup_sources(warm.get('sources', []))}")
 
+    # Se arriva da uno state CORE+FAST precedente al FREQ LAB, ricostruisce SOLO FREQ.
+    if FREQ_LAB_ENABLED and not engine.freq_bootstrap_done:
+        freq_boot = await engine.ensure_freq_lab_bootstrap()
+        if freq_boot.get("ok"):
+            console_log(
+                f"FREQ BOOTSTRAP OK | draws={freq_boot.get('draws', 0)} | "
+                f"active={len(engine.freq_sessions)}"
+            )
+        else:
+            console_log(f"FREQ BOOTSTRAP PARZIALE | {freq_boot.get('reason', '-')}")
+            await engine.tg(
+                app,
+                "⚠️ FREQ LAB NON ANCORA PRONTO\n\n"
+                f"Motivo: {freq_boot.get('reason', '-')}\n"
+                "CORE e FAST restano regolarmente attivi e INVARIATI.\n"
+                "Il FREQ LAB costruira' lo storico necessario con i prossimi draw."
+            )
+
     # Catch-up di eventuali draw successivi allo state/warmup.
     try:
         rows = parse_site_today()
@@ -1784,25 +2237,30 @@ async def startup(engine, app, warmup_retry_state=None):
             f"• CORE gap {CORE_GAP} = {', '.join(map(str, core)) or '-'}\n"
             f"• FAST gap {FAST_GAP_MIN}-{FAST_GAP_MAX} = {engine.fast_targets_text()}\n"
             f"• H1 CORE prossima = {engine.pending_pairs_count('core')} ambi\n"
-            f"• H1 FAST prossima = {engine.pending_pairs_count('fast')} ambi\n\n"
+            f"• H1 FAST prossima = {engine.pending_pairs_count('fast')} ambi\n"
+            f"• FREQ LAB = {'READY' if engine.freq_bootstrap_done else 'BUILD'} | sessioni attive={len(engine.freq_sessions)}\n\n"
             f"{engine.stats_text()}"
         )
 
     await engine.tg(
         app,
-        "🚀 BOT DUAL GAP / DECINE DIVERSE / SOLO H1 AVVIATO\n\n"
-        f"✅ CORE = GAP {GAP_A}+{CORE_GAP}\n"
-        f"✅ FAST LAB = GAP {GAP_A}+{FAST_GAP_MIN}-{FAST_GAP_MAX}\n"
-        "✅ tutte le coppie valide, solo decine diverse, dedup per strategia\n"
-        f"✅ SOLO H1 = {STAKE_H1:.2f}€ per ambo\n"
-        "✅ nessun H2 / progressione / WAIT30\n"
-        f"✅ modalita' = {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}\n"
+        "🚀 BOT CORE + FAST + FREQ LAB AVVIATO\n\n"
+        f"✅ CORE = GAP {GAP_A}+{CORE_GAP} — INVARIATO\n"
+        f"✅ FAST LAB = GAP {GAP_A}+{FAST_GAP_MIN}-{FAST_GAP_MAX} — INVARIATO\n"
+        "✅ CORE/FAST: tutte le coppie valide, decine diverse, SOLO H1\n"
+        f"✅ H1 CORE/FAST = {STAKE_H1:.2f}€ per ambo diagnostico\n"
+        "✅ nessun H2 / progressione / WAIT30 aggiunto\n"
+        f"✅ modalita' CORE/FAST = {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}\n"
+        "🧪 FREQ LAB = 2/5 + 2/20, SEMPRE SHADOW, zero puntate\n"
+        "🧪 osserva H1/H2/H3/H5/H10; target >=3/5 e >=4/10\n"
         "✅ warmup continuo + state persistente GitHub\n"
         f"✅ warmup minimo = {WARMUP_MIN_DRAWS} estrazioni continue\n"
         f"✅ retry warmup ogni {WARMUP_RETRY_SEC}s\n\n"
         f"H1 CORE prossima: {engine.pending_pairs_count('core')} ambi\n"
-        f"H1 FAST prossima: {engine.pending_pairs_count('fast')} ambi\n\n"
-        "ℹ️ FAST include il CORE a gap27: statistiche separate, costi non sommabili."
+        f"H1 FAST prossima: {engine.pending_pairs_count('fast')} ambi\n"
+        f"FREQ LAB: {'READY' if engine.freq_bootstrap_done else 'BUILD'} | sessioni={len(engine.freq_sessions)}\n\n"
+        "ℹ️ FAST include il CORE a gap27: statistiche separate, costi non sommabili.\n"
+        "ℹ️ /freq mostra il forward completo del nuovo laboratorio."
     )
     await notify_actionable_state(engine, app)
     console_log("STARTUP COMPLETATO -> entro nel live_loop")
@@ -1920,7 +2378,40 @@ async def run_self_test():
     assert eng3.current_gap(17) == 0
     assert eng3.pending_events["core"] is None
 
-    print("SELF-TEST OK: CORE gap4+27 + FAST gap4+24-29 + decine diverse + SOLO H1 + stats separate")
+    # FREQ LAB: 42 compare 2 volte nelle ultime 5 e 2 nelle ultime 20.
+    freq = DualGapEngine(load=False)
+    freq.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
+    freq._reset_freq_lab()
+    filler = list(range(1, 21))
+    for i in range(20):
+        nums = list(filler)
+        if i in (16, 19):
+            nums[-1] = 42
+        freq.freq_stats_warmup["draws"] += 1
+        await freq.settle_freq_sessions(None, "2099-02-01", i + 1, nums, mode="warmup", notify=False)
+        k = draw_key("2099-02-01", i + 1)
+        freq.freq_append_history(k, nums)
+        await freq.arm_freq_birth(None, k, mode="warmup", notify=False)
+    assert 42 in freq.freq_candidates()
+    sessions_42 = [x for x in freq.freq_sessions if x.get("number") == 42 and x.get("age") == 0]
+    assert sessions_42, "FREQ-BIRTH non armato per 42"
+
+    # Una sessione isolata su 42 deve riconoscere 3/5.
+    testfreq = DualGapEngine(load=False)
+    testfreq.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
+    testfreq.freq_sessions = [{
+        "id": "FREQ-TEST", "number": 42, "signal_from_key": "2099-02-02#001",
+        "created_at": now_txt(), "age": 0, "hit_ages": [],
+    }]
+    for i in range(1, 6):
+        nums = list(range(1, 21))
+        if i in (1, 3, 5):
+            nums[-1] = 42
+        await testfreq.settle_freq_sessions(None, "2099-02-02", i + 1, nums, mode="live", notify=False)
+    assert testfreq.freq_stats_live["target5_eval"] == 1
+    assert testfreq.freq_stats_live["target5_success"] == 1
+
+    print("SELF-TEST OK: CORE/FAST invariati + FREQ LAB 2/5+2/20 shadow + H1/H2/H3/H5/H10")
 
 
 # ============================================================
@@ -1951,6 +2442,7 @@ async def main():
 
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("freq", cmd_freq))
     app.add_handler(CommandHandler("menu", cmd_menu))
 
     await app.initialize()
