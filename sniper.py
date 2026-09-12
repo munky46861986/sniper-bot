@@ -1,66 +1,45 @@
 # ============================================================
-# 🎯 SUPERAMBO — 5 SUPERSTITI / OLDEST 70-79 / +30 / H1-H2
+# 🎯 SUPERAMBO — GAP 4 + GAP 27 / DECINE DIVERSE / SOLO H1
 # ============================================================
 #
-# STRATEGIA UNICA, CONGELATA:
+# STRATEGIA UNICA, CONGELATA — FORWARD/SHADOW:
 #
-#   • Ogni estrazione diventa un NUOVO PUNTO DI PARTENZA (origine).
-#     Esempio: origine = estrazione 127 -> il conteggio parte dalla 128.
+#   1) Dopo ogni estrazione aggiorna il GAP (ritardo) dei numeri 1..90.
+#      - numero uscito nell'ultima estrazione -> gap = 0
+#      - se resta assente -> gap aumenta di 1
 #
-#   • Per OGNI origine vengono seguite in parallelo tutte le 9 decine:
-#       90-9, 10-19, 20-29, 30-39, 40-49,
-#       50-59, 60-69, 70-79, 80-89.
+#   2) Cerca TUTTI i numeri con gap esattamente 4 e TUTTI quelli
+#      con gap esattamente 27.
 #
-#   • Ogni decina parte con tutti i suoi 45 ambi possibili.
-#     Man mano che gli ambi compaiono, vengono eliminati.
+#   3) Forma tutti gli ambi GAP4 x GAP27, ma accetta SOLO coppie
+#      appartenenti a DECINE DIVERSE.
 #
-#   • Quando una decina resta con 1 solo ambo non ancora uscito,
-#     quell'ambo e' un SUPERSTITE e si memorizza da quale estrazione
-#     e' rimasto solo.
+#      Decine usate (coerenti con il progetto precedente):
+#        90-9, 10-19, 20-29, 30-39, 40-49,
+#        50-59, 60-69, 70-79, 80-89.
 #
-#   • Quando, per la stessa origine, ci sono ESATTAMENTE 5 superstiti
-#     contemporaneamente, si forma un BASKET da 5.
+#   4) Tutti gli ambi validi vengono armati per UNA SOLA estrazione:
+#      SOLO H1 sulla prossima estrazione.
+#      - HIT se entrambi i numeri dell'ambo compaiono
+#      - STOP se non compaiono insieme
+#      - nessun H2, nessuna progressione, nessun WAIT30
 #
-#   • Lo stesso IDENTICO basket (stesse 5 decine + stessi 5 ambi)
-#     viene considerato UNA SOLA VOLTA globalmente, anche se compare
-#     da origini diverse. Questa e' la deduplica usata nel test.
+#   5) Se nella stessa estrazione esistono piu' ambi validi, vengono
+#      mantenuti TUTTI, come nel test storico. Ogni ambo e' deduplicato.
 #
-#   • Tra i 5 superstiti si sceglie il PIU' VECCHIO, cioe' quello
-#     che e' rimasto unico da piu' tempo.
+# WARMUP / PERSISTENZA:
+#   • scarica gli ultimi WARMUP_DAYS giorni e usa solo il segmento
+#     cronologico continuo piu' recente;
+#   • i giorni conclusi devono avere 288 estrazioni senza buchi;
+#   • ricostruisce i gap e l'eventuale H1 gia' valido per la prossima;
+#   • ai riavvii riparte dallo state persistente GitHub;
+#   • se il warmup non e' pronto il processo resta acceso e ritenta.
 #
-#   • Il basket e' valido SOLO se il piu' vecchio appartiene alla 70-79.
-#
-#   • Da quando nasce il basket, l'ambo 70-79 deve restare ASSENTE
-#     per altre 30 estrazioni complete.
-#       - se esce durante le 30 -> candidato annullato
-#       - se sopravvive -> H1 sulla PROSSIMA estrazione
-#       - se H1 perde -> H2 sulla PROSSIMA
-#       - dopo HIT H1 / HIT H2 / STOP H2 -> chiusura
-#
-# WARMUP INIZIALE v6:
-#   • al primo avvio scarica gli ultimi WARMUP_DAYS giorni
-#   • ogni giorno GIA' CONCLUSO deve avere esattamente 288 estrazioni
-#   • se una fonte e' incompleta prova automaticamente le altre e integra
-#   • se restano buchi/conflitti il il warmup usa SOLO il segmento continuo successivo al buco; blocca solo se insufficiente
-#   • crea retroattivamente tutte le origini storiche necessarie
-#   • ricostruisce basket, superstiti e candidati ancora vivi
-#   • NON manda segnali retroattivi
-#   • quindi all'avvio non bisogna aspettare decine di estrazioni
-#   • agli avvii successivi riparte dallo state persistente
-#   • se il warmup non e' pronto il processo NON termina: resta acceso e ritenta
-#   • lo STATE viene versionato e pushato su GitHub con verifica reale del remote
-#   • ai riavvii lo state viene caricato e il warmup NON riparte se e' gia' valido
-#
-# SHADOW/FORWARD:
-#   • default SHADOW_MODE=1 -> messaggi marcati SHADOW
-#   • SHADOW_MODE=0 -> messaggi marcati PLAY
-#   • il bot NON effettua puntate automaticamente
-#
+# SHADOW_MODE=1 (default): segnala soltanto; NON effettua puntate.
 # ============================================================
 
 import asyncio
 import atexit
-import hashlib
 import json
 import os
 import re
@@ -68,7 +47,6 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta
-from itertools import combinations
 from zoneinfo import ZoneInfo
 
 import requests
@@ -113,25 +91,26 @@ HEADERS = {
 }
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "superambo_5survivors_70_79_wait30_state.json")
-LOCK_FILE = "/tmp/superambo_5survivors_70_79_wait30.lock"
+STATE_FILE = os.path.join(BASE_DIR, "superambo_gap4_gap27_h1_state.json")
+LOCK_FILE = "/tmp/superambo_gap4_gap27_h1.lock"
 
-LOGIC_VERSION = 5
+# Nuova strategia = nuovo state. Non riusa lo state del vecchio basket5.
+LOGIC_VERSION = 1
+
 LOOP_SEC = int(os.getenv("LOOP_SEC", "60"))
 WARMUP_RETRY_SEC = int(os.getenv("WARMUP_RETRY_SEC", "300"))
 WARMUP_FAIL_TG_MIN_SECONDS = int(os.getenv("WARMUP_FAIL_TG_MIN_SECONDS", "900"))
 WARMUP_DAYS = int(os.getenv("WARMUP_DAYS", "7"))
-WARMUP_MIN_DRAWS = int(os.getenv("WARMUP_MIN_DRAWS", "900"))
+# Per un gap massimo 27 non servono 900 colpi: 120 colpi continui danno
+# un margine ampio per inizializzare correttamente tutti i ritardi.
+WARMUP_MIN_DRAWS = int(os.getenv("WARMUP_MIN_DRAWS", "120"))
 WARMUP_FULL_DAY_DRAWS = int(os.getenv("WARMUP_FULL_DAY_DRAWS", "288"))
 WARMUP_REQUIRE_COMPLETE_PAST_DAYS = os.getenv("WARMUP_REQUIRE_COMPLETE_PAST_DAYS", "1") != "0"
-ORIGIN_MAX_AGE = int(os.getenv("ORIGIN_MAX_AGE", "1000"))
+PROCESSED_MAX = int(os.getenv("PROCESSED_MAX", "12000"))
 
-BASKET_SIZE = 5
-TARGET_DECADE = "70-79"
-TARGET_DECADE_INDEX = 7
-EXTRA_WAIT = 30
+GAP_A = int(os.getenv("GAP_A", "4"))
+GAP_B = int(os.getenv("GAP_B", "27"))
 STAKE_H1 = float(os.getenv("STAKE_H1", "1"))
-STAKE_H2 = float(os.getenv("STAKE_H2", "1"))
 AMBO_PAYOUT = float(os.getenv("AMBO_PAYOUT", "14"))
 SHADOW_MODE = os.getenv("SHADOW_MODE", "1") != "0"
 
@@ -139,24 +118,10 @@ PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
 _LAST_GIT_COMMIT_TS = 0.0
 
-DECADES = [
-    ("90-9", (90, 1, 2, 3, 4, 5, 6, 7, 8, 9)),
-    ("10-19", tuple(range(10, 20))),
-    ("20-29", tuple(range(20, 30))),
-    ("30-39", tuple(range(30, 40))),
-    ("40-49", tuple(range(40, 50))),
-    ("50-59", tuple(range(50, 60))),
-    ("60-69", tuple(range(60, 70))),
-    ("70-79", tuple(range(70, 80))),
-    ("80-89", tuple(range(80, 90))),
+DECADE_NAMES = [
+    "90-9", "10-19", "20-29", "30-39", "40-49",
+    "50-59", "60-69", "70-79", "80-89",
 ]
-DECADE_NAMES = [x[0] for x in DECADES]
-PAIR_LISTS = [tuple(combinations(nums, 2)) for _, nums in DECADES]
-PAIR_INDEX = [
-    {tuple(sorted(pair)): idx for idx, pair in enumerate(pairs)}
-    for pairs in PAIR_LISTS
-]
-FULL_MASK = (1 << 45) - 1
 
 
 # ============================================================
@@ -176,7 +141,6 @@ def day_key():
 
 
 def console_log(message):
-    """Log immediato nei GitHub Actions (stdout non bufferizzato lato applicazione)."""
     print(f"[{now_txt()}] {message}", flush=True)
 
 
@@ -194,19 +158,24 @@ def signal_word():
 
 def fmt_pair(pair):
     a, b = sorted(map(int, pair))
-    if b == 90:
-        return f"90-{a}"
     return f"{a}-{b}"
 
 
-def bit_index(single_bit_mask):
-    return int(single_bit_mask).bit_length() - 1
+def decade_index(n):
+    n = int(n)
+    if n == 90 or 1 <= n <= 9:
+        return 0
+    if 10 <= n <= 89:
+        return n // 10
+    raise ValueError(f"numero fuori range: {n}")
 
 
-def pair_from_mask(decade_index, mask):
-    if int(mask).bit_count() != 1:
-        return None
-    return PAIR_LISTS[decade_index][bit_index(int(mask))]
+def decade_name(n):
+    return DECADE_NAMES[decade_index(n)]
+
+
+def different_decades(a, b):
+    return decade_index(a) != decade_index(b)
 
 
 def atomic_write_json(path, data):
@@ -232,7 +201,6 @@ def _http_get_text(url, retries=3, timeout=20):
             if attempt < retries:
                 time.sleep(1.2 * attempt)
     raise RuntimeError(f"download fallito: {url} | {last_exc}")
-
 
 # ============================================================
 # PARSER STORICO / LIVE
@@ -816,7 +784,7 @@ def git_commit_state_if_needed(force=False):
     rc_diff, _, _ = _git_run(["diff", "--cached", "--quiet", "--", rel], root)
     committed_now = False
     if rc_diff == 1:
-        rc, out, err = _git_run(["commit", "-m", "state: 5-survivors 70-79"], root)
+        rc, out, err = _git_run(["commit", "-m", "state: gap4-gap27 h1"], root)
         if rc != 0:
             st = _git_status(False, "commit-failed", err or out, branch=branch)
             console_log(f"STATE PUSH FAIL | git commit | {st['detail']}")
@@ -894,11 +862,12 @@ def git_commit_state_if_needed(force=False):
     return st
 
 
+
 # ============================================================
-# MOTORE MULTI-ORIGINE
+# MOTORE GAP 4 + GAP 27 / DECINE DIVERSE / SOLO H1
 # ============================================================
 
-class FiveSurvivorsEngine:
+class Gap427Engine:
     def __init__(self, load=True):
         self.logic_version = LOGIC_VERSION
 
@@ -912,25 +881,24 @@ class FiveSurvivorsEngine:
         self.last_draw_key = None
         self.seq = 0
 
-        # Ogni draw crea una nuova origine; restano in RAM solo quelle
-        # che possono ancora generare un basket da 5.
-        self.origins = []
-        self.next_origin_id = 1
+        # Ultima sequenza in cui ogni numero e' comparso. None = non ancora noto.
+        self.last_seen_seq = {n: None for n in range(1, 91)}
 
-        # Deduplica GLOBALE dei basket: stesse 5 decine + stessi 5 ambi = 1 caso.
-        self.seen_baskets = []
-        self.seen_basket_set = set()
+        # Un unico evento H1 per la prossima estrazione; contiene TUTTI gli ambi
+        # validi generati dal draw precedente.
+        self.pending_event = None
 
-        # Piu' candidati possono essere contemporaneamente in WAIT/H1/H2.
-        self.candidates = []
-        self.next_candidate_id = 1
+        # Solo diagnostica recente, non influenza mai la logica.
+        self.recent_events = []
 
         self.stats_warmup = self._new_stats()
         self.stats_live = self._new_stats()
 
         self.state_load_info = {
-            "loaded": False, "reason": "non ancora controllato",
-            "saved_at": None, "path": STATE_FILE,
+            "loaded": False,
+            "reason": "non ancora controllato",
+            "saved_at": None,
+            "path": STATE_FILE,
         }
         self.last_git_status = _git_status(True, "not-run", "nessun push ancora eseguito")
 
@@ -940,21 +908,19 @@ class FiveSurvivorsEngine:
     @staticmethod
     def _new_stats():
         return {
-            "origins_started": 0,
-            "origins_pruned": 0,
-            "baskets5": 0,
-            "baskets5_oldest_target": 0,
-            "candidates": 0,
-            "canceled_wait30": 0,
-            "armed_h1": 0,
+            "draws": 0,
+            "signal_draws": 0,
+            "pairs_signaled": 0,
+            "result_draws": 0,
+            "hit_draws": 0,
+            "stop_draws": 0,
+            "multi_hit_draws": 0,
             "h1_plays": 0,
             "h1_hits": 0,
             "h1_misses": 0,
-            "h2_plays": 0,
-            "h2_hits": 0,
-            "stops_h2": 0,
             "cost": 0.0,
             "gross": 0.0,
+            "max_pairs_signal": 0,
         }
 
     def _stats(self, mode):
@@ -964,52 +930,57 @@ class FiveSurvivorsEngine:
     # Stato / serializzazione
     # ----------------------------
 
-    @staticmethod
-    def _serialize_origin(o):
-        return {
-            "id": int(o["id"]),
-            "anchor_seq": int(o["anchor_seq"]),
-            "anchor_key": o.get("anchor_key"),
-            "remaining": [int(x) for x in o["remaining"]],
-            "survivor_since": [None if x is None else int(x) for x in o["survivor_since"]],
-            "survivor_since_key": list(o.get("survivor_since_key", [None] * 9)),
-        }
-
-    @staticmethod
-    def _deserialize_origin(o):
-        rem = list(o.get("remaining", []))
-        ss = list(o.get("survivor_since", []))
-        ssk = list(o.get("survivor_since_key", []))
-        if len(rem) != 9 or len(ss) != 9:
+    def _sanitize_pending(self, raw):
+        if not isinstance(raw, dict):
             return None
-        if len(ssk) != 9:
-            ssk = [None] * 9
+        items = []
+        seen = set()
+        for x in raw.get("items", []) or []:
+            try:
+                g4 = int(x["gap4"])
+                g27 = int(x["gap27"])
+                pair = tuple(sorted((g4, g27)))
+            except Exception:
+                continue
+            if not (1 <= g4 <= 90 and 1 <= g27 <= 90):
+                continue
+            if not different_decades(g4, g27):
+                continue
+            if pair in seen:
+                continue
+            seen.add(pair)
+            items.append({"gap4": g4, "gap27": g27, "pair": list(pair)})
+        if not items:
+            return None
         return {
-            "id": int(o.get("id", 0)),
-            "anchor_seq": int(o.get("anchor_seq", 0)),
-            "anchor_key": o.get("anchor_key"),
-            "remaining": [int(x) for x in rem],
-            "survivor_since": [None if x is None else int(x) for x in ss],
-            "survivor_since_key": ssk,
+            "signal_from_key": raw.get("signal_from_key"),
+            "armed_at_seq": int(raw.get("armed_at_seq", 0) or 0),
+            "created_at": raw.get("created_at"),
+            "items": items,
         }
 
     def load_state(self):
         if not os.path.exists(STATE_FILE):
             self.state_load_info = {
-                "loaded": False, "reason": "state non presente nel checkout",
-                "saved_at": None, "path": STATE_FILE,
+                "loaded": False,
+                "reason": "state non presente nel checkout",
+                "saved_at": None,
+                "path": STATE_FILE,
             }
             console_log(f"STATE NON TROVATO | {STATE_FILE}")
             return False
+
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 d = json.load(f)
-            found_logic = int(d.get("logic_version", 0))
+
+            found_logic = int(d.get("logic_version", 0) or 0)
             if found_logic != LOGIC_VERSION:
                 self.state_load_info = {
                     "loaded": False,
                     "reason": f"logic_version incompatibile: file={found_logic} bot={LOGIC_VERSION}",
-                    "saved_at": d.get("saved_at"), "path": STATE_FILE,
+                    "saved_at": d.get("saved_at"),
+                    "path": STATE_FILE,
                 }
                 console_log(f"STATE IGNORATO | {self.state_load_info['reason']}")
                 return False
@@ -1019,42 +990,42 @@ class FiveSurvivorsEngine:
             self.warmup_draws = int(d.get("warmup_draws", 0) or 0)
             self.warmup_sources = list(d.get("warmup_sources", []) or [])
 
-            self.processed = list(d.get("processed", []) or [])[-12000:]
+            self.processed = list(d.get("processed", []) or [])[-PROCESSED_MAX:]
             self.processed_set = set(self.processed)
             self.last_draw_key = d.get("last_draw_key")
             self.seq = int(d.get("seq", 0) or 0)
 
-            self.origins = []
-            for raw in d.get("origins", []) or []:
-                o = self._deserialize_origin(raw)
-                if o:
-                    self.origins.append(o)
-            self.next_origin_id = int(d.get("next_origin_id", 1) or 1)
+            raw_seen = d.get("last_seen_seq", {}) or {}
+            self.last_seen_seq = {}
+            for n in range(1, 91):
+                v = raw_seen.get(str(n), raw_seen.get(n))
+                self.last_seen_seq[n] = None if v is None else int(v)
 
-            self.seen_baskets = list(d.get("seen_baskets", []) or [])
-            self.seen_basket_set = set(self.seen_baskets)
-
-            self.candidates = list(d.get("candidates", []) or [])
-            self.next_candidate_id = int(d.get("next_candidate_id", 1) or 1)
+            self.pending_event = self._sanitize_pending(d.get("pending_event"))
+            self.recent_events = list(d.get("recent_events", []) or [])[-100:]
 
             self.stats_warmup.update(d.get("stats_warmup") or {})
             self.stats_live.update(d.get("stats_live") or {})
 
             self.state_load_info = {
-                "loaded": True, "reason": "OK",
-                "saved_at": d.get("saved_at"), "path": STATE_FILE,
+                "loaded": True,
+                "reason": "OK",
+                "saved_at": d.get("saved_at"),
+                "path": STATE_FILE,
             }
             console_log(
                 f"STATE CARICATO | saved_at={d.get('saved_at') or '-'} | "
                 f"warmup={'OK' if self.warmup_done else 'NO'} | seq={self.seq} | "
-                f"last={self.last_draw_key or '-'} | origini={len(self.origins)} | "
-                f"basket={len(self.seen_basket_set)} | candidati={len(self.candidates)}"
+                f"last={self.last_draw_key or '-'} | "
+                f"pending_ambi={self.pending_pairs_count()}"
             )
             return True
         except Exception as exc:
             self.state_load_info = {
-                "loaded": False, "reason": f"{type(exc).__name__}: {exc}",
-                "saved_at": None, "path": STATE_FILE,
+                "loaded": False,
+                "reason": f"{type(exc).__name__}: {exc}",
+                "saved_at": None,
+                "path": STATE_FILE,
             }
             console_log(f"STATE NON CARICATO | {self.state_load_info['reason']}")
             return False
@@ -1067,14 +1038,12 @@ class FiveSurvivorsEngine:
             "warmup_completed_at": self.warmup_completed_at,
             "warmup_draws": self.warmup_draws,
             "warmup_sources": self.warmup_sources,
-            "processed": self.processed[-12000:],
+            "processed": self.processed[-PROCESSED_MAX:],
             "last_draw_key": self.last_draw_key,
             "seq": self.seq,
-            "origins": [self._serialize_origin(o) for o in self.origins],
-            "next_origin_id": self.next_origin_id,
-            "seen_baskets": self.seen_baskets,
-            "candidates": self.candidates,
-            "next_candidate_id": self.next_candidate_id,
+            "last_seen_seq": {str(n): self.last_seen_seq.get(n) for n in range(1, 91)},
+            "pending_event": self.pending_event,
+            "recent_events": self.recent_events[-100:],
             "stats_warmup": self.stats_warmup,
             "stats_live": self.stats_live,
         }
@@ -1091,51 +1060,77 @@ class FiveSurvivorsEngine:
         k = draw_key(day, e)
         if k not in self.processed_set:
             self.processed.append(k)
-            self.processed = self.processed[-12000:]
+            self.processed = self.processed[-PROCESSED_MAX:]
             self.processed_set = set(self.processed)
         self.last_draw_key = k
         self.seq += 1
         return k
 
     # ----------------------------
-    # Bitmask ambi
+    # Gap e segnali
     # ----------------------------
 
-    @staticmethod
-    def hit_masks_for_draw(nums):
-        numset = set(map(int, nums))
-        masks = []
-        for i, (_, decade_nums) in enumerate(DECADES):
-            inside = [n for n in decade_nums if n in numset]
-            mask = 0
-            for pair in combinations(inside, 2):
-                idx = PAIR_INDEX[i][tuple(sorted(pair))]
-                mask |= 1 << idx
-            masks.append(mask)
-        return masks
+    def current_gap(self, n):
+        seen = self.last_seen_seq.get(int(n))
+        if seen is None:
+            return None
+        return int(self.seq) - int(seen)
+
+    def current_gaps(self):
+        return {n: self.current_gap(n) for n in range(1, 91)}
+
+    def numbers_at_gap(self, gap_value):
+        gap_value = int(gap_value)
+        return [n for n in range(1, 91) if self.current_gap(n) == gap_value]
+
+    def update_last_seen(self, nums):
+        for n in set(map(int, nums)):
+            self.last_seen_seq[n] = int(self.seq)
+
+    def build_signal_items(self):
+        nums4 = self.numbers_at_gap(GAP_A)
+        nums27 = self.numbers_at_gap(GAP_B)
+        items = []
+        seen_pairs = set()
+
+        for n4 in nums4:
+            for n27 in nums27:
+                if n4 == n27:
+                    continue
+                if not different_decades(n4, n27):
+                    continue
+                pair = tuple(sorted((int(n4), int(n27))))
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+                items.append({
+                    "gap4": int(n4),
+                    "gap27": int(n27),
+                    "pair": list(pair),
+                })
+
+        items.sort(key=lambda x: tuple(x["pair"]))
+        return items
+
+    def pending_pairs_count(self):
+        return len((self.pending_event or {}).get("items", []) or [])
+
+    def pending_pairs(self):
+        return [tuple(map(int, x["pair"])) for x in (self.pending_event or {}).get("items", []) or []]
 
     @staticmethod
-    def basket_signature(origin, survivor_indexes):
-        # Firma volutamente SENZA origin_id e SENZA eta':
-        # stesse 5 decine + stessi 5 ambi = identico basket globale.
+    def _format_pairs(items, limit=30):
+        items = list(items or [])
+        shown = items[:limit]
         parts = []
-        for i in survivor_indexes:
-            mask = int(origin["remaining"][i])
-            idx = bit_index(mask)
-            parts.append(f"{i}:{idx}")
-        raw = "|".join(parts)
-        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20], raw
-
-    def mark_basket_seen(self, fingerprint):
-        if fingerprint in self.seen_basket_set:
-            return False
-        self.seen_baskets.append(fingerprint)
-        self.seen_basket_set.add(fingerprint)
-        return True
-
-    # ----------------------------
-    # Telegram
-    # ----------------------------
+        for x in shown:
+            pair = tuple(x.get("pair", []))
+            if len(pair) != 2:
+                continue
+            parts.append(fmt_pair(pair))
+        if len(items) > limit:
+            parts.append(f"... +{len(items)-limit} altri")
+        return ", ".join(parts) if parts else "-"
 
     async def tg(self, app, text):
         if not app or not CHAT_ID:
@@ -1144,259 +1139,175 @@ class FiveSurvivorsEngine:
         try:
             await app.bot.send_message(chat_id=CHAT_ID, text=text)
         except Exception as exc:
-            print(f"⚠️ Telegram: {exc}")
+            console_log(f"⚠️ Telegram: {exc}")
 
-    # ----------------------------
-    # Candidati +30 / H1-H2
-    # ----------------------------
+    async def settle_pending(self, app, day, e, nums, mode="live", notify=True):
+        event = self.pending_event
+        if not event:
+            return None
 
-    @staticmethod
-    def candidate_pair(candidate):
-        return PAIR_LISTS[TARGET_DECADE_INDEX][int(candidate["pair_index"])]
+        # Consuma l'evento subito: non potra' essere contabilizzato due volte.
+        self.pending_event = None
+        items = list(event.get("items", []) or [])
+        if not items:
+            return None
 
-    async def advance_candidates(self, app, day, e, nums, mode="live", notify=True):
-        if not self.candidates:
-            return
-
-        st = self._stats(mode)
         numset = set(map(int, nums))
-        keep = []
-
-        for c in self.candidates:
-            pair = self.candidate_pair(c)
-            hit = pair[0] in numset and pair[1] in numset
-            phase = c.get("phase")
-
-            if phase == "WAIT30":
-                if hit:
-                    st["canceled_wait30"] = int(st.get("canceled_wait30", 0)) + 1
-                    if notify and mode == "live":
-                        await self.tg(
-                            app,
-                            "♻️ CANDIDATO 70-79 ANNULLATO\n\n"
-                            f"Ambo: {fmt_pair(pair)}\n"
-                            f"Attesa raggiunta: {int(c.get('wait_count', 0))}/{EXTRA_WAIT}\n"
-                            f"Uscito all'estrazione {e} | {day}.\n"
-                            "Nessun H1/H2."
-                        )
-                    continue
-
-                c["wait_count"] = int(c.get("wait_count", 0)) + 1
-                if c["wait_count"] >= EXTRA_WAIT:
-                    c["phase"] = "H1"
-                    st["armed_h1"] = int(st.get("armed_h1", 0)) + 1
-                    if notify and mode == "live":
-                        await self.tg(
-                            app,
-                            f"🎯 {signal_word()} H1 ARMATO — 70-79\n\n"
-                            f"Ambo: {fmt_pair(pair)}\n"
-                            f"Origine: {c.get('origin_anchor_key', '-')}\n"
-                            f"Basket da {BASKET_SIZE}: {c.get('basket_text', '-')}\n"
-                            f"Completate altre {EXTRA_WAIT} assenze.\n"
-                            f"Ultima osservata: {e} | {day}\n\n"
-                            f"➡️ PROSSIMA ESTRAZIONE: {STAKE_H1:.2f}€ H1 su {fmt_pair(pair)}.\n"
-                            "Se H1 perde, il bot arma H2."
-                        )
-                elif notify and mode == "live" and c["wait_count"] in {10, 20, 25}:
-                    await self.tg(
-                        app,
-                        f"⏳ CANDIDATO {fmt_pair(pair)} — attesa "
-                        f"{c['wait_count']}/{EXTRA_WAIT}\nNessun H1 ancora."
-                    )
-                keep.append(c)
+        hits = []
+        misses = []
+        for item in items:
+            pair = tuple(map(int, item.get("pair", [])))
+            if len(pair) != 2:
                 continue
-
-            if phase == "H1":
-                st["h1_plays"] = int(st.get("h1_plays", 0)) + 1
-                st["cost"] = float(st.get("cost", 0.0)) + STAKE_H1
-                if hit:
-                    st["h1_hits"] = int(st.get("h1_hits", 0)) + 1
-                    st["gross"] = float(st.get("gross", 0.0)) + AMBO_PAYOUT * STAKE_H1
-                    if notify and mode == "live":
-                        await self.tg(
-                            app,
-                            f"✅ {signal_word()} H1 HIT\n\n"
-                            f"Ambo: {fmt_pair(pair)}\n"
-                            f"Estrazione: {e} | {day}\n"
-                            f"Puntata teorica: {STAKE_H1:.2f}€\n"
-                            f"Lordo teorico: {AMBO_PAYOUT * STAKE_H1:.2f}€\n\n"
-                            f"{self.stats_text(live_only=True)}"
-                        )
-                    continue
-
-                st["h1_misses"] = int(st.get("h1_misses", 0)) + 1
-                c["phase"] = "H2"
-                if notify and mode == "live":
-                    await self.tg(
-                        app,
-                        f"➡️ {signal_word()} H1 MISS — H2 ARMATO\n\n"
-                        f"Ambo: {fmt_pair(pair)}\n"
-                        f"H1: estrazione {e} | {day}\n"
-                        f"➡️ PROSSIMA ESTRAZIONE: {STAKE_H2:.2f}€ H2 su {fmt_pair(pair)}.\n"
-                        "Dopo H2 si chiude comunque."
-                    )
-                keep.append(c)
-                continue
-
-            if phase == "H2":
-                st["h2_plays"] = int(st.get("h2_plays", 0)) + 1
-                st["cost"] = float(st.get("cost", 0.0)) + STAKE_H2
-                if hit:
-                    st["h2_hits"] = int(st.get("h2_hits", 0)) + 1
-                    st["gross"] = float(st.get("gross", 0.0)) + AMBO_PAYOUT * STAKE_H2
-                else:
-                    st["stops_h2"] = int(st.get("stops_h2", 0)) + 1
-
-                if notify and mode == "live":
-                    icon = "✅" if hit else "❌"
-                    label = "H2 HIT" if hit else "STOP H2"
-                    await self.tg(
-                        app,
-                        f"{icon} {signal_word()} {label}\n\n"
-                        f"Ambo: {fmt_pair(pair)}\n"
-                        f"Estrazione: {e} | {day}\n\n"
-                        f"{self.stats_text(live_only=True)}"
-                    )
-                continue
-
-        self.candidates = keep
-
-    # ----------------------------
-    # Origini / superstiti / basket
-    # ----------------------------
-
-    def start_new_origin(self, current_key, mode):
-        self.origins.append({
-            "id": int(self.next_origin_id),
-            "anchor_seq": int(self.seq),
-            "anchor_key": current_key,
-            "remaining": [FULL_MASK] * 9,
-            "survivor_since": [None] * 9,
-            "survivor_since_key": [None] * 9,
-        })
-        self.next_origin_id += 1
-        st = self._stats(mode)
-        st["origins_started"] = int(st.get("origins_started", 0)) + 1
-
-    async def advance_origins(self, app, day, e, nums, hit_masks, current_key,
-                              mode="live", notify=True):
-        st = self._stats(mode)
-        keep = []
-
-        for origin in self.origins:
-            rem = origin["remaining"]
-            since = origin["survivor_since"]
-            since_key = origin["survivor_since_key"]
-
-            for i in range(9):
-                prev = int(rem[i])
-                new = prev & ~int(hit_masks[i])
-                if new == prev:
-                    continue
-
-                rem[i] = new
-                prev_count = prev.bit_count()
-                new_count = new.bit_count()
-
-                if new_count == 1 and prev_count != 1:
-                    since[i] = int(self.seq)
-                    since_key[i] = current_key
-                elif new_count != 1:
-                    since[i] = None
-                    since_key[i] = None
-
-            survivors = [i for i in range(9) if int(rem[i]).bit_count() == 1]
-
-            if len(survivors) == BASKET_SIZE:
-                fingerprint, raw_sig = self.basket_signature(origin, survivors)
-                if self.mark_basket_seen(fingerprint):
-                    st["baskets5"] = int(st.get("baskets5", 0)) + 1
-
-                    oldest = min(
-                        survivors,
-                        key=lambda i: (
-                            int(since[i]) if since[i] is not None else 10**18,
-                            i,
-                        ),
-                    )
-
-                    if oldest == TARGET_DECADE_INDEX:
-                        st["baskets5_oldest_target"] = int(st.get("baskets5_oldest_target", 0)) + 1
-                        pair_index = bit_index(int(rem[oldest]))
-                        basket_text = ", ".join(
-                            f"{DECADE_NAMES[i]}:{fmt_pair(pair_from_mask(i, rem[i]))}"
-                            for i in survivors
-                        )
-
-                        self.candidates.append({
-                            "id": int(self.next_candidate_id),
-                            "phase": "WAIT30",
-                            "pair_index": int(pair_index),
-                            "wait_count": 0,
-                            "origin_id": int(origin["id"]),
-                            "origin_anchor_key": origin.get("anchor_key"),
-                            "basket_created_key": current_key,
-                            "basket_created_seq": int(self.seq),
-                            "basket_fingerprint": fingerprint,
-                            "basket_raw": raw_sig,
-                            "basket_text": basket_text,
-                            "target_survivor_since_key": since_key[oldest],
-                            "target_age_at_basket": int(self.seq) - int(since[oldest]),
-                        })
-                        self.next_candidate_id += 1
-                        st["candidates"] = int(st.get("candidates", 0)) + 1
-
-                        if notify and mode == "live":
-                            target_pair = pair_from_mask(oldest, rem[oldest])
-                            await self.tg(
-                                app,
-                                "🧩 NUOVO BASKET DA 5 — CANDIDATO 70-79\n\n"
-                                f"Origine: {origin.get('anchor_key', '-')}\n"
-                                f"Basket: {basket_text}\n\n"
-                                f"✅ Piu' vecchio: {fmt_pair(target_pair)} della 70-79\n"
-                                f"Era superstite da {int(self.seq) - int(since[oldest])} estrazioni.\n"
-                                f"Ora deve restare assente per ALTRE {EXTRA_WAIT}.\n"
-                                "⚠️ NON E' ANCORA H1."
-                            )
-
-            # Un'origine puo' ancora arrivare a 5 superstiti solo se almeno
-            # 5 decine hanno ancora almeno un ambo mancante.
-            nonzero_decades = sum(1 for mask in rem if int(mask) != 0)
-            age = int(self.seq) - int(origin["anchor_seq"])
-            if nonzero_decades >= BASKET_SIZE and age <= ORIGIN_MAX_AGE:
-                keep.append(origin)
+            if pair[0] in numset and pair[1] in numset:
+                hits.append(item)
             else:
-                st["origins_pruned"] = int(st.get("origins_pruned", 0)) + 1
+                misses.append(item)
 
-        self.origins = keep
+        plays = len(hits) + len(misses)
+        hit_count = len(hits)
+        st = self._stats(mode)
+        st["result_draws"] = int(st.get("result_draws", 0)) + 1
+        st["h1_plays"] = int(st.get("h1_plays", 0)) + plays
+        st["h1_hits"] = int(st.get("h1_hits", 0)) + hit_count
+        st["h1_misses"] = int(st.get("h1_misses", 0)) + len(misses)
+        st["cost"] = float(st.get("cost", 0.0)) + plays * STAKE_H1
+        st["gross"] = float(st.get("gross", 0.0)) + hit_count * AMBO_PAYOUT * STAKE_H1
 
-    async def process_draw(self, app, day, e, nums, mode="live", notify=True):
-        if len(nums) != 20 or len(set(nums)) != 20:
-            return
+        if hit_count:
+            st["hit_draws"] = int(st.get("hit_draws", 0)) + 1
+            if hit_count > 1:
+                st["multi_hit_draws"] = int(st.get("multi_hit_draws", 0)) + 1
+        else:
+            st["stop_draws"] = int(st.get("stop_draws", 0)) + 1
+
+        draw_cost = plays * STAKE_H1
+        draw_gross = hit_count * AMBO_PAYOUT * STAKE_H1
+        draw_net = draw_gross - draw_cost
+
+        self.recent_events.append({
+            "type": "RESULT",
+            "at": draw_key(day, e),
+            "signal_from": event.get("signal_from_key"),
+            "plays": plays,
+            "hits": hit_count,
+            "net": draw_net,
+        })
+        self.recent_events = self.recent_events[-100:]
+
+        if notify and mode == "live":
+            hit_txt = self._format_pairs(hits)
+            miss_txt = self._format_pairs(misses)
+            icon = "✅" if hit_count else "❌"
+            title = "HIT H1" if hit_count else "STOP H1"
+            await self.tg(
+                app,
+                f"{icon} {signal_word()} {title} — GAP {GAP_A}+{GAP_B}\n\n"
+                f"Segnale da: {event.get('signal_from_key', '-')}\n"
+                f"Risultato: {draw_key(day, e)}\n"
+                f"Ambi giocati: {plays} | costo: {draw_cost:.2f}€\n"
+                f"✅ HIT ({hit_count}): {hit_txt}\n"
+                f"❌ MISS ({len(misses)}): {miss_txt}\n\n"
+                f"Lordo draw: {draw_gross:.2f}€ | netto draw: {draw_net:+.2f}€\n"
+                f"Forward: {self.live_summary_one_line()}"
+            )
+
+        return {
+            "plays": plays,
+            "hits": hit_count,
+            "misses": len(misses),
+            "cost": draw_cost,
+            "gross": draw_gross,
+            "net": draw_net,
+        }
+
+    async def arm_from_current_gaps(self, app, current_key, mode="live", notify=True):
+        items = self.build_signal_items()
+        if not items:
+            self.pending_event = None
+            return None
+
+        nums4 = sorted({int(x["gap4"]) for x in items})
+        nums27 = sorted({int(x["gap27"]) for x in items})
+        self.pending_event = {
+            "signal_from_key": current_key,
+            "armed_at_seq": int(self.seq),
+            "created_at": now_txt(),
+            "items": items,
+        }
+
+        st = self._stats(mode)
+        st["signal_draws"] = int(st.get("signal_draws", 0)) + 1
+        st["pairs_signaled"] = int(st.get("pairs_signaled", 0)) + len(items)
+        st["max_pairs_signal"] = max(int(st.get("max_pairs_signal", 0) or 0), len(items))
+
+        self.recent_events.append({
+            "type": "SIGNAL",
+            "at": current_key,
+            "pairs": len(items),
+            "gap4": nums4,
+            "gap27": nums27,
+        })
+        self.recent_events = self.recent_events[-100:]
+
+        if notify and mode == "live":
+            potential_cost = len(items) * STAKE_H1
+            await self.tg(
+                app,
+                f"🎯 {signal_word()} GAP {GAP_A}+{GAP_B} — H1 ARMATO\n\n"
+                f"Segnale da: {current_key}\n"
+                f"Gap {GAP_A}: {', '.join(map(str, nums4)) or '-'}\n"
+                f"Gap {GAP_B}: {', '.join(map(str, nums27)) or '-'}\n"
+                f"Regola: SOLO decine diverse\n\n"
+                f"Ambi validi ({len(items)}):\n{self._format_pairs(items)}\n\n"
+                f"➡️ PROSSIMA estrazione: SOLO H1\n"
+                f"Stake: {STAKE_H1:.2f}€ per ambo | costo potenziale: {potential_cost:.2f}€\n"
+                "Nessun H2, nessuna progressione."
+            )
+
+        return self.pending_event
+
+    async def process_draw(self, app, day, e, nums, mode="live", notify=True, persist=True):
+        clean = list(map(int, nums))
+        if len(clean) != 20 or len(set(clean)) != 20 or any(n < 1 or n > 90 for n in clean):
+            return None
         if self.already_processed(day, e):
-            return
+            return None
 
         current_key = self.remember_processed(day, e)
+        st = self._stats(mode)
+        st["draws"] = int(st.get("draws", 0)) + 1
 
-        # 1) I candidati gia' esistenti usano il draw corrente per WAIT/H1/H2.
-        await self.advance_candidates(app, day, e, nums, mode=mode, notify=notify)
+        # 1) Il segnale generato dal draw precedente si gioca ORA.
+        result = await self.settle_pending(app, day, e, clean, mode=mode, notify=notify)
 
-        # 2) Le origini gia' esistenti eliminano gli ambi usciti nel draw corrente.
-        hit_masks = self.hit_masks_for_draw(nums)
-        await self.advance_origins(
-            app, day, e, nums, hit_masks, current_key,
-            mode=mode, notify=notify,
+        # 2) Aggiorna i gap con il draw corrente.
+        self.update_last_seen(clean)
+
+        # 3) Sui gap DOPO il draw corrente arma l'eventuale H1 per il PROSSIMO.
+        signal = await self.arm_from_current_gaps(
+            app, current_key=current_key, mode=mode, notify=notify
         )
 
-        # 3) SOLO ORA il draw corrente diventa una nuova origine.
-        #    Quindi il suo conteggio partira' dalla prossima estrazione.
-        self.start_new_origin(current_key, mode)
+        if persist:
+            self.save_state(git=(mode == "live"))
 
-        self.save_state(git=(mode == "live"))
+        return {"result": result, "signal": signal}
 
     # ----------------------------
     # Warmup
     # ----------------------------
+
+    def _reset_for_warmup(self):
+        self.processed = []
+        self.processed_set = set()
+        self.last_draw_key = None
+        self.seq = 0
+        self.last_seen_seq = {n: None for n in range(1, 91)}
+        self.pending_event = None
+        self.recent_events = []
+        self.stats_warmup = self._new_stats()
+        self.stats_live = self._new_stats()
 
     async def run_initial_warmup(self, app=None):
         if self.warmup_done:
@@ -1410,6 +1321,7 @@ class FiveSurvivorsEngine:
         all_records, sources = fetch_warmup_records(WARMUP_DAYS)
         records, sources, continuity = _select_latest_contiguous_warmup(all_records, sources)
         integrity_problems = list(continuity.get("problems", []) or [])
+
         if integrity_problems:
             return {
                 "already_done": False,
@@ -1431,25 +1343,31 @@ class FiveSurvivorsEngine:
                 "reason": f"warmup continuo insufficiente: {len(records)}<{WARMUP_MIN_DRAWS}{extra}",
             }
 
-        # Stato completamente pulito.
-        self.processed = []
-        self.processed_set = set()
-        self.last_draw_key = None
-        self.seq = 0
-        self.origins = []
-        self.next_origin_id = 1
-        self.seen_baskets = []
-        self.seen_basket_set = set()
-        self.candidates = []
-        self.next_candidate_id = 1
-        self.stats_warmup = self._new_stats()
-        self.stats_live = self._new_stats()
+        self._reset_for_warmup()
 
         for d, e, nums in records:
             await self.process_draw(
-                app=None, day=d, e=e, nums=nums,
-                mode="warmup", notify=False,
+                app=None,
+                day=d,
+                e=e,
+                nums=nums,
+                mode="warmup",
+                notify=False,
+                persist=False,
             )
+
+        # Con un warmup ampio tutti i 90 numeri devono essere stati osservati.
+        unknown = [n for n in range(1, 91) if self.last_seen_seq.get(n) is None]
+        if unknown:
+            self._reset_for_warmup()
+            return {
+                "already_done": False,
+                "ok": False,
+                "draws": len(records),
+                "sources": sources,
+                "continuity_note": continuity.get("note"),
+                "reason": f"warmup senza ultima uscita nota per: {unknown}",
+            }
 
         self.warmup_done = True
         self.warmup_completed_at = now_txt()
@@ -1467,112 +1385,108 @@ class FiveSurvivorsEngine:
         }
 
     # ----------------------------
-    # Testi stato/stats
+    # Testi / diagnostica
     # ----------------------------
 
-    def candidate_lines(self, max_rows=12):
-        if not self.candidates:
-            return ["• nessun candidato attivo"]
-        out = []
-        for c in self.candidates[:max_rows]:
-            pair = self.candidate_pair(c)
-            phase = c.get("phase")
-            if phase == "WAIT30":
-                desc = f"WAIT {int(c.get('wait_count', 0))}/{EXTRA_WAIT}"
-            elif phase == "H1":
-                desc = "🎯 H1 PROSSIMA"
-            elif phase == "H2":
-                desc = "🎯 H2 PROSSIMA"
-            else:
-                desc = str(phase)
-            out.append(
-                f"• #{c.get('id')} {fmt_pair(pair)} | {desc} | origine {c.get('origin_anchor_key', '-')}"
-            )
-        if len(self.candidates) > max_rows:
-            out.append(f"• ... +{len(self.candidates) - max_rows} altri")
-        return out
+    def current_gap_lists(self):
+        return self.numbers_at_gap(GAP_A), self.numbers_at_gap(GAP_B)
 
-    def stats_text(self, live_only=False):
+    def pending_text(self):
+        if not self.pending_event:
+            return "• nessun H1 armato"
+        items = self.pending_event.get("items", []) or []
+        nums4 = sorted({int(x["gap4"]) for x in items})
+        nums27 = sorted({int(x["gap27"]) for x in items})
+        return (
+            f"• segnale da {self.pending_event.get('signal_from_key', '-')}\n"
+            f"• gap {GAP_A}: {', '.join(map(str, nums4)) or '-'}\n"
+            f"• gap {GAP_B}: {', '.join(map(str, nums27)) or '-'}\n"
+            f"• H1 prossima = {len(items)} ambi | costo potenziale = {len(items)*STAKE_H1:.2f}€\n"
+            f"• ambi: {self._format_pairs(items)}"
+        )
+
+    def live_summary_one_line(self):
         s = self.stats_live
-        h1p = int(s.get("h1_plays", 0))
-        h1h = int(s.get("h1_hits", 0))
-        h2p = int(s.get("h2_plays", 0))
-        h2h = int(s.get("h2_hits", 0))
-        stops = int(s.get("stops_h2", 0))
-        closed = h1h + h2h + stops
-        hits = h1h + h2h
+        plays = int(s.get("h1_plays", 0))
+        hits = int(s.get("h1_hits", 0))
+        cost = float(s.get("cost", 0.0))
+        gross = float(s.get("gross", 0.0))
+        return (
+            f"HIT {hits}/{plays} ({safe_pct(hits, plays):.2f}%) | "
+            f"netto {gross-cost:+.2f}€ | ROI {safe_pct(gross-cost, cost):+.2f}%"
+        )
+
+    def _stats_block(self, title, s, include_draws=True):
+        plays = int(s.get("h1_plays", 0))
+        hits = int(s.get("h1_hits", 0))
+        misses = int(s.get("h1_misses", 0))
+        result_draws = int(s.get("result_draws", 0))
+        hit_draws = int(s.get("hit_draws", 0))
+        stop_draws = int(s.get("stop_draws", 0))
         cost = float(s.get("cost", 0.0))
         gross = float(s.get("gross", 0.0))
         net = gross - cost
-
-        lines = [
-            "📊 FORWARD LIVE — 5 SURV / 70-79 / +30 / H1-H2",
-            f"• origini attive = {len(self.origins)} | basket unici storici = {len(self.seen_basket_set)}",
-            f"• nuovi basket5 live = {int(s.get('baskets5', 0))}",
-            f"• oldest70-79 live = {int(s.get('baskets5_oldest_target', 0))}",
-            f"• candidati live = {int(s.get('candidates', 0))} | annullati WAIT30 = {int(s.get('canceled_wait30', 0))}",
-            f"• chiusi = {closed} | HIT = {hits} | STOP = {stops} | HIT H1-H2 = {safe_pct(hits, closed):.2f}%",
-            f"• H1 = {h1h}/{h1p} | H2 = {h2h}/{h2p}",
+        break_even = 100.0 / AMBO_PAYOUT if AMBO_PAYOUT else 0.0
+        lines = [title]
+        if include_draws:
+            lines.append(f"• draw elaborati = {int(s.get('draws', 0))}")
+        lines.extend([
+            f"• draw con segnale generato = {int(s.get('signal_draws', 0))} | ambi segnalati = {int(s.get('pairs_signaled', 0))}",
+            f"• draw H1 chiusi = {result_draws} | con >=1 HIT = {hit_draws} ({safe_pct(hit_draws, result_draws):.2f}%) | senza HIT = {stop_draws}",
+            f"• multi-HIT nello stesso draw = {int(s.get('multi_hit_draws', 0))}",
+            f"• AMBI H1 = {hits}/{plays} ({safe_pct(hits, plays):.2f}%) | break-even = {break_even:.2f}%",
+            f"• MISS ambo = {misses} | max ambi in un singolo segnale = {int(s.get('max_pairs_signal', 0))}",
             f"• costo = {cost:.2f}€ | lordo = {gross:.2f}€ | netto = {net:+.2f}€ | ROI = {safe_pct(net, cost):+.2f}%",
-        ]
+        ])
+        return lines
 
-        if not live_only:
-            w = self.stats_warmup
-            wh1p = int(w.get("h1_plays", 0))
-            wh1h = int(w.get("h1_hits", 0))
-            wh2p = int(w.get("h2_plays", 0))
-            wh2h = int(w.get("h2_hits", 0))
-            wstops = int(w.get("stops_h2", 0))
-            wclosed = wh1h + wh2h + wstops
-            whits = wh1h + wh2h
-            wc = float(w.get("cost", 0.0))
-            wg = float(w.get("gross", 0.0))
-            lines.extend([
-                "",
-                "🕰️ WARMUP DIAGNOSTICO",
-                f"• draw = {self.warmup_draws}",
-                f"• origini create = {int(w.get('origins_started', 0))}",
-                f"• basket5 unici = {int(w.get('baskets5', 0))}",
-                f"• oldest70-79 = {int(w.get('baskets5_oldest_target', 0))}",
-                f"• candidati = {int(w.get('candidates', 0))} | annullati WAIT30 = {int(w.get('canceled_wait30', 0))}",
-                f"• chiusi H1-H2 = {wclosed} | HIT = {whits} ({safe_pct(whits, wclosed):.2f}%)",
-                f"• H1 = {wh1h}/{wh1p} | H2 = {wh2h}/{wh2p}",
-                f"• ROI warmup = {safe_pct(wg - wc, wc):+.2f}%",
-            ])
-
+    def stats_text(self):
+        lines = self._stats_block(
+            f"📊 FORWARD LIVE — GAP {GAP_A}+{GAP_B} / DECINE DIVERSE / SOLO H1",
+            self.stats_live,
+        )
+        lines.extend([
+            "",
+            "🎯 H1 ATTUALE",
+            self.pending_text(),
+            "",
+            *self._stats_block("🕰️ WARMUP DIAGNOSTICO", self.stats_warmup),
+        ])
         return "\n".join(lines)
 
     def status_text(self):
+        nums4, nums27 = self.current_gap_lists()
         lines = [
-            "🎯 5 SUPERSTITI → OLDEST 70-79 → +30 → H1/H2",
+            f"🎯 GAP {GAP_A} + GAP {GAP_B} → DECINE DIVERSE → SOLO H1",
             f"• modalita' = {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}",
             f"• ultimo draw = {self.last_draw_key or '-'} | seq = {self.seq}",
-            f"• origini ancora attive = {len(self.origins)}",
-            f"• basket globali gia' deduplicati = {len(self.seen_basket_set)}",
-            f"• candidati attivi = {len(self.candidates)}",
+            f"• gap {GAP_A} ora = {', '.join(map(str, nums4)) or '-'}",
+            f"• gap {GAP_B} ora = {', '.join(map(str, nums27)) or '-'}",
+            f"• H1 attivi per prossima = {self.pending_pairs_count()} ambi",
             f"• warmup = {'OK' if self.warmup_done else 'NO'} | {self.warmup_draws} draw",
             f"• state checkout = {'CARICATO' if self.state_load_info.get('loaded') else 'NUOVO'} | saved_at={self.state_load_info.get('saved_at') or '-'}",
             f"• state Git = {'OK' if self.last_git_status.get('ok') else 'ERRORE'} | {self.last_git_status.get('action', '-')} | {self.last_git_status.get('detail', '-')}",
             "",
-            "🧩 CANDIDATI ATTUALI",
-            *self.candidate_lines(),
+            "🎯 EVENTO ATTUALE",
+            self.pending_text(),
             "",
-            self.stats_text(),
+            self.live_summary_one_line(),
         ]
         return "\n".join(lines)
 
     def menu_text(self):
         return (
-            "🎯 SUPERAMBO — STRATEGIA UNICA\n\n"
-            "Ogni estrazione crea una nuova origine. Dalla successiva, per quella origine, "
-            "seguo i 45 ambi di tutte le 9 decine.\n"
-            "Quando ci sono esattamente 5 superstiti, il basket viene deduplicato globalmente.\n"
-            "Scelgo il superstite rimasto unico da piu' tempo.\n"
-            f"Valido SOLO se e' della {TARGET_DECADE}.\n"
-            f"Poi altre {EXTRA_WAIT} assenze; quindi {STAKE_H1:.2f}€ H1 e, se perde, {STAKE_H2:.2f}€ H2.\n\n"
-            f"Modalita': {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}.\n"
-            "Warmup iniziale attivo; nessun reset giornaliero.\n\n"
-            "/status — stato origini/candidati\n"
+            "🎯 SUPERAMBO — GAP 4 + GAP 27 / SOLO H1\n\n"
+            f"Dopo ogni estrazione aggiorno i gap 1..90.\n"
+            f"Cerco tutti i numeri con gap esatto {GAP_A} e gap esatto {GAP_B}.\n"
+            "Formo tutti gli ambi tra i due gruppi, ma SOLO se appartengono a decine diverse.\n"
+            "Le decine sono: 90-9, 10-19, 20-29, ..., 80-89.\n"
+            "Tutti gli ambi validi vengono mantenuti e deduplicati.\n\n"
+            f"➡️ SOLO H1 sulla prossima estrazione: {STAKE_H1:.2f}€ per ambo.\n"
+            "Nessun H2, nessuna progressione, nessun WAIT30.\n"
+            f"Pagamento statistico impostato: {AMBO_PAYOUT:.2f}x.\n"
+            f"Modalita': {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}; il bot non effettua puntate automatiche.\n\n"
+            "/status — gap correnti + H1 armato\n"
             "/stats — risultati forward + warmup\n"
             "/menu — questa schermata"
         )
@@ -1604,7 +1518,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setup_commands(app):
     await app.bot.set_my_commands([
-        BotCommand("status", "Stato origini e candidati"),
+        BotCommand("status", "Gap correnti e H1 armato"),
         BotCommand("stats", "Statistiche forward e warmup"),
         BotCommand("menu", "Mostra la strategia"),
     ])
@@ -1648,26 +1562,25 @@ def acquire_single_instance_lock():
 # ============================================================
 
 async def notify_actionable_state(engine, app):
-    actionable = [c for c in engine.candidates if c.get("phase") in {"H1", "H2"}]
-    for c in actionable:
-        pair = engine.candidate_pair(c)
-        phase = c.get("phase")
-        stake = STAKE_H1 if phase == "H1" else STAKE_H2
-        await engine.tg(
-            app,
-            f"🎯 {signal_word()} {phase} GIA' ARMATO DALLO STATO CORRENTE\n\n"
-            f"Ambo: {fmt_pair(pair)}\n"
-            f"Origine: {c.get('origin_anchor_key', '-')}\n"
-            f"➡️ PROSSIMA estrazione: {stake:.2f}€ {phase}."
-        )
+    event = engine.pending_event
+    if not event:
+        return
+    items = event.get("items", []) or []
+    nums4 = sorted({int(x["gap4"]) for x in items})
+    nums27 = sorted({int(x["gap27"]) for x in items})
+    await engine.tg(
+        app,
+        f"🎯 {signal_word()} H1 GIA' ARMATO DALLO STATO CORRENTE\n\n"
+        f"Segnale da: {event.get('signal_from_key', '-')}\n"
+        f"Gap {GAP_A}: {', '.join(map(str, nums4)) or '-'}\n"
+        f"Gap {GAP_B}: {', '.join(map(str, nums27)) or '-'}\n"
+        f"Ambi ({len(items)}): {engine._format_pairs(items)}\n\n"
+        f"➡️ PROSSIMA estrazione: {STAKE_H1:.2f}€ H1 per ambo.\n"
+        "Nessun H2."
+    )
 
 
 async def startup(engine, app, warmup_retry_state=None):
-    """Esegue UN tentativo di startup.
-
-    Se il warmup non e' ancora utilizzabile restituisce False ma NON chiude il bot.
-    Il chiamante puo' quindi lasciare Telegram polling attivo e ritentare.
-    """
     warmup_retry_state = warmup_retry_state if warmup_retry_state is not None else {}
 
     console_log(
@@ -1697,18 +1610,12 @@ async def startup(engine, app, warmup_retry_state=None):
         console_log(f"  motivo = {reason}")
         console_log(f"  giorni/fonti = {sources_txt}")
         console_log(f"  continuita = {continuity_txt}")
-        console_log(
-            f"  il processo RESTA ATTIVO; nuovo tentativo tra {WARMUP_RETRY_SEC}s"
-        )
+        console_log(f"  il processo RESTA ATTIVO; nuovo tentativo tra {WARMUP_RETRY_SEC}s")
 
-        # Evita spam Telegram: avvisa al cambio motivo oppure almeno ogni N secondi.
         now_ts = time.time()
         last_reason = str(warmup_retry_state.get("last_reason", ""))
         last_tg_ts = float(warmup_retry_state.get("last_tg_ts", 0.0) or 0.0)
-        should_tg = (
-            reason != last_reason
-            or now_ts - last_tg_ts >= max(60, WARMUP_FAIL_TG_MIN_SECONDS)
-        )
+        should_tg = reason != last_reason or now_ts - last_tg_ts >= max(60, WARMUP_FAIL_TG_MIN_SECONDS)
         if should_tg:
             await engine.tg(
                 app,
@@ -1718,7 +1625,7 @@ async def startup(engine, app, warmup_retry_state=None):
                 f"• giorni/fonti = {sources_txt}\n"
                 f"• continuita' = {continuity_txt}\n\n"
                 "⏳ Il bot RESTA ACCESO e NON entra ancora nel motore live.\n"
-                f"Riprova automaticamente il warmup ogni {WARMUP_RETRY_SEC} secondi.\n"
+                f"Riprova automaticamente ogni {WARMUP_RETRY_SEC} secondi.\n"
                 "Nel frattempo /status e /stats restano disponibili."
             )
             warmup_retry_state["last_tg_ts"] = now_ts
@@ -1733,7 +1640,7 @@ async def startup(engine, app, warmup_retry_state=None):
     if warm.get("sources"):
         console_log(f"WARMUP SOURCES | {format_warmup_sources(warm.get('sources', []))}")
 
-    # Recupera eventuali draw di oggi successivi all'ultimo draw nello state.
+    # Recupera eventuali draw di oggi successivi allo state/warmup.
     try:
         rows = parse_site_today()
         console_log(f"CATCH-UP iniziale | righe live lette={len(rows)}")
@@ -1746,8 +1653,11 @@ async def startup(engine, app, warmup_retry_state=None):
     unseen.sort(key=lambda x: (x[0], x[1]))
     console_log(f"CATCH-UP iniziale | unseen={len(unseen)}")
     for d, e, nums in unseen:
-        # Catch-up silenzioso: mai inviare un segnale scaduto.
-        await engine.process_draw(app=None, day=d, e=e, nums=nums, mode="live", notify=False)
+        # Catch-up silenzioso: mai inviare segnali o risultati ormai scaduti.
+        await engine.process_draw(
+            app=None, day=d, e=e, nums=nums,
+            mode="live", notify=False, persist=False,
+        )
 
     persist = engine.save_state(git=True, force_git=True)
     if not persist.get("ok"):
@@ -1762,37 +1672,33 @@ async def startup(engine, app, warmup_retry_state=None):
 
     if not warm.get("already_done"):
         source_txt = format_warmup_sources(warm.get("sources", []))
+        nums4, nums27 = engine.current_gap_lists()
         await engine.tg(
             app,
             "🕰️ WARMUP INIZIALE COMPLETATO\n\n"
             f"• estrazioni = {warm.get('draws', 0)}\n"
-            f"• giorni = {WARMUP_DAYS}\n"
             f"• fonti = {source_txt or '-'}\n"
-            f"• continuita' = {warm.get('continuity_note') or 'tutti i giorni richiesti integri'}\n"
-            f"• origini ancora attive = {len(engine.origins)}\n"
-            f"• basket unici ricostruiti = {len(engine.seen_basket_set)}\n"
-            f"• candidati ancora attivi = {len(engine.candidates)}\n\n"
+            f"• continuita' = {warm.get('continuity_note') or 'segmento richiesto integro'}\n"
+            f"• gap {GAP_A} attuali = {', '.join(map(str, nums4)) or '-'}\n"
+            f"• gap {GAP_B} attuali = {', '.join(map(str, nums27)) or '-'}\n"
+            f"• H1 gia' valido per la prossima = {engine.pending_pairs_count()} ambi\n\n"
             f"{engine.stats_text()}"
         )
 
     await engine.tg(
         app,
-        "🚀 BOT 5 SUPERSTITI / 70-79 AVVIATO\n\n"
-        "✅ nuova origine a ogni estrazione\n"
-        "✅ 9 decine x 45 ambi seguite in parallelo\n"
-        "✅ basket valido = esattamente 5 superstiti\n"
-        "✅ basket identici deduplicati globalmente\n"
-        "✅ scelgo il piu' vecchio\n"
-        "✅ valido solo se e' 70-79\n"
-        f"✅ +{EXTRA_WAIT} assenze\n"
-        f"✅ H1 {STAKE_H1:.2f}€ + eventuale H2 {STAKE_H2:.2f}€\n"
+        f"🚀 BOT GAP {GAP_A}+{GAP_B} / DECINE DIVERSE / SOLO H1 AVVIATO\n\n"
+        f"✅ gap esatti = {GAP_A} e {GAP_B}\n"
+        "✅ tutte le coppie valide tra i due gruppi\n"
+        "✅ SOLO decine diverse: 90-9, 10-19, ..., 80-89\n"
+        "✅ ogni ambo deduplicato\n"
+        f"✅ SOLO H1 = {STAKE_H1:.2f}€ per ambo\n"
+        "✅ nessun H2 / progressione / WAIT30\n"
         f"✅ modalita' = {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}\n"
-        "✅ warmup iniziale + state persistente VERIFICATO su GitHub\n"
-        f"✅ giorni conclusi richiesti = {WARMUP_FULL_DAY_DRAWS} estrazioni senza buchi\n"
-        "✅ fallback automatico tra fonti\n"
-        "✅ se un vecchio giorno e' incompleto usa solo il segmento continuo successivo\n"
-        f"✅ se il warmup fallisce il processo resta acceso e ritenta ogni {WARMUP_RETRY_SEC}s\n\n"
-        f"Candidati attivi: {len(engine.candidates)}"
+        "✅ warmup continuo + state persistente GitHub\n"
+        f"✅ warmup minimo = {WARMUP_MIN_DRAWS} estrazioni continue\n"
+        f"✅ se il warmup fallisce resta acceso e ritenta ogni {WARMUP_RETRY_SEC}s\n\n"
+        f"H1 attivi per la prossima: {engine.pending_pairs_count()} ambi"
     )
     await notify_actionable_state(engine, app)
     console_log("STARTUP COMPLETATO -> entro nel live_loop")
@@ -1800,7 +1706,6 @@ async def startup(engine, app, warmup_retry_state=None):
 
 
 async def startup_until_ready(engine, app):
-    """Resta vivo finche' il warmup non e' pronto."""
     retry_state = {}
     attempt = 0
     while True:
@@ -1827,10 +1732,18 @@ async def live_loop(engine, app):
 
                 if len(unseen) == 1:
                     d, e, nums = unseen[0]
-                    await engine.process_draw(app=app, day=d, e=e, nums=nums, mode="live", notify=True)
+                    await engine.process_draw(
+                        app=app, day=d, e=e, nums=nums,
+                        mode="live", notify=True, persist=True,
+                    )
                 else:
+                    # Se il processo era rimasto indietro, elabora tutto ma non invia
+                    # messaggi ormai scaduti. Alla fine mostra solo il vero H1 corrente.
                     for d, e, nums in unseen:
-                        await engine.process_draw(app=None, day=d, e=e, nums=nums, mode="live", notify=False)
+                        await engine.process_draw(
+                            app=None, day=d, e=e, nums=nums,
+                            mode="live", notify=False, persist=False,
+                        )
                     engine.save_state(git=True, force_git=True)
                     await notify_actionable_state(engine, app)
 
@@ -1851,97 +1764,67 @@ async def live_loop(engine, app):
 # SELF TEST
 # ============================================================
 
-def _draw_without(pair):
-    excluded = set(pair)
-    return [n for n in range(1, 91) if n not in excluded][:20]
-
-
-def _draw_with(pair):
-    out = [pair[0], pair[1]]
-    for n in range(1, 91):
-        if n not in out:
-            out.append(n)
-        if len(out) == 20:
-            break
-    return out
-
-
 async def run_self_test():
-    eng = FiveSurvivorsEngine(load=False)
-    eng.save_state = lambda *a, **k: None
+    eng = Gap427Engine(load=False)
+    eng.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
 
-    # Test 1: una nuova origine NON usa il proprio draw, ma parte dal successivo.
-    nums0 = list(range(1, 21))
-    await eng.process_draw(None, "2099-01-01", 1, nums0, mode="warmup", notify=False)
-    assert len(eng.origins) == 1
-    assert all(mask == FULL_MASK for mask in eng.origins[0]["remaining"])
-
-    # Test 2: costruiamo direttamente un'origine con 5 superstiti e 70-79 oldest.
-    origin = {
-        "id": 999,
-        "anchor_seq": 1,
-        "anchor_key": "2099-01-01#001",
-        "remaining": [0] * 9,
-        "survivor_since": [None] * 9,
-        "survivor_since_key": [None] * 9,
-    }
-    setup = {
-        1: ((10, 11), 80),
-        2: ((20, 21), 85),
-        4: ((40, 41), 90),
-        7: ((70, 71), 50),
-        8: ((80, 81), 95),
-    }
+    # 1) Gap: se un numero e' uscito alla seq 96 e ora siamo a 100 -> gap 4.
     eng.seq = 100
-    for i, (pair, since) in setup.items():
-        idx = PAIR_INDEX[i][tuple(sorted(pair))]
-        origin["remaining"][i] = 1 << idx
-        origin["survivor_since"][i] = since
-        origin["survivor_since_key"][i] = f"T#{since}"
-    eng.origins = [origin]
+    eng.last_seen_seq = {n: None for n in range(1, 91)}
+    eng.last_seen_seq[17] = 96
+    eng.last_seen_seq[73] = 73
+    assert eng.current_gap(17) == 4
+    assert eng.current_gap(73) == 27
 
-    # Nessun hit mask: il basket viene rilevato e crea candidato.
-    await eng.advance_origins(
-        None, "2099-01-01", 2, _draw_without((70, 71)), [0] * 9,
-        "2099-01-01#002", mode="warmup", notify=False,
+    # 2) Decine diverse -> ambo valido.
+    items = eng.build_signal_items()
+    assert len(items) == 1
+    assert tuple(items[0]["pair"]) == (17, 73)
+
+    # 3) Stessa decina -> esclusione totale.
+    eng.last_seen_seq = {n: None for n in range(1, 91)}
+    eng.last_seen_seq[72] = 96
+    eng.last_seen_seq[78] = 73
+    assert eng.build_signal_items() == []
+
+    # 4) Multipli: 2 gap4 x 2 gap27, uno stesso-decade escluso.
+    eng.last_seen_seq = {n: None for n in range(1, 91)}
+    eng.last_seen_seq[17] = 96   # gap4, decade 10-19
+    eng.last_seen_seq[25] = 96   # gap4, decade 20-29
+    eng.last_seen_seq[73] = 73   # gap27, decade 70-79
+    eng.last_seen_seq[28] = 73   # gap27, decade 20-29
+    items = eng.build_signal_items()
+    pairs = {tuple(x["pair"]) for x in items}
+    assert pairs == {(17, 28), (17, 73), (25, 73)}
+
+    # 5) Arma H1, poi sul draw successivo 17-73 deve essere HIT.
+    await eng.arm_from_current_gaps(None, "2099-01-01#100", mode="live", notify=False)
+    assert eng.pending_pairs_count() == 3
+    result = await eng.settle_pending(
+        None, "2099-01-01", 101,
+        [17, 73] + [n for n in range(1, 91) if n not in {17, 73}][:18],
+        mode="live", notify=False,
     )
-    assert len(eng.candidates) == 1
-    assert eng.candidate_pair(eng.candidates[0]) == (70, 71)
-    assert eng.candidates[0]["phase"] == "WAIT30"
+    assert result["plays"] == 3
+    assert result["hits"] == 1
+    assert eng.stats_live["h1_plays"] == 3
+    assert eng.stats_live["h1_hits"] == 1
+    assert abs(float(eng.stats_live["cost"]) - 3 * STAKE_H1) < 1e-9
+    assert abs(float(eng.stats_live["gross"]) - AMBO_PAYOUT * STAKE_H1) < 1e-9
 
-    # Lo stesso basket, anche se ritrovato da un'altra origine, NON deve duplicarsi.
-    clone = json.loads(json.dumps(eng._serialize_origin(origin)))
-    clone = eng._deserialize_origin(clone)
-    clone["id"] = 1000
-    eng.origins = [origin, clone]
-    old_candidates = len(eng.candidates)
-    await eng.advance_origins(
-        None, "2099-01-01", 3, _draw_without((70, 71)), [0] * 9,
-        "2099-01-01#003", mode="warmup", notify=False,
-    )
-    assert len(eng.candidates) == old_candidates, "deduplica globale basket fallita"
+    # 6) Il draw corrente azzera il gap dei numeri usciti PRIMA di creare il segnale nuovo.
+    eng = Gap427Engine(load=False)
+    eng.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
+    eng.seq = 99
+    eng.last_seen_seq = {n: 99 for n in range(1, 91)}
+    eng.last_seen_seq[17] = 95  # diventerebbe gap5 dopo incremento seq se assente
+    eng.last_seen_seq[73] = 72  # diventerebbe gap28 dopo incremento seq se assente
+    draw = list(range(1, 21))
+    await eng.process_draw(None, "2099-01-02", 100, draw, mode="live", notify=False, persist=False)
+    assert eng.current_gap(17) == 0  # 17 era nel draw corrente
+    assert eng.pending_event is None
 
-    # 30 draw assenti -> H1 armato.
-    eng.origins = []
-    nohit = _draw_without((70, 71))
-    for k in range(EXTRA_WAIT):
-        await eng.advance_candidates(None, "2099-01-02", 10 + k, nohit, mode="warmup", notify=False)
-    assert len(eng.candidates) == 1 and eng.candidates[0]["phase"] == "H1"
-
-    # H1 miss -> H2; H2 hit -> chiusura.
-    await eng.advance_candidates(None, "2099-01-02", 50, nohit, mode="warmup", notify=False)
-    assert eng.candidates[0]["phase"] == "H2"
-    await eng.advance_candidates(None, "2099-01-02", 51, _draw_with((70, 71)), mode="warmup", notify=False)
-    assert len(eng.candidates) == 0
-
-    s = eng.stats_warmup
-    assert s["h1_plays"] == 1
-    assert s["h2_plays"] == 1
-    assert s["h2_hits"] == 1
-    assert abs(float(s["cost"]) - (STAKE_H1 + STAKE_H2)) < 1e-9
-    assert abs(float(s["gross"]) - AMBO_PAYOUT * STAKE_H2) < 1e-9
-
-    print("SELF-TEST OK: multi-origin + dedup basket + oldest70-79 + WAIT30 + H1/H2")
+    print("SELF-TEST OK: gap4+gap27 + decine diverse + tutti gli ambi + SOLO H1 + contabilita' multi-ambo")
 
 
 # ============================================================
@@ -1961,8 +1844,9 @@ async def main():
         raise RuntimeError("CHAT_ID mancante/non valido nelle variabili ambiente")
 
     app = ApplicationBuilder().token(TOKEN).build()
-    engine = FiveSurvivorsEngine()
+    engine = Gap427Engine()
     app.bot_data["engine"] = engine
+
     console_log(
         f"STATE STARTUP | loaded={engine.state_load_info.get('loaded')} | "
         f"reason={engine.state_load_info.get('reason')} | "
@@ -1977,8 +1861,7 @@ async def main():
     await app.start()
     await setup_commands(app)
 
-    # Avvia subito il polling Telegram: anche durante un warmup non pronto
-    # /status, /stats e /menu restano disponibili e GitHub Actions resta in corso.
+    # Telegram resta disponibile anche durante eventuali retry del warmup.
     await app.updater.start_polling(drop_pending_updates=True)
     console_log("TELEGRAM polling attivo; avvio/ritento warmup fino a successo")
 
