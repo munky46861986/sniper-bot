@@ -49,6 +49,7 @@
 import asyncio
 import atexit
 import json
+import math
 import os
 import re
 import subprocess
@@ -171,6 +172,20 @@ FREQ_ANALYSIS_MIN_GROUP = int(os.getenv("FREQ_ANALYSIS_MIN_GROUP", "12"))
 FREQ_REGIME_DISTINCT5_MAX = int(os.getenv("FREQ_REGIME_DISTINCT5_MAX", "61"))
 FREQ_REGIME_H10_LOOKBACK = int(os.getenv("FREQ_REGIME_H10_LOOKBACK", "50"))
 FREQ_REGIME_H10_COMPLETED_MIN = int(os.getenv("FREQ_REGIME_H10_COMPLETED_MIN", "16"))
+
+# 10eLOTTO ENGINE SHADOW — surrogate statistico separato da CORE/FAST/FREQ.
+# Non genera puntate. Produce Top1/Top2 solo quando la confidence entra
+# nella coda superiore calibrata sui margini PRE-FUTURO recenti.
+ENGINE_SHADOW_ENABLED = os.getenv("ENGINE_SHADOW_ENABLED", "1") != "0"
+ENGINE_NOTIFY_SIGNALS = os.getenv("ENGINE_NOTIFY_SIGNALS", "1") != "0"
+ENGINE_MODEL_VERSION = 1
+ENGINE_HISTORY_MAX = int(os.getenv("ENGINE_HISTORY_MAX", "800"))
+ENGINE_MIN_HISTORY = int(os.getenv("ENGINE_MIN_HISTORY", "120"))
+ENGINE_TRANSITION_LOOKBACK = int(os.getenv("ENGINE_TRANSITION_LOOKBACK", "300"))
+ENGINE_MARGIN_LOOKBACK = int(os.getenv("ENGINE_MARGIN_LOOKBACK", "300"))
+ENGINE_MIN_MARGIN_SAMPLES = int(os.getenv("ENGINE_MIN_MARGIN_SAMPLES", "80"))
+ENGINE_SELECT_RATE = float(os.getenv("ENGINE_SELECT_RATE", "0.15"))
+ENGINE_RECENT_MAX = int(os.getenv("ENGINE_RECENT_MAX", "250"))
 
 PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
@@ -970,6 +985,16 @@ class DualGapEngine:
         self.freq_cohits_live = []
         self.freq_diag_version = FREQ_DIAG_VERSION
 
+        # 10eLotto ENGINE SHADOW: completamente separato dagli altri motori.
+        self.engine_model_version = ENGINE_MODEL_VERSION
+        self.engine_bootstrap_done = False
+        self.engine_history = []
+        self.engine_pending = None
+        self.engine_margin_history = []
+        self.engine_recent_events = []
+        self.engine_stats_warmup = self._new_engine_stats()
+        self.engine_stats_live = self._new_engine_stats()
+
         self.state_load_info = {
             "loaded": False,
             "reason": "non ancora controllato",
@@ -1028,6 +1053,30 @@ class DualGapEngine:
             "co_pair_hits": 0,
             "cohit_draws": 0,
         }
+
+    @staticmethod
+    def _new_engine_stats():
+        return {
+            "predictions": 0,
+            "evaluated": 0,
+            "all_top1_hits": 0,
+            "all_top2_any_hits": 0,
+            "signals": 0,
+            "signals_evaluated": 0,
+            "signal_top1_hits": 0,
+            "signal_top2_any_hits": 0,
+            "no_signal": 0,
+        }
+
+    @staticmethod
+    def _merge_engine_stats(dst, raw):
+        raw = raw if isinstance(raw, dict) else {}
+        for k in dst:
+            try:
+                dst[k] = int(raw.get(k, dst[k]) or 0)
+            except Exception:
+                pass
+        return dst
 
     @staticmethod
     def _merge_freq_stats(dst, raw):
@@ -1155,6 +1204,40 @@ class DualGapEngine:
                 "origin_mode": origin,
             })
         return out[-FREQ_RECENT_MAX:]
+
+    @staticmethod
+    def _sanitize_engine_history(raw):
+        out = []
+        for row in list(raw or []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                nums = sorted(set(map(int, row.get("nums", []) or [])))
+            except Exception:
+                continue
+            if len(nums) != 20 or any(n < 1 or n > 90 for n in nums):
+                continue
+            out.append({"key": str(row.get("key") or ""), "nums": nums})
+        return out[-ENGINE_HISTORY_MAX:]
+
+    @staticmethod
+    def _sanitize_engine_pending(raw):
+        if not isinstance(raw, dict):
+            return None
+        try:
+            top1 = int(raw.get("top1"))
+            top2 = int(raw.get("top2"))
+        except Exception:
+            return None
+        if not (1 <= top1 <= 90 and 1 <= top2 <= 90 and top1 != top2):
+            return None
+        clean = dict(raw)
+        clean["top1"] = top1
+        clean["top2"] = top2
+        clean["accepted"] = bool(raw.get("accepted", False))
+        if clean.get("origin_mode") not in {"warmup", "live"}:
+            clean["origin_mode"] = "live"
+        return clean
 
     # ----------------------------
     # Stato / serializzazione
@@ -1294,6 +1377,27 @@ class DualGapEngine:
                     self.freq_diag_version = FREQ_DIAG_VERSION
                     console_log("FREQ DIAGNOSTICS MIGRATED | origin accounting + return/co-hit v1")
 
+            # ENGINE SHADOW e' versionato a parte: eventuali upgrade NON toccano CORE/FAST/FREQ.
+            found_engine_version = int(d.get("engine_model_version", 0) or 0)
+            if found_engine_version == ENGINE_MODEL_VERSION:
+                self.engine_model_version = ENGINE_MODEL_VERSION
+                self.engine_history = self._sanitize_engine_history(d.get("engine_history", []))
+                self.engine_pending = self._sanitize_engine_pending(d.get("engine_pending"))
+                self.engine_margin_history = [
+                    float(x) for x in (d.get("engine_margin_history", []) or [])
+                    if isinstance(x, (int, float)) and math.isfinite(float(x))
+                ][-ENGINE_MARGIN_LOOKBACK:]
+                self.engine_recent_events = list(d.get("engine_recent_events", []) or [])[-ENGINE_RECENT_MAX:]
+                self._merge_engine_stats(self.engine_stats_warmup, d.get("engine_stats_warmup", {}))
+                self._merge_engine_stats(self.engine_stats_live, d.get("engine_stats_live", {}))
+                self.engine_bootstrap_done = bool(d.get("engine_bootstrap_done", False)) or len(self.engine_history) >= ENGINE_MIN_HISTORY
+            else:
+                self._reset_engine_shadow()
+                console_log(
+                    f"ENGINE SHADOW DA RICOSTRUIRE | old={found_engine_version} new={ENGINE_MODEL_VERSION} | "
+                    "CORE/FAST/FREQ preservati"
+                )
+
             self.state_load_info = {
                 "loaded": True,
                 "reason": "OK",
@@ -1352,6 +1456,14 @@ class DualGapEngine:
             "freq_h10_live": self.freq_h10_live[-FREQ_RECORD_MAX:],
             "freq_cohits_warmup": self.freq_cohits_warmup[-FREQ_RECENT_MAX:],
             "freq_cohits_live": self.freq_cohits_live[-FREQ_RECENT_MAX:],
+            "engine_model_version": ENGINE_MODEL_VERSION,
+            "engine_bootstrap_done": self.engine_bootstrap_done,
+            "engine_history": self.engine_history[-ENGINE_HISTORY_MAX:],
+            "engine_pending": self.engine_pending,
+            "engine_margin_history": self.engine_margin_history[-ENGINE_MARGIN_LOOKBACK:],
+            "engine_recent_events": self.engine_recent_events[-ENGINE_RECENT_MAX:],
+            "engine_stats_warmup": self.engine_stats_warmup,
+            "engine_stats_live": self.engine_stats_live,
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -1623,6 +1735,417 @@ class DualGapEngine:
             )
 
         return armed or None
+
+    # ----------------------------
+    # 10eLOTTO ENGINE SHADOW — surrogate multi-engine PRE-FUTURO
+    # ----------------------------
+
+    def _reset_engine_shadow(self):
+        self.engine_model_version = ENGINE_MODEL_VERSION
+        self.engine_bootstrap_done = False
+        self.engine_history = []
+        self.engine_pending = None
+        self.engine_margin_history = []
+        self.engine_recent_events = []
+        self.engine_stats_warmup = self._new_engine_stats()
+        self.engine_stats_live = self._new_engine_stats()
+
+    def _engine_stats(self, mode):
+        return self.engine_stats_warmup if mode == "warmup" else self.engine_stats_live
+
+    def engine_append_history(self, current_key, nums):
+        self.engine_history.append({
+            "key": str(current_key),
+            "nums": sorted(set(map(int, nums))),
+        })
+        self.engine_history = self.engine_history[-ENGINE_HISTORY_MAX:]
+        self.engine_bootstrap_done = len(self.engine_history) >= ENGINE_MIN_HISTORY
+
+    @staticmethod
+    def _engine_standardize(score_map):
+        vals = [float(score_map.get(n, 0.0)) for n in range(1, 91)]
+        mu = sum(vals) / len(vals)
+        var = sum((x - mu) ** 2 for x in vals) / len(vals)
+        sd = math.sqrt(var)
+        if sd <= 1e-12:
+            return {n: 0.0 for n in range(1, 91)}
+        return {n: (float(score_map.get(n, 0.0)) - mu) / sd for n in range(1, 91)}
+
+    @staticmethod
+    def _engine_quantile(values, q):
+        vals = sorted(float(x) for x in values if isinstance(x, (int, float)) and math.isfinite(float(x)))
+        if not vals:
+            return None
+        q = max(0.0, min(1.0, float(q)))
+        if len(vals) == 1:
+            return vals[0]
+        pos = q * (len(vals) - 1)
+        lo = int(math.floor(pos))
+        hi = int(math.ceil(pos))
+        if lo == hi:
+            return vals[lo]
+        w = pos - lo
+        return vals[lo] * (1.0 - w) + vals[hi] * w
+
+    def _engine_frequency_scores(self):
+        hist = self.engine_history
+        p0 = 20.0 / 90.0
+        windows = ((3, 1.00), (5, 1.15), (10, 1.00), (20, 0.80), (50, 0.50), (100, 0.30))
+        raw = {n: 0.0 for n in range(1, 91)}
+        rates = {}
+        for w, weight in windows:
+            if len(hist) < w:
+                continue
+            rows = hist[-w:]
+            denom = math.sqrt(max(1e-9, w * p0 * (1.0 - p0)))
+            for n in range(1, 91):
+                c = sum(1 for row in rows if n in row["nums"])
+                z = (c - w * p0) / denom
+                raw[n] += weight * z
+                rates[(n, w)] = c / float(w)
+        # Accelerazione recente rispetto al fondo: piccolo peso, sempre PRE-FUTURO.
+        if len(hist) >= 20:
+            for n in range(1, 91):
+                r5 = rates.get((n, 5), p0)
+                r10 = rates.get((n, 10), p0)
+                r20 = rates.get((n, 20), p0)
+                raw[n] += 1.25 * (r5 - r20) + 0.75 * (r10 - r20)
+        return raw
+
+    def _engine_transition_scores(self):
+        hist = self.engine_history
+        out = {n: 0.0 for n in range(1, 91)}
+        if len(hist) < 3:
+            return out
+        cur = set(hist[-1]["nums"])
+        start = max(0, len(hist) - 1 - ENGINE_TRANSITION_LOOKBACK)
+        den = {x: 0 for x in cur}
+        num = {x: {n: 0 for n in range(1, 91)} for x in cur}
+        for i in range(start, len(hist) - 1):
+            a = set(hist[i]["nums"])
+            b = hist[i + 1]["nums"]
+            active = cur.intersection(a)
+            if not active:
+                continue
+            for x in active:
+                den[x] += 1
+                nx = num[x]
+                for n in b:
+                    nx[n] += 1
+        p0 = 20.0 / 90.0
+        for n in range(1, 91):
+            vals = []
+            for x in cur:
+                d = den[x]
+                if d <= 0:
+                    continue
+                # Beta smoothing verso la baseline casuale.
+                vals.append((num[x][n] + 8.0 * p0) / (d + 8.0) - p0)
+            out[n] = (sum(vals) / len(vals)) if vals else 0.0
+        return out
+
+    def _engine_neighbor_scores(self):
+        hist = self.engine_history
+        out = {n: 0.0 for n in range(1, 91)}
+        if len(hist) < 3:
+            return out
+        cur = set(hist[-1]["nums"])
+        start = max(0, len(hist) - 1 - ENGINE_TRANSITION_LOOKBACK)
+        total_w = 0.0
+        for i in range(start, len(hist) - 1):
+            a = set(hist[i]["nums"])
+            sim = len(cur.intersection(a))
+            # Atteso casuale ~4.44: diamo piu' peso agli stati realmente simili,
+            # ma senza azzerare completamente il resto.
+            w = 0.20 + max(0.0, sim - 3.0) ** 2
+            total_w += w
+            for n in hist[i + 1]["nums"]:
+                out[n] += w
+        if total_w > 0:
+            p0 = 20.0 / 90.0
+            for n in out:
+                out[n] = out[n] / total_w - p0
+        return out
+
+    def _engine_gap_hazard_scores(self):
+        hist = self.engine_history
+        out = {n: 0.0 for n in range(1, 91)}
+        if len(hist) < 20:
+            return out
+        start = max(0, len(hist) - 1 - ENGINE_TRANSITION_LOOKBACK)
+        last_seen = {n: None for n in range(1, 91)}
+        exp = {g: 0 for g in range(16)}
+        hit = {g: 0 for g in range(16)}
+        # Ricostruzione dei gap nota solo con draw precedenti.
+        for i in range(len(hist) - 1):
+            for n in hist[i]["nums"]:
+                last_seen[n] = i
+            if i < start:
+                continue
+            nxt = set(hist[i + 1]["nums"])
+            for n in range(1, 91):
+                ls = last_seen[n]
+                g = 15 if ls is None else min(15, i - ls)
+                exp[g] += 1
+                if n in nxt:
+                    hit[g] += 1
+        p0 = 20.0 / 90.0
+        hazard = {g: (hit[g] + 30.0 * p0) / (exp[g] + 30.0) for g in exp}
+        current_last = {n: None for n in range(1, 91)}
+        for i, row in enumerate(hist):
+            for n in row["nums"]:
+                current_last[n] = i
+        i = len(hist) - 1
+        for n in range(1, 91):
+            ls = current_last[n]
+            g = 15 if ls is None else min(15, i - ls)
+            out[n] = hazard[g] - p0
+        return out
+
+    def engine_score_current(self):
+        if not ENGINE_SHADOW_ENABLED or len(self.engine_history) < ENGINE_MIN_HISTORY:
+            return None
+        components_raw = {
+            "freq": self._engine_frequency_scores(),
+            "transition": self._engine_transition_scores(),
+            "neighbor": self._engine_neighbor_scores(),
+            "gap": self._engine_gap_hazard_scores(),
+        }
+        components = {k: self._engine_standardize(v) for k, v in components_raw.items()}
+        weights = {"freq": 0.35, "transition": 0.30, "neighbor": 0.20, "gap": 0.15}
+        total = {}
+        for n in range(1, 91):
+            total[n] = sum(weights[k] * components[k][n] for k in weights)
+        ranked = sorted(range(1, 91), key=lambda n: (-total[n], n))
+        top1, top2 = ranked[0], ranked[1]
+        margin = float(total[top1] - total[top2])
+        # Consensus: in quanti mini-engine il Top1 e' almeno nei primi 5.
+        support = 0
+        component_ranks = {}
+        for k, sc in components.items():
+            rk = sorted(range(1, 91), key=lambda n: (-sc[n], n))
+            component_ranks[k] = rk[:5]
+            if top1 in rk[:5]:
+                support += 1
+        confidence = margin * (0.75 + 0.25 * (support / 4.0))
+        return {
+            "top1": top1,
+            "top2": top2,
+            "score1": float(total[top1]),
+            "score2": float(total[top2]),
+            "margin": margin,
+            "confidence": float(confidence),
+            "support": int(support),
+            "components_top5": component_ranks,
+        }
+
+    def engine_current_threshold(self):
+        bank = self.engine_margin_history[-ENGINE_MARGIN_LOOKBACK:]
+        if len(bank) < ENGINE_MIN_MARGIN_SAMPLES:
+            return None
+        return self._engine_quantile(bank, 1.0 - max(0.01, min(0.50, ENGINE_SELECT_RATE)))
+
+    async def settle_engine_pending(self, app, day, e, nums, mode="live", notify=True):
+        p = self.engine_pending
+        if not p:
+            return None
+        self.engine_pending = None
+        actual = set(map(int, nums))
+        origin = p.get("origin_mode") if p.get("origin_mode") in {"warmup", "live"} else mode
+        st = self._engine_stats(origin)
+        st["evaluated"] += 1
+        hit1 = int(p["top1"] in actual)
+        hit2 = int((p["top1"] in actual) or (p["top2"] in actual))
+        st["all_top1_hits"] += hit1
+        st["all_top2_any_hits"] += hit2
+        if p.get("accepted"):
+            st["signals_evaluated"] += 1
+            st["signal_top1_hits"] += hit1
+            st["signal_top2_any_hits"] += hit2
+            ev = {
+                "signal_from_key": p.get("signal_from_key"),
+                "result_key": draw_key(day, e),
+                "top1": p["top1"], "top2": p["top2"],
+                "top1_hit": bool(hit1), "top2_any_hit": bool(hit2),
+                "confidence": p.get("confidence"), "threshold": p.get("threshold"),
+                "origin_mode": origin,
+            }
+            self.engine_recent_events.append(ev)
+            self.engine_recent_events = self.engine_recent_events[-ENGINE_RECENT_MAX:]
+            if notify and mode == "live":
+                await self.tg(
+                    app,
+                    "🧠 10eLOTTO ENGINE — RISULTATO SHADOW\n\n"
+                    f"Segnale da: {p.get('signal_from_key','-')}\n"
+                    f"Risultato: {draw_key(day,e)}\n"
+                    f"TOP1 #{p['top1']}: {'✅ HIT' if hit1 else '❌ MISS'}\n"
+                    f"TOP2 backup #{p['top2']}: {'✅ almeno uno presente' if hit2 else '❌ nessuno dei due'}\n"
+                    f"Forward ENGINE: TOP1 {st['signal_top1_hits']}/{st['signals_evaluated']} "
+                    f"({safe_pct(st['signal_top1_hits'], st['signals_evaluated']):.2f}%) | "
+                    f">=1 TOP2 {st['signal_top2_any_hits']}/{st['signals_evaluated']} "
+                    f"({safe_pct(st['signal_top2_any_hits'], st['signals_evaluated']):.2f}%)"
+                )
+        return {"top1_hit": bool(hit1), "top2_any_hit": bool(hit2), "accepted": bool(p.get("accepted"))}
+
+    async def arm_engine_shadow(self, app, current_key, mode="live", notify=True):
+        if not ENGINE_SHADOW_ENABLED:
+            return None
+        scored = self.engine_score_current()
+        if not scored:
+            self.engine_pending = None
+            return None
+        threshold = self.engine_current_threshold()
+        ready = threshold is not None
+        accepted = bool(ready and scored["confidence"] >= threshold)
+        st = self._engine_stats(mode)
+        st["predictions"] += 1
+        if accepted:
+            st["signals"] += 1
+        else:
+            st["no_signal"] += 1
+        p = {
+            "signal_from_key": str(current_key),
+            "created_at": now_txt(),
+            "origin_mode": mode,
+            "top1": int(scored["top1"]),
+            "top2": int(scored["top2"]),
+            "score1": round(float(scored["score1"]), 8),
+            "score2": round(float(scored["score2"]), 8),
+            "margin": round(float(scored["margin"]), 8),
+            "confidence": round(float(scored["confidence"]), 8),
+            "threshold": None if threshold is None else round(float(threshold), 8),
+            "support": int(scored["support"]),
+            "accepted": accepted,
+        }
+        self.engine_pending = p
+        self.engine_margin_history.append(float(scored["confidence"]))
+        self.engine_margin_history = self.engine_margin_history[-ENGINE_MARGIN_LOOKBACK:]
+        if accepted and notify and mode == "live" and ENGINE_NOTIFY_SIGNALS:
+            await self.tg(
+                app,
+                "🧠 10eLOTTO ENGINE SHADOW — HIGH CONFIDENCE\n\n"
+                f"Segnale da: {current_key}\n"
+                f"🎯 TOP1: {p['top1']}\n"
+                f"🥈 TOP2 backup: {p['top2']}\n"
+                f"Confidence: {p['confidence']:.4f} | soglia dinamica: {p['threshold']:.4f}\n"
+                f"Consensus mini-engine: {p['support']}/4\n\n"
+                f"Filtro selettivo target ≈ top {ENGINE_SELECT_RATE*100:.0f}% dei margini recenti.\n"
+                "⚠️ SOLO SHADOW: nessuna puntata automatica."
+            )
+        return p
+
+    async def rebuild_engine_from_records(self, records):
+        """Ricostruisce SOLO ENGINE SHADOW. I record precedenti diventano calibrazione/warmup."""
+        self._reset_engine_shadow()
+        usable = list(records or [])[-ENGINE_HISTORY_MAX:]
+        for d, e, nums in usable:
+            clean = list(map(int, nums))
+            if len(clean) != 20 or len(set(clean)) != 20:
+                continue
+            await self.settle_engine_pending(None, d, e, clean, mode="warmup", notify=False)
+            k = draw_key(d, e)
+            self.engine_append_history(k, clean)
+            await self.arm_engine_shadow(None, k, mode="warmup", notify=False)
+        self.engine_bootstrap_done = len(self.engine_history) >= ENGINE_MIN_HISTORY
+        # L'ultima previsione del replay era warmup; la riarmo come prima previsione LIVE prospettica.
+        self.engine_pending = None
+        if self.engine_bootstrap_done and self.engine_history:
+            await self.arm_engine_shadow(None, self.engine_history[-1]["key"], mode="live", notify=False)
+        return self.engine_bootstrap_done
+
+    async def ensure_engine_bootstrap(self):
+        if not ENGINE_SHADOW_ENABLED:
+            return {"ok": True, "disabled": True, "draws": 0}
+        if self.engine_bootstrap_done and len(self.engine_history) >= ENGINE_MIN_HISTORY:
+            return {"ok": True, "already_done": True, "draws": len(self.engine_history)}
+        try:
+            all_records, sources = fetch_warmup_records(WARMUP_DAYS)
+            records, _, continuity = _select_latest_contiguous_warmup(all_records, sources)
+            if self.processed_set:
+                usable = [(d, e, nums) for d, e, nums in records if draw_key(d, e) in self.processed_set]
+            else:
+                usable = list(records)
+            usable.sort(key=lambda x: (x[0], x[1]))
+            usable = usable[-ENGINE_HISTORY_MAX:]
+            ok = await self.rebuild_engine_from_records(usable)
+            return {
+                "ok": bool(ok), "already_done": False, "draws": len(usable),
+                "continuity_note": continuity.get("note"),
+                "reason": None if ok else f"storico ENGINE insufficiente: {len(usable)}<{ENGINE_MIN_HISTORY}",
+            }
+        except Exception as exc:
+            return {"ok": False, "already_done": False, "draws": 0, "reason": f"{type(exc).__name__}: {exc}"}
+
+    def engine_promote_pending_to_live(self):
+        """Promuove la sola previsione prospettica finale del warmup a LIVE, senza rifarla."""
+        p = self.engine_pending
+        if not p or p.get("origin_mode") != "warmup":
+            return False
+        sw = self.engine_stats_warmup
+        sl = self.engine_stats_live
+        sw["predictions"] = max(0, int(sw.get("predictions", 0)) - 1)
+        sl["predictions"] = int(sl.get("predictions", 0)) + 1
+        if p.get("accepted"):
+            sw["signals"] = max(0, int(sw.get("signals", 0)) - 1)
+            sl["signals"] = int(sl.get("signals", 0)) + 1
+        else:
+            sw["no_signal"] = max(0, int(sw.get("no_signal", 0)) - 1)
+            sl["no_signal"] = int(sl.get("no_signal", 0)) + 1
+        p["origin_mode"] = "live"
+        return True
+
+    def _engine_stats_line(self, label, st):
+        ev = int(st.get("evaluated", 0))
+        sig_ev = int(st.get("signals_evaluated", 0))
+        return (
+            f"• {label}: tutte TOP1 {st.get('all_top1_hits',0)}/{ev} "
+            f"({safe_pct(st.get('all_top1_hits',0), ev):.2f}%) | >=1 TOP2 {st.get('all_top2_any_hits',0)}/{ev} "
+            f"({safe_pct(st.get('all_top2_any_hits',0), ev):.2f}%)\n"
+            f"  selettive TOP1 {st.get('signal_top1_hits',0)}/{sig_ev} "
+            f"({safe_pct(st.get('signal_top1_hits',0), sig_ev):.2f}%) | >=1 TOP2 {st.get('signal_top2_any_hits',0)}/{sig_ev} "
+            f"({safe_pct(st.get('signal_top2_any_hits',0), sig_ev):.2f}%) | segnali creati={st.get('signals',0)}"
+        )
+
+    def engine_text(self):
+        if not ENGINE_SHADOW_ENABLED:
+            return "🧠 10eLOTTO ENGINE SHADOW disabilitato (ENGINE_SHADOW_ENABLED=0)."
+        p = self.engine_pending
+        threshold = self.engine_current_threshold()
+        if p:
+            if p.get("accepted"):
+                pending = (
+                    f"🔥 HIGH CONFIDENCE per la prossima: TOP1 {p['top1']} | TOP2 {p['top2']} | "
+                    f"conf={p.get('confidence',0):.4f} soglia={p.get('threshold',0):.4f} support={p.get('support',0)}/4"
+                )
+            else:
+                pending = (
+                    f"NO SIGNAL | ranking corrente TOP1 {p['top1']} / TOP2 {p['top2']} | "
+                    f"conf={p.get('confidence',0):.4f}"
+                )
+        else:
+            pending = "nessuna previsione armata"
+        recent = [x for x in self.engine_recent_events if x.get("origin_mode") == "live"][-10:]
+        recent_txt = "\n".join(
+            f"• {x.get('result_key','-')}: #{x.get('top1')} {'HIT' if x.get('top1_hit') else 'MISS'} | "
+            f"backup #{x.get('top2')} {'OK' if x.get('top2_any_hit') else 'MISS'}"
+            for x in recent
+        ) or "• -"
+        return (
+            "🧠 10eLOTTO ENGINE — SOLO SHADOW\n"
+            "• surrogate multi-engine: frequenza/accelerazione + transizioni + vicini di stato + hazard gap\n"
+            "• NON modifica CORE/FAST/FREQ e NON genera puntate\n\n"
+            f"Storico ENGINE: {len(self.engine_history)}/{ENGINE_MIN_HISTORY}+ | calibrazione margini: "
+            f"{len(self.engine_margin_history)}/{ENGINE_MIN_MARGIN_SAMPLES}+\n"
+            f"Filtro selettivo target: top {ENGINE_SELECT_RATE*100:.0f}% | soglia attuale: "
+            f"{'BUILD' if threshold is None else f'{threshold:.4f}'}\n"
+            f"Prossima: {pending}\n\n"
+            "📊 FORWARD\n" + self._engine_stats_line("LIVE", self.engine_stats_live) + "\n\n"
+            "🕰️ CALIBRAZIONE/WARMUP\n" + self._engine_stats_line("WARMUP", self.engine_stats_warmup) + "\n\n"
+            "🧾 ULTIMI SEGNALI LIVE\n" + recent_txt + "\n\n"
+            "Baseline casuale: TOP1 22.22% | almeno uno di 2 numeri ≈39.70%.\n"
+            "⚠️ Le percentuali del precedente backtest LightGBM NON vengono attribuite a questo surrogate: "
+            "questo motore deve dimostrarle in forward."
+        )
 
     # ----------------------------
     # FREQ LAB — ENTRY-ONLY 2/5 e 2/20
@@ -2565,15 +3088,21 @@ class DualGapEngine:
         results = await self.settle_pending(app, day, e, clean, mode=mode, notify=notify)
         # 1b) Avanza e valuta le sessioni FREQ nate nei draw precedenti.
         freq_results = await self.settle_freq_sessions(app, day, e, clean, mode=mode, notify=notify)
+        # 1c) Valuta la previsione ENGINE creata PRIMA di conoscere questo draw.
+        engine_result = await self.settle_engine_pending(app, day, e, clean, mode=mode, notify=notify) if ENGINE_SHADOW_ENABLED else None
         # 2) Aggiorna i gap CORE/FAST col draw corrente.
         self.update_last_seen(clean)
-        # 2b) Aggiorna lo storico FREQ col draw corrente.
+        # 2b) Aggiorna gli storici diagnostici col draw corrente.
         if FREQ_LAB_ENABLED:
             self.freq_append_history(current_key, clean)
+        if ENGINE_SHADOW_ENABLED:
+            self.engine_append_history(current_key, clean)
         # 3) Arma CORE e FAST per il draw successivo — LOGICA INVARIATA.
         signals = await self.arm_from_current_gaps(app, current_key, mode=mode, notify=notify)
         # 3b) Apre nuove osservazioni FREQ-BIRTH — solo shadow.
         freq_signals = await self.arm_freq_birth(app, current_key, mode=mode, notify=notify)
+        # 3c) Costruisce il ranking ENGINE per il SOLO draw successivo.
+        engine_signal = await self.arm_engine_shadow(app, current_key, mode=mode, notify=notify) if ENGINE_SHADOW_ENABLED else None
 
         if persist:
             self.save_state(git=(mode == "live"))
@@ -2581,6 +3110,7 @@ class DualGapEngine:
         return {
             "results": results, "signals": signals,
             "freq_results": freq_results, "freq_signals": freq_signals,
+            "engine_result": engine_result, "engine_signal": engine_signal,
         }
 
     # ----------------------------
@@ -2598,6 +3128,7 @@ class DualGapEngine:
         self.stats_warmup = {name: self._new_stats() for name in STRATEGY_ORDER}
         self.stats_live = {name: self._new_stats() for name in STRATEGY_ORDER}
         self._reset_freq_lab()
+        self._reset_engine_shadow()
 
     async def run_initial_warmup(self, app=None):
         if self.warmup_done:
@@ -2822,6 +3353,7 @@ class DualGapEngine:
             "/freqanalysis — analisi pattern/pre-gap ENTRY-ONLY\n"
             "/freqcluster — ritorni H3/H5/H10 + co-uscite FREQ attive\n"
             "/freqregime — regime globale COMPRESSION_ACTIVE / NORMAL\n"
+            "/engine — Top1/Top2 + confidence del 10eLotto ENGINE SHADOW\n"
             "/menu — questa schermata"
         )
 
@@ -2870,6 +3402,11 @@ async def cmd_freqregime(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, engine.freq_regime_text())
 
 
+async def cmd_engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.engine_text())
+
+
 async def setup_commands(app):
     await app.bot.set_my_commands([
         BotCommand("status", "Gap correnti, H1 CORE/FAST e stato FREQ"),
@@ -2878,7 +3415,8 @@ async def setup_commands(app):
         BotCommand("freqanalysis", "Analisi pattern/pre-gap FREQ ENTRY-ONLY"),
         BotCommand("freqcluster", "Ritorni e co-uscite FREQ attive"),
         BotCommand("freqregime", "Regime globale FREQ diagnostico"),
-        BotCommand("menu", "Mostra CORE, FAST e FREQ LAB"),
+        BotCommand("engine", "10eLotto ENGINE Top1/Top2 shadow"),
+        BotCommand("menu", "Mostra CORE, FAST, FREQ ed ENGINE"),
     ])
 
 
@@ -3022,6 +3560,29 @@ async def startup(engine, app, warmup_retry_state=None):
                 "Il FREQ LAB costruira' lo storico necessario con i prossimi draw."
             )
 
+    # ENGINE SHADOW ha state/versione indipendenti: se e' nuovo, usa i draw gia' processati
+    # solo come calibrazione e NON altera alcun altro motore.
+    if ENGINE_SHADOW_ENABLED and not engine.engine_bootstrap_done:
+        eng_boot = await engine.ensure_engine_bootstrap()
+        if eng_boot.get("ok"):
+            console_log(
+                f"ENGINE BOOTSTRAP OK | draws={eng_boot.get('draws', 0)} | "
+                f"margins={len(engine.engine_margin_history)}"
+            )
+        else:
+            console_log(f"ENGINE BOOTSTRAP PARZIALE | {eng_boot.get('reason', '-')}")
+            await engine.tg(
+                app,
+                "⚠️ 10eLOTTO ENGINE NON ANCORA PRONTO\n\n"
+                f"Motivo: {eng_boot.get('reason', '-')}\n"
+                "CORE, FAST e FREQ restano regolarmente attivi e INVARIATI.\n"
+                "ENGINE costruira' la calibrazione con i prossimi draw."
+            )
+
+    if ENGINE_SHADOW_ENABLED and not warm.get("already_done"):
+        if engine.engine_promote_pending_to_live():
+            console_log("ENGINE pending finale warmup promosso a LIVE")
+
     # Catch-up di eventuali draw successivi allo state/warmup.
     try:
         rows = parse_site_today()
@@ -3081,18 +3642,39 @@ async def startup(engine, app, warmup_retry_state=None):
         "🧪 FREQ LAB = ENTRY-ONLY 2/5 + 2/20, SEMPRE SHADOW, zero puntate\n"
         "🧪 niente duplicati stesso episodio; snapshot nascita + H1/H2/H3/H5/H10\n"
         "🧬 diagnostica ritorno >=1 H3/H5/H10 + co-uscite tra FREQ attivi\n"
+        "🧠 ENGINE SHADOW = Top1/Top2 selettivi, ensemble statistico, zero puntate\n"
         "✅ warmup continuo + state persistente GitHub\n"
         f"✅ warmup minimo = {WARMUP_MIN_DRAWS} estrazioni continue\n"
         f"✅ retry warmup ogni {WARMUP_RETRY_SEC}s\n\n"
         f"H1 CORE prossima: {engine.pending_pairs_count('core')} ambi\n"
         f"H1 FAST prossima: {engine.pending_pairs_count('fast')} ambi\n"
-        f"FREQ LAB: {'READY' if engine.freq_bootstrap_done else 'BUILD'} | sessioni={len(engine.freq_sessions)}\n\n"
+        f"FREQ LAB: {'READY' if engine.freq_bootstrap_done else 'BUILD'} | sessioni={len(engine.freq_sessions)}\n"
+        f"ENGINE: {'READY' if engine.engine_bootstrap_done else 'BUILD'} | filtro target top {ENGINE_SELECT_RATE*100:.0f}%\n\n"
         "ℹ️ FAST include il CORE a gap27: statistiche separate, costi non sommabili.\n"
-        "ℹ️ /freq mostra il forward; /freqanalysis pattern/pre-gap; /freqcluster ritorni/co-uscite; /freqregime contesto globale."
+        "ℹ️ /freq per FREQ; /freqregime per contesto; /engine per Top1/Top2 e risultati ENGINE."
     )
     await notify_actionable_state(engine, app)
+    await notify_engine_actionable_state(engine, app)
     console_log("STARTUP COMPLETATO -> entro nel live_loop")
     return True
+
+
+async def notify_engine_actionable_state(engine, app):
+    if not ENGINE_SHADOW_ENABLED:
+        return
+    p = engine.engine_pending
+    if not p or not p.get("accepted"):
+        return
+    await engine.tg(
+        app,
+        "🧠 10eLOTTO ENGINE — SEGNALE GIA' ARMATO DALLO STATO CORRENTE\n\n"
+        f"Segnale da: {p.get('signal_from_key','-')}\n"
+        f"🎯 TOP1: {p.get('top1')}\n"
+        f"🥈 TOP2 backup: {p.get('top2')}\n"
+        f"Confidence: {float(p.get('confidence',0)):.4f} | soglia: {float(p.get('threshold',0)):.4f}\n"
+        f"Consensus: {p.get('support',0)}/4\n\n"
+        "⚠️ SOLO SHADOW: vale esclusivamente per la prossima estrazione."
+    )
 
 
 async def startup_until_ready(engine, app):
@@ -3311,7 +3893,39 @@ async def run_self_test():
     assert coh.freq_stats_live["co_pair_hits"] == 1
     assert coh.freq_cohits_live and coh.freq_cohits_live[-1]["pair"] == [42,55]
 
-    print("SELF-TEST OK: CORE/FAST invariati + FREQ ENTRY-ONLY + origin accounting + return H3/H5/H10 + co-hit")
+    # ENGINE SHADOW: calibrazione PRE-FUTURO, Top1/Top2 validi e settlement sul solo draw successivo.
+    import random as _random
+    _random.seed(47013)
+    ee = DualGapEngine(load=False)
+    ee.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
+    recs = []
+    for i in range(260):
+        nums = sorted(_random.sample(range(1, 91), 20))
+        recs.append(("2099-05-01", i + 1, nums))
+    assert await ee.rebuild_engine_from_records(recs)
+    assert len(ee.engine_history) >= ENGINE_MIN_HISTORY
+    assert len(ee.engine_margin_history) >= ENGINE_MIN_MARGIN_SAMPLES
+    assert ee.engine_pending is not None
+    assert ee.engine_pending.get("origin_mode") == "live"
+    assert ee.engine_pending["top1"] != ee.engine_pending["top2"]
+    # Nessun leakage: cambiare un draw futuro non puo' cambiare lo score gia' costruito.
+    score_before = ee.engine_score_current()
+    future = sorted(_random.sample(range(1, 91), 20))
+    assert score_before == ee.engine_score_current()
+    p0 = dict(ee.engine_pending)
+    await ee.settle_engine_pending(None, "2099-05-02", 1, future, mode="live", notify=False)
+    assert ee.engine_pending is None
+    assert ee.engine_stats_live["evaluated"] >= 1
+    # Promozione warmup->live coerente sui contatori.
+    ep = DualGapEngine(load=False)
+    ep.engine_pending = {"top1": 1, "top2": 2, "accepted": True, "origin_mode": "warmup"}
+    ep.engine_stats_warmup["predictions"] = 1
+    ep.engine_stats_warmup["signals"] = 1
+    assert ep.engine_promote_pending_to_live()
+    assert ep.engine_stats_warmup["predictions"] == 0 and ep.engine_stats_live["predictions"] == 1
+    assert ep.engine_stats_warmup["signals"] == 0 and ep.engine_stats_live["signals"] == 1
+
+    print("SELF-TEST OK: CORE/FAST invariati + FREQ ENTRY-ONLY/regime + ENGINE SHADOW pre-futuro Top1/Top2")
 
 
 # ============================================================
@@ -3346,6 +3960,7 @@ async def main():
     app.add_handler(CommandHandler("freqanalysis", cmd_freqanalysis))
     app.add_handler(CommandHandler("freqcluster", cmd_freqcluster))
     app.add_handler(CommandHandler("freqregime", cmd_freqregime))
+    app.add_handler(CommandHandler("engine", cmd_engine))
     app.add_handler(CommandHandler("menu", cmd_menu))
 
     await app.initialize()
