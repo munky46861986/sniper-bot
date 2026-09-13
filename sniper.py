@@ -28,6 +28,7 @@
 #   • a H10 verifica >=4 uscite nelle 10 successive
 #   • diagnostica anche RITORNO >=1 entro H3/H5/H10
 #   • diagnostica co-uscite nello stesso draw tra candidati FREQ attivi
+#   • diagnostica regime globale COMPRESSION_ACTIVE / NORMAL (solo contesto)
 #   • contabilizza warmup/forward in base alla NASCITA della sessione
 #
 # IMPORTANTE:
@@ -163,6 +164,13 @@ FREQ_TARGET10_MIN_HITS = 4
 FREQ_RECENT_MAX = int(os.getenv("FREQ_RECENT_MAX", "250"))
 FREQ_RECORD_MAX = int(os.getenv("FREQ_RECORD_MAX", "5000"))
 FREQ_ANALYSIS_MIN_GROUP = int(os.getenv("FREQ_ANALYSIS_MIN_GROUP", "12"))
+
+# FREQ REGIME — SOLO DIAGNOSTICA / ZERO PUNTATE.
+# Backtest storico: la combinazione sotto ha portato FREQ H10 vicino alla baseline
+# in modo stabile, ma NON ha mostrato edge sufficiente per diventare operativa.
+FREQ_REGIME_DISTINCT5_MAX = int(os.getenv("FREQ_REGIME_DISTINCT5_MAX", "61"))
+FREQ_REGIME_H10_LOOKBACK = int(os.getenv("FREQ_REGIME_H10_LOOKBACK", "50"))
+FREQ_REGIME_H10_COMPLETED_MIN = int(os.getenv("FREQ_REGIME_H10_COMPLETED_MIN", "16"))
 
 PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
@@ -1659,6 +1667,56 @@ class DualGapEngine:
                 out.append(n)
         return out
 
+    def freq_regime_metrics(self):
+        """
+        Regime globale PRE-FUTURO, solo diagnostico.
+
+        COMPRESSION_ACTIVE quando:
+          1) <= FREQ_REGIME_DISTINCT5_MAX numeri distinti nelle ultime 5 estrazioni;
+          2) >= FREQ_REGIME_H10_COMPLETED_MIN sessioni FREQ H10 concluse
+             negli ultimi FREQ_REGIME_H10_LOOKBACK draw.
+
+        Usa esclusivamente informazioni gia' note al momento corrente.
+        Non modifica candidati, segnali o puntate.
+        """
+        hist = list(self.freq_history)
+        last5 = hist[-5:] if len(hist) >= 5 else hist
+        distinct5 = len({
+            int(n)
+            for row in last5
+            for n in (row.get("nums", []) or [])
+            if 1 <= int(n) <= 90
+        }) if last5 else 0
+
+        lookback = max(1, int(FREQ_REGIME_H10_LOOKBACK))
+        recent_keys = {str(row.get("key") or "") for row in hist[-lookback:]}
+        completed_ids = set()
+        for bank in (self.freq_h10_warmup, self.freq_h10_live):
+            for row in bank:
+                if str(row.get("evaluated_at") or "") not in recent_keys:
+                    continue
+                sid = str(row.get("id") or "")
+                if not sid:
+                    sid = f"{row.get('signal_from_key','')}|{row.get('number','?')}"
+                completed_ids.add(sid)
+        completed_h10 = len(completed_ids)
+
+        enough5 = len(last5) >= 5
+        enough_lb = len(hist) >= min(lookback, FREQ_HISTORY_MAX)
+        compression = enough5 and distinct5 <= int(FREQ_REGIME_DISTINCT5_MAX)
+        active = enough_lb and completed_h10 >= int(FREQ_REGIME_H10_COMPLETED_MIN)
+        label = "COMPRESSION_ACTIVE" if (compression and active) else "NORMAL"
+
+        return {
+            "label": label,
+            "distinct5": int(distinct5),
+            "completed_h10_lookback": int(completed_h10),
+            "lookback": int(lookback),
+            "compression_ok": bool(compression),
+            "activity_ok": bool(active),
+            "history_ready": bool(enough5 and enough_lb),
+        }
+
     def freq_entry_snapshot(self, n, current_key):
         """Fotografia PRE-FUTURO della vera nascita FREQ. Nessun leakage."""
         n = int(n)
@@ -1696,6 +1754,7 @@ class DualGapEngine:
         c50 = cnt(50) if total >= 50 else None
         extra_20_30 = (c30 - c20) if c30 is not None else None
         extra_20_50 = (c50 - c20) if c50 is not None else None
+        regime = self.freq_regime_metrics()
 
         return {
             "signal_key": str(current_key),
@@ -1714,6 +1773,11 @@ class DualGapEngine:
             "pre_absences": pre_absences,
             "prev_distance": prev_distance,
             "decade": decade_index(n),
+            # Regime globale noto al momento della nascita: SOLO diagnostica.
+            "regime": regime.get("label", "NORMAL"),
+            "regime_distinct5": regime.get("distinct5"),
+            "regime_h10_completed_lookback": regime.get("completed_h10_lookback"),
+            "regime_h10_lookback": regime.get("lookback"),
         }
 
     def _freq_origin_for_key(self, signal_key, fallback="live", index_map=None):
@@ -2129,7 +2193,8 @@ class DualGapEngine:
                 pg_txt = "?" if pg is None else str(pg)
                 detail.append(
                     f"#{x['number']} pattern={snap.get('pattern5','-')} "
-                    f"spacing={snap.get('spacing','?')} pre-gap={pg_txt}"
+                    f"spacing={snap.get('spacing','?')} pre-gap={pg_txt} "
+                    f"regime={snap.get('regime','NORMAL')}"
                 )
             await self.tg(
                 app,
@@ -2141,7 +2206,8 @@ class DualGapEngine:
                 "ENTRY-ONLY: se il numero resta nella condizione nei draw successivi NON viene riaperto.\n\n"
                 "Osservazione: H1 / H2 / H3 / H5 / H10.\n"
                 "Target H5: >=3 uscite nelle prossime 5.\n"
-                "Target H10: >=4 uscite nelle prossime 10.\n\n"
+                "Target H10: >=4 uscite nelle prossime 10.\n"
+                "Regime globale: SOLO diagnostica, non filtra il segnale.\n\n"
                 "⚠️ ZERO puntate: non modifica CORE o FAST."
             )
         return created
@@ -2410,6 +2476,51 @@ class DualGapEngine:
         ])
         return "\n".join(lines)
 
+    def freq_regime_text(self):
+        m = self.freq_regime_metrics()
+
+        def regime_return_line(label, rows):
+            rows = list(rows)
+            if not rows:
+                return f"• {label}: nessun H10 completato classificato da questa versione"
+            chunks = []
+            for h in FREQ_RETURN_HORIZONS:
+                hit = 0
+                for r in rows:
+                    ages = [int(x) for x in (r.get("hit_ages10", []) or [])]
+                    hit += int(any(a <= int(h) for a in ages))
+                chunks.append(f"H{h} {hit}/{len(rows)}={safe_pct(hit,len(rows)):.1f}%")
+            return f"• {label}: " + " | ".join(chunks)
+
+        live_classified = [
+            r for r in self.freq_h10_live
+            if (r.get("snapshot", {}) or {}).get("regime") in {"COMPRESSION_ACTIVE", "NORMAL"}
+        ]
+        live_hot = [r for r in live_classified if (r.get("snapshot", {}) or {}).get("regime") == "COMPRESSION_ACTIVE"]
+        live_normal = [r for r in live_classified if (r.get("snapshot", {}) or {}).get("regime") == "NORMAL"]
+
+        lines = [
+            "🧭 FREQ REGIME — SOLO SHADOW",
+            "• NON cambia la regola 2/5+2/20 e NON genera puntate",
+            f"• stato attuale = {m.get('label','NORMAL')}",
+            f"• distinti ultime 5 = {m.get('distinct5',0)} | soglia COMPRESSION <= {FREQ_REGIME_DISTINCT5_MAX}",
+            f"• H10 concluse ultimi {FREQ_REGIME_H10_LOOKBACK} draw = {m.get('completed_h10_lookback',0)} | soglia ACTIVE >= {FREQ_REGIME_H10_COMPLETED_MIN}",
+            "",
+            "📚 RIFERIMENTO BACKTEST 51.291 DRAW",
+            "• COMPRESSION_ACTIVE H10: TRAIN 91.26% | VALID 91.30% | TEST 91.34%",
+            "• baseline teorica ritorno H10 ≈ 91.90%",
+            "• quindi e' un indicatore di contesto, NON un edge operativo validato",
+            "",
+            "📊 FORWARD CLASSIFICATO DA QUESTA VERSIONE",
+            regime_return_line("COMPRESSION_ACTIVE", live_hot),
+            regime_return_line("NORMAL", live_normal),
+            f"• record H10 classificati = {len(live_classified)}",
+            "",
+            "⚠️ Non azzerare lo state: i vecchi record senza campo regime restano validi ma non entrano in questo confronto.",
+            "CORE e FAST restano completamente esclusi.",
+        ]
+        return "\n".join(lines)
+
     def freq_stats_text(self):
         if not FREQ_LAB_ENABLED:
             return "🧪 FREQ LAB disabilitato (FREQ_LAB_ENABLED=0)."
@@ -2431,7 +2542,7 @@ class DualGapEngine:
             self.freq_active_text(),
             "",
             "Baseline teorica singolo H1 = 22.22%; >=3/5 ≈ 7.64%; >=4/10 ≈ 16.32%.",
-            "Usa /freqanalysis per pattern/pre-gap; /freqcluster per ritorni e co-uscite.",
+            "Usa /freqanalysis per pattern/pre-gap; /freqcluster per ritorni/co-uscite; /freqregime per il contesto globale.",
         ])
         return "\n".join(lines)
 
@@ -2710,6 +2821,7 @@ class DualGapEngine:
             "/freq — dettaglio completo FREQ LAB\n"
             "/freqanalysis — analisi pattern/pre-gap ENTRY-ONLY\n"
             "/freqcluster — ritorni H3/H5/H10 + co-uscite FREQ attive\n"
+            "/freqregime — regime globale COMPRESSION_ACTIVE / NORMAL\n"
             "/menu — questa schermata"
         )
 
@@ -2753,6 +2865,11 @@ async def cmd_freqcluster(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, engine.freq_cluster_text())
 
 
+async def cmd_freqregime(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.freq_regime_text())
+
+
 async def setup_commands(app):
     await app.bot.set_my_commands([
         BotCommand("status", "Gap correnti, H1 CORE/FAST e stato FREQ"),
@@ -2760,6 +2877,7 @@ async def setup_commands(app):
         BotCommand("freq", "Statistiche complete FREQ ENTRY-ONLY"),
         BotCommand("freqanalysis", "Analisi pattern/pre-gap FREQ ENTRY-ONLY"),
         BotCommand("freqcluster", "Ritorni e co-uscite FREQ attive"),
+        BotCommand("freqregime", "Regime globale FREQ diagnostico"),
         BotCommand("menu", "Mostra CORE, FAST e FREQ LAB"),
     ])
 
@@ -2970,7 +3088,7 @@ async def startup(engine, app, warmup_retry_state=None):
         f"H1 FAST prossima: {engine.pending_pairs_count('fast')} ambi\n"
         f"FREQ LAB: {'READY' if engine.freq_bootstrap_done else 'BUILD'} | sessioni={len(engine.freq_sessions)}\n\n"
         "ℹ️ FAST include il CORE a gap27: statistiche separate, costi non sommabili.\n"
-        "ℹ️ /freq mostra il forward; /freqanalysis confronta pattern/pre-gap; /freqcluster ritorni e co-uscite."
+        "ℹ️ /freq mostra il forward; /freqanalysis pattern/pre-gap; /freqcluster ritorni/co-uscite; /freqregime contesto globale."
     )
     await notify_actionable_state(engine, app)
     console_log("STARTUP COMPLETATO -> entro nel live_loop")
@@ -3227,6 +3345,7 @@ async def main():
     app.add_handler(CommandHandler("freq", cmd_freq))
     app.add_handler(CommandHandler("freqanalysis", cmd_freqanalysis))
     app.add_handler(CommandHandler("freqcluster", cmd_freqcluster))
+    app.add_handler(CommandHandler("freqregime", cmd_freqregime))
     app.add_handler(CommandHandler("menu", cmd_menu))
 
     await app.initialize()
