@@ -106,6 +106,10 @@ LOCK_FILE = "/tmp/superambo_gap4_core_fast_h1.lock"
 LOGIC_VERSION = 2
 
 LOOP_SEC = int(os.getenv("LOOP_SEC", "60"))
+# GitHub-hosted runner: rotazione volontaria prima del limite massimo del job.
+# 19800s = 5h30m; lascia margine per salvataggio state e avvio del run successivo.
+BOT_MAX_RUNTIME_SECONDS = int(os.getenv("BOT_MAX_RUNTIME_SECONDS", "19800"))
+BOT_ROTATION_NOTIFY = os.getenv("BOT_ROTATION_NOTIFY", "1") != "0"
 WARMUP_RETRY_SEC = int(os.getenv("WARMUP_RETRY_SEC", "300"))
 WARMUP_FAIL_TG_MIN_SECONDS = int(os.getenv("WARMUP_FAIL_TG_MIN_SECONDS", "900"))
 WARMUP_DAYS = int(os.getenv("WARMUP_DAYS", "7"))
@@ -2986,11 +2990,41 @@ async def startup_until_ready(engine, app):
 
 
 async def live_loop(engine, app):
-    console_log(f"LIVE LOOP ATTIVO | polling sito ogni {LOOP_SEC}s")
+    console_log(
+        f"LIVE LOOP ATTIVO | polling sito ogni {LOOP_SEC}s | "
+        f"rotazione={BOT_MAX_RUNTIME_SECONDS}s"
+    )
     last_error = ""
     last_error_ts = 0.0
+    loop_started = time.monotonic()
 
     while True:
+        # GitHub-hosted runner: uscita VOLONTARIA prima del limite di 6 ore.
+        # Il workflow, vedendo exit code 0, avvia automaticamente il run successivo.
+        if BOT_MAX_RUNTIME_SECONDS > 0:
+            elapsed = time.monotonic() - loop_started
+            if elapsed >= BOT_MAX_RUNTIME_SECONDS:
+                console_log(
+                    f"ROTAZIONE runner richiesta | elapsed={int(elapsed)}s | "
+                    "salvo state e termino pulito"
+                )
+                try:
+                    st = engine.save_state(git=True, force_git=True)
+                    console_log(
+                        f"ROTAZIONE state | ok={st.get('ok')} | "
+                        f"action={st.get('action')} | detail={st.get('detail', '')}"
+                    )
+                except Exception as exc:
+                    console_log(f"⚠️ ROTAZIONE save_state: {type(exc).__name__}: {exc}")
+                if BOT_ROTATION_NOTIFY:
+                    await engine.tg(
+                        app,
+                        "♻️ ROTAZIONE RUNNER AUTOMATICA\n\n"
+                        "State salvato. Il processo termina in modo ordinato prima del limite GitHub; "
+                        "il workflow avviera' automaticamente il run successivo."
+                    )
+                return "rotation"
+
         try:
             rows = parse_site_today()
             unseen = [(d, e, nums) for d, e, nums in rows if not engine.already_processed(d, e)]
