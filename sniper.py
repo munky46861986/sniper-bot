@@ -186,6 +186,18 @@ ENGINE_MARGIN_LOOKBACK = int(os.getenv("ENGINE_MARGIN_LOOKBACK", "300"))
 ENGINE_MIN_MARGIN_SAMPLES = int(os.getenv("ENGINE_MIN_MARGIN_SAMPLES", "80"))
 ENGINE_SELECT_RATE = float(os.getenv("ENGINE_SELECT_RATE", "0.15"))
 ENGINE_RECENT_MAX = int(os.getenv("ENGINE_RECENT_MAX", "250"))
+# Diagnostica separata: segue OGNI segnale HIGH CONFIDENCE fino a H5,
+# senza cambiare ranking, soglia o creazione del segnale ENGINE.
+ENGINE_HORIZON_DIAG_VERSION = 1
+ENGINE_HORIZONS = (1, 2, 3, 5)
+ENGINE_HORIZON_MAX = max(ENGINE_HORIZONS)
+ENGINE_HORIZON_RECORD_MAX = int(os.getenv("ENGINE_HORIZON_RECORD_MAX", "4000"))
+
+# Profondita' ranking ENGINE — SOLO DIAGNOSTICA H1 / zero puntate.
+# Salva i Top5/Top10 dello STESSO score gia' usato per Top1/Top2 e misura
+# quanti numeri compaiono nel draw successivo. Non cambia ranking o filtro.
+ENGINE_RANK_DIAG_VERSION = 1
+ENGINE_RANK_DEPTHS = (5, 10)
 
 PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
@@ -994,6 +1006,15 @@ class DualGapEngine:
         self.engine_recent_events = []
         self.engine_stats_warmup = self._new_engine_stats()
         self.engine_stats_live = self._new_engine_stats()
+        # Horizon tracker diagnostico: SOLO segnali HIGH CONFIDENCE, nessun effetto sul ranking.
+        self.engine_horizon_diag_version = ENGINE_HORIZON_DIAG_VERSION
+        self.engine_horizon_sessions = []
+        self.engine_horizon_records_warmup = []
+        self.engine_horizon_records_live = []
+        # Ranking-depth tracker: Top5/Top10 H1, separato da tutto il resto.
+        self.engine_rank_diag_version = ENGINE_RANK_DIAG_VERSION
+        self.engine_rank_stats_warmup = self._new_engine_rank_stats()
+        self.engine_rank_stats_live = self._new_engine_rank_stats()
 
         self.state_load_info = {
             "loaded": False,
@@ -1076,6 +1097,45 @@ class DualGapEngine:
                 dst[k] = int(raw.get(k, dst[k]) or 0)
             except Exception:
                 pass
+        return dst
+
+    @staticmethod
+    def _new_engine_rank_stats():
+        def bucket(k):
+            return {
+                "total_hits": 0,
+                "hist": {str(i): 0 for i in range(k + 1)},
+            }
+        return {
+            "evaluated": 0,
+            "signals_evaluated": 0,
+            "all": {"5": bucket(5), "10": bucket(10)},
+            "signals": {"5": bucket(5), "10": bucket(10)},
+        }
+
+    @staticmethod
+    def _merge_engine_rank_stats(dst, raw):
+        raw = raw if isinstance(raw, dict) else {}
+        for key in ("evaluated", "signals_evaluated"):
+            try:
+                dst[key] = int(raw.get(key, 0) or 0)
+            except Exception:
+                dst[key] = 0
+        for group in ("all", "signals"):
+            srcg = raw.get(group, {}) if isinstance(raw.get(group, {}), dict) else {}
+            for depth in (5, 10):
+                dkey = str(depth)
+                src = srcg.get(dkey, {}) if isinstance(srcg.get(dkey, {}), dict) else {}
+                try:
+                    dst[group][dkey]["total_hits"] = int(src.get("total_hits", 0) or 0)
+                except Exception:
+                    dst[group][dkey]["total_hits"] = 0
+                hist = src.get("hist", {}) if isinstance(src.get("hist", {}), dict) else {}
+                for i in range(depth + 1):
+                    try:
+                        dst[group][dkey]["hist"][str(i)] = int(hist.get(str(i), hist.get(i, 0)) or 0)
+                    except Exception:
+                        dst[group][dkey]["hist"][str(i)] = 0
         return dst
 
     @staticmethod
@@ -1235,9 +1295,85 @@ class DualGapEngine:
         clean["top1"] = top1
         clean["top2"] = top2
         clean["accepted"] = bool(raw.get("accepted", False))
+        # Top5/Top10 sono opzionali per compatibilita' con gli state precedenti.
+        for depth in ENGINE_RANK_DEPTHS:
+            key = f"top{depth}"
+            try:
+                vals = [int(x) for x in (raw.get(key, []) or [])]
+            except Exception:
+                vals = []
+            if len(vals) == depth and len(set(vals)) == depth and all(1 <= n <= 90 for n in vals):
+                clean[key] = vals
+            else:
+                clean.pop(key, None)
         if clean.get("origin_mode") not in {"warmup", "live"}:
             clean["origin_mode"] = "live"
         return clean
+
+    @staticmethod
+    def _sanitize_engine_horizon_sessions(raw):
+        out = []
+        for row in list(raw or []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                top1 = int(row.get("top1"))
+                top2 = int(row.get("top2"))
+                age = int(row.get("age", 0) or 0)
+                support = int(row.get("support", 0) or 0)
+                h1 = sorted({int(x) for x in (row.get("top1_hit_ages", []) or []) if 1 <= int(x) <= ENGINE_HORIZON_MAX})
+                h2 = sorted({int(x) for x in (row.get("top2_any_hit_ages", []) or []) if 1 <= int(x) <= ENGINE_HORIZON_MAX})
+            except Exception:
+                continue
+            if not (1 <= top1 <= 90 and 1 <= top2 <= 90 and top1 != top2):
+                continue
+            if not (0 <= age < ENGINE_HORIZON_MAX and 0 <= support <= 4):
+                continue
+            origin = row.get("origin_mode") if row.get("origin_mode") in {"warmup", "live"} else "live"
+            out.append({
+                "signal_from_key": str(row.get("signal_from_key") or ""),
+                "created_at": row.get("created_at"),
+                "origin_mode": origin,
+                "top1": top1, "top2": top2,
+                "support": support,
+                "confidence": float(row.get("confidence", 0.0) or 0.0),
+                "threshold": row.get("threshold"),
+                "confidence_ratio": row.get("confidence_ratio"),
+                "age": age,
+                "top1_hit_ages": h1,
+                "top2_any_hit_ages": h2,
+            })
+        return out[-1000:]
+
+    @staticmethod
+    def _sanitize_engine_horizon_records(raw):
+        out = []
+        for row in list(raw or []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                h = int(row.get("horizon"))
+                top1 = int(row.get("top1"))
+                top2 = int(row.get("top2"))
+                support = int(row.get("support", 0) or 0)
+            except Exception:
+                continue
+            if h not in ENGINE_HORIZONS or not (1 <= top1 <= 90 and 1 <= top2 <= 90 and top1 != top2):
+                continue
+            if not 0 <= support <= 4:
+                continue
+            clean = dict(row)
+            clean.update({
+                "horizon": h, "top1": top1, "top2": top2, "support": support,
+                "top1_exact_hit": bool(row.get("top1_exact_hit", False)),
+                "top2_exact_any_hit": bool(row.get("top2_exact_any_hit", False)),
+                "top1_cum_hit": bool(row.get("top1_cum_hit", False)),
+                "top2_cum_any_hit": bool(row.get("top2_cum_any_hit", False)),
+            })
+            if clean.get("origin_mode") not in {"warmup", "live"}:
+                clean["origin_mode"] = "live"
+            out.append(clean)
+        return out[-ENGINE_HORIZON_RECORD_MAX:]
 
     # ----------------------------
     # Stato / serializzazione
@@ -1391,6 +1527,19 @@ class DualGapEngine:
                 self._merge_engine_stats(self.engine_stats_warmup, d.get("engine_stats_warmup", {}))
                 self._merge_engine_stats(self.engine_stats_live, d.get("engine_stats_live", {}))
                 self.engine_bootstrap_done = bool(d.get("engine_bootstrap_done", False)) or len(self.engine_history) >= ENGINE_MIN_HISTORY
+                # Upgrade diagnostico non distruttivo: i vecchi risultati H1 restano intatti.
+                self.engine_horizon_diag_version = ENGINE_HORIZON_DIAG_VERSION
+                self.engine_horizon_sessions = self._sanitize_engine_horizon_sessions(d.get("engine_horizon_sessions", []))
+                self.engine_horizon_records_warmup = self._sanitize_engine_horizon_records(d.get("engine_horizon_records_warmup", []))
+                self.engine_horizon_records_live = self._sanitize_engine_horizon_records(d.get("engine_horizon_records_live", []))
+                # Ranking-depth v1: migrazione non distruttiva; i vecchi H1 restano intatti,
+                # Top5/Top10 iniziano a essere classificati solo dalle previsioni che li salvano.
+                self.engine_rank_diag_version = ENGINE_RANK_DIAG_VERSION
+                self._merge_engine_rank_stats(self.engine_rank_stats_warmup, d.get("engine_rank_stats_warmup", {}))
+                self._merge_engine_rank_stats(self.engine_rank_stats_live, d.get("engine_rank_stats_live", {}))
+                # Se lo state precedente ha un HIGH CONFIDENCE gia' armato, iniziamo a seguirlo da H1.
+                if self.engine_pending and self.engine_pending.get("accepted"):
+                    self._start_engine_horizon_session(self.engine_pending)
             else:
                 self._reset_engine_shadow()
                 console_log(
@@ -1464,6 +1613,13 @@ class DualGapEngine:
             "engine_recent_events": self.engine_recent_events[-ENGINE_RECENT_MAX:],
             "engine_stats_warmup": self.engine_stats_warmup,
             "engine_stats_live": self.engine_stats_live,
+            "engine_horizon_diag_version": ENGINE_HORIZON_DIAG_VERSION,
+            "engine_horizon_sessions": self.engine_horizon_sessions[-1000:],
+            "engine_horizon_records_warmup": self.engine_horizon_records_warmup[-ENGINE_HORIZON_RECORD_MAX:],
+            "engine_horizon_records_live": self.engine_horizon_records_live[-ENGINE_HORIZON_RECORD_MAX:],
+            "engine_rank_diag_version": ENGINE_RANK_DIAG_VERSION,
+            "engine_rank_stats_warmup": self.engine_rank_stats_warmup,
+            "engine_rank_stats_live": self.engine_rank_stats_live,
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -1749,9 +1905,125 @@ class DualGapEngine:
         self.engine_recent_events = []
         self.engine_stats_warmup = self._new_engine_stats()
         self.engine_stats_live = self._new_engine_stats()
+        self.engine_horizon_diag_version = ENGINE_HORIZON_DIAG_VERSION
+        self.engine_horizon_sessions = []
+        self.engine_horizon_records_warmup = []
+        self.engine_horizon_records_live = []
+        self.engine_rank_diag_version = ENGINE_RANK_DIAG_VERSION
+        self.engine_rank_stats_warmup = self._new_engine_rank_stats()
+        self.engine_rank_stats_live = self._new_engine_rank_stats()
 
     def _engine_stats(self, mode):
         return self.engine_stats_warmup if mode == "warmup" else self.engine_stats_live
+
+    def _engine_horizon_bank(self, mode):
+        return self.engine_horizon_records_warmup if mode == "warmup" else self.engine_horizon_records_live
+
+    def _engine_rank_stats(self, mode):
+        return self.engine_rank_stats_warmup if mode == "warmup" else self.engine_rank_stats_live
+
+    @staticmethod
+    def _engine_update_rank_bucket(bucket, hits):
+        hits = int(hits)
+        bucket["total_hits"] = int(bucket.get("total_hits", 0) or 0) + hits
+        hist = bucket.setdefault("hist", {})
+        hist[str(hits)] = int(hist.get(str(hits), 0) or 0) + 1
+
+    def _engine_settle_rank_depth(self, pending, actual, origin):
+        top5 = pending.get("top5")
+        top10 = pending.get("top10")
+        if not (isinstance(top5, list) and len(top5) == 5 and isinstance(top10, list) and len(top10) == 10):
+            return None
+        st = self._engine_rank_stats(origin)
+        h5 = len(set(map(int, top5)) & actual)
+        h10 = len(set(map(int, top10)) & actual)
+        st["evaluated"] += 1
+        self._engine_update_rank_bucket(st["all"]["5"], h5)
+        self._engine_update_rank_bucket(st["all"]["10"], h10)
+        if pending.get("accepted"):
+            st["signals_evaluated"] += 1
+            self._engine_update_rank_bucket(st["signals"]["5"], h5)
+            self._engine_update_rank_bucket(st["signals"]["10"], h10)
+        return {"top5_hits": h5, "top10_hits": h10}
+
+    def _start_engine_horizon_session(self, pending):
+        if not pending or not pending.get("accepted"):
+            return False
+        key = str(pending.get("signal_from_key") or "")
+        origin = pending.get("origin_mode") if pending.get("origin_mode") in {"warmup", "live"} else "live"
+        # Una sola sessione per segnale/origine, anche dopo restart/catch-up.
+        if any(str(x.get("signal_from_key") or "") == key and x.get("origin_mode") == origin
+               for x in self.engine_horizon_sessions):
+            return False
+        try:
+            conf = float(pending.get("confidence", 0.0) or 0.0)
+            thr = pending.get("threshold")
+            thr_f = float(thr) if thr is not None else None
+            ratio = (conf / thr_f) if thr_f and thr_f > 0 else None
+        except Exception:
+            conf, thr_f, ratio = 0.0, None, None
+        self.engine_horizon_sessions.append({
+            "signal_from_key": key,
+            "created_at": pending.get("created_at"),
+            "origin_mode": origin,
+            "top1": int(pending["top1"]),
+            "top2": int(pending["top2"]),
+            "support": int(pending.get("support", 0) or 0),
+            "confidence": conf,
+            "threshold": thr_f,
+            "confidence_ratio": ratio,
+            "age": 0,
+            "top1_hit_ages": [],
+            "top2_any_hit_ages": [],
+        })
+        self.engine_horizon_sessions = self.engine_horizon_sessions[-1000:]
+        return True
+
+    async def settle_engine_horizon_sessions(self, app, day, e, nums, mode="live", notify=True):
+        if not self.engine_horizon_sessions:
+            return []
+        actual = set(map(int, nums))
+        result_key = draw_key(day, e)
+        kept, emitted = [], []
+        for sess in self.engine_horizon_sessions:
+            age = int(sess.get("age", 0) or 0) + 1
+            sess["age"] = age
+            hit1 = int(sess.get("top1")) in actual
+            hit2 = hit1 or (int(sess.get("top2")) in actual)
+            if hit1 and age not in sess["top1_hit_ages"]:
+                sess["top1_hit_ages"].append(age)
+            if hit2 and age not in sess["top2_any_hit_ages"]:
+                sess["top2_any_hit_ages"].append(age)
+
+            if age in ENGINE_HORIZONS:
+                origin = sess.get("origin_mode") if sess.get("origin_mode") in {"warmup", "live"} else mode
+                rec = {
+                    "signal_from_key": sess.get("signal_from_key"),
+                    "result_key": result_key,
+                    "horizon": age,
+                    "top1": int(sess["top1"]),
+                    "top2": int(sess["top2"]),
+                    "support": int(sess.get("support", 0) or 0),
+                    "confidence": sess.get("confidence"),
+                    "threshold": sess.get("threshold"),
+                    "confidence_ratio": sess.get("confidence_ratio"),
+                    "top1_exact_hit": bool(hit1),
+                    "top2_exact_any_hit": bool(hit2),
+                    "top1_cum_hit": bool(sess.get("top1_hit_ages")),
+                    "top2_cum_any_hit": bool(sess.get("top2_any_hit_ages")),
+                    "top1_hit_ages": list(sess.get("top1_hit_ages", [])),
+                    "top2_any_hit_ages": list(sess.get("top2_any_hit_ages", [])),
+                    "origin_mode": origin,
+                }
+                bank = self._engine_horizon_bank(origin)
+                bank.append(rec)
+                del bank[:-ENGINE_HORIZON_RECORD_MAX]
+                emitted.append(rec)
+
+            if age < ENGINE_HORIZON_MAX:
+                kept.append(sess)
+        self.engine_horizon_sessions = kept
+        return emitted
 
     def engine_append_history(self, current_key, nums):
         self.engine_history.append({
@@ -1931,6 +2203,8 @@ class DualGapEngine:
         return {
             "top1": top1,
             "top2": top2,
+            "top5": [int(n) for n in ranked[:5]],
+            "top10": [int(n) for n in ranked[:10]],
             "score1": float(total[top1]),
             "score2": float(total[top2]),
             "margin": margin,
@@ -1954,6 +2228,7 @@ class DualGapEngine:
         origin = p.get("origin_mode") if p.get("origin_mode") in {"warmup", "live"} else mode
         st = self._engine_stats(origin)
         st["evaluated"] += 1
+        rank_depth = self._engine_settle_rank_depth(p, actual, origin)
         hit1 = int(p["top1"] in actual)
         hit2 = int((p["top1"] in actual) or (p["top2"] in actual))
         st["all_top1_hits"] += hit1
@@ -1985,7 +2260,10 @@ class DualGapEngine:
                     f">=1 TOP2 {st['signal_top2_any_hits']}/{st['signals_evaluated']} "
                     f"({safe_pct(st['signal_top2_any_hits'], st['signals_evaluated']):.2f}%)"
                 )
-        return {"top1_hit": bool(hit1), "top2_any_hit": bool(hit2), "accepted": bool(p.get("accepted"))}
+        out = {"top1_hit": bool(hit1), "top2_any_hit": bool(hit2), "accepted": bool(p.get("accepted"))}
+        if rank_depth:
+            out.update(rank_depth)
+        return out
 
     async def arm_engine_shadow(self, app, current_key, mode="live", notify=True):
         if not ENGINE_SHADOW_ENABLED:
@@ -2009,6 +2287,8 @@ class DualGapEngine:
             "origin_mode": mode,
             "top1": int(scored["top1"]),
             "top2": int(scored["top2"]),
+            "top5": [int(n) for n in scored["top5"]],
+            "top10": [int(n) for n in scored["top10"]],
             "score1": round(float(scored["score1"]), 8),
             "score2": round(float(scored["score2"]), 8),
             "margin": round(float(scored["margin"]), 8),
@@ -2018,6 +2298,8 @@ class DualGapEngine:
             "accepted": accepted,
         }
         self.engine_pending = p
+        if accepted:
+            self._start_engine_horizon_session(p)
         self.engine_margin_history.append(float(scored["confidence"]))
         self.engine_margin_history = self.engine_margin_history[-ENGINE_MARGIN_LOOKBACK:]
         if accepted and notify and mode == "live" and ENGINE_NOTIFY_SIGNALS:
@@ -2042,15 +2324,23 @@ class DualGapEngine:
             clean = list(map(int, nums))
             if len(clean) != 20 or len(set(clean)) != 20:
                 continue
+            await self.settle_engine_horizon_sessions(None, d, e, clean, mode="warmup", notify=False)
             await self.settle_engine_pending(None, d, e, clean, mode="warmup", notify=False)
             k = draw_key(d, e)
             self.engine_append_history(k, clean)
             await self.arm_engine_shadow(None, k, mode="warmup", notify=False)
         self.engine_bootstrap_done = len(self.engine_history) >= ENGINE_MIN_HISTORY
         # L'ultima previsione del replay era warmup; la riarmo come prima previsione LIVE prospettica.
+        # Rimuove soltanto l'eventuale sessione H0 dell'ultimo draw, che non ha ancora avuto futuro.
         self.engine_pending = None
         if self.engine_bootstrap_done and self.engine_history:
-            await self.arm_engine_shadow(None, self.engine_history[-1]["key"], mode="live", notify=False)
+            final_key = self.engine_history[-1]["key"]
+            self.engine_horizon_sessions = [
+                x for x in self.engine_horizon_sessions
+                if not (x.get("origin_mode") == "warmup" and int(x.get("age",0) or 0) == 0
+                        and str(x.get("signal_from_key") or "") == str(final_key))
+            ]
+            await self.arm_engine_shadow(None, final_key, mode="live", notify=False)
         return self.engine_bootstrap_done
 
     async def ensure_engine_bootstrap(self):
@@ -2091,7 +2381,13 @@ class DualGapEngine:
         else:
             sw["no_signal"] = max(0, int(sw.get("no_signal", 0)) - 1)
             sl["no_signal"] = int(sl.get("no_signal", 0)) + 1
+        old_origin = p.get("origin_mode")
         p["origin_mode"] = "live"
+        for sess in self.engine_horizon_sessions:
+            if (sess.get("origin_mode") == old_origin and
+                    str(sess.get("signal_from_key") or "") == str(p.get("signal_from_key") or "") and
+                    int(sess.get("age", 0) or 0) == 0):
+                sess["origin_mode"] = "live"
         return True
 
     def _engine_stats_line(self, label, st):
@@ -2105,6 +2401,149 @@ class DualGapEngine:
             f"({safe_pct(st.get('signal_top1_hits',0), sig_ev):.2f}%) | >=1 TOP2 {st.get('signal_top2_any_hits',0)}/{sig_ev} "
             f"({safe_pct(st.get('signal_top2_any_hits',0), sig_ev):.2f}%) | segnali creati={st.get('signals',0)}"
         )
+
+    @staticmethod
+    def _engine_horizon_baseline_top1(h):
+        return 100.0 * (1.0 - (70.0 / 90.0) ** int(h))
+
+    @staticmethod
+    def _engine_horizon_baseline_pair(h):
+        # Probabilita' che entrambi i due numeri siano assenti in un singolo draw.
+        q_none = (70.0 / 90.0) * (69.0 / 89.0)
+        return 100.0 * (1.0 - q_none ** int(h))
+
+    def _engine_horizon_summary(self, records, support=None):
+        rows = []
+        for h in ENGINE_HORIZONS:
+            rr = [r for r in records if int(r.get("horizon", 0) or 0) == h]
+            if support is not None:
+                rr = [r for r in rr if int(r.get("support", 0) or 0) == int(support)]
+            n = len(rr)
+            rows.append({
+                "h": h, "n": n,
+                "t1_exact": sum(bool(r.get("top1_exact_hit")) for r in rr),
+                "t2_exact": sum(bool(r.get("top2_exact_any_hit")) for r in rr),
+                "t1_cum": sum(bool(r.get("top1_cum_hit")) for r in rr),
+                "t2_cum": sum(bool(r.get("top2_cum_any_hit")) for r in rr),
+            })
+        return rows
+
+    def engine_horizon_text(self):
+        live = self.engine_horizon_records_live
+        active_live = [x for x in self.engine_horizon_sessions if x.get("origin_mode") == "live"]
+        lines = [
+            "🧭 10eLOTTO ENGINE — HORIZON SHADOW",
+            "• SOLO segnali HIGH CONFIDENCE; il segnale originale NON viene prolungato o modificato",
+            "• osservazione esatta + cumulativa H1/H2/H3/H5",
+            f"• sessioni LIVE attive={len(active_live)} | record horizon LIVE={len(live)}",
+            "",
+            "📊 LIVE — TUTTI I CONSENSUS",
+        ]
+        for row in self._engine_horizon_summary(live):
+            h, n = row["h"], row["n"]
+            lines.append(
+                f"• H{h} exact: TOP1 {row['t1_exact']}/{n} ({safe_pct(row['t1_exact'],n):.2f}%) | "
+                f">=1 TOP2 {row['t2_exact']}/{n} ({safe_pct(row['t2_exact'],n):.2f}%)"
+            )
+            lines.append(
+                f"  entro H{h}: TOP1 {row['t1_cum']}/{n} ({safe_pct(row['t1_cum'],n):.2f}%) | "
+                f">=1 TOP2 {row['t2_cum']}/{n} ({safe_pct(row['t2_cum'],n):.2f}%) | "
+                f"baseline cum {self._engine_horizon_baseline_top1(h):.2f}% / {self._engine_horizon_baseline_pair(h):.2f}%"
+            )
+        lines.extend(["", "🧩 CUMULATIVO LIVE PER CONSENSUS"])
+        present_supports = sorted({int(r.get("support",0) or 0) for r in live})
+        if not present_supports:
+            lines.append("• nessun record classificato da questa versione")
+        else:
+            for support in present_supports:
+                parts = []
+                for row in self._engine_horizon_summary(live, support=support):
+                    h, n = row["h"], row["n"]
+                    if n:
+                        parts.append(
+                            f"H{h} T1 {row['t1_cum']}/{n}={safe_pct(row['t1_cum'],n):.1f}% "
+                            f"T2 {row['t2_cum']}/{n}={safe_pct(row['t2_cum'],n):.1f}%"
+                        )
+                if parts:
+                    lines.append(f"• {support}/4: " + " | ".join(parts))
+        lines.extend([
+            "",
+            "Baseline exact per singolo draw: TOP1 22.22% | >=1 dei due 39.70%.",
+            "⚠️ H2/H3/H5 sono SOLO diagnostica: non cambiano la validita' operativa H1 del segnale.",
+        ])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _engine_rank_baseline_ge(depth, atleast):
+        depth = int(depth); atleast = int(atleast)
+        den = math.comb(90, 20)
+        p = 0
+        for x in range(atleast, min(depth, 20) + 1):
+            if 20 - x < 0 or 20 - x > 90 - depth:
+                continue
+            p += math.comb(depth, x) * math.comb(90 - depth, 20 - x)
+        return 100.0 * p / den
+
+    @staticmethod
+    def _engine_rank_ge(bucket, atleast):
+        hist = bucket.get("hist", {}) if isinstance(bucket, dict) else {}
+        return sum(int(v or 0) for k, v in hist.items() if str(k).isdigit() and int(k) >= int(atleast))
+
+    def _engine_rank_block(self, title, st, group):
+        n = int(st.get("signals_evaluated" if group == "signals" else "evaluated", 0) or 0)
+        lines = [f"{title}: n={n}"]
+        for depth in ENGINE_RANK_DEPTHS:
+            b = st[group][str(depth)]
+            total = int(b.get("total_hits", 0) or 0)
+            mean = (total / n) if n else 0.0
+            checks = (1, 2, 3) if depth == 5 else (1, 2, 3, 4)
+            parts = []
+            for a in checks:
+                got = self._engine_rank_ge(b, a)
+                parts.append(
+                    f">={a} {got}/{n}={safe_pct(got,n):.1f}% (rnd {self._engine_rank_baseline_ge(depth,a):.1f}%)"
+                )
+            lines.append(f"• TOP{depth}: media hit={mean:.3f} (rnd {depth*20/90:.3f}) | " + " | ".join(parts))
+            hist = b.get("hist", {})
+            if depth == 5:
+                dist = " ".join(f"{i}:{int(hist.get(str(i),0) or 0)}" for i in range(6))
+            else:
+                d0 = int(hist.get("0",0) or 0); d1=int(hist.get("1",0) or 0); d2=int(hist.get("2",0) or 0); d3=int(hist.get("3",0) or 0)
+                d4p = sum(int(hist.get(str(i),0) or 0) for i in range(4,11))
+                dist = f"0:{d0} 1:{d1} 2:{d2} 3:{d3} 4+:{d4p}"
+            lines.append(f"  distribuzione hit -> {dist}")
+        return lines
+
+    def engine_rank_text(self):
+        p = self.engine_pending or {}
+        top5 = p.get("top5") if isinstance(p.get("top5"), list) else []
+        top10 = p.get("top10") if isinstance(p.get("top10"), list) else []
+        lines = [
+            "🔬 10eLOTTO ENGINE — TOP5/TOP10 SHADOW",
+            "• usa lo STESSO ranking che genera TOP1/TOP2; non cambia score, soglia o segnali",
+            "• valuta SOLO il draw successivo (H1) e conta quanti numeri del ranking sono realmente usciti",
+            "• statistiche avviate da questa versione: nessun retrofill inventato sui vecchi state",
+            "",
+            f"Ranking corrente TOP5: {', '.join(map(str, top5)) if top5 else '-'}",
+            f"Ranking corrente TOP10: {', '.join(map(str, top10)) if top10 else '-'}",
+            f"Stato: {'HIGH CONFIDENCE' if p.get('accepted') else 'NO SIGNAL' if p else '-'}",
+            "",
+            "📊 LIVE — TUTTE LE PREVISIONI",
+        ]
+        lines.extend(self._engine_rank_block("ALL", self.engine_rank_stats_live, "all"))
+        lines.extend(["", "🔥 LIVE — SOLO HIGH CONFIDENCE"])
+        lines.extend(self._engine_rank_block("SELECTIVE", self.engine_rank_stats_live, "signals"))
+        lines.extend([
+            "",
+            "🕰️ WARMUP/CALIBRAZIONE — da questa diagnostica",
+        ])
+        lines.extend(self._engine_rank_block("WARMUP ALL", self.engine_rank_stats_warmup, "all"))
+        lines.extend([
+            "",
+            "Baseline casuale calcolata con distribuzione ipergeometrica 20 numeri estratti su 90.",
+            "⚠️ TOP5/TOP10 sono SOLO diagnostica: nessuna puntata e nessuna modifica a TOP1/TOP2/H1-H5.",
+        ])
+        return "\n".join(lines)
 
     def engine_text(self):
         if not ENGINE_SHADOW_ENABLED:
@@ -2122,6 +2561,10 @@ class DualGapEngine:
                     f"NO SIGNAL | ranking corrente TOP1 {p['top1']} / TOP2 {p['top2']} | "
                     f"conf={p.get('confidence',0):.4f}"
                 )
+            if isinstance(p.get("top5"), list):
+                pending += "\nTOP5 shadow: " + ", ".join(map(str, p["top5"]))
+            if isinstance(p.get("top10"), list):
+                pending += "\nTOP10 shadow: " + ", ".join(map(str, p["top10"]))
         else:
             pending = "nessuna previsione armata"
         recent = [x for x in self.engine_recent_events if x.get("origin_mode") == "live"][-10:]
@@ -2142,6 +2585,9 @@ class DualGapEngine:
             "📊 FORWARD\n" + self._engine_stats_line("LIVE", self.engine_stats_live) + "\n\n"
             "🕰️ CALIBRAZIONE/WARMUP\n" + self._engine_stats_line("WARMUP", self.engine_stats_warmup) + "\n\n"
             "🧾 ULTIMI SEGNALI LIVE\n" + recent_txt + "\n\n"
+            f"🧭 HORIZON: sessioni LIVE attive={sum(1 for x in self.engine_horizon_sessions if x.get('origin_mode')=='live')} | "
+            f"record={len(self.engine_horizon_records_live)} | dettagli /engineh\n"
+            f"🔬 RANK DEPTH: TOP5/TOP10 H1 classificati={self.engine_rank_stats_live.get('evaluated',0)} | dettagli /enginerank\n\n"
             "Baseline casuale: TOP1 22.22% | almeno uno di 2 numeri ≈39.70%.\n"
             "⚠️ Le percentuali del precedente backtest LightGBM NON vengono attribuite a questo surrogate: "
             "questo motore deve dimostrarle in forward."
@@ -3088,7 +3534,9 @@ class DualGapEngine:
         results = await self.settle_pending(app, day, e, clean, mode=mode, notify=notify)
         # 1b) Avanza e valuta le sessioni FREQ nate nei draw precedenti.
         freq_results = await self.settle_freq_sessions(app, day, e, clean, mode=mode, notify=notify)
-        # 1c) Valuta la previsione ENGINE creata PRIMA di conoscere questo draw.
+        # 1c) Avanza le finestre H1/H2/H3/H5 dei soli HIGH CONFIDENCE gia' nati.
+        engine_horizon_results = await self.settle_engine_horizon_sessions(app, day, e, clean, mode=mode, notify=notify) if ENGINE_SHADOW_ENABLED else []
+        # 1d) Valuta la previsione ENGINE H1 creata PRIMA di conoscere questo draw.
         engine_result = await self.settle_engine_pending(app, day, e, clean, mode=mode, notify=notify) if ENGINE_SHADOW_ENABLED else None
         # 2) Aggiorna i gap CORE/FAST col draw corrente.
         self.update_last_seen(clean)
@@ -3111,6 +3559,7 @@ class DualGapEngine:
             "results": results, "signals": signals,
             "freq_results": freq_results, "freq_signals": freq_signals,
             "engine_result": engine_result, "engine_signal": engine_signal,
+            "engine_horizon_results": engine_horizon_results,
         }
 
     # ----------------------------
@@ -3354,6 +3803,8 @@ class DualGapEngine:
             "/freqcluster — ritorni H3/H5/H10 + co-uscite FREQ attive\n"
             "/freqregime — regime globale COMPRESSION_ACTIVE / NORMAL\n"
             "/engine — Top1/Top2 + confidence del 10eLotto ENGINE SHADOW\n"
+            "/engineh — risultati ENGINE H1/H2/H3/H5 + consensus\n"
+            "/enginerank — TOP5/TOP10 H1 + overlap e baseline casuale\n"
             "/menu — questa schermata"
         )
 
@@ -3407,6 +3858,16 @@ async def cmd_engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, engine.engine_text())
 
 
+async def cmd_engineh(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.engine_horizon_text())
+
+
+async def cmd_enginerank(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.engine_rank_text())
+
+
 async def setup_commands(app):
     await app.bot.set_my_commands([
         BotCommand("status", "Gap correnti, H1 CORE/FAST e stato FREQ"),
@@ -3416,6 +3877,8 @@ async def setup_commands(app):
         BotCommand("freqcluster", "Ritorni e co-uscite FREQ attive"),
         BotCommand("freqregime", "Regime globale FREQ diagnostico"),
         BotCommand("engine", "10eLotto ENGINE Top1/Top2 shadow"),
+        BotCommand("engineh", "ENGINE H1/H2/H3/H5 + consensus"),
+        BotCommand("enginerank", "ENGINE TOP5/TOP10 overlap shadow"),
         BotCommand("menu", "Mostra CORE, FAST, FREQ ed ENGINE"),
     ])
 
@@ -3642,7 +4105,7 @@ async def startup(engine, app, warmup_retry_state=None):
         "🧪 FREQ LAB = ENTRY-ONLY 2/5 + 2/20, SEMPRE SHADOW, zero puntate\n"
         "🧪 niente duplicati stesso episodio; snapshot nascita + H1/H2/H3/H5/H10\n"
         "🧬 diagnostica ritorno >=1 H3/H5/H10 + co-uscite tra FREQ attivi\n"
-        "🧠 ENGINE SHADOW = Top1/Top2 selettivi, ensemble statistico, zero puntate\n"
+        "🧠 ENGINE SHADOW = Top1/Top2 selettivi + H1/H2/H3/H5 + TOP5/TOP10 depth, zero puntate\n"
         "✅ warmup continuo + state persistente GitHub\n"
         f"✅ warmup minimo = {WARMUP_MIN_DRAWS} estrazioni continue\n"
         f"✅ retry warmup ogni {WARMUP_RETRY_SEC}s\n\n"
@@ -3651,7 +4114,7 @@ async def startup(engine, app, warmup_retry_state=None):
         f"FREQ LAB: {'READY' if engine.freq_bootstrap_done else 'BUILD'} | sessioni={len(engine.freq_sessions)}\n"
         f"ENGINE: {'READY' if engine.engine_bootstrap_done else 'BUILD'} | filtro target top {ENGINE_SELECT_RATE*100:.0f}%\n\n"
         "ℹ️ FAST include il CORE a gap27: statistiche separate, costi non sommabili.\n"
-        "ℹ️ /freq per FREQ; /freqregime per contesto; /engine per Top1/Top2 e risultati ENGINE."
+        "ℹ️ /engine per Top1/Top2; /engineh per H1/H2/H3/H5; CORE/FAST/FREQ invariati."
     )
     await notify_actionable_state(engine, app)
     await notify_engine_actionable_state(engine, app)
@@ -3908,6 +4371,9 @@ async def run_self_test():
     assert ee.engine_pending is not None
     assert ee.engine_pending.get("origin_mode") == "live"
     assert ee.engine_pending["top1"] != ee.engine_pending["top2"]
+    assert len(ee.engine_pending.get("top5", [])) == 5
+    assert len(ee.engine_pending.get("top10", [])) == 10
+    assert ee.engine_pending["top5"] == ee.engine_pending["top10"][:5]
     # Nessun leakage: cambiare un draw futuro non puo' cambiare lo score gia' costruito.
     score_before = ee.engine_score_current()
     future = sorted(_random.sample(range(1, 91), 20))
@@ -3916,6 +4382,9 @@ async def run_self_test():
     await ee.settle_engine_pending(None, "2099-05-02", 1, future, mode="live", notify=False)
     assert ee.engine_pending is None
     assert ee.engine_stats_live["evaluated"] >= 1
+    assert ee.engine_rank_stats_live["evaluated"] >= 1
+    assert sum(ee.engine_rank_stats_live["all"]["5"]["hist"].values()) == ee.engine_rank_stats_live["evaluated"]
+    assert sum(ee.engine_rank_stats_live["all"]["10"]["hist"].values()) == ee.engine_rank_stats_live["evaluated"]
     # Promozione warmup->live coerente sui contatori.
     ep = DualGapEngine(load=False)
     ep.engine_pending = {"top1": 1, "top2": 2, "accepted": True, "origin_mode": "warmup"}
@@ -3925,7 +4394,30 @@ async def run_self_test():
     assert ep.engine_stats_warmup["predictions"] == 0 and ep.engine_stats_live["predictions"] == 1
     assert ep.engine_stats_warmup["signals"] == 0 and ep.engine_stats_live["signals"] == 1
 
-    print("SELF-TEST OK: CORE/FAST invariati + FREQ ENTRY-ONLY/regime + ENGINE SHADOW pre-futuro Top1/Top2")
+    # ENGINE HORIZON: stesso segnale congelato seguito a H1/H2/H3/H5, separato per consensus.
+    eh = DualGapEngine(load=False)
+    sig = {
+        "signal_from_key":"2099-06-01#001", "created_at":now_txt(), "origin_mode":"live",
+        "top1":11, "top2":22, "support":2, "confidence":0.60, "threshold":0.40, "accepted":True,
+    }
+    assert eh._start_engine_horizon_session(sig)
+    assert not eh._start_engine_horizon_session(sig)  # no duplicati
+    draws_h = [
+        [1,2,3,4,5,6,7,8,9,10,31,32,33,34,35,36,37,38,39,40],             # H1 miss
+        [11,1,2,3,4,5,6,7,8,9,31,32,33,34,35,36,37,38,39,40],            # H2 TOP1 hit
+        [22,1,2,3,4,5,6,7,8,9,31,32,33,34,35,36,37,38,39,40],            # H3 backup hit
+        [1,2,3,4,5,6,7,8,9,10,31,32,33,34,35,36,37,38,39,40],             # H4
+        [1,2,3,4,5,6,7,8,9,10,31,32,33,34,35,36,37,38,39,40],             # H5
+    ]
+    for i, nums in enumerate(draws_h, 1):
+        await eh.settle_engine_horizon_sessions(None, "2099-06-01", i+1, nums, mode="live", notify=False)
+    assert not eh.engine_horizon_sessions
+    rec_h2 = [r for r in eh.engine_horizon_records_live if r["horizon"] == 2][0]
+    rec_h3 = [r for r in eh.engine_horizon_records_live if r["horizon"] == 3][0]
+    assert rec_h2["top1_exact_hit"] and rec_h2["top1_cum_hit"]
+    assert rec_h3["top2_exact_any_hit"] and rec_h3["top2_cum_any_hit"] and rec_h3["support"] == 2
+
+    print("SELF-TEST OK: CORE/FAST invariati + FREQ ENTRY-ONLY/regime + ENGINE SHADOW + H1/H2/H3/H5 + TOP5/TOP10")
 
 
 # ============================================================
@@ -3961,6 +4453,8 @@ async def main():
     app.add_handler(CommandHandler("freqcluster", cmd_freqcluster))
     app.add_handler(CommandHandler("freqregime", cmd_freqregime))
     app.add_handler(CommandHandler("engine", cmd_engine))
+    app.add_handler(CommandHandler("engineh", cmd_engineh))
+    app.add_handler(CommandHandler("enginerank", cmd_enginerank))
     app.add_handler(CommandHandler("menu", cmd_menu))
 
     await app.initialize()
