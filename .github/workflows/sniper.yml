@@ -1,4 +1,4 @@
-name: Sniper Bot
+name: 10eLotto ENGINE Only
 
 on:
   workflow_dispatch:
@@ -8,14 +8,12 @@ permissions:
   actions: write
 
 concurrency:
-  group: sniper-bot-live
+  group: 10elotto-engine-only-live
   cancel-in-progress: false
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    # Margine di sicurezza: il bot esce volontariamente dopo 5h30m.
-    # Il limite GitHub-hosted e' 6 ore per job.
     timeout-minutes: 358
 
     env:
@@ -26,9 +24,11 @@ jobs:
       GIT_COMMIT_MIN_SECONDS: "300"
       STATE_GIT_BRANCH: "main"
       LOOP_SEC: "60"
-      # 19800 secondi = 5h30m. Poi sniper.py salva lo state ed esce con code 0.
       BOT_MAX_RUNTIME_SECONDS: "19800"
       BOT_ROTATION_NOTIFY: "1"
+      ENGINE_NOTIFY_SIGNALS: "1"
+      ENGINE_NOTIFY_H1_RESULT: "1"
+      ENGINE_NOTIFY_H5_RESULT: "1"
 
     steps:
       - name: Checkout repo
@@ -47,17 +47,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 python-telegram-bot==22.8
 
-      - name: Run bot
+      - name: Run ENGINE Only bot
         run: python -u sniper.py
 
-      # Arriva qui SOLO se sniper.py termina correttamente (exit code 0),
-      # cioe' nella rotazione programmata. Se il bot ha un vero crash,
-      # il workflow fallisce e non crea un loop infinito di restart.
       - name: Start next bot run
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Avvio automatico del prossimo runner..."
+          echo "Avvio automatico del prossimo runner ENGINE Only..."
           sleep 10
           for attempt in 1 2 3; do
             if gh workflow run sniper.yml --ref "${GITHUB_REF_NAME}"; then
