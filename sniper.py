@@ -1,49 +1,40 @@
 # ============================================================
-# 🎯 SUPERAMBO — CORE + FAST + FREQ LAB SHADOW
+# 🧠 10eLOTTO ENGINE ONLY — HIGH CONFIDENCE + MULTI-HIT H5
 # ============================================================
 #
-# MOTORE CORE — CONGELATO / INVARIATO:
-#   • GAP 4 + GAP 27 esatto
-#   • solo decine diverse
-#   • tutti gli ambi validi, deduplicati
-#   • SOLO H1 sulla prossima estrazione
+# UNICO MOTORE ATTIVO:
+#   • surrogate multi-engine PRE-FUTURO:
+#       frequenza/accelerazione + transizioni + vicini di stato + hazard gap
+#   • HIGH CONFIDENCE = coda superiore dinamica dei margini recenti (default top 15%)
+#   • UNICO NUMERO OSSERVATO = TOP1
 #
-# MOTORE FAST LAB — INVARIATO:
-#   • GAP 4 + GAP 24..29
-#   • solo decine diverse
-#   • tutti gli ambi validi, deduplicati
-#   • SOLO H1 sulla prossima estrazione
+# DIAGNOSTICA PRINCIPALE:
+#   • H1/H2/H3/H5 sul TOP1 congelato alla nascita del segnale
+#   • MULTI-HIT H5:
+#       0/5, 1/5, ESATTO 2/5, 3+/5
+#       >=2/5 e >=3/5
+#   • rolling ultimi 50 / 100 HIGH CONFIDENCE completati
+#   • split per consensus 1/4..4/4
+#   • controllo H1 MISS -> >=2 hit tra H2-H5
+#   • controllo H1 HIT -> almeno un secondo hit tra H2-H5
 #
-# FREQ LAB ENTRY-ONLY — SOLO OSSERVAZIONE:
-#   • FREQ-BIRTH = numero uscito esattamente 2 volte nelle ultime 5
-#                  e 2 volte nelle ultime 20
-#     => quindi 0 uscite nelle 15 precedenti e accelerazione recente 2/5
-#   • ENTRY-ONLY: apre UNA sessione solo al passaggio NON-FREQ -> FREQ
-#     (se resta FREQ per piu' draw consecutivi NON duplica la sessione)
-#   • salva lo snapshot della nascita: pattern delle 2 uscite, spacing,
-#     gap precedente, frequenze 30/50 e contesto pregresso
-#   • NON genera ambi e NON genera puntate
-#   • segue ogni vera nascita a H1, H2, H3, H5 e H10
-#   • a H5 verifica >=3 uscite nelle 5 successive
-#   • a H10 verifica >=4 uscite nelle 10 successive
-#   • diagnostica anche RITORNO >=1 entro H3/H5/H10
-#   • diagnostica co-uscite nello stesso draw tra candidati FREQ attivi
-#   • diagnostica regime globale COMPRESSION_ACTIVE / NORMAL (solo contesto)
-#   • contabilizza warmup/forward in base alla NASCITA della sessione
+# RIMOSSI:
+#   • CORE
+#   • FAST
+#   • FREQ
+#   • TOP5/TOP10 ranking depth
+#   • qualsiasi puntata automatica / progressione
 #
-# IMPORTANTE:
-#   • CORE e FAST NON vengono modificati.
-#   • FAST include anche i casi CORE (gap 27), ma statistiche e risultati
-#     restano completamente separati.
-#   • FREQ LAB e' sempre SHADOW: zero costo, zero puntate automatiche.
-#   • Nessun H2/progressione/WAIT30 viene aggiunto a CORE o FAST.
+# MIGRAZIONE:
+#   • se esiste il vecchio state combinato, importa SOLO i campi ENGINE;
+#   • ignora completamente CORE/FAST/FREQ;
+#   • converte i vecchi record ENGINE H5 nella nuova diagnostica MULTI-HIT,
+#     quindi non riparte da zero quando i dati sono disponibili.
 #
-# WARMUP / PERSISTENZA:
-#   • usa il segmento cronologico continuo piu' recente;
-#   • conserva lo state CORE/FAST esistente (LOGIC_VERSION invariata);
-#   • se lo state e' precedente al FREQ LAB, ricostruisce SOLO il FREQ LAB
-#     dai draw recenti gia' processati, senza azzerare il forward CORE/FAST;
-#   • state persistente GitHub, retry warmup senza spegnere il processo.
+# INFRASTRUTTURA:
+#   • polling sito ogni LOOP_SEC
+#   • state persistente GitHub
+#   • rotazione automatica GitHub runner prima del limite
 # ============================================================
 
 import asyncio
@@ -55,7 +46,6 @@ import re
 import subprocess
 import sys
 import time
-from itertools import combinations
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -101,83 +91,26 @@ HEADERS = {
 }
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_FILE = os.path.join(BASE_DIR, "superambo_gap4_core_fast_h1_state.json")
-LOCK_FILE = "/tmp/superambo_gap4_core_fast_h1.lock"
-
-# Doppio motore = nuovo state pulito.
-LOGIC_VERSION = 2
+STATE_FILE = os.path.join(BASE_DIR, "10elotto_engine_only_state.json")
+LEGACY_STATE_FILE = os.path.join(BASE_DIR, "superambo_gap4_core_fast_h1_state.json")
+LOCK_FILE = "/tmp/10elotto_engine_only.lock"
+STATE_VERSION = 1
 
 LOOP_SEC = int(os.getenv("LOOP_SEC", "60"))
-# GitHub-hosted runner: rotazione volontaria prima del limite massimo del job.
-# 19800s = 5h30m; lascia margine per salvataggio state e avvio del run successivo.
 BOT_MAX_RUNTIME_SECONDS = int(os.getenv("BOT_MAX_RUNTIME_SECONDS", "19800"))
 BOT_ROTATION_NOTIFY = os.getenv("BOT_ROTATION_NOTIFY", "1") != "0"
 WARMUP_RETRY_SEC = int(os.getenv("WARMUP_RETRY_SEC", "300"))
 WARMUP_FAIL_TG_MIN_SECONDS = int(os.getenv("WARMUP_FAIL_TG_MIN_SECONDS", "900"))
 WARMUP_DAYS = int(os.getenv("WARMUP_DAYS", "7"))
-# Per un gap massimo 29 non servono 900 colpi: 120 colpi continui danno
-# un margine ampio per inizializzare correttamente tutti i ritardi.
 WARMUP_MIN_DRAWS = int(os.getenv("WARMUP_MIN_DRAWS", "120"))
 WARMUP_FULL_DAY_DRAWS = int(os.getenv("WARMUP_FULL_DAY_DRAWS", "288"))
 WARMUP_REQUIRE_COMPLETE_PAST_DAYS = os.getenv("WARMUP_REQUIRE_COMPLETE_PAST_DAYS", "1") != "0"
 PROCESSED_MAX = int(os.getenv("PROCESSED_MAX", "12000"))
 
-GAP_A = int(os.getenv("GAP_A", "4"))
-CORE_GAP = int(os.getenv("CORE_GAP", "27"))
-FAST_GAP_MIN = int(os.getenv("FAST_GAP_MIN", "24"))
-FAST_GAP_MAX = int(os.getenv("FAST_GAP_MAX", "29"))
-
-STRATEGY_ORDER = ("core", "fast")
-STRATEGIES = {
-    "core": {
-        "label": "CORE",
-        "gap_min": CORE_GAP,
-        "gap_max": CORE_GAP,
-        "description": f"GAP {GAP_A}+{CORE_GAP}",
-    },
-    "fast": {
-        "label": "FAST LAB",
-        "gap_min": FAST_GAP_MIN,
-        "gap_max": FAST_GAP_MAX,
-        "description": f"GAP {GAP_A}+{FAST_GAP_MIN}-{FAST_GAP_MAX}",
-    },
-}
-STAKE_H1 = float(os.getenv("STAKE_H1", "1"))
-AMBO_PAYOUT = float(os.getenv("AMBO_PAYOUT", "14"))
-SHADOW_MODE = os.getenv("SHADOW_MODE", "1") != "0"
-
-# FREQ LAB: laboratorio indipendente, SEMPRE shadow/diagnostico.
-FREQ_LAB_ENABLED = os.getenv("FREQ_LAB_ENABLED", "1") != "0"
-FREQ_NOTIFY_SIGNALS = os.getenv("FREQ_NOTIFY_SIGNALS", "1") != "0"
-# I milestone possono diventare frequenti: OFF di default. Tutto resta in /freq e nello state.
-FREQ_NOTIFY_MILESTONES = os.getenv("FREQ_NOTIFY_MILESTONES", "0") != "0"
-# Versione logica ENTRY-ONLY: resta 2 per preservare le sessioni forward gia' raccolte.
-FREQ_LOGIC_VERSION = 2
-# Versione diagnostica separata: migra le sole statistiche FREQ senza resettare CORE/FAST o le entry live.
-FREQ_DIAG_VERSION = 1
-FREQ_HISTORY_LEN = 20
-# 120 draw permettono snapshot 30/50 + gap precedente senza toccare CORE/FAST.
-FREQ_HISTORY_MAX = int(os.getenv("FREQ_HISTORY_MAX", "120"))
-FREQ_HORIZONS = (1, 2, 3, 5, 10)
-FREQ_RETURN_HORIZONS = (3, 5, 10)
-FREQ_TARGET5_MIN_HITS = 3
-FREQ_TARGET10_MIN_HITS = 4
-FREQ_RECENT_MAX = int(os.getenv("FREQ_RECENT_MAX", "250"))
-FREQ_RECORD_MAX = int(os.getenv("FREQ_RECORD_MAX", "5000"))
-FREQ_ANALYSIS_MIN_GROUP = int(os.getenv("FREQ_ANALYSIS_MIN_GROUP", "12"))
-
-# FREQ REGIME — SOLO DIAGNOSTICA / ZERO PUNTATE.
-# Backtest storico: la combinazione sotto ha portato FREQ H10 vicino alla baseline
-# in modo stabile, ma NON ha mostrato edge sufficiente per diventare operativa.
-FREQ_REGIME_DISTINCT5_MAX = int(os.getenv("FREQ_REGIME_DISTINCT5_MAX", "61"))
-FREQ_REGIME_H10_LOOKBACK = int(os.getenv("FREQ_REGIME_H10_LOOKBACK", "50"))
-FREQ_REGIME_H10_COMPLETED_MIN = int(os.getenv("FREQ_REGIME_H10_COMPLETED_MIN", "16"))
-
-# 10eLOTTO ENGINE SHADOW — surrogate statistico separato da CORE/FAST/FREQ.
-# Non genera puntate. Produce Top1/Top2 solo quando la confidence entra
-# nella coda superiore calibrata sui margini PRE-FUTURO recenti.
-ENGINE_SHADOW_ENABLED = os.getenv("ENGINE_SHADOW_ENABLED", "1") != "0"
+ENGINE_SHADOW_ENABLED = True
 ENGINE_NOTIFY_SIGNALS = os.getenv("ENGINE_NOTIFY_SIGNALS", "1") != "0"
+ENGINE_NOTIFY_H1_RESULT = os.getenv("ENGINE_NOTIFY_H1_RESULT", "1") != "0"
+ENGINE_NOTIFY_H5_RESULT = os.getenv("ENGINE_NOTIFY_H5_RESULT", "1") != "0"
 ENGINE_MODEL_VERSION = 1
 ENGINE_HISTORY_MAX = int(os.getenv("ENGINE_HISTORY_MAX", "800"))
 ENGINE_MIN_HISTORY = int(os.getenv("ENGINE_MIN_HISTORY", "120"))
@@ -186,32 +119,21 @@ ENGINE_MARGIN_LOOKBACK = int(os.getenv("ENGINE_MARGIN_LOOKBACK", "300"))
 ENGINE_MIN_MARGIN_SAMPLES = int(os.getenv("ENGINE_MIN_MARGIN_SAMPLES", "80"))
 ENGINE_SELECT_RATE = float(os.getenv("ENGINE_SELECT_RATE", "0.15"))
 ENGINE_RECENT_MAX = int(os.getenv("ENGINE_RECENT_MAX", "250"))
-# Diagnostica separata: segue OGNI segnale HIGH CONFIDENCE fino a H5,
-# senza cambiare ranking, soglia o creazione del segnale ENGINE.
-ENGINE_HORIZON_DIAG_VERSION = 1
-ENGINE_HORIZONS = (1, 2, 3, 5)
-ENGINE_HORIZON_MAX = max(ENGINE_HORIZONS)
-ENGINE_HORIZON_RECORD_MAX = int(os.getenv("ENGINE_HORIZON_RECORD_MAX", "4000"))
 
-# Profondita' ranking ENGINE — SOLO DIAGNOSTICA H1 / zero puntate.
-# Salva i Top5/Top10 dello STESSO score gia' usato per Top1/Top2 e misura
-# quanti numeri compaiono nel draw successivo. Non cambia ranking o filtro.
-ENGINE_RANK_DIAG_VERSION = 1
-ENGINE_RANK_DEPTHS = (5, 10)
+ENGINE_H5_MAX = 5
+ENGINE_H5_RECORD_MAX = int(os.getenv("ENGINE_H5_RECORD_MAX", "5000"))
+ENGINE_MULTI_DIAG_VERSION = 1
 
 PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
 _LAST_GIT_COMMIT_TS = 0.0
 
-DECADE_NAMES = [
-    "90-9", "10-19", "20-29", "30-39", "40-49",
-    "50-59", "60-69", "70-79", "80-89",
-]
+_ITALIAN_MONTHS = {
+    "gennaio": 1, "febbraio": 2, "marzo": 3, "aprile": 4,
+    "maggio": 5, "giugno": 6, "luglio": 7, "agosto": 8,
+    "settembre": 9, "ottobre": 10, "novembre": 11, "dicembre": 12,
+}
 
-
-# ============================================================
-# UTILITY
-# ============================================================
 
 def now_dt():
     return datetime.now(BOT_TZ)
@@ -237,32 +159,6 @@ def safe_pct(num, den):
     return (100.0 * float(num) / float(den)) if den else 0.0
 
 
-def signal_word():
-    return "SHADOW" if SHADOW_MODE else "PLAY"
-
-
-def fmt_pair(pair):
-    a, b = sorted(map(int, pair))
-    return f"{a}-{b}"
-
-
-def decade_index(n):
-    n = int(n)
-    if n == 90 or 1 <= n <= 9:
-        return 0
-    if 10 <= n <= 89:
-        return n // 10
-    raise ValueError(f"numero fuori range: {n}")
-
-
-def decade_name(n):
-    return DECADE_NAMES[decade_index(n)]
-
-
-def different_decades(a, b):
-    return decade_index(a) != decade_index(b)
-
-
 def atomic_write_json(path, data):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -286,16 +182,6 @@ def _http_get_text(url, retries=3, timeout=20):
             if attempt < retries:
                 time.sleep(1.2 * attempt)
     raise RuntimeError(f"download fallito: {url} | {last_exc}")
-
-# ============================================================
-# PARSER STORICO / LIVE
-# ============================================================
-
-_ITALIAN_MONTHS = {
-    "gennaio": 1, "febbraio": 2, "marzo": 3, "aprile": 4,
-    "maggio": 5, "giugno": 6, "luglio": 7, "agosto": 8,
-    "settembre": 9, "ottobre": 10, "novembre": 11, "dicembre": 12,
-}
 
 
 def _extract_day_from_header(line):
@@ -775,10 +661,6 @@ def fetch_warmup_records(days=WARMUP_DAYS):
     return ordered, summary
 
 
-# ============================================================
-# PERSISTENZA GIT VERIFICATA
-# ============================================================
-
 def _git_clean_text(text, limit=900):
     txt = str(text or "").strip()
     # Non mostrare mai eventuali credenziali presenti in un URL remoto.
@@ -869,7 +751,7 @@ def git_commit_state_if_needed(force=False):
     rc_diff, _, _ = _git_run(["diff", "--cached", "--quiet", "--", rel], root)
     committed_now = False
     if rc_diff == 1:
-        rc, out, err = _git_run(["commit", "-m", "state: gap4-gap27 h1"], root)
+        rc, out, err = _git_run(["commit", "-m", "state: 10elotto engine only"], root)
         if rc != 0:
             st = _git_status(False, "commit-failed", err or out, branch=branch)
             console_log(f"STATE PUSH FAIL | git commit | {st['detail']}")
@@ -947,57 +829,42 @@ def git_commit_state_if_needed(force=False):
     return st
 
 
+def acquire_single_instance_lock():
+    global _LOCK_HANDLE
+    _LOCK_HANDLE = open(LOCK_FILE, "a+", encoding="utf-8")
+    if fcntl is not None:
+        try:
+            fcntl.flock(_LOCK_HANDLE, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("⚠️ Un'altra istanza di questo bot e' gia' attiva.")
+            sys.exit(1)
+
+    _LOCK_HANDLE.seek(0)
+    _LOCK_HANDLE.truncate()
+    _LOCK_HANDLE.write(str(os.getpid()))
+    _LOCK_HANDLE.flush()
+
+    def cleanup_lock():
+        try:
+            if fcntl is not None:
+                fcntl.flock(_LOCK_HANDLE, fcntl.LOCK_UN)
+            _LOCK_HANDLE.close()
+        except Exception:
+            pass
+
+    atexit.register(cleanup_lock)
+
 
 # ============================================================
-# MOTORE DUAL GAP — CORE 4+27 + FAST 4+24..29 / SOLO H1
+# ENGINE ONLY
 # ============================================================
 
-class DualGapEngine:
+class EngineOnly:
     def __init__(self, load=True):
-        self.logic_version = LOGIC_VERSION
-
-        self.warmup_done = False
-        self.warmup_completed_at = None
-        self.warmup_draws = 0
-        self.warmup_sources = []
-
         self.processed = []
         self.processed_set = set()
         self.last_draw_key = None
-        self.seq = 0
 
-        # Ultima seq in cui ogni numero e' comparso. None = non ancora noto.
-        self.last_seen_seq = {n: None for n in range(1, 91)}
-
-        # Un evento H1 per strategia, valido esclusivamente sul draw successivo.
-        self.pending_events = {name: None for name in STRATEGY_ORDER}
-
-        self.recent_events = []
-        self.stats_warmup = {name: self._new_stats() for name in STRATEGY_ORDER}
-        self.stats_live = {name: self._new_stats() for name in STRATEGY_ORDER}
-
-        # FREQ LAB e' completamente separato da CORE/FAST.
-        self.freq_logic_version = FREQ_LOGIC_VERSION
-        self.freq_bootstrap_done = False
-        self.freq_history = []
-        self.freq_sessions = []
-        # Numeri che erano gia' nella condizione 2/5+2/20 al draw precedente.
-        # Serve a creare una sessione solo sul vero ingresso NON-FREQ -> FREQ.
-        self.freq_condition_active = set()
-        self.freq_recent_events = []
-        self.freq_uid = 0
-        self.freq_stats_warmup = self._new_freq_stats()
-        self.freq_stats_live = self._new_freq_stats()
-        self.freq_h5_warmup = []
-        self.freq_h5_live = []
-        self.freq_h10_warmup = []
-        self.freq_h10_live = []
-        # Eventi di co-uscita tra DUE numeri con sessione FREQ attiva e stessa origine (warmup/live).
-        self.freq_cohits_warmup = []
-        self.freq_cohits_live = []
-        self.freq_diag_version = FREQ_DIAG_VERSION
-
-        # 10eLotto ENGINE SHADOW: completamente separato dagli altri motori.
         self.engine_model_version = ENGINE_MODEL_VERSION
         self.engine_bootstrap_done = False
         self.engine_history = []
@@ -1006,74 +873,22 @@ class DualGapEngine:
         self.engine_recent_events = []
         self.engine_stats_warmup = self._new_engine_stats()
         self.engine_stats_live = self._new_engine_stats()
-        # Horizon tracker diagnostico: SOLO segnali HIGH CONFIDENCE, nessun effetto sul ranking.
-        self.engine_horizon_diag_version = ENGINE_HORIZON_DIAG_VERSION
-        self.engine_horizon_sessions = []
-        self.engine_horizon_records_warmup = []
-        self.engine_horizon_records_live = []
-        # Ranking-depth tracker: Top5/Top10 H1, separato da tutto il resto.
-        self.engine_rank_diag_version = ENGINE_RANK_DIAG_VERSION
-        self.engine_rank_stats_warmup = self._new_engine_rank_stats()
-        self.engine_rank_stats_live = self._new_engine_rank_stats()
+
+        self.engine_h5_sessions = []
+        self.engine_h5_records_warmup = []
+        self.engine_h5_records_live = []
+        self.engine_multi_diag_version = ENGINE_MULTI_DIAG_VERSION
 
         self.state_load_info = {
             "loaded": False,
+            "migrated_legacy": False,
             "reason": "non ancora controllato",
             "saved_at": None,
             "path": STATE_FILE,
         }
         self.last_git_status = _git_status(True, "not-run", "nessun push ancora eseguito")
-
         if load:
             self.load_state()
-
-    @staticmethod
-    def _new_stats():
-        return {
-            "draws": 0,
-            "signal_draws": 0,
-            "pairs_signaled": 0,
-            "result_draws": 0,
-            "hit_draws": 0,
-            "stop_draws": 0,
-            "multi_hit_draws": 0,
-            "h1_plays": 0,
-            "h1_hits": 0,
-            "h1_misses": 0,
-            "cost": 0.0,
-            "gross": 0.0,
-            "max_pairs_signal": 0,
-        }
-
-    @staticmethod
-    def _new_freq_stats():
-        return {
-            "draws": 0,
-            # condition_* = quante volte la condizione grezza 2/5+2/20 e' presente.
-            "condition_draws": 0,
-            "condition_candidates": 0,
-            # signal/candidates = SOLO vere ENTRY NON-FREQ -> FREQ.
-            "signal_draws": 0,
-            "candidates_signaled": 0,
-            "suppressed_repeats": 0,
-            "max_candidates_signal": 0,
-            "horizon_eval": {str(h): 0 for h in FREQ_HORIZONS},
-            "horizon_hits": {str(h): 0 for h in FREQ_HORIZONS},
-            "target5_eval": 0,
-            "target5_success": 0,
-            "target5_total_hits": 0,
-            "target10_eval": 0,
-            "target10_success": 0,
-            "target10_total_hits": 0,
-            "completed_sessions": 0,
-            # Ritorno cumulativo: almeno UNA uscita entro H3/H5/H10.
-            "return_eval": {str(h): 0 for h in FREQ_RETURN_HORIZONS},
-            "return_hits": {str(h): 0 for h in FREQ_RETURN_HORIZONS},
-            # Coppie di numeri FREQ contemporaneamente attivi osservate sullo stesso draw.
-            "co_pair_eval": 0,
-            "co_pair_hits": 0,
-            "cohit_draws": 0,
-        }
 
     @staticmethod
     def _new_engine_stats():
@@ -1081,11 +896,9 @@ class DualGapEngine:
             "predictions": 0,
             "evaluated": 0,
             "all_top1_hits": 0,
-            "all_top2_any_hits": 0,
             "signals": 0,
             "signals_evaluated": 0,
             "signal_top1_hits": 0,
-            "signal_top2_any_hits": 0,
             "no_signal": 0,
         }
 
@@ -1098,172 +911,6 @@ class DualGapEngine:
             except Exception:
                 pass
         return dst
-
-    @staticmethod
-    def _new_engine_rank_stats():
-        def bucket(k):
-            return {
-                "total_hits": 0,
-                "hist": {str(i): 0 for i in range(k + 1)},
-            }
-        return {
-            "evaluated": 0,
-            "signals_evaluated": 0,
-            "all": {"5": bucket(5), "10": bucket(10)},
-            "signals": {"5": bucket(5), "10": bucket(10)},
-        }
-
-    @staticmethod
-    def _merge_engine_rank_stats(dst, raw):
-        raw = raw if isinstance(raw, dict) else {}
-        for key in ("evaluated", "signals_evaluated"):
-            try:
-                dst[key] = int(raw.get(key, 0) or 0)
-            except Exception:
-                dst[key] = 0
-        for group in ("all", "signals"):
-            srcg = raw.get(group, {}) if isinstance(raw.get(group, {}), dict) else {}
-            for depth in (5, 10):
-                dkey = str(depth)
-                src = srcg.get(dkey, {}) if isinstance(srcg.get(dkey, {}), dict) else {}
-                try:
-                    dst[group][dkey]["total_hits"] = int(src.get("total_hits", 0) or 0)
-                except Exception:
-                    dst[group][dkey]["total_hits"] = 0
-                hist = src.get("hist", {}) if isinstance(src.get("hist", {}), dict) else {}
-                for i in range(depth + 1):
-                    try:
-                        dst[group][dkey]["hist"][str(i)] = int(hist.get(str(i), hist.get(i, 0)) or 0)
-                    except Exception:
-                        dst[group][dkey]["hist"][str(i)] = 0
-        return dst
-
-    @staticmethod
-    def _merge_freq_stats(dst, raw):
-        raw = raw if isinstance(raw, dict) else {}
-        for key in (
-            "draws", "condition_draws", "condition_candidates",
-            "signal_draws", "candidates_signaled", "suppressed_repeats", "max_candidates_signal",
-            "target5_eval", "target5_success", "target5_total_hits",
-            "target10_eval", "target10_success", "target10_total_hits",
-            "completed_sessions", "co_pair_eval", "co_pair_hits", "cohit_draws",
-        ):
-            try:
-                dst[key] = int(raw.get(key, dst.get(key, 0)) or 0)
-            except Exception:
-                pass
-        for bucket in ("horizon_eval", "horizon_hits"):
-            src = raw.get(bucket, {}) if isinstance(raw.get(bucket, {}), dict) else {}
-            for h in FREQ_HORIZONS:
-                try:
-                    dst[bucket][str(h)] = int(src.get(str(h), src.get(h, dst[bucket][str(h)])) or 0)
-                except Exception:
-                    pass
-        for bucket in ("return_eval", "return_hits"):
-            src = raw.get(bucket, {}) if isinstance(raw.get(bucket, {}), dict) else {}
-            for h in FREQ_RETURN_HORIZONS:
-                try:
-                    dst[bucket][str(h)] = int(src.get(str(h), src.get(h, dst[bucket][str(h)])) or 0)
-                except Exception:
-                    pass
-        return dst
-
-    def _stats(self, mode, strategy):
-        bank = self.stats_warmup if mode == "warmup" else self.stats_live
-        return bank[strategy]
-
-    def strategy_gap_values(self, strategy):
-        cfg = STRATEGIES[strategy]
-        return range(int(cfg["gap_min"]), int(cfg["gap_max"]) + 1)
-
-    def _freq_stats(self, mode):
-        return self.freq_stats_warmup if mode == "warmup" else self.freq_stats_live
-
-    @staticmethod
-    def _sanitize_freq_history(raw):
-        out = []
-        for row in list(raw or []):
-            if not isinstance(row, dict):
-                continue
-            nums = row.get("nums", []) or []
-            try:
-                nums = sorted(set(map(int, nums)))
-            except Exception:
-                continue
-            if len(nums) != 20 or any(n < 1 or n > 90 for n in nums):
-                continue
-            out.append({"key": str(row.get("key") or ""), "nums": nums})
-        return out[-max(FREQ_HISTORY_LEN, FREQ_HISTORY_MAX):]
-
-    @staticmethod
-    def _sanitize_freq_sessions(raw):
-        out = []
-        for row in list(raw or []):
-            if not isinstance(row, dict):
-                continue
-            try:
-                n = int(row.get("number"))
-                age = int(row.get("age", 0) or 0)
-                hit_ages = sorted({int(x) for x in (row.get("hit_ages", []) or []) if 1 <= int(x) <= 10})
-            except Exception:
-                continue
-            if not (1 <= n <= 90 and 0 <= age < 10):
-                continue
-            snap = row.get("snapshot", {}) if isinstance(row.get("snapshot", {}), dict) else {}
-            out.append({
-                "id": str(row.get("id") or ""),
-                "number": n,
-                "signal_from_key": row.get("signal_from_key"),
-                "created_at": row.get("created_at"),
-                "age": age,
-                "hit_ages": hit_ages,
-                "snapshot": dict(snap),
-                "h5_hits": row.get("h5_hits"),
-                "h5_success": row.get("h5_success"),
-                "origin_mode": row.get("origin_mode") if row.get("origin_mode") in {"warmup", "live"} else None,
-            })
-        return out[-1000:]
-
-    @staticmethod
-    def _sanitize_freq_records(raw):
-        out = []
-        for row in list(raw or []):
-            if not isinstance(row, dict):
-                continue
-            try:
-                n = int(row.get("number"))
-            except Exception:
-                continue
-            if not 1 <= n <= 90:
-                continue
-            snap = row.get("snapshot", {}) if isinstance(row.get("snapshot", {}), dict) else {}
-            clean = dict(row)
-            clean["number"] = n
-            clean["snapshot"] = dict(snap)
-            if clean.get("origin_mode") not in {"warmup", "live"}:
-                clean["origin_mode"] = None
-            out.append(clean)
-        return out[-FREQ_RECORD_MAX:]
-
-    @staticmethod
-    def _sanitize_freq_cohits(raw):
-        out = []
-        for row in list(raw or []):
-            if not isinstance(row, dict):
-                continue
-            try:
-                pair = sorted({int(x) for x in (row.get("pair", []) or [])})
-            except Exception:
-                continue
-            if len(pair) != 2 or any(n < 1 or n > 90 for n in pair):
-                continue
-            origin = row.get("origin_mode") if row.get("origin_mode") in {"warmup", "live"} else None
-            out.append({
-                "at": str(row.get("at") or ""),
-                "pair": pair,
-                "origin_mode": origin,
-            })
-        return out[-FREQ_RECENT_MAX:]
 
     @staticmethod
     def _sanitize_engine_history(raw):
@@ -1286,325 +933,192 @@ class DualGapEngine:
             return None
         try:
             top1 = int(raw.get("top1"))
-            top2 = int(raw.get("top2"))
         except Exception:
             return None
-        if not (1 <= top1 <= 90 and 1 <= top2 <= 90 and top1 != top2):
+        if not 1 <= top1 <= 90:
             return None
-        clean = dict(raw)
-        clean["top1"] = top1
-        clean["top2"] = top2
-        clean["accepted"] = bool(raw.get("accepted", False))
-        # Top5/Top10 sono opzionali per compatibilita' con gli state precedenti.
-        for depth in ENGINE_RANK_DEPTHS:
-            key = f"top{depth}"
-            try:
-                vals = [int(x) for x in (raw.get(key, []) or [])]
-            except Exception:
-                vals = []
-            if len(vals) == depth and len(set(vals)) == depth and all(1 <= n <= 90 for n in vals):
-                clean[key] = vals
-            else:
-                clean.pop(key, None)
-        if clean.get("origin_mode") not in {"warmup", "live"}:
-            clean["origin_mode"] = "live"
+        clean = {
+            "signal_from_key": str(raw.get("signal_from_key") or ""),
+            "created_at": raw.get("created_at"),
+            "origin_mode": raw.get("origin_mode") if raw.get("origin_mode") in {"warmup", "live"} else "live",
+            "top1": top1,
+            "score1": float(raw.get("score1", 0.0) or 0.0),
+            "score2": float(raw.get("score2", 0.0) or 0.0),
+            "margin": float(raw.get("margin", 0.0) or 0.0),
+            "confidence": float(raw.get("confidence", 0.0) or 0.0),
+            "threshold": None,
+            "support": int(raw.get("support", 0) or 0),
+            "accepted": bool(raw.get("accepted", False)),
+        }
+        try:
+            clean["threshold"] = float(raw["threshold"]) if raw.get("threshold") is not None else None
+        except Exception:
+            clean["threshold"] = None
         return clean
 
     @staticmethod
-    def _sanitize_engine_horizon_sessions(raw):
+    def _sanitize_h5_sessions(raw):
         out = []
         for row in list(raw or []):
             if not isinstance(row, dict):
                 continue
             try:
                 top1 = int(row.get("top1"))
-                top2 = int(row.get("top2"))
                 age = int(row.get("age", 0) or 0)
                 support = int(row.get("support", 0) or 0)
-                h1 = sorted({int(x) for x in (row.get("top1_hit_ages", []) or []) if 1 <= int(x) <= ENGINE_HORIZON_MAX})
-                h2 = sorted({int(x) for x in (row.get("top2_any_hit_ages", []) or []) if 1 <= int(x) <= ENGINE_HORIZON_MAX})
+                hit_ages = sorted({int(x) for x in (row.get("hit_ages", row.get("top1_hit_ages", [])) or []) if 1 <= int(x) <= 5})
             except Exception:
                 continue
-            if not (1 <= top1 <= 90 and 1 <= top2 <= 90 and top1 != top2):
+            if not (1 <= top1 <= 90 and 0 <= age < 5 and 0 <= support <= 4):
                 continue
-            if not (0 <= age < ENGINE_HORIZON_MAX and 0 <= support <= 4):
-                continue
-            origin = row.get("origin_mode") if row.get("origin_mode") in {"warmup", "live"} else "live"
             out.append({
                 "signal_from_key": str(row.get("signal_from_key") or ""),
                 "created_at": row.get("created_at"),
-                "origin_mode": origin,
-                "top1": top1, "top2": top2,
+                "origin_mode": row.get("origin_mode") if row.get("origin_mode") in {"warmup", "live"} else "live",
+                "top1": top1,
                 "support": support,
                 "confidence": float(row.get("confidence", 0.0) or 0.0),
                 "threshold": row.get("threshold"),
                 "confidence_ratio": row.get("confidence_ratio"),
                 "age": age,
-                "top1_hit_ages": h1,
-                "top2_any_hit_ages": h2,
+                "hit_ages": hit_ages,
             })
         return out[-1000:]
 
     @staticmethod
-    def _sanitize_engine_horizon_records(raw):
+    def _sanitize_h5_records(raw):
         out = []
+        seen = set()
         for row in list(raw or []):
             if not isinstance(row, dict):
                 continue
             try:
-                h = int(row.get("horizon"))
                 top1 = int(row.get("top1"))
-                top2 = int(row.get("top2"))
                 support = int(row.get("support", 0) or 0)
+                hit_ages = sorted({int(x) for x in (row.get("hit_ages", row.get("top1_hit_ages", [])) or []) if 1 <= int(x) <= 5})
             except Exception:
                 continue
-            if h not in ENGINE_HORIZONS or not (1 <= top1 <= 90 and 1 <= top2 <= 90 and top1 != top2):
+            if not (1 <= top1 <= 90 and 0 <= support <= 4):
                 continue
-            if not 0 <= support <= 4:
+            key = (str(row.get("signal_from_key") or ""), row.get("origin_mode", "live"))
+            if key in seen:
                 continue
-            clean = dict(row)
-            clean.update({
-                "horizon": h, "top1": top1, "top2": top2, "support": support,
-                "top1_exact_hit": bool(row.get("top1_exact_hit", False)),
-                "top2_exact_any_hit": bool(row.get("top2_exact_any_hit", False)),
-                "top1_cum_hit": bool(row.get("top1_cum_hit", False)),
-                "top2_cum_any_hit": bool(row.get("top2_cum_any_hit", False)),
+            seen.add(key)
+            out.append({
+                "signal_from_key": str(row.get("signal_from_key") or ""),
+                "completed_at": str(row.get("completed_at", row.get("result_key", "")) or ""),
+                "origin_mode": row.get("origin_mode") if row.get("origin_mode") in {"warmup", "live"} else "live",
+                "top1": top1,
+                "support": support,
+                "confidence": float(row.get("confidence", 0.0) or 0.0),
+                "threshold": row.get("threshold"),
+                "confidence_ratio": row.get("confidence_ratio"),
+                "hit_ages": hit_ages,
+                "hits5": len(hit_ages),
             })
-            if clean.get("origin_mode") not in {"warmup", "live"}:
-                clean["origin_mode"] = "live"
-            out.append(clean)
-        return out[-ENGINE_HORIZON_RECORD_MAX:]
+        return out[-ENGINE_H5_RECORD_MAX:]
 
-    # ----------------------------
-    # Stato / serializzazione
-    # ----------------------------
+    def _migrate_h5_from_legacy_horizon(self, d):
+        # Vecchi record horizon: a H5 contengono gia' tutti i top1_hit_ages della sessione.
+        if self.engine_h5_records_warmup or self.engine_h5_records_live:
+            return
+        for origin, field in (("warmup", "engine_horizon_records_warmup"), ("live", "engine_horizon_records_live")):
+            rows = []
+            for r in list(d.get(field, []) or []):
+                if not isinstance(r, dict):
+                    continue
+                try:
+                    if int(r.get("horizon", 0) or 0) != 5:
+                        continue
+                except Exception:
+                    continue
+                rows.append({
+                    "signal_from_key": r.get("signal_from_key"),
+                    "completed_at": r.get("result_key"),
+                    "origin_mode": origin,
+                    "top1": r.get("top1"),
+                    "support": r.get("support", 0),
+                    "confidence": r.get("confidence", 0.0),
+                    "threshold": r.get("threshold"),
+                    "confidence_ratio": r.get("confidence_ratio"),
+                    "hit_ages": r.get("top1_hit_ages", []),
+                })
+            clean = self._sanitize_h5_records(rows)
+            if origin == "warmup":
+                self.engine_h5_records_warmup = clean
+            else:
+                self.engine_h5_records_live = clean
 
-    def _sanitize_pending(self, raw, strategy):
-        if not isinstance(raw, dict):
-            return None
-        allowed = set(self.strategy_gap_values(strategy))
-        items = []
-        seen = set()
-        for x in raw.get("items", []) or []:
-            try:
-                n4 = int(x.get("gap4"))
-                target = int(x.get("target", x.get("gap27")))
-                target_gap = int(x.get("target_gap", CORE_GAP if strategy == "core" else -1))
-                pair = tuple(sorted((n4, target)))
-            except Exception:
-                continue
-            if not (1 <= n4 <= 90 and 1 <= target <= 90):
-                continue
-            if target_gap not in allowed:
-                continue
-            if not different_decades(n4, target):
-                continue
-            if pair in seen:
-                continue
-            seen.add(pair)
-            items.append({
-                "gap4": n4,
-                "target": target,
-                "target_gap": target_gap,
-                "pair": list(pair),
-            })
-        if not items:
-            return None
-        return {
-            "strategy": strategy,
-            "signal_from_key": raw.get("signal_from_key"),
-            "armed_at_seq": int(raw.get("armed_at_seq", 0) or 0),
-            "created_at": raw.get("created_at"),
-            "items": items,
-        }
+        # Migra anche eventuali sessioni ancora aperte.
+        if not self.engine_h5_sessions:
+            self.engine_h5_sessions = self._sanitize_h5_sessions(d.get("engine_horizon_sessions", []))
 
     def load_state(self):
-        if not os.path.exists(STATE_FILE):
-            self.state_load_info = {
-                "loaded": False,
-                "reason": "state non presente nel checkout",
-                "saved_at": None,
-                "path": STATE_FILE,
-            }
-            console_log(f"STATE NON TROVATO | {STATE_FILE}")
+        path = STATE_FILE if os.path.exists(STATE_FILE) else (LEGACY_STATE_FILE if os.path.exists(LEGACY_STATE_FILE) else None)
+        if not path:
+            self.state_load_info["reason"] = "nessuno state presente"
             return False
-
         try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 d = json.load(f)
 
-            found_logic = int(d.get("logic_version", 0) or 0)
-            if found_logic != LOGIC_VERSION:
-                self.state_load_info = {
-                    "loaded": False,
-                    "reason": f"logic_version incompatibile: file={found_logic} bot={LOGIC_VERSION}",
-                    "saved_at": d.get("saved_at"),
-                    "path": STATE_FILE,
-                }
-                console_log(f"STATE IGNORATO | {self.state_load_info['reason']}")
+            found_engine_version = int(d.get("engine_model_version", 0) or 0)
+            if found_engine_version != ENGINE_MODEL_VERSION:
+                self.state_load_info["reason"] = f"ENGINE version mismatch: {found_engine_version}"
                 return False
 
-            self.warmup_done = bool(d.get("warmup_done", False))
-            self.warmup_completed_at = d.get("warmup_completed_at")
-            self.warmup_draws = int(d.get("warmup_draws", 0) or 0)
-            self.warmup_sources = list(d.get("warmup_sources", []) or [])
-
-            self.processed = list(d.get("processed", []) or [])[-PROCESSED_MAX:]
+            self.processed = [str(x) for x in (d.get("processed", []) or [])][-PROCESSED_MAX:]
             self.processed_set = set(self.processed)
             self.last_draw_key = d.get("last_draw_key")
-            self.seq = int(d.get("seq", 0) or 0)
 
-            raw_seen = d.get("last_seen_seq", {}) or {}
-            self.last_seen_seq = {}
-            for n in range(1, 91):
-                v = raw_seen.get(str(n), raw_seen.get(n))
-                self.last_seen_seq[n] = None if v is None else int(v)
+            self.engine_model_version = ENGINE_MODEL_VERSION
+            self.engine_history = self._sanitize_engine_history(d.get("engine_history", []))
+            self.engine_pending = self._sanitize_engine_pending(d.get("engine_pending"))
+            self.engine_margin_history = [
+                float(x) for x in (d.get("engine_margin_history", []) or [])
+                if isinstance(x, (int, float)) and math.isfinite(float(x))
+            ][-ENGINE_MARGIN_LOOKBACK:]
+            self.engine_recent_events = list(d.get("engine_recent_events", []) or [])[-ENGINE_RECENT_MAX:]
+            self._merge_engine_stats(self.engine_stats_warmup, d.get("engine_stats_warmup", {}))
+            self._merge_engine_stats(self.engine_stats_live, d.get("engine_stats_live", {}))
+            self.engine_bootstrap_done = bool(d.get("engine_bootstrap_done", False)) or len(self.engine_history) >= ENGINE_MIN_HISTORY
 
-            raw_pending = d.get("pending_events", {}) or {}
-            self.pending_events = {
-                name: self._sanitize_pending(raw_pending.get(name), name)
-                for name in STRATEGY_ORDER
-            }
-            self.recent_events = list(d.get("recent_events", []) or [])[-150:]
+            self.engine_multi_diag_version = ENGINE_MULTI_DIAG_VERSION
+            self.engine_h5_sessions = self._sanitize_h5_sessions(d.get("engine_h5_sessions", []))
+            self.engine_h5_records_warmup = self._sanitize_h5_records(d.get("engine_h5_records_warmup", []))
+            self.engine_h5_records_live = self._sanitize_h5_records(d.get("engine_h5_records_live", []))
+            self._migrate_h5_from_legacy_horizon(d)
 
-            for name in STRATEGY_ORDER:
-                self.stats_warmup[name].update((d.get("stats_warmup", {}) or {}).get(name, {}) or {})
-                self.stats_live[name].update((d.get("stats_live", {}) or {}).get(name, {}) or {})
+            # Se c'e' un pending HC ma manca la sessione H5, aggancialo senza duplicare.
+            if self.engine_pending and self.engine_pending.get("accepted"):
+                self._start_h5_session(self.engine_pending)
 
-            # Compatibilita' retroattiva: CORE/FAST non vengono MAI invalidati da una modifica FREQ.
-            # Se lo state contiene la vecchia logica FREQ multi-sessione, resetto e ricostruisco SOLO FREQ.
-            found_freq_logic = int(d.get("freq_logic_version", 1) or 1)
-            if found_freq_logic != FREQ_LOGIC_VERSION:
-                self._reset_freq_lab()
-                console_log(
-                    f"FREQ STATE DA RICOSTRUIRE | old={found_freq_logic} new={FREQ_LOGIC_VERSION} | "
-                    "CORE/FAST preservati"
-                )
-            else:
-                self.freq_logic_version = FREQ_LOGIC_VERSION
-                self.freq_bootstrap_done = bool(d.get("freq_bootstrap_done", False))
-                self.freq_history = self._sanitize_freq_history(d.get("freq_history", []))
-                self.freq_sessions = self._sanitize_freq_sessions(d.get("freq_sessions", []))
-                self.freq_condition_active = {
-                    int(x) for x in (d.get("freq_condition_active", []) or [])
-                    if str(x).isdigit() and 1 <= int(x) <= 90
-                }
-                self.freq_recent_events = list(d.get("freq_recent_events", []) or [])[-FREQ_RECENT_MAX:]
-                self.freq_uid = int(d.get("freq_uid", 0) or 0)
-                self._merge_freq_stats(self.freq_stats_warmup, d.get("freq_stats_warmup", {}))
-                self._merge_freq_stats(self.freq_stats_live, d.get("freq_stats_live", {}))
-                self.freq_h5_warmup = self._sanitize_freq_records(d.get("freq_h5_warmup", []))
-                self.freq_h5_live = self._sanitize_freq_records(d.get("freq_h5_live", []))
-                self.freq_h10_warmup = self._sanitize_freq_records(d.get("freq_h10_warmup", []))
-                self.freq_h10_live = self._sanitize_freq_records(d.get("freq_h10_live", []))
-                self.freq_cohits_warmup = self._sanitize_freq_cohits(d.get("freq_cohits_warmup", []))
-                self.freq_cohits_live = self._sanitize_freq_cohits(d.get("freq_cohits_live", []))
-                self.freq_diag_version = int(d.get("freq_diag_version", 0) or 0)
-                if len(self.freq_history) >= FREQ_HISTORY_LEN:
-                    self.freq_bootstrap_done = True
-                # Fallback prudente: con history valida, il set corrente impedisce una falsa nuova entry al riavvio.
-                if not self.freq_condition_active and self.freq_bootstrap_done:
-                    self.freq_condition_active = set(self.freq_candidates())
-                # Migrazione NON distruttiva v2 -> diagnostica v1:
-                # corregge l'origine warmup/live delle sessioni gia' esistenti e
-                # ricostruisce i soli contatori di settlement. CORE/FAST e le entry FREQ restano intatti.
-                if self.freq_diag_version != FREQ_DIAG_VERSION:
-                    self._migrate_freq_diagnostics()
-                    self.freq_diag_version = FREQ_DIAG_VERSION
-                    console_log("FREQ DIAGNOSTICS MIGRATED | origin accounting + return/co-hit v1")
-
-            # ENGINE SHADOW e' versionato a parte: eventuali upgrade NON toccano CORE/FAST/FREQ.
-            found_engine_version = int(d.get("engine_model_version", 0) or 0)
-            if found_engine_version == ENGINE_MODEL_VERSION:
-                self.engine_model_version = ENGINE_MODEL_VERSION
-                self.engine_history = self._sanitize_engine_history(d.get("engine_history", []))
-                self.engine_pending = self._sanitize_engine_pending(d.get("engine_pending"))
-                self.engine_margin_history = [
-                    float(x) for x in (d.get("engine_margin_history", []) or [])
-                    if isinstance(x, (int, float)) and math.isfinite(float(x))
-                ][-ENGINE_MARGIN_LOOKBACK:]
-                self.engine_recent_events = list(d.get("engine_recent_events", []) or [])[-ENGINE_RECENT_MAX:]
-                self._merge_engine_stats(self.engine_stats_warmup, d.get("engine_stats_warmup", {}))
-                self._merge_engine_stats(self.engine_stats_live, d.get("engine_stats_live", {}))
-                self.engine_bootstrap_done = bool(d.get("engine_bootstrap_done", False)) or len(self.engine_history) >= ENGINE_MIN_HISTORY
-                # Upgrade diagnostico non distruttivo: i vecchi risultati H1 restano intatti.
-                self.engine_horizon_diag_version = ENGINE_HORIZON_DIAG_VERSION
-                self.engine_horizon_sessions = self._sanitize_engine_horizon_sessions(d.get("engine_horizon_sessions", []))
-                self.engine_horizon_records_warmup = self._sanitize_engine_horizon_records(d.get("engine_horizon_records_warmup", []))
-                self.engine_horizon_records_live = self._sanitize_engine_horizon_records(d.get("engine_horizon_records_live", []))
-                # Ranking-depth v1: migrazione non distruttiva; i vecchi H1 restano intatti,
-                # Top5/Top10 iniziano a essere classificati solo dalle previsioni che li salvano.
-                self.engine_rank_diag_version = ENGINE_RANK_DIAG_VERSION
-                self._merge_engine_rank_stats(self.engine_rank_stats_warmup, d.get("engine_rank_stats_warmup", {}))
-                self._merge_engine_rank_stats(self.engine_rank_stats_live, d.get("engine_rank_stats_live", {}))
-                # Se lo state precedente ha un HIGH CONFIDENCE gia' armato, iniziamo a seguirlo da H1.
-                if self.engine_pending and self.engine_pending.get("accepted"):
-                    self._start_engine_horizon_session(self.engine_pending)
-            else:
-                self._reset_engine_shadow()
-                console_log(
-                    f"ENGINE SHADOW DA RICOSTRUIRE | old={found_engine_version} new={ENGINE_MODEL_VERSION} | "
-                    "CORE/FAST/FREQ preservati"
-                )
-
+            migrated = os.path.abspath(path) == os.path.abspath(LEGACY_STATE_FILE)
             self.state_load_info = {
                 "loaded": True,
+                "migrated_legacy": migrated,
                 "reason": "OK",
                 "saved_at": d.get("saved_at"),
-                "path": STATE_FILE,
+                "path": path,
             }
             console_log(
-                f"STATE CARICATO | saved_at={d.get('saved_at') or '-'} | "
-                f"warmup={'OK' if self.warmup_done else 'NO'} | seq={self.seq} | "
-                f"last={self.last_draw_key or '-'} | "
-                f"pending_core={self.pending_pairs_count('core')} | "
-                f"pending_fast={self.pending_pairs_count('fast')} | "
-                f"freq_ready={'SI' if self.freq_bootstrap_done else 'NO'} | "
-                f"freq_active={len(self.freq_sessions)}"
+                f"STATE ENGINE CARICATO | legacy={'SI' if migrated else 'NO'} | "
+                f"history={len(self.engine_history)} | margins={len(self.engine_margin_history)} | "
+                f"HC live={self.engine_stats_live.get('signals_evaluated',0)} | "
+                f"H5 live={len(self.engine_h5_records_live)}"
             )
             return True
         except Exception as exc:
-            self.state_load_info = {
-                "loaded": False,
-                "reason": f"{type(exc).__name__}: {exc}",
-                "saved_at": None,
-                "path": STATE_FILE,
-            }
-            console_log(f"STATE NON CARICATO | {self.state_load_info['reason']}")
+            self.state_load_info["reason"] = f"{type(exc).__name__}: {exc}"
+            console_log(f"STATE ENGINE NON CARICATO | {self.state_load_info['reason']}")
             return False
 
     def save_state(self, git=False, force_git=False):
         data = {
-            "logic_version": LOGIC_VERSION,
+            "state_version": STATE_VERSION,
             "saved_at": now_txt(),
-            "warmup_done": self.warmup_done,
-            "warmup_completed_at": self.warmup_completed_at,
-            "warmup_draws": self.warmup_draws,
-            "warmup_sources": self.warmup_sources,
             "processed": self.processed[-PROCESSED_MAX:],
             "last_draw_key": self.last_draw_key,
-            "seq": self.seq,
-            "last_seen_seq": {str(n): self.last_seen_seq.get(n) for n in range(1, 91)},
-            "pending_events": self.pending_events,
-            "recent_events": self.recent_events[-150:],
-            "stats_warmup": self.stats_warmup,
-            "stats_live": self.stats_live,
-            "freq_logic_version": FREQ_LOGIC_VERSION,
-            "freq_diag_version": FREQ_DIAG_VERSION,
-            "freq_bootstrap_done": self.freq_bootstrap_done,
-            "freq_history": self.freq_history[-max(FREQ_HISTORY_LEN, FREQ_HISTORY_MAX):],
-            "freq_sessions": self.freq_sessions[-1000:],
-            "freq_condition_active": sorted(self.freq_condition_active),
-            "freq_recent_events": self.freq_recent_events[-FREQ_RECENT_MAX:],
-            "freq_uid": self.freq_uid,
-            "freq_stats_warmup": self.freq_stats_warmup,
-            "freq_stats_live": self.freq_stats_live,
-            "freq_h5_warmup": self.freq_h5_warmup[-FREQ_RECORD_MAX:],
-            "freq_h5_live": self.freq_h5_live[-FREQ_RECORD_MAX:],
-            "freq_h10_warmup": self.freq_h10_warmup[-FREQ_RECORD_MAX:],
-            "freq_h10_live": self.freq_h10_live[-FREQ_RECORD_MAX:],
-            "freq_cohits_warmup": self.freq_cohits_warmup[-FREQ_RECENT_MAX:],
-            "freq_cohits_live": self.freq_cohits_live[-FREQ_RECENT_MAX:],
             "engine_model_version": ENGINE_MODEL_VERSION,
             "engine_bootstrap_done": self.engine_bootstrap_done,
             "engine_history": self.engine_history[-ENGINE_HISTORY_MAX:],
@@ -1613,13 +1127,10 @@ class DualGapEngine:
             "engine_recent_events": self.engine_recent_events[-ENGINE_RECENT_MAX:],
             "engine_stats_warmup": self.engine_stats_warmup,
             "engine_stats_live": self.engine_stats_live,
-            "engine_horizon_diag_version": ENGINE_HORIZON_DIAG_VERSION,
-            "engine_horizon_sessions": self.engine_horizon_sessions[-1000:],
-            "engine_horizon_records_warmup": self.engine_horizon_records_warmup[-ENGINE_HORIZON_RECORD_MAX:],
-            "engine_horizon_records_live": self.engine_horizon_records_live[-ENGINE_HORIZON_RECORD_MAX:],
-            "engine_rank_diag_version": ENGINE_RANK_DIAG_VERSION,
-            "engine_rank_stats_warmup": self.engine_rank_stats_warmup,
-            "engine_rank_stats_live": self.engine_rank_stats_live,
+            "engine_multi_diag_version": ENGINE_MULTI_DIAG_VERSION,
+            "engine_h5_sessions": self.engine_h5_sessions[-1000:],
+            "engine_h5_records_warmup": self.engine_h5_records_warmup[-ENGINE_H5_RECORD_MAX:],
+            "engine_h5_records_live": self.engine_h5_records_live[-ENGINE_H5_RECORD_MAX:],
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -1637,91 +1148,7 @@ class DualGapEngine:
             self.processed = self.processed[-PROCESSED_MAX:]
             self.processed_set = set(self.processed)
         self.last_draw_key = k
-        self.seq += 1
         return k
-
-    # ----------------------------
-    # Gap e segnali
-    # ----------------------------
-
-    def current_gap(self, n):
-        seen = self.last_seen_seq.get(int(n))
-        if seen is None:
-            return None
-        return int(self.seq) - int(seen)
-
-    def current_gaps(self):
-        return {n: self.current_gap(n) for n in range(1, 91)}
-
-    def numbers_at_gap(self, gap_value):
-        gap_value = int(gap_value)
-        return [n for n in range(1, 91) if self.current_gap(n) == gap_value]
-
-    def numbers_in_gap_range(self, gap_min, gap_max):
-        return [
-            n for n in range(1, 91)
-            if self.current_gap(n) is not None and int(gap_min) <= self.current_gap(n) <= int(gap_max)
-        ]
-
-    def update_last_seen(self, nums):
-        for n in set(map(int, nums)):
-            self.last_seen_seq[n] = int(self.seq)
-
-    def build_signal_items(self, strategy):
-        nums4 = self.numbers_at_gap(GAP_A)
-        target_nums = self.numbers_in_gap_range(
-            STRATEGIES[strategy]["gap_min"], STRATEGIES[strategy]["gap_max"]
-        )
-        items = []
-        seen_pairs = set()
-
-        for n4 in nums4:
-            for target in target_nums:
-                if n4 == target:
-                    continue
-                if not different_decades(n4, target):
-                    continue
-                pair = tuple(sorted((int(n4), int(target))))
-                if pair in seen_pairs:
-                    continue
-                seen_pairs.add(pair)
-                items.append({
-                    "gap4": int(n4),
-                    "target": int(target),
-                    "target_gap": int(self.current_gap(target)),
-                    "pair": list(pair),
-                })
-
-        items.sort(key=lambda x: (tuple(x["pair"]), x["target_gap"]))
-        return items
-
-    def pending_pairs_count(self, strategy=None):
-        if strategy is None:
-            return sum(self.pending_pairs_count(name) for name in STRATEGY_ORDER)
-        return len((self.pending_events.get(strategy) or {}).get("items", []) or [])
-
-    def pending_pairs(self, strategy):
-        return [
-            tuple(map(int, x["pair"]))
-            for x in (self.pending_events.get(strategy) or {}).get("items", []) or []
-        ]
-
-    @staticmethod
-    def _format_pairs(items, limit=30, with_gap=False):
-        items = list(items or [])
-        shown = items[:limit]
-        parts = []
-        for x in shown:
-            pair = tuple(x.get("pair", []))
-            if len(pair) != 2:
-                continue
-            txt = fmt_pair(pair)
-            if with_gap and x.get("target_gap") is not None:
-                txt += f"(g{x.get('target_gap')})"
-            parts.append(txt)
-        if len(items) > limit:
-            parts.append(f"... +{len(items)-limit} altri")
-        return ", ".join(parts) if parts else "-"
 
     async def tg(self, app, text):
         if not app or not CHAT_ID:
@@ -1732,304 +1159,95 @@ class DualGapEngine:
         except Exception as exc:
             console_log(f"⚠️ Telegram: {exc}")
 
-    async def settle_pending(self, app, day, e, nums, mode="live", notify=True):
-        numset = set(map(int, nums))
-        all_results = {}
-        sections = []
-
-        for strategy in STRATEGY_ORDER:
-            event = self.pending_events.get(strategy)
-            if not event:
-                continue
-
-            # Consuma subito: mai doppia contabilizzazione.
-            self.pending_events[strategy] = None
-            items = list(event.get("items", []) or [])
-            if not items:
-                continue
-
-            hits, misses = [], []
-            for item in items:
-                pair = tuple(map(int, item.get("pair", [])))
-                if len(pair) != 2:
-                    continue
-                (hits if pair[0] in numset and pair[1] in numset else misses).append(item)
-
-            plays = len(hits) + len(misses)
-            hit_count = len(hits)
-            st = self._stats(mode, strategy)
-            st["result_draws"] = int(st.get("result_draws", 0)) + 1
-            st["h1_plays"] = int(st.get("h1_plays", 0)) + plays
-            st["h1_hits"] = int(st.get("h1_hits", 0)) + hit_count
-            st["h1_misses"] = int(st.get("h1_misses", 0)) + len(misses)
-            st["cost"] = float(st.get("cost", 0.0)) + plays * STAKE_H1
-            st["gross"] = float(st.get("gross", 0.0)) + hit_count * AMBO_PAYOUT * STAKE_H1
-            if hit_count:
-                st["hit_draws"] = int(st.get("hit_draws", 0)) + 1
-                if hit_count > 1:
-                    st["multi_hit_draws"] = int(st.get("multi_hit_draws", 0)) + 1
-            else:
-                st["stop_draws"] = int(st.get("stop_draws", 0)) + 1
-
-            draw_cost = plays * STAKE_H1
-            draw_gross = hit_count * AMBO_PAYOUT * STAKE_H1
-            draw_net = draw_gross - draw_cost
-            result = {
-                "strategy": strategy,
-                "signal_from": event.get("signal_from_key"),
-                "plays": plays,
-                "hits": hit_count,
-                "misses": len(misses),
-                "cost": draw_cost,
-                "gross": draw_gross,
-                "net": draw_net,
-                "hit_items": hits,
-                "miss_items": misses,
-            }
-            all_results[strategy] = result
-
-            self.recent_events.append({
-                "type": "RESULT",
-                "strategy": strategy,
-                "at": draw_key(day, e),
-                "signal_from": event.get("signal_from_key"),
-                "plays": plays,
-                "hits": hit_count,
-                "net": draw_net,
-            })
-
-            cfg = STRATEGIES[strategy]
-            icon = "✅" if hit_count else "❌"
-            title = "HIT H1" if hit_count else "STOP H1"
-            sections.extend([
-                f"{icon} {cfg['label']} — {title}",
-                f"Segnale da: {event.get('signal_from_key', '-')}",
-                f"Ambi: {plays} | HIT: {hit_count} | MISS: {len(misses)}",
-                f"✅ {self._format_pairs(hits, with_gap=(strategy == 'fast'))}",
-                f"❌ {self._format_pairs(misses, with_gap=(strategy == 'fast'))}",
-                f"Costo: {draw_cost:.2f}€ | lordo: {draw_gross:.2f}€ | netto: {draw_net:+.2f}€",
-                f"Forward {cfg['label']}: {self.live_summary_one_line(strategy)}",
-                "",
-            ])
-
-        self.recent_events = self.recent_events[-150:]
-
-        if notify and mode == "live" and all_results:
-            await self.tg(
-                app,
-                f"📌 {signal_word()} RISULTATI H1 — DUAL GAP\n"
-                f"Risultato: {draw_key(day, e)}\n\n" +
-                "\n".join(sections).rstrip() +
-                "\n\nℹ️ FAST include il CORE: non sommare i due costi come portafogli indipendenti."
-            )
-
-        return all_results or None
-
-    async def arm_from_current_gaps(self, app, current_key, mode="live", notify=True):
-        armed = {}
-        sections = []
-        nums4_all = self.numbers_at_gap(GAP_A)
-
-        for strategy in STRATEGY_ORDER:
-            items = self.build_signal_items(strategy)
-            if not items:
-                self.pending_events[strategy] = None
-                continue
-
-            self.pending_events[strategy] = {
-                "strategy": strategy,
-                "signal_from_key": current_key,
-                "armed_at_seq": int(self.seq),
-                "created_at": now_txt(),
-                "items": items,
-            }
-            armed[strategy] = self.pending_events[strategy]
-
-            st = self._stats(mode, strategy)
-            st["signal_draws"] = int(st.get("signal_draws", 0)) + 1
-            st["pairs_signaled"] = int(st.get("pairs_signaled", 0)) + len(items)
-            st["max_pairs_signal"] = max(int(st.get("max_pairs_signal", 0) or 0), len(items))
-
-            target_by_gap = {}
-            for item in items:
-                target_by_gap.setdefault(int(item["target_gap"]), set()).add(int(item["target"]))
-            self.recent_events.append({
-                "type": "SIGNAL",
-                "strategy": strategy,
-                "at": current_key,
-                "pairs": len(items),
-                "gap4": sorted({int(x["gap4"]) for x in items}),
-                "targets": {str(g): sorted(v) for g, v in sorted(target_by_gap.items())},
-            })
-
-            cfg = STRATEGIES[strategy]
-            targets_txt = " | ".join(
-                f"g{g}: {','.join(map(str, sorted(vals)))}"
-                for g, vals in sorted(target_by_gap.items())
-            ) or "-"
-            sections.extend([
-                f"🎯 {cfg['label']} — {cfg['description']}",
-                f"Gap {GAP_A}: {', '.join(map(str, sorted({int(x['gap4']) for x in items}))) or '-'}",
-                f"Target: {targets_txt}",
-                f"Ambi validi ({len(items)}): {self._format_pairs(items, with_gap=(strategy == 'fast'))}",
-                f"Costo teorico H1: {len(items)*STAKE_H1:.2f}€",
-                "",
-            ])
-
-        self.recent_events = self.recent_events[-150:]
-
-        if notify and mode == "live" and armed:
-            await self.tg(
-                app,
-                f"🎯 {signal_word()} H1 ARMATO — DUAL GAP\n\n"
-                f"Segnale da: {current_key}\n"
-                f"Regola comune: decine diverse / SOLO H1\n\n" +
-                "\n".join(sections).rstrip() +
-                f"\n\n➡️ PROSSIMA estrazione: {STAKE_H1:.2f}€ H1 per ambo in ciascun laboratorio.\n"
-                "Nessun H2, nessuna progressione.\n"
-                "ℹ️ FAST 24-29 include anche gli ambi CORE a gap27: statistiche separate."
-            )
-
-        return armed or None
-
-    # ----------------------------
-    # 10eLOTTO ENGINE SHADOW — surrogate multi-engine PRE-FUTURO
-    # ----------------------------
-
-    def _reset_engine_shadow(self):
-        self.engine_model_version = ENGINE_MODEL_VERSION
-        self.engine_bootstrap_done = False
-        self.engine_history = []
-        self.engine_pending = None
-        self.engine_margin_history = []
-        self.engine_recent_events = []
-        self.engine_stats_warmup = self._new_engine_stats()
-        self.engine_stats_live = self._new_engine_stats()
-        self.engine_horizon_diag_version = ENGINE_HORIZON_DIAG_VERSION
-        self.engine_horizon_sessions = []
-        self.engine_horizon_records_warmup = []
-        self.engine_horizon_records_live = []
-        self.engine_rank_diag_version = ENGINE_RANK_DIAG_VERSION
-        self.engine_rank_stats_warmup = self._new_engine_rank_stats()
-        self.engine_rank_stats_live = self._new_engine_rank_stats()
-
     def _engine_stats(self, mode):
         return self.engine_stats_warmup if mode == "warmup" else self.engine_stats_live
 
-    def _engine_horizon_bank(self, mode):
-        return self.engine_horizon_records_warmup if mode == "warmup" else self.engine_horizon_records_live
+    def _h5_bank(self, mode):
+        return self.engine_h5_records_warmup if mode == "warmup" else self.engine_h5_records_live
 
-    def _engine_rank_stats(self, mode):
-        return self.engine_rank_stats_warmup if mode == "warmup" else self.engine_rank_stats_live
-
-    @staticmethod
-    def _engine_update_rank_bucket(bucket, hits):
-        hits = int(hits)
-        bucket["total_hits"] = int(bucket.get("total_hits", 0) or 0) + hits
-        hist = bucket.setdefault("hist", {})
-        hist[str(hits)] = int(hist.get(str(hits), 0) or 0) + 1
-
-    def _engine_settle_rank_depth(self, pending, actual, origin):
-        top5 = pending.get("top5")
-        top10 = pending.get("top10")
-        if not (isinstance(top5, list) and len(top5) == 5 and isinstance(top10, list) and len(top10) == 10):
-            return None
-        st = self._engine_rank_stats(origin)
-        h5 = len(set(map(int, top5)) & actual)
-        h10 = len(set(map(int, top10)) & actual)
-        st["evaluated"] += 1
-        self._engine_update_rank_bucket(st["all"]["5"], h5)
-        self._engine_update_rank_bucket(st["all"]["10"], h10)
-        if pending.get("accepted"):
-            st["signals_evaluated"] += 1
-            self._engine_update_rank_bucket(st["signals"]["5"], h5)
-            self._engine_update_rank_bucket(st["signals"]["10"], h10)
-        return {"top5_hits": h5, "top10_hits": h10}
-
-    def _start_engine_horizon_session(self, pending):
+    def _start_h5_session(self, pending):
         if not pending or not pending.get("accepted"):
             return False
         key = str(pending.get("signal_from_key") or "")
         origin = pending.get("origin_mode") if pending.get("origin_mode") in {"warmup", "live"} else "live"
-        # Una sola sessione per segnale/origine, anche dopo restart/catch-up.
-        if any(str(x.get("signal_from_key") or "") == key and x.get("origin_mode") == origin
-               for x in self.engine_horizon_sessions):
+        if any(str(x.get("signal_from_key") or "") == key and x.get("origin_mode") == origin for x in self.engine_h5_sessions):
             return False
+        if any(str(x.get("signal_from_key") or "") == key and x.get("origin_mode") == origin
+               for x in (self.engine_h5_records_warmup + self.engine_h5_records_live)):
+            return False
+        conf = float(pending.get("confidence", 0.0) or 0.0)
+        thr = pending.get("threshold")
         try:
-            conf = float(pending.get("confidence", 0.0) or 0.0)
-            thr = pending.get("threshold")
             thr_f = float(thr) if thr is not None else None
-            ratio = (conf / thr_f) if thr_f and thr_f > 0 else None
         except Exception:
-            conf, thr_f, ratio = 0.0, None, None
-        self.engine_horizon_sessions.append({
+            thr_f = None
+        ratio = (conf / thr_f) if thr_f and thr_f > 0 else None
+        self.engine_h5_sessions.append({
             "signal_from_key": key,
             "created_at": pending.get("created_at"),
             "origin_mode": origin,
             "top1": int(pending["top1"]),
-            "top2": int(pending["top2"]),
             "support": int(pending.get("support", 0) or 0),
             "confidence": conf,
             "threshold": thr_f,
             "confidence_ratio": ratio,
             "age": 0,
-            "top1_hit_ages": [],
-            "top2_any_hit_ages": [],
+            "hit_ages": [],
         })
-        self.engine_horizon_sessions = self.engine_horizon_sessions[-1000:]
+        self.engine_h5_sessions = self.engine_h5_sessions[-1000:]
         return True
 
-    async def settle_engine_horizon_sessions(self, app, day, e, nums, mode="live", notify=True):
-        if not self.engine_horizon_sessions:
+    async def settle_h5_sessions(self, app, day, e, nums, mode="live", notify=True):
+        if not self.engine_h5_sessions:
             return []
         actual = set(map(int, nums))
         result_key = draw_key(day, e)
-        kept, emitted = [], []
-        for sess in self.engine_horizon_sessions:
+        kept, completed = [], []
+        for sess in self.engine_h5_sessions:
             age = int(sess.get("age", 0) or 0) + 1
             sess["age"] = age
-            hit1 = int(sess.get("top1")) in actual
-            hit2 = hit1 or (int(sess.get("top2")) in actual)
-            if hit1 and age not in sess["top1_hit_ages"]:
-                sess["top1_hit_ages"].append(age)
-            if hit2 and age not in sess["top2_any_hit_ages"]:
-                sess["top2_any_hit_ages"].append(age)
-
-            if age in ENGINE_HORIZONS:
+            if int(sess["top1"]) in actual and age not in sess["hit_ages"]:
+                sess["hit_ages"].append(age)
+            if age >= 5:
                 origin = sess.get("origin_mode") if sess.get("origin_mode") in {"warmup", "live"} else mode
+                hits = sorted(sess.get("hit_ages", []))
                 rec = {
                     "signal_from_key": sess.get("signal_from_key"),
-                    "result_key": result_key,
-                    "horizon": age,
+                    "completed_at": result_key,
+                    "origin_mode": origin,
                     "top1": int(sess["top1"]),
-                    "top2": int(sess["top2"]),
                     "support": int(sess.get("support", 0) or 0),
                     "confidence": sess.get("confidence"),
                     "threshold": sess.get("threshold"),
                     "confidence_ratio": sess.get("confidence_ratio"),
-                    "top1_exact_hit": bool(hit1),
-                    "top2_exact_any_hit": bool(hit2),
-                    "top1_cum_hit": bool(sess.get("top1_hit_ages")),
-                    "top2_cum_any_hit": bool(sess.get("top2_any_hit_ages")),
-                    "top1_hit_ages": list(sess.get("top1_hit_ages", [])),
-                    "top2_any_hit_ages": list(sess.get("top2_any_hit_ages", [])),
-                    "origin_mode": origin,
+                    "hit_ages": hits,
+                    "hits5": len(hits),
                 }
-                bank = self._engine_horizon_bank(origin)
+                bank = self._h5_bank(origin)
                 bank.append(rec)
-                del bank[:-ENGINE_HORIZON_RECORD_MAX]
-                emitted.append(rec)
+                del bank[:-ENGINE_H5_RECORD_MAX]
+                completed.append(rec)
 
-            if age < ENGINE_HORIZON_MAX:
+                if notify and mode == "live" and origin == "live" and ENGINE_NOTIFY_H5_RESULT:
+                    label = "🎯 ESATTO 2/5" if len(hits) == 2 else ("🔥 3+/5" if len(hits) >= 3 else "—")
+                    ages_txt = ", ".join(f"H{x}" for x in hits) if hits else "-"
+                    await self.tg(
+                        app,
+                        "🧪 ENGINE ONLY — MULTI-HIT H5 CHIUSO\n\n"
+                        f"Segnale: {sess.get('signal_from_key','-')}\n"
+                        f"TOP1 congelato: #{sess['top1']}\n"
+                        f"Uscite nelle 5 successive: {len(hits)}/5 | {label}\n"
+                        f"Colpi HIT: {ages_txt}\n\n"
+                        f"Forward H5 completati: {len(self.engine_h5_records_live)}\n"
+                        f"Dettagli: /multih5"
+                    )
+            else:
                 kept.append(sess)
-        self.engine_horizon_sessions = kept
-        return emitted
+        self.engine_h5_sessions = kept
+        return completed
 
     def engine_append_history(self, current_key, nums):
-        self.engine_history.append({
-            "key": str(current_key),
-            "nums": sorted(set(map(int, nums))),
-        })
+        self.engine_history.append({"key": str(current_key), "nums": sorted(set(map(int, nums)))})
         self.engine_history = self.engine_history[-ENGINE_HISTORY_MAX:]
         self.engine_bootstrap_done = len(self.engine_history) >= ENGINE_MIN_HISTORY
 
@@ -2052,8 +1270,7 @@ class DualGapEngine:
         if len(vals) == 1:
             return vals[0]
         pos = q * (len(vals) - 1)
-        lo = int(math.floor(pos))
-        hi = int(math.ceil(pos))
+        lo = int(math.floor(pos)); hi = int(math.ceil(pos))
         if lo == hi:
             return vals[lo]
         w = pos - lo
@@ -2075,7 +1292,6 @@ class DualGapEngine:
                 z = (c - w * p0) / denom
                 raw[n] += weight * z
                 rates[(n, w)] = c / float(w)
-        # Accelerazione recente rispetto al fondo: piccolo peso, sempre PRE-FUTURO.
         if len(hist) >= 20:
             for n in range(1, 91):
                 r5 = rates.get((n, 5), p0)
@@ -2111,7 +1327,6 @@ class DualGapEngine:
                 d = den[x]
                 if d <= 0:
                     continue
-                # Beta smoothing verso la baseline casuale.
                 vals.append((num[x][n] + 8.0 * p0) / (d + 8.0) - p0)
             out[n] = (sum(vals) / len(vals)) if vals else 0.0
         return out
@@ -2127,8 +1342,6 @@ class DualGapEngine:
         for i in range(start, len(hist) - 1):
             a = set(hist[i]["nums"])
             sim = len(cur.intersection(a))
-            # Atteso casuale ~4.44: diamo piu' peso agli stati realmente simili,
-            # ma senza azzerare completamente il resto.
             w = 0.20 + max(0.0, sim - 3.0) ** 2
             total_w += w
             for n in hist[i + 1]["nums"]:
@@ -2148,7 +1361,6 @@ class DualGapEngine:
         last_seen = {n: None for n in range(1, 91)}
         exp = {g: 0 for g in range(16)}
         hit = {g: 0 for g in range(16)}
-        # Ricostruzione dei gap nota solo con draw precedenti.
         for i in range(len(hist) - 1):
             for n in hist[i]["nums"]:
                 last_seen[n] = i
@@ -2175,7 +1387,7 @@ class DualGapEngine:
         return out
 
     def engine_score_current(self):
-        if not ENGINE_SHADOW_ENABLED or len(self.engine_history) < ENGINE_MIN_HISTORY:
+        if len(self.engine_history) < ENGINE_MIN_HISTORY:
             return None
         components_raw = {
             "freq": self._engine_frequency_scores(),
@@ -2185,32 +1397,24 @@ class DualGapEngine:
         }
         components = {k: self._engine_standardize(v) for k, v in components_raw.items()}
         weights = {"freq": 0.35, "transition": 0.30, "neighbor": 0.20, "gap": 0.15}
-        total = {}
-        for n in range(1, 91):
-            total[n] = sum(weights[k] * components[k][n] for k in weights)
+        total = {n: sum(weights[k] * components[k][n] for k in weights) for n in range(1, 91)}
         ranked = sorted(range(1, 91), key=lambda n: (-total[n], n))
         top1, top2 = ranked[0], ranked[1]
         margin = float(total[top1] - total[top2])
-        # Consensus: in quanti mini-engine il Top1 e' almeno nei primi 5.
         support = 0
-        component_ranks = {}
-        for k, sc in components.items():
+        for sc in components.values():
             rk = sorted(range(1, 91), key=lambda n: (-sc[n], n))
-            component_ranks[k] = rk[:5]
             if top1 in rk[:5]:
                 support += 1
         confidence = margin * (0.75 + 0.25 * (support / 4.0))
         return {
-            "top1": top1,
-            "top2": top2,
-            "top5": [int(n) for n in ranked[:5]],
-            "top10": [int(n) for n in ranked[:10]],
+            "top1": int(top1),
+            "top2_internal": int(top2),
             "score1": float(total[top1]),
             "score2": float(total[top2]),
             "margin": margin,
             "confidence": float(confidence),
             "support": int(support),
-            "components_top5": component_ranks,
         }
 
     def engine_current_threshold(self):
@@ -2228,67 +1432,55 @@ class DualGapEngine:
         origin = p.get("origin_mode") if p.get("origin_mode") in {"warmup", "live"} else mode
         st = self._engine_stats(origin)
         st["evaluated"] += 1
-        rank_depth = self._engine_settle_rank_depth(p, actual, origin)
         hit1 = int(p["top1"] in actual)
-        hit2 = int((p["top1"] in actual) or (p["top2"] in actual))
         st["all_top1_hits"] += hit1
-        st["all_top2_any_hits"] += hit2
         if p.get("accepted"):
             st["signals_evaluated"] += 1
             st["signal_top1_hits"] += hit1
-            st["signal_top2_any_hits"] += hit2
             ev = {
                 "signal_from_key": p.get("signal_from_key"),
                 "result_key": draw_key(day, e),
-                "top1": p["top1"], "top2": p["top2"],
-                "top1_hit": bool(hit1), "top2_any_hit": bool(hit2),
-                "confidence": p.get("confidence"), "threshold": p.get("threshold"),
+                "top1": p["top1"],
+                "top1_hit": bool(hit1),
+                "confidence": p.get("confidence"),
+                "threshold": p.get("threshold"),
+                "support": p.get("support"),
                 "origin_mode": origin,
             }
             self.engine_recent_events.append(ev)
             self.engine_recent_events = self.engine_recent_events[-ENGINE_RECENT_MAX:]
-            if notify and mode == "live":
+            if notify and mode == "live" and ENGINE_NOTIFY_H1_RESULT:
                 await self.tg(
                     app,
-                    "🧠 10eLOTTO ENGINE — RISULTATO SHADOW\n\n"
+                    "🧠 ENGINE ONLY — H1\n\n"
                     f"Segnale da: {p.get('signal_from_key','-')}\n"
                     f"Risultato: {draw_key(day,e)}\n"
-                    f"TOP1 #{p['top1']}: {'✅ HIT' if hit1 else '❌ MISS'}\n"
-                    f"TOP2 backup #{p['top2']}: {'✅ almeno uno presente' if hit2 else '❌ nessuno dei due'}\n"
-                    f"Forward ENGINE: TOP1 {st['signal_top1_hits']}/{st['signals_evaluated']} "
-                    f"({safe_pct(st['signal_top1_hits'], st['signals_evaluated']):.2f}%) | "
-                    f">=1 TOP2 {st['signal_top2_any_hits']}/{st['signals_evaluated']} "
-                    f"({safe_pct(st['signal_top2_any_hits'], st['signals_evaluated']):.2f}%)"
+                    f"TOP1 #{p['top1']}: {'✅ HIT' if hit1 else '❌ MISS'}\n\n"
+                    f"Forward HC H1: {st['signal_top1_hits']}/{st['signals_evaluated']} "
+                    f"({safe_pct(st['signal_top1_hits'], st['signals_evaluated']):.2f}%)\n"
+                    "Il TOP1 resta comunque osservato fino a H5 per MULTI-HIT."
                 )
-        out = {"top1_hit": bool(hit1), "top2_any_hit": bool(hit2), "accepted": bool(p.get("accepted"))}
-        if rank_depth:
-            out.update(rank_depth)
-        return out
+        return {"top1_hit": bool(hit1), "accepted": bool(p.get("accepted"))}
 
     async def arm_engine_shadow(self, app, current_key, mode="live", notify=True):
-        if not ENGINE_SHADOW_ENABLED:
-            return None
         scored = self.engine_score_current()
         if not scored:
             self.engine_pending = None
             return None
         threshold = self.engine_current_threshold()
-        ready = threshold is not None
-        accepted = bool(ready and scored["confidence"] >= threshold)
+        accepted = bool(threshold is not None and scored["confidence"] >= threshold)
         st = self._engine_stats(mode)
         st["predictions"] += 1
         if accepted:
             st["signals"] += 1
         else:
             st["no_signal"] += 1
+
         p = {
             "signal_from_key": str(current_key),
             "created_at": now_txt(),
             "origin_mode": mode,
             "top1": int(scored["top1"]),
-            "top2": int(scored["top2"]),
-            "top5": [int(n) for n in scored["top5"]],
-            "top10": [int(n) for n in scored["top10"]],
             "score1": round(float(scored["score1"]), 8),
             "score2": round(float(scored["score2"]), 8),
             "margin": round(float(scored["margin"]), 8),
@@ -2299,2130 +1491,470 @@ class DualGapEngine:
         }
         self.engine_pending = p
         if accepted:
-            self._start_engine_horizon_session(p)
+            self._start_h5_session(p)
+
+        # IMPORTANTISSIMO: prima si decide usando la soglia PRE-FUTURO, poi si aggiunge
+        # la confidence corrente alla calibrazione. Nessun future leakage.
         self.engine_margin_history.append(float(scored["confidence"]))
         self.engine_margin_history = self.engine_margin_history[-ENGINE_MARGIN_LOOKBACK:]
+
         if accepted and notify and mode == "live" and ENGINE_NOTIFY_SIGNALS:
             await self.tg(
                 app,
-                "🧠 10eLOTTO ENGINE SHADOW — HIGH CONFIDENCE\n\n"
+                "🔥 10eLOTTO ENGINE ONLY — HIGH CONFIDENCE\n\n"
                 f"Segnale da: {current_key}\n"
                 f"🎯 TOP1: {p['top1']}\n"
-                f"🥈 TOP2 backup: {p['top2']}\n"
-                f"Confidence: {p['confidence']:.4f} | soglia dinamica: {p['threshold']:.4f}\n"
+                f"Confidence: {p['confidence']:.4f} | soglia: {p['threshold']:.4f}\n"
                 f"Consensus mini-engine: {p['support']}/4\n\n"
-                f"Filtro selettivo target ≈ top {ENGINE_SELECT_RATE*100:.0f}% dei margini recenti.\n"
-                "⚠️ SOLO SHADOW: nessuna puntata automatica."
+                "🧪 TRACKER: il TOP1 viene congelato e seguito per H1-H5.\n"
+                "Focus: ESATTO 2/5 e >=2/5 nelle prossime 5 estrazioni.\n"
+                "⚠️ SHADOW: nessuna puntata automatica."
             )
         return p
 
     async def rebuild_engine_from_records(self, records):
-        """Ricostruisce SOLO ENGINE SHADOW. I record precedenti diventano calibrazione/warmup."""
-        self._reset_engine_shadow()
+        self.engine_bootstrap_done = False
+        self.engine_history = []
+        self.engine_pending = None
+        self.engine_margin_history = []
+        self.engine_recent_events = []
+        self.engine_stats_warmup = self._new_engine_stats()
+        self.engine_stats_live = self._new_engine_stats()
+        self.engine_h5_sessions = []
+        self.engine_h5_records_warmup = []
+        self.engine_h5_records_live = []
+
         usable = list(records or [])[-ENGINE_HISTORY_MAX:]
         for d, e, nums in usable:
             clean = list(map(int, nums))
             if len(clean) != 20 or len(set(clean)) != 20:
                 continue
-            await self.settle_engine_horizon_sessions(None, d, e, clean, mode="warmup", notify=False)
+            await self.settle_h5_sessions(None, d, e, clean, mode="warmup", notify=False)
             await self.settle_engine_pending(None, d, e, clean, mode="warmup", notify=False)
             k = draw_key(d, e)
             self.engine_append_history(k, clean)
             await self.arm_engine_shadow(None, k, mode="warmup", notify=False)
+
         self.engine_bootstrap_done = len(self.engine_history) >= ENGINE_MIN_HISTORY
-        # L'ultima previsione del replay era warmup; la riarmo come prima previsione LIVE prospettica.
-        # Rimuove soltanto l'eventuale sessione H0 dell'ultimo draw, che non ha ancora avuto futuro.
+
+        # L'ultima previsione del replay deve diventare prospettica LIVE.
         self.engine_pending = None
         if self.engine_bootstrap_done and self.engine_history:
             final_key = self.engine_history[-1]["key"]
-            self.engine_horizon_sessions = [
-                x for x in self.engine_horizon_sessions
+            self.engine_h5_sessions = [
+                x for x in self.engine_h5_sessions
                 if not (x.get("origin_mode") == "warmup" and int(x.get("age",0) or 0) == 0
                         and str(x.get("signal_from_key") or "") == str(final_key))
             ]
             await self.arm_engine_shadow(None, final_key, mode="live", notify=False)
         return self.engine_bootstrap_done
 
-    async def ensure_engine_bootstrap(self):
-        if not ENGINE_SHADOW_ENABLED:
-            return {"ok": True, "disabled": True, "draws": 0}
-        if self.engine_bootstrap_done and len(self.engine_history) >= ENGINE_MIN_HISTORY:
-            return {"ok": True, "already_done": True, "draws": len(self.engine_history)}
-        try:
-            all_records, sources = fetch_warmup_records(WARMUP_DAYS)
-            records, _, continuity = _select_latest_contiguous_warmup(all_records, sources)
-            if self.processed_set:
-                usable = [(d, e, nums) for d, e, nums in records if draw_key(d, e) in self.processed_set]
-            else:
-                usable = list(records)
-            usable.sort(key=lambda x: (x[0], x[1]))
-            usable = usable[-ENGINE_HISTORY_MAX:]
-            ok = await self.rebuild_engine_from_records(usable)
-            return {
-                "ok": bool(ok), "already_done": False, "draws": len(usable),
-                "continuity_note": continuity.get("note"),
-                "reason": None if ok else f"storico ENGINE insufficiente: {len(usable)}<{ENGINE_MIN_HISTORY}",
-            }
-        except Exception as exc:
-            return {"ok": False, "already_done": False, "draws": 0, "reason": f"{type(exc).__name__}: {exc}"}
-
-    def engine_promote_pending_to_live(self):
-        """Promuove la sola previsione prospettica finale del warmup a LIVE, senza rifarla."""
-        p = self.engine_pending
-        if not p or p.get("origin_mode") != "warmup":
-            return False
-        sw = self.engine_stats_warmup
-        sl = self.engine_stats_live
-        sw["predictions"] = max(0, int(sw.get("predictions", 0)) - 1)
-        sl["predictions"] = int(sl.get("predictions", 0)) + 1
-        if p.get("accepted"):
-            sw["signals"] = max(0, int(sw.get("signals", 0)) - 1)
-            sl["signals"] = int(sl.get("signals", 0)) + 1
-        else:
-            sw["no_signal"] = max(0, int(sw.get("no_signal", 0)) - 1)
-            sl["no_signal"] = int(sl.get("no_signal", 0)) + 1
-        old_origin = p.get("origin_mode")
-        p["origin_mode"] = "live"
-        for sess in self.engine_horizon_sessions:
-            if (sess.get("origin_mode") == old_origin and
-                    str(sess.get("signal_from_key") or "") == str(p.get("signal_from_key") or "") and
-                    int(sess.get("age", 0) or 0) == 0):
-                sess["origin_mode"] = "live"
-        return True
-
-    def _engine_stats_line(self, label, st):
-        ev = int(st.get("evaluated", 0))
-        sig_ev = int(st.get("signals_evaluated", 0))
-        return (
-            f"• {label}: tutte TOP1 {st.get('all_top1_hits',0)}/{ev} "
-            f"({safe_pct(st.get('all_top1_hits',0), ev):.2f}%) | >=1 TOP2 {st.get('all_top2_any_hits',0)}/{ev} "
-            f"({safe_pct(st.get('all_top2_any_hits',0), ev):.2f}%)\n"
-            f"  selettive TOP1 {st.get('signal_top1_hits',0)}/{sig_ev} "
-            f"({safe_pct(st.get('signal_top1_hits',0), sig_ev):.2f}%) | >=1 TOP2 {st.get('signal_top2_any_hits',0)}/{sig_ev} "
-            f"({safe_pct(st.get('signal_top2_any_hits',0), sig_ev):.2f}%) | segnali creati={st.get('signals',0)}"
-        )
-
-    @staticmethod
-    def _engine_horizon_baseline_top1(h):
-        return 100.0 * (1.0 - (70.0 / 90.0) ** int(h))
-
-    @staticmethod
-    def _engine_horizon_baseline_pair(h):
-        # Probabilita' che entrambi i due numeri siano assenti in un singolo draw.
-        q_none = (70.0 / 90.0) * (69.0 / 89.0)
-        return 100.0 * (1.0 - q_none ** int(h))
-
-    def _engine_horizon_summary(self, records, support=None):
-        rows = []
-        for h in ENGINE_HORIZONS:
-            rr = [r for r in records if int(r.get("horizon", 0) or 0) == h]
-            if support is not None:
-                rr = [r for r in rr if int(r.get("support", 0) or 0) == int(support)]
-            n = len(rr)
-            rows.append({
-                "h": h, "n": n,
-                "t1_exact": sum(bool(r.get("top1_exact_hit")) for r in rr),
-                "t2_exact": sum(bool(r.get("top2_exact_any_hit")) for r in rr),
-                "t1_cum": sum(bool(r.get("top1_cum_hit")) for r in rr),
-                "t2_cum": sum(bool(r.get("top2_cum_any_hit")) for r in rr),
-            })
-        return rows
-
-    def engine_horizon_text(self):
-        live = self.engine_horizon_records_live
-        active_live = [x for x in self.engine_horizon_sessions if x.get("origin_mode") == "live"]
-        lines = [
-            "🧭 10eLOTTO ENGINE — HORIZON SHADOW",
-            "• SOLO segnali HIGH CONFIDENCE; il segnale originale NON viene prolungato o modificato",
-            "• osservazione esatta + cumulativa H1/H2/H3/H5",
-            f"• sessioni LIVE attive={len(active_live)} | record horizon LIVE={len(live)}",
-            "",
-            "📊 LIVE — TUTTI I CONSENSUS",
-        ]
-        for row in self._engine_horizon_summary(live):
-            h, n = row["h"], row["n"]
-            lines.append(
-                f"• H{h} exact: TOP1 {row['t1_exact']}/{n} ({safe_pct(row['t1_exact'],n):.2f}%) | "
-                f">=1 TOP2 {row['t2_exact']}/{n} ({safe_pct(row['t2_exact'],n):.2f}%)"
-            )
-            lines.append(
-                f"  entro H{h}: TOP1 {row['t1_cum']}/{n} ({safe_pct(row['t1_cum'],n):.2f}%) | "
-                f">=1 TOP2 {row['t2_cum']}/{n} ({safe_pct(row['t2_cum'],n):.2f}%) | "
-                f"baseline cum {self._engine_horizon_baseline_top1(h):.2f}% / {self._engine_horizon_baseline_pair(h):.2f}%"
-            )
-        lines.extend(["", "🧩 CUMULATIVO LIVE PER CONSENSUS"])
-        present_supports = sorted({int(r.get("support",0) or 0) for r in live})
-        if not present_supports:
-            lines.append("• nessun record classificato da questa versione")
-        else:
-            for support in present_supports:
-                parts = []
-                for row in self._engine_horizon_summary(live, support=support):
-                    h, n = row["h"], row["n"]
-                    if n:
-                        parts.append(
-                            f"H{h} T1 {row['t1_cum']}/{n}={safe_pct(row['t1_cum'],n):.1f}% "
-                            f"T2 {row['t2_cum']}/{n}={safe_pct(row['t2_cum'],n):.1f}%"
-                        )
-                if parts:
-                    lines.append(f"• {support}/4: " + " | ".join(parts))
-        lines.extend([
-            "",
-            "Baseline exact per singolo draw: TOP1 22.22% | >=1 dei due 39.70%.",
-            "⚠️ H2/H3/H5 sono SOLO diagnostica: non cambiano la validita' operativa H1 del segnale.",
-        ])
-        return "\n".join(lines)
-
-    @staticmethod
-    def _engine_rank_baseline_ge(depth, atleast):
-        depth = int(depth); atleast = int(atleast)
-        den = math.comb(90, 20)
-        p = 0
-        for x in range(atleast, min(depth, 20) + 1):
-            if 20 - x < 0 or 20 - x > 90 - depth:
-                continue
-            p += math.comb(depth, x) * math.comb(90 - depth, 20 - x)
-        return 100.0 * p / den
-
-    @staticmethod
-    def _engine_rank_ge(bucket, atleast):
-        hist = bucket.get("hist", {}) if isinstance(bucket, dict) else {}
-        return sum(int(v or 0) for k, v in hist.items() if str(k).isdigit() and int(k) >= int(atleast))
-
-    def _engine_rank_block(self, title, st, group):
-        n = int(st.get("signals_evaluated" if group == "signals" else "evaluated", 0) or 0)
-        lines = [f"{title}: n={n}"]
-        for depth in ENGINE_RANK_DEPTHS:
-            b = st[group][str(depth)]
-            total = int(b.get("total_hits", 0) or 0)
-            mean = (total / n) if n else 0.0
-            checks = (1, 2, 3) if depth == 5 else (1, 2, 3, 4)
-            parts = []
-            for a in checks:
-                got = self._engine_rank_ge(b, a)
-                parts.append(
-                    f">={a} {got}/{n}={safe_pct(got,n):.1f}% (rnd {self._engine_rank_baseline_ge(depth,a):.1f}%)"
-                )
-            lines.append(f"• TOP{depth}: media hit={mean:.3f} (rnd {depth*20/90:.3f}) | " + " | ".join(parts))
-            hist = b.get("hist", {})
-            if depth == 5:
-                dist = " ".join(f"{i}:{int(hist.get(str(i),0) or 0)}" for i in range(6))
-            else:
-                d0 = int(hist.get("0",0) or 0); d1=int(hist.get("1",0) or 0); d2=int(hist.get("2",0) or 0); d3=int(hist.get("3",0) or 0)
-                d4p = sum(int(hist.get(str(i),0) or 0) for i in range(4,11))
-                dist = f"0:{d0} 1:{d1} 2:{d2} 3:{d3} 4+:{d4p}"
-            lines.append(f"  distribuzione hit -> {dist}")
-        return lines
-
-    def engine_rank_text(self):
-        p = self.engine_pending or {}
-        top5 = p.get("top5") if isinstance(p.get("top5"), list) else []
-        top10 = p.get("top10") if isinstance(p.get("top10"), list) else []
-        lines = [
-            "🔬 10eLOTTO ENGINE — TOP5/TOP10 SHADOW",
-            "• usa lo STESSO ranking che genera TOP1/TOP2; non cambia score, soglia o segnali",
-            "• valuta SOLO il draw successivo (H1) e conta quanti numeri del ranking sono realmente usciti",
-            "• statistiche avviate da questa versione: nessun retrofill inventato sui vecchi state",
-            "",
-            f"Ranking corrente TOP5: {', '.join(map(str, top5)) if top5 else '-'}",
-            f"Ranking corrente TOP10: {', '.join(map(str, top10)) if top10 else '-'}",
-            f"Stato: {'HIGH CONFIDENCE' if p.get('accepted') else 'NO SIGNAL' if p else '-'}",
-            "",
-            "📊 LIVE — TUTTE LE PREVISIONI",
-        ]
-        lines.extend(self._engine_rank_block("ALL", self.engine_rank_stats_live, "all"))
-        lines.extend(["", "🔥 LIVE — SOLO HIGH CONFIDENCE"])
-        lines.extend(self._engine_rank_block("SELECTIVE", self.engine_rank_stats_live, "signals"))
-        lines.extend([
-            "",
-            "🕰️ WARMUP/CALIBRAZIONE — da questa diagnostica",
-        ])
-        lines.extend(self._engine_rank_block("WARMUP ALL", self.engine_rank_stats_warmup, "all"))
-        lines.extend([
-            "",
-            "Baseline casuale calcolata con distribuzione ipergeometrica 20 numeri estratti su 90.",
-            "⚠️ TOP5/TOP10 sono SOLO diagnostica: nessuna puntata e nessuna modifica a TOP1/TOP2/H1-H5.",
-        ])
-        return "\n".join(lines)
-
-    def engine_text(self):
-        if not ENGINE_SHADOW_ENABLED:
-            return "🧠 10eLOTTO ENGINE SHADOW disabilitato (ENGINE_SHADOW_ENABLED=0)."
-        p = self.engine_pending
-        threshold = self.engine_current_threshold()
-        if p:
-            if p.get("accepted"):
-                pending = (
-                    f"🔥 HIGH CONFIDENCE per la prossima: TOP1 {p['top1']} | TOP2 {p['top2']} | "
-                    f"conf={p.get('confidence',0):.4f} soglia={p.get('threshold',0):.4f} support={p.get('support',0)}/4"
-                )
-            else:
-                pending = (
-                    f"NO SIGNAL | ranking corrente TOP1 {p['top1']} / TOP2 {p['top2']} | "
-                    f"conf={p.get('confidence',0):.4f}"
-                )
-            if isinstance(p.get("top5"), list):
-                pending += "\nTOP5 shadow: " + ", ".join(map(str, p["top5"]))
-            if isinstance(p.get("top10"), list):
-                pending += "\nTOP10 shadow: " + ", ".join(map(str, p["top10"]))
-        else:
-            pending = "nessuna previsione armata"
-        recent = [x for x in self.engine_recent_events if x.get("origin_mode") == "live"][-10:]
-        recent_txt = "\n".join(
-            f"• {x.get('result_key','-')}: #{x.get('top1')} {'HIT' if x.get('top1_hit') else 'MISS'} | "
-            f"backup #{x.get('top2')} {'OK' if x.get('top2_any_hit') else 'MISS'}"
-            for x in recent
-        ) or "• -"
-        return (
-            "🧠 10eLOTTO ENGINE — SOLO SHADOW\n"
-            "• surrogate multi-engine: frequenza/accelerazione + transizioni + vicini di stato + hazard gap\n"
-            "• NON modifica CORE/FAST/FREQ e NON genera puntate\n\n"
-            f"Storico ENGINE: {len(self.engine_history)}/{ENGINE_MIN_HISTORY}+ | calibrazione margini: "
-            f"{len(self.engine_margin_history)}/{ENGINE_MIN_MARGIN_SAMPLES}+\n"
-            f"Filtro selettivo target: top {ENGINE_SELECT_RATE*100:.0f}% | soglia attuale: "
-            f"{'BUILD' if threshold is None else f'{threshold:.4f}'}\n"
-            f"Prossima: {pending}\n\n"
-            "📊 FORWARD\n" + self._engine_stats_line("LIVE", self.engine_stats_live) + "\n\n"
-            "🕰️ CALIBRAZIONE/WARMUP\n" + self._engine_stats_line("WARMUP", self.engine_stats_warmup) + "\n\n"
-            "🧾 ULTIMI SEGNALI LIVE\n" + recent_txt + "\n\n"
-            f"🧭 HORIZON: sessioni LIVE attive={sum(1 for x in self.engine_horizon_sessions if x.get('origin_mode')=='live')} | "
-            f"record={len(self.engine_horizon_records_live)} | dettagli /engineh\n"
-            f"🔬 RANK DEPTH: TOP5/TOP10 H1 classificati={self.engine_rank_stats_live.get('evaluated',0)} | dettagli /enginerank\n\n"
-            "Baseline casuale: TOP1 22.22% | almeno uno di 2 numeri ≈39.70%.\n"
-            "⚠️ Le percentuali del precedente backtest LightGBM NON vengono attribuite a questo surrogate: "
-            "questo motore deve dimostrarle in forward."
-        )
-
-    # ----------------------------
-    # FREQ LAB — ENTRY-ONLY 2/5 e 2/20
-    # ----------------------------
-
-    def _reset_freq_lab(self):
-        self.freq_logic_version = FREQ_LOGIC_VERSION
-        self.freq_bootstrap_done = False
-        self.freq_history = []
-        self.freq_sessions = []
-        self.freq_condition_active = set()
-        self.freq_recent_events = []
-        self.freq_uid = 0
-        self.freq_stats_warmup = self._new_freq_stats()
-        self.freq_stats_live = self._new_freq_stats()
-        self.freq_h5_warmup = []
-        self.freq_h5_live = []
-        self.freq_h10_warmup = []
-        self.freq_h10_live = []
-        self.freq_cohits_warmup = []
-        self.freq_cohits_live = []
-        self.freq_diag_version = FREQ_DIAG_VERSION
-
-    def freq_append_history(self, current_key, nums):
-        row = {"key": str(current_key), "nums": sorted(set(map(int, nums)))}
-        self.freq_history.append(row)
-        self.freq_history = self.freq_history[-max(FREQ_HISTORY_LEN, FREQ_HISTORY_MAX):]
-        if len(self.freq_history) >= FREQ_HISTORY_LEN:
-            self.freq_bootstrap_done = True
-
-    def freq_candidates(self):
-        """Condizione grezza corrente: 2 presenze nelle ultime 5 E 2 nelle ultime 20."""
-        if not FREQ_LAB_ENABLED or len(self.freq_history) < FREQ_HISTORY_LEN:
-            return []
-        last20 = self.freq_history[-20:]
-        last5 = self.freq_history[-5:]
-        out = []
-        for n in range(1, 91):
-            c20 = sum(1 for row in last20 if n in set(row.get("nums", [])))
-            c5 = sum(1 for row in last5 if n in set(row.get("nums", [])))
-            if c5 == 2 and c20 == 2:
-                out.append(n)
-        return out
-
-    def freq_regime_metrics(self):
-        """
-        Regime globale PRE-FUTURO, solo diagnostico.
-
-        COMPRESSION_ACTIVE quando:
-          1) <= FREQ_REGIME_DISTINCT5_MAX numeri distinti nelle ultime 5 estrazioni;
-          2) >= FREQ_REGIME_H10_COMPLETED_MIN sessioni FREQ H10 concluse
-             negli ultimi FREQ_REGIME_H10_LOOKBACK draw.
-
-        Usa esclusivamente informazioni gia' note al momento corrente.
-        Non modifica candidati, segnali o puntate.
-        """
-        hist = list(self.freq_history)
-        last5 = hist[-5:] if len(hist) >= 5 else hist
-        distinct5 = len({
-            int(n)
-            for row in last5
-            for n in (row.get("nums", []) or [])
-            if 1 <= int(n) <= 90
-        }) if last5 else 0
-
-        lookback = max(1, int(FREQ_REGIME_H10_LOOKBACK))
-        recent_keys = {str(row.get("key") or "") for row in hist[-lookback:]}
-        completed_ids = set()
-        for bank in (self.freq_h10_warmup, self.freq_h10_live):
-            for row in bank:
-                if str(row.get("evaluated_at") or "") not in recent_keys:
-                    continue
-                sid = str(row.get("id") or "")
-                if not sid:
-                    sid = f"{row.get('signal_from_key','')}|{row.get('number','?')}"
-                completed_ids.add(sid)
-        completed_h10 = len(completed_ids)
-
-        enough5 = len(last5) >= 5
-        enough_lb = len(hist) >= min(lookback, FREQ_HISTORY_MAX)
-        compression = enough5 and distinct5 <= int(FREQ_REGIME_DISTINCT5_MAX)
-        active = enough_lb and completed_h10 >= int(FREQ_REGIME_H10_COMPLETED_MIN)
-        label = "COMPRESSION_ACTIVE" if (compression and active) else "NORMAL"
-
-        return {
-            "label": label,
-            "distinct5": int(distinct5),
-            "completed_h10_lookback": int(completed_h10),
-            "lookback": int(lookback),
-            "compression_ok": bool(compression),
-            "activity_ok": bool(active),
-            "history_ready": bool(enough5 and enough_lb),
-        }
-
-    def freq_entry_snapshot(self, n, current_key):
-        """Fotografia PRE-FUTURO della vera nascita FREQ. Nessun leakage."""
-        n = int(n)
-        hist = list(self.freq_history)
-        total = len(hist)
-
-        def cnt(w):
-            rows = hist[-min(int(w), total):]
-            return sum(1 for row in rows if n in set(row.get("nums", [])))
-
-        last5 = hist[-5:] if total >= 5 else hist
-        # Convenzione leggibile: -1 = draw del segnale, -2 = precedente, ... -5.
-        offsets = []
-        base = len(last5)
-        for i, row in enumerate(last5):
-            if n in set(row.get("nums", [])):
-                offsets.append(-(base - i))
-        offsets = sorted(offsets)
-        pattern5 = "/".join(str(x) for x in offsets) if offsets else "-"
-        spacing = abs(offsets[-1] - offsets[-2]) if len(offsets) == 2 else None
-        current_hit = (-1 in offsets)
-
-        # Prima delle due uscite recenti: quante ASSENZE consecutive separavano la precedente uscita?
-        hit_idx = [i for i, row in enumerate(hist) if n in set(row.get("nums", []))]
-        pre_absences = None
-        prev_distance = None
-        if len(hit_idx) >= 3:
-            first_recent_idx = hit_idx[-2]
-            prev_idx = hit_idx[-3]
-            prev_distance = first_recent_idx - prev_idx
-            pre_absences = max(0, prev_distance - 1)
-
-        c20 = cnt(20)
-        c30 = cnt(30) if total >= 30 else None
-        c50 = cnt(50) if total >= 50 else None
-        extra_20_30 = (c30 - c20) if c30 is not None else None
-        extra_20_50 = (c50 - c20) if c50 is not None else None
-        regime = self.freq_regime_metrics()
-
-        return {
-            "signal_key": str(current_key),
-            "history_len": total,
-            "pattern5": pattern5,
-            "offsets5": offsets,
-            "spacing": spacing,
-            "current_hit": bool(current_hit),
-            "c5": cnt(5),
-            "c10": cnt(10),
-            "c20": c20,
-            "c30": c30,
-            "c50": c50,
-            "extra_20_30": extra_20_30,
-            "extra_20_50": extra_20_50,
-            "pre_absences": pre_absences,
-            "prev_distance": prev_distance,
-            "decade": decade_index(n),
-            # Regime globale noto al momento della nascita: SOLO diagnostica.
-            "regime": regime.get("label", "NORMAL"),
-            "regime_distinct5": regime.get("distinct5"),
-            "regime_h10_completed_lookback": regime.get("completed_h10_lookback"),
-            "regime_h10_lookback": regime.get("lookback"),
-        }
-
-    def _freq_origin_for_key(self, signal_key, fallback="live", index_map=None):
-        """Determina dove e' NATA una sessione. La nascita governa tutta la sua contabilita'."""
-        if fallback not in {"warmup", "live"}:
-            fallback = "live"
-        key = str(signal_key or "")
-        if not key:
-            return fallback
-        if index_map is None:
-            index_map = {str(k): i for i, k in enumerate(self.processed)}
-        idx = index_map.get(key)
-        if idx is None:
-            return fallback
-        warm_n = max(0, min(int(self.warmup_draws or 0), len(self.processed)))
-        return "warmup" if idx < warm_n else "live"
-
-    @staticmethod
-    def _freq_reset_settlement_fields(st):
-        st["horizon_eval"] = {str(h): 0 for h in FREQ_HORIZONS}
-        st["horizon_hits"] = {str(h): 0 for h in FREQ_HORIZONS}
-        st["target5_eval"] = 0
-        st["target5_success"] = 0
-        st["target5_total_hits"] = 0
-        st["target10_eval"] = 0
-        st["target10_success"] = 0
-        st["target10_total_hits"] = 0
-        st["completed_sessions"] = 0
-        st["return_eval"] = {str(h): 0 for h in FREQ_RETURN_HORIZONS}
-        st["return_hits"] = {str(h): 0 for h in FREQ_RETURN_HORIZONS}
-        # Le co-uscite non sono ricostruibili perfettamente dal vecchio state aggregato:
-        # ripartono pulite dalla migrazione diagnostica.
-        st["co_pair_eval"] = 0
-        st["co_pair_hits"] = 0
-        st["cohit_draws"] = 0
-
-    def _freq_apply_session_summary(self, origin, age, hit_ages, h5_hits=None, h5_success=None):
-        origin = origin if origin in {"warmup", "live"} else "live"
-        st = self._freq_stats(origin)
-        age = int(age)
-        hits = sorted({int(x) for x in (hit_ages or []) if 1 <= int(x) <= min(10, age)})
-        for h in FREQ_HORIZONS:
-            if age >= h:
-                st["horizon_eval"][str(h)] += 1
-                if h in hits:
-                    st["horizon_hits"][str(h)] += 1
-        for h in FREQ_RETURN_HORIZONS:
-            if age >= h:
-                st["return_eval"][str(h)] += 1
-                if any(x <= h for x in hits):
-                    st["return_hits"][str(h)] += 1
-        if age >= 5:
-            hh5 = int(h5_hits) if h5_hits is not None else len([x for x in hits if x <= 5])
-            suc5 = bool(h5_success) if h5_success is not None else (hh5 >= FREQ_TARGET5_MIN_HITS)
-            st["target5_eval"] += 1
-            st["target5_success"] += int(suc5)
-            st["target5_total_hits"] += hh5
-        if age >= 10:
-            hh10 = len([x for x in hits if x <= 10])
-            st["target10_eval"] += 1
-            st["target10_success"] += int(hh10 >= FREQ_TARGET10_MIN_HITS)
-            st["target10_total_hits"] += hh10
-            st["completed_sessions"] += 1
-
-    def _freq_rebuild_cohits_from_retained_history(self):
-        """Retrofill co-uscite usando lo storico FREQ ancora nello state (max FREQ_HISTORY_MAX draw)."""
-        # Azzera solo la diagnostica coppie: questa funzione viene usata una volta in migrazione.
-        for st in (self.freq_stats_warmup, self.freq_stats_live):
-            st["co_pair_eval"] = 0
-            st["co_pair_hits"] = 0
-            st["cohit_draws"] = 0
-        self.freq_cohits_warmup = []
-        self.freq_cohits_live = []
-
-        hist = list(self.freq_history or [])
-        if not hist:
-            return
-        pos = {str(row.get("key") or ""): i for i, row in enumerate(hist)}
-
-        # Catalogo sessioni uniche: completate H10 + record H5 + attive.
-        catalog = {}
-        def add_row(row, fallback_origin):
-            if not isinstance(row, dict):
-                return
-            sid = str(row.get("id") or "")
-            sig = str(row.get("signal_from_key") or "")
-            try:
-                n = int(row.get("number"))
-            except Exception:
-                return
-            if not sid:
-                sid = f"{sig}|{n}"
-            origin = row.get("origin_mode")
-            if origin not in {"warmup", "live"}:
-                origin = fallback_origin if fallback_origin in {"warmup", "live"} else self._freq_origin_for_key(sig, "live")
-            catalog[sid] = {"id": sid, "number": n, "signal_from_key": sig, "origin_mode": origin}
-
-        for r in self.freq_h10_warmup: add_row(r, "warmup")
-        for r in self.freq_h10_live: add_row(r, "live")
-        for r in self.freq_h5_warmup: add_row(r, "warmup")
-        for r in self.freq_h5_live: add_row(r, "live")
-        for r in self.freq_sessions: add_row(r, r.get("origin_mode") or "live")
-
-        sessions = []
-        for ses in catalog.values():
-            si = pos.get(ses["signal_from_key"])
-            if si is None:
-                continue
-            x = dict(ses)
-            x["signal_pos"] = si
-            sessions.append(x)
-
-        for j, row in enumerate(hist):
-            numset = set(map(int, row.get("nums", []) or []))
-            current_key = str(row.get("key") or "")
-            for origin in ("warmup", "live"):
-                active_nums = sorted({
-                    int(x["number"]) for x in sessions
-                    if x.get("origin_mode") == origin and 1 <= (j - int(x["signal_pos"])) <= 10
-                })
-                if len(active_nums) < 2:
-                    continue
-                st = self._freq_stats(origin)
-                pairs = list(combinations(active_nums, 2))
-                st["co_pair_eval"] += len(pairs)
-                hit_pairs = [pair for pair in pairs if pair[0] in numset and pair[1] in numset]
-                if hit_pairs:
-                    st["co_pair_hits"] += len(hit_pairs)
-                    st["cohit_draws"] += 1
-                    bank = self._freq_cohit_bank(origin)
-                    for a, b in hit_pairs:
-                        bank.append({"at": current_key, "pair": [int(a), int(b)], "origin_mode": origin})
-                    del bank[:-FREQ_RECENT_MAX]
-
-    def _migrate_freq_diagnostics(self):
-        """Migra uno state ENTRY-ONLY precedente senza cancellare il forward FREQ raccolto."""
-        idx_map = {str(k): i for i, k in enumerate(self.processed)}
-
-        # 1) assegna un'origine alle sessioni ancora attive.
-        for ses in self.freq_sessions:
-            if ses.get("origin_mode") not in {"warmup", "live"}:
-                ses["origin_mode"] = self._freq_origin_for_key(ses.get("signal_from_key"), "live", idx_map)
-
-        # 2) riclassifica i record H5/H10 secondo la nascita, non secondo il draw di chiusura.
-        def reclassify(warm_rows, live_rows):
-            seen = {}
-            for fallback, rows in (("warmup", warm_rows), ("live", live_rows)):
-                for r in list(rows or []):
-                    rr = dict(r)
-                    origin = rr.get("origin_mode")
-                    if origin not in {"warmup", "live"}:
-                        origin = self._freq_origin_for_key(rr.get("signal_from_key"), fallback, idx_map)
-                    rr["origin_mode"] = origin
-                    key = str(rr.get("id") or f"{rr.get('signal_from_key')}|{rr.get('number')}|{rr.get('evaluated_at')}")
-                    seen[key] = rr
-            w = [r for r in seen.values() if r.get("origin_mode") == "warmup"][-FREQ_RECORD_MAX:]
-            l = [r for r in seen.values() if r.get("origin_mode") == "live"][-FREQ_RECORD_MAX:]
-            return w, l
-
-        self.freq_h5_warmup, self.freq_h5_live = reclassify(self.freq_h5_warmup, self.freq_h5_live)
-        self.freq_h10_warmup, self.freq_h10_live = reclassify(self.freq_h10_warmup, self.freq_h10_live)
-
-        # 3) ricostruisce SOLO i contatori di settlement. I contatori di entry/condizione restano quelli reali.
-        self._freq_reset_settlement_fields(self.freq_stats_warmup)
-        self._freq_reset_settlement_fields(self.freq_stats_live)
-        self.freq_cohits_warmup = []
-        self.freq_cohits_live = []
-
-        completed_ids = set()
-        for origin, rows in (("warmup", self.freq_h10_warmup), ("live", self.freq_h10_live)):
-            for r in rows:
-                rid = str(r.get("id") or "")
-                if rid:
-                    completed_ids.add(rid)
-                self._freq_apply_session_summary(
-                    origin, 10, r.get("hit_ages10", []),
-                    r.get("h5_hits"), r.get("h5_success"),
-                )
-
-        active_ids = set()
-        for ses in self.freq_sessions:
-            rid = str(ses.get("id") or "")
-            if rid:
-                active_ids.add(rid)
-            self._freq_apply_session_summary(
-                ses.get("origin_mode") or "live", ses.get("age", 0), ses.get("hit_ages", []),
-                ses.get("h5_hits"), ses.get("h5_success"),
-            )
-
-        # Fallback raro: record H5 che non ha ne' H10 ne' sessione attiva nello state.
-        for origin, rows in (("warmup", self.freq_h5_warmup), ("live", self.freq_h5_live)):
-            for r in rows:
-                rid = str(r.get("id") or "")
-                if rid and (rid in completed_ids or rid in active_ids):
-                    continue
-                self._freq_apply_session_summary(
-                    origin, 5, r.get("hit_ages5", []),
-                    r.get("hits5"), r.get("success5"),
-                )
-
-        # 4) retrofill delle co-uscite nella finestra di storico ancora conservata nello state.
-        # Per il forward recente (tipicamente <120 draw) recupera anche eventi gia' avvenuti prima dell'upgrade.
-        self._freq_rebuild_cohits_from_retained_history()
-
-    def _freq_record_bank(self, mode, horizon):
-        if int(horizon) == 5:
-            return self.freq_h5_warmup if mode == "warmup" else self.freq_h5_live
-        return self.freq_h10_warmup if mode == "warmup" else self.freq_h10_live
-
-    def _freq_cohit_bank(self, mode):
-        return self.freq_cohits_warmup if mode == "warmup" else self.freq_cohits_live
-
-    async def settle_freq_sessions(self, app, day, e, nums, mode="live", notify=True):
-        if not FREQ_LAB_ENABLED or not self.freq_sessions:
-            return None
-
-        numset = set(map(int, nums))
-        survivors = []
-        milestone_lines = []
-        current_key = draw_key(day, e)
-
-        # CO-USCITE: considero coppie di NUMERI unici con sessioni attive della stessa origine.
-        # In questo modo il forward resta puro: una sessione nata in warmup non sporca le coppie live.
-        for origin in ("warmup", "live"):
-            active_nums = sorted({
-                int(x.get("number")) for x in self.freq_sessions
-                if (x.get("origin_mode") or self._freq_origin_for_key(x.get("signal_from_key"), mode)) == origin
-            })
-            if len(active_nums) >= 2:
-                st_origin = self._freq_stats(origin)
-                pairs = list(combinations(active_nums, 2))
-                st_origin["co_pair_eval"] = int(st_origin.get("co_pair_eval", 0)) + len(pairs)
-                hit_pairs = [p for p in pairs if p[0] in numset and p[1] in numset]
-                if hit_pairs:
-                    st_origin["co_pair_hits"] = int(st_origin.get("co_pair_hits", 0)) + len(hit_pairs)
-                    st_origin["cohit_draws"] = int(st_origin.get("cohit_draws", 0)) + 1
-                    bank = self._freq_cohit_bank(origin)
-                    for a, b in hit_pairs:
-                        bank.append({"at": current_key, "pair": [int(a), int(b)], "origin_mode": origin})
-                    del bank[:-FREQ_RECENT_MAX]
-                    self.freq_recent_events.append({
-                        "type": "FREQ_COHIT", "at": current_key, "origin_mode": origin,
-                        "pairs": [list(p) for p in hit_pairs],
-                    })
-
-        for session in list(self.freq_sessions):
-            origin = session.get("origin_mode")
-            if origin not in {"warmup", "live"}:
-                origin = self._freq_origin_for_key(session.get("signal_from_key"), mode)
-                session["origin_mode"] = origin
-            st = self._freq_stats(origin)
-
-            age = int(session.get("age", 0) or 0) + 1
-            session["age"] = age
-            n = int(session["number"])
-            hit_now = n in numset
-            hit_ages = list(session.get("hit_ages", []) or [])
-            if hit_now and age not in hit_ages:
-                hit_ages.append(age)
-                hit_ages.sort()
-            session["hit_ages"] = hit_ages
-
-            if age in FREQ_HORIZONS:
-                h = str(age)
-                st["horizon_eval"][h] = int(st["horizon_eval"].get(h, 0)) + 1
-                if hit_now:
-                    st["horizon_hits"][h] = int(st["horizon_hits"].get(h, 0)) + 1
-
-            hits_so_far = len([x for x in hit_ages if x <= age])
-
-            # RITORNO cumulativo: almeno una ricomparsa entro H3/H5/H10.
-            if age in FREQ_RETURN_HORIZONS:
-                h = str(age)
-                st["return_eval"][h] = int(st["return_eval"].get(h, 0)) + 1
-                if hits_so_far >= 1:
-                    st["return_hits"][h] = int(st["return_hits"].get(h, 0)) + 1
-
-            if age == 5:
-                success5 = hits_so_far >= FREQ_TARGET5_MIN_HITS
-                session["h5_hits"] = hits_so_far
-                session["h5_success"] = bool(success5)
-                st["target5_eval"] = int(st.get("target5_eval", 0)) + 1
-                st["target5_success"] = int(st.get("target5_success", 0)) + int(success5)
-                st["target5_total_hits"] = int(st.get("target5_total_hits", 0)) + hits_so_far
-                rec5 = {
-                    "id": session.get("id"), "number": n,
-                    "signal_from_key": session.get("signal_from_key"),
-                    "evaluated_at": current_key, "hits5": hits_so_far,
-                    "success5": bool(success5),
-                    "hit_ages5": [x for x in hit_ages if x <= 5],
-                    "snapshot": dict(session.get("snapshot", {}) or {}),
-                    "origin_mode": origin,
-                }
-                bank5 = self._freq_record_bank(origin, 5)
-                bank5.append(rec5)
-                del bank5[:-FREQ_RECORD_MAX]
-                self.freq_recent_events.append({
-                    "type": "FREQ_H5", "at": current_key, "id": session.get("id"),
-                    "number": n, "hits_5": hits_so_far, "success": bool(success5),
-                    "origin_mode": origin,
-                })
-                if FREQ_NOTIFY_MILESTONES and notify and mode == "live" and origin == "live":
-                    milestone_lines.append(
-                        f"H5 | #{n} | uscite={hits_so_far}/5 | "
-                        f"ritorno={'✅' if hits_so_far >= 1 else '❌'} | "
-                        f"target >=3: {'✅' if success5 else '❌'}"
-                    )
-
-            if age == 10:
-                hits10 = len([x for x in hit_ages if x <= 10])
-                success10 = hits10 >= FREQ_TARGET10_MIN_HITS
-                st["target10_eval"] = int(st.get("target10_eval", 0)) + 1
-                st["target10_success"] = int(st.get("target10_success", 0)) + int(success10)
-                st["target10_total_hits"] = int(st.get("target10_total_hits", 0)) + hits10
-                st["completed_sessions"] = int(st.get("completed_sessions", 0)) + 1
-                rec10 = {
-                    "id": session.get("id"), "number": n,
-                    "signal_from_key": session.get("signal_from_key"),
-                    "evaluated_at": current_key, "hits10": hits10,
-                    "success10": bool(success10),
-                    "hit_ages10": [x for x in hit_ages if x <= 10],
-                    "h5_hits": session.get("h5_hits"),
-                    "h5_success": session.get("h5_success"),
-                    "snapshot": dict(session.get("snapshot", {}) or {}),
-                    "origin_mode": origin,
-                }
-                bank10 = self._freq_record_bank(origin, 10)
-                bank10.append(rec10)
-                del bank10[:-FREQ_RECORD_MAX]
-                self.freq_recent_events.append({
-                    "type": "FREQ_H10", "at": current_key, "id": session.get("id"),
-                    "number": n, "hits_10": hits10, "success": bool(success10),
-                    "origin_mode": origin,
-                })
-                if FREQ_NOTIFY_MILESTONES and notify and mode == "live" and origin == "live":
-                    milestone_lines.append(
-                        f"H10 | #{n} | uscite={hits10}/10 | "
-                        f"ritorno={'✅' if hits10 >= 1 else '❌'} | "
-                        f"target >=4: {'✅' if success10 else '❌'}"
-                    )
-            else:
-                survivors.append(session)
-
-        self.freq_sessions = survivors[-1000:]
-        self.freq_recent_events = self.freq_recent_events[-FREQ_RECENT_MAX:]
-
-        if milestone_lines and notify and mode == "live":
-            await self.tg(
-                app,
-                "🧪 FREQ LAB — MILESTONE SHADOW\n"
-                f"Risultato: {current_key}\n\n" +
-                "\n".join(milestone_lines) +
-                "\n\nZero puntate: laboratorio statistico indipendente da CORE/FAST."
-            )
-        return milestone_lines or None
-
-    async def arm_freq_birth(self, app, current_key, mode="live", notify=True):
-        if not FREQ_LAB_ENABLED:
-            return []
-
-        current = set(self.freq_candidates())
-        previous = set(self.freq_condition_active)
-        entries = sorted(current - previous)
-        repeats = sorted(current & previous)
-        # Aggiorno SEMPRE lo stato della condizione, anche se non ci sono nuove entry.
-        self.freq_condition_active = current
-
-        st = self._freq_stats(mode)
-        if current:
-            st["condition_draws"] = int(st.get("condition_draws", 0)) + 1
-            st["condition_candidates"] = int(st.get("condition_candidates", 0)) + len(current)
-        if repeats:
-            st["suppressed_repeats"] = int(st.get("suppressed_repeats", 0)) + len(repeats)
-        if not entries:
-            return []
-
-        st["signal_draws"] = int(st.get("signal_draws", 0)) + 1
-        st["candidates_signaled"] = int(st.get("candidates_signaled", 0)) + len(entries)
-        st["max_candidates_signal"] = max(int(st.get("max_candidates_signal", 0)), len(entries))
-
-        created = []
-        for n in entries:
-            self.freq_uid += 1
-            snapshot = self.freq_entry_snapshot(n, current_key)
-            session = {
-                "id": f"FREQ-{self.freq_uid:07d}",
-                "number": int(n),
-                "signal_from_key": current_key,
-                "created_at": now_txt(),
-                "age": 0,
-                "hit_ages": [],
-                "snapshot": snapshot,
-                "h5_hits": None,
-                "h5_success": None,
-                "origin_mode": mode if mode in {"warmup", "live"} else "live",
-            }
-            self.freq_sessions.append(session)
-            created.append(session)
-
-        self.freq_sessions = self.freq_sessions[-1000:]
-        self.freq_recent_events.append({
-            "type": "FREQ_ENTRY", "at": current_key,
-            "numbers": list(entries), "count": len(entries),
-            "suppressed_same_episode": list(repeats),
-        })
-        self.freq_recent_events = self.freq_recent_events[-FREQ_RECENT_MAX:]
-
-        if notify and mode == "live" and FREQ_NOTIFY_SIGNALS:
-            detail = []
-            for x in created:
-                snap = x.get("snapshot", {})
-                pg = snap.get("pre_absences")
-                pg_txt = "?" if pg is None else str(pg)
-                detail.append(
-                    f"#{x['number']} pattern={snap.get('pattern5','-')} "
-                    f"spacing={snap.get('spacing','?')} pre-gap={pg_txt} "
-                    f"regime={snap.get('regime','NORMAL')}"
-                )
-            await self.tg(
-                app,
-                "🧪 FREQ LAB SHADOW — VERA FREQ-BIRTH ENTRY\n\n"
-                f"Segnale da: {current_key}\n"
-                f"Nuove entry: {', '.join(map(str, entries))}\n"
-                + ("\n".join(detail) + "\n\n" if detail else "\n") +
-                "Regola: 2 uscite nelle ultime 5 e 2 nelle ultime 20.\n"
-                "ENTRY-ONLY: se il numero resta nella condizione nei draw successivi NON viene riaperto.\n\n"
-                "Osservazione: H1 / H2 / H3 / H5 / H10.\n"
-                "Target H5: >=3 uscite nelle prossime 5.\n"
-                "Target H10: >=4 uscite nelle prossime 10.\n"
-                "Regime globale: SOLO diagnostica, non filtra il segnale.\n\n"
-                "⚠️ ZERO puntate: non modifica CORE o FAST."
-            )
-        return created
-
-    async def rebuild_freq_lab_from_records(self, records):
-        # Ricostruisce SOLO il laboratorio FREQ ENTRY-ONLY; CORE/FAST non vengono toccati.
-        self._reset_freq_lab()
-        for d, e, nums in list(records or []):
-            clean = list(map(int, nums))
-            if len(clean) != 20 or len(set(clean)) != 20:
-                continue
-            self.freq_stats_warmup["draws"] = int(self.freq_stats_warmup.get("draws", 0)) + 1
-            await self.settle_freq_sessions(None, d, e, clean, mode="warmup", notify=False)
-            current_key = draw_key(d, e)
-            self.freq_append_history(current_key, clean)
-            await self.arm_freq_birth(None, current_key, mode="warmup", notify=False)
-        self.freq_bootstrap_done = len(self.freq_history) >= FREQ_HISTORY_LEN
-        return self.freq_bootstrap_done
-
-    async def ensure_freq_lab_bootstrap(self):
-        if not FREQ_LAB_ENABLED:
-            return {"ok": True, "disabled": True, "draws": 0}
-        if self.freq_bootstrap_done and len(self.freq_history) >= FREQ_HISTORY_LEN:
-            return {"ok": True, "already_done": True, "draws": len(self.freq_history)}
-
-        try:
-            all_records, sources = fetch_warmup_records(WARMUP_DAYS)
-            records, _, continuity = _select_latest_contiguous_warmup(all_records, sources)
-            # Per uno state CORE/FAST gia' attivo usiamo SOLO draw che risultano gia' processati.
-            if self.processed_set:
-                usable = [
-                    (d, e, nums) for d, e, nums in records
-                    if draw_key(d, e) in self.processed_set
-                ]
-            else:
-                usable = list(records)
-            usable.sort(key=lambda x: (x[0], x[1]))
-            if len(usable) > 800:
-                usable = usable[-800:]
-            ok = await self.rebuild_freq_lab_from_records(usable)
-            return {
-                "ok": bool(ok),
-                "already_done": False,
-                "draws": len(usable),
-                "continuity_note": continuity.get("note"),
-                "reason": None if ok else f"storico FREQ insufficiente: {len(usable)} draw",
-            }
-        except Exception as exc:
-            return {
-                "ok": False, "already_done": False, "draws": 0,
-                "reason": f"{type(exc).__name__}: {exc}",
-            }
-
-    def freq_active_text(self, limit=25):
-        if not self.freq_sessions:
-            return "-"
-        rows = []
-        for s in self.freq_sessions[:limit]:
-            snap = s.get("snapshot", {}) or {}
-            rows.append(
-                f"{s.get('id')} #{s.get('number')} da {s.get('signal_from_key')} "
-                f"| H{s.get('age', 0)}/10 | hit={len(s.get('hit_ages', []) or [])} "
-                f"| p5={snap.get('pattern5','-')} | origin={s.get('origin_mode') or '?'}"
-            )
-        if len(self.freq_sessions) > limit:
-            rows.append(f"... +{len(self.freq_sessions)-limit} altri")
-        return "\n".join(rows)
-
-    def _freq_stats_block(self, title, st):
-        lines = [title]
-        lines.append(f"• draw elaborati = {int(st.get('draws', 0))}")
-        lines.append(
-            f"• condizione grezza = {int(st.get('condition_draws', 0))} draw | "
-            f"presenze-candidato = {int(st.get('condition_candidates', 0))}"
-        )
-        lines.append(
-            f"• VERE ENTRY = {int(st.get('signal_draws', 0))} draw | "
-            f"candidati entry = {int(st.get('candidates_signaled', 0))} | "
-            f"repliche stesso episodio scartate = {int(st.get('suppressed_repeats', 0))}"
-        )
-        lines.append(f"• max nuove entry nello stesso draw = {int(st.get('max_candidates_signal', 0))}")
-        for h in FREQ_HORIZONS:
-            ev = int(st.get("horizon_eval", {}).get(str(h), 0))
-            hi = int(st.get("horizon_hits", {}).get(str(h), 0))
-            lines.append(f"• H{h} esatto = {hi}/{ev} ({safe_pct(hi, ev):.2f}%)")
-        lines.append("• RITORNO >=1 cumulativo:")
-        for h in FREQ_RETURN_HORIZONS:
-            ev = int(st.get("return_eval", {}).get(str(h), 0))
-            hi = int(st.get("return_hits", {}).get(str(h), 0))
-            lines.append(f"  H{h}: {hi}/{ev} ({safe_pct(hi, ev):.2f}%)")
-        pair_ev = int(st.get("co_pair_eval", 0))
-        pair_hi = int(st.get("co_pair_hits", 0))
-        lines.append(
-            f"• CO-USCITE coppie FREQ attive = {pair_hi}/{pair_ev} ({safe_pct(pair_hi,pair_ev):.2f}%) "
-            f"| draw con >=1 co-hit={int(st.get('cohit_draws',0))}"
-        )
-        e5 = int(st.get("target5_eval", 0))
-        s5 = int(st.get("target5_success", 0))
-        e10 = int(st.get("target10_eval", 0))
-        s10 = int(st.get("target10_success", 0))
-        lines.extend([
-            f"• TARGET H5 >=3/5 = {s5}/{e5} ({safe_pct(s5, e5):.2f}%) | media uscite={safe_pct(st.get('target5_total_hits', 0), e5)/100.0:.3f}/5",
-            f"• TARGET H10 >=4/10 = {s10}/{e10} ({safe_pct(s10, e10):.2f}%) | media uscite={safe_pct(st.get('target10_total_hits', 0), e10)/100.0:.3f}/10",
-            f"• sessioni completate H10 = {int(st.get('completed_sessions', 0))}",
-        ])
-        return lines
-
-    @staticmethod
-    def _freq_gap_bucket(v):
-        if v is None:
-            return "?"
-        v = int(v)
-        if v <= 4:
-            return "0-4"
-        if v <= 9:
-            return "5-9"
-        if v <= 14:
-            return "10-14"
-        if v <= 19:
-            return "15-19"
-        return "20+"
-
-    @staticmethod
-    def _freq_group_lines(records, key_fn, limit=8):
-        groups = {}
-        for r in records:
-            key = str(key_fn(r))
-            g = groups.setdefault(key, [0, 0])
-            g[0] += 1
-            g[1] += int(bool(r.get("success5")))
-        rows = sorted(groups.items(), key=lambda kv: (-kv[1][0], kv[0]))[:limit]
-        return [f"• {k}: {suc}/{n} = {safe_pct(suc,n):.2f}%" for k, (n, suc) in rows]
-
-    def _freq_rule_catalog(self):
-        # Catalogo PREDEFINITO: evita di inventare una soglia diversa per ogni singolo HIT.
-        return [
-            ("seconda uscita nel draw-segnale", lambda s: bool(s.get("current_hit"))),
-            ("seconda uscita NON nel draw-segnale", lambda s: not bool(s.get("current_hit"))),
-            ("spacing=1", lambda s: s.get("spacing") == 1),
-            ("spacing=2", lambda s: s.get("spacing") == 2),
-            ("spacing=3", lambda s: s.get("spacing") == 3),
-            ("spacing=4", lambda s: s.get("spacing") == 4),
-            ("pre-gap >=10", lambda s: s.get("pre_absences") is not None and int(s.get("pre_absences")) >= 10),
-            ("pre-gap >=15", lambda s: s.get("pre_absences") is not None and int(s.get("pre_absences")) >= 15),
-            ("pre-gap >=20", lambda s: s.get("pre_absences") is not None and int(s.get("pre_absences")) >= 20),
-            ("pre-gap >=10 + ultimo draw", lambda s: bool(s.get("current_hit")) and s.get("pre_absences") is not None and int(s.get("pre_absences")) >= 10),
-            ("pre-gap >=15 + ultimo draw", lambda s: bool(s.get("current_hit")) and s.get("pre_absences") is not None and int(s.get("pre_absences")) >= 15),
-            ("spacing<=2 + pre-gap>=10", lambda s: s.get("spacing") is not None and int(s.get("spacing")) <= 2 and s.get("pre_absences") is not None and int(s.get("pre_absences")) >= 10),
-            ("nessuna uscita extra 20-30", lambda s: s.get("extra_20_30") == 0),
-            (">=1 uscita extra 20-30", lambda s: s.get("extra_20_30") is not None and int(s.get("extra_20_30")) >= 1),
-            ("<=1 uscita extra 20-50", lambda s: s.get("extra_20_50") is not None and int(s.get("extra_20_50")) <= 1),
-            (">=2 uscite extra 20-50", lambda s: s.get("extra_20_50") is not None and int(s.get("extra_20_50")) >= 2),
-        ]
-
-    def _freq_validated_rules(self, records):
-        if len(records) < 30:
-            return []
-        cut = max(1, int(len(records) * 0.60))
-        train, valid = records[:cut], records[cut:]
-        min_train = max(FREQ_ANALYSIS_MIN_GROUP, 8)
-        min_valid = max(6, int(FREQ_ANALYSIS_MIN_GROUP * 0.5))
-        out = []
-        for label, rule in self._freq_rule_catalog():
-            tr = [r for r in train if rule(r.get("snapshot", {}) or {})]
-            va = [r for r in valid if rule(r.get("snapshot", {}) or {})]
-            if len(tr) < min_train or len(va) < min_valid:
-                continue
-            trs = sum(int(bool(r.get("success5"))) for r in tr)
-            vas = sum(int(bool(r.get("success5"))) for r in va)
-            trp = safe_pct(trs, len(tr))
-            vap = safe_pct(vas, len(va))
-            out.append((label, len(tr), trs, trp, len(va), vas, vap))
-        # Ordino per validation, poi numerosita'. Non significa che sia gia' una regola valida.
-        return sorted(out, key=lambda x: (-x[6], -x[4], -x[3]))
-
-    def freq_analysis_text(self):
-        warm = list(self.freq_h5_warmup)
-        live = list(self.freq_h5_live)
-        ws = sum(int(bool(r.get("success5"))) for r in warm)
-        ls = sum(int(bool(r.get("success5"))) for r in live)
-        lines = [
-            "🔬 FREQ ENTRY-ONLY — ANALISI NASCITE",
-            "• ogni numero conta UNA volta finche' non esce dalla condizione e poi rientra",
-            "• baseline teorica >=3/5 ≈ 7.64%",
-            f"• WARMUP H5 = {ws}/{len(warm)} ({safe_pct(ws,len(warm)):.2f}%)",
-            f"• FORWARD H5 = {ls}/{len(live)} ({safe_pct(ls,len(live)):.2f}%)",
-            "",
-        ]
-        if not warm:
-            lines.append("Warmup ENTRY-ONLY non ancora disponibile: riavvia/lascia completare il bootstrap FREQ.")
-            return "\n".join(lines)
-
-        lines.append("🧬 PATTERN DELLE 2 USCITE NELLE ULTIME 5")
-        lines.extend(self._freq_group_lines(warm, lambda r: (r.get("snapshot", {}) or {}).get("pattern5", "?"), limit=10))
-        lines.extend(["", "⏱ PRE-GAP (assenze prima della prima delle 2 uscite)"] )
-        lines.extend(self._freq_group_lines(warm, lambda r: self._freq_gap_bucket((r.get("snapshot", {}) or {}).get("pre_absences")), limit=6))
-
-        rules = self._freq_validated_rules(warm)
-        lines.extend(["", "🧪 SPLIT CRONOLOGICO 60/40 — FILTRI PREDEFINITI"] )
-        robust = []
-        for x in rules:
-            label, tn, ts, tp, vn, vs, vp = x
-            # Per essere evidenziato deve stare sopra il teorico in ENTRAMBE le meta'.
-            if tp > 7.64 and vp > 7.64:
-                robust.append(x)
-        if robust:
-            for label, tn, ts, tp, vn, vs, vp in robust[:6]:
-                lines.append(f"• {label}: TRAIN {ts}/{tn}={tp:.1f}% | VALID {vs}/{vn}={vp:.1f}%")
-        else:
-            lines.append("• Nessun filtro con campione minimo resta >7.64% sia in TRAIN sia in VALIDATION.")
-
-        lines.extend([
-            "",
-            "⚠️ Lettura: anche un filtro evidenziato resta esplorativo; serve il forward indipendente prima di usarlo.",
-            "CORE e FAST non sono coinvolti in questa analisi.",
-        ])
-        return "\n".join(lines)
-
-    @staticmethod
-    def _freq_return_baseline(h):
-        # Ogni singolo numero ha p=20/90 di apparire in ciascun draw.
-        return 100.0 * (1.0 - (70.0/90.0) ** int(h))
-
-    def freq_cluster_text(self):
-        def ret_line(label, st):
-            chunks = []
-            for h in FREQ_RETURN_HORIZONS:
-                ev = int(st.get("return_eval", {}).get(str(h), 0))
-                hi = int(st.get("return_hits", {}).get(str(h), 0))
-                chunks.append(f"H{h} {hi}/{ev}={safe_pct(hi,ev):.1f}%")
-            return f"• {label}: " + " | ".join(chunks)
-
-        pair_base = 100.0 * (20.0/90.0) * (19.0/89.0)
-        lines = [
-            "🧬 FREQ CLUSTER / RITORNI — SHADOW",
-            "• misura il fenomeno notato nei log: ricomparsa e co-uscita, NON il target severo >=3/5",
-            "",
-            "🔁 RITORNO >=1 ENTRO H",
-            "• baseline teorica: " + " | ".join(
-                f"H{h}≈{self._freq_return_baseline(h):.1f}%" for h in FREQ_RETURN_HORIZONS
-            ),
-            ret_line("WARMUP", self.freq_stats_warmup),
-            ret_line("FORWARD", self.freq_stats_live),
-            "",
-            "🤝 CO-USCITE TRA NUMERI FREQ ATTIVI",
-            f"• baseline teorica coppia nello stesso draw ≈ {pair_base:.2f}%",
-        ]
-        for label, st in (("WARMUP", self.freq_stats_warmup), ("FORWARD", self.freq_stats_live)):
-            ev = int(st.get("co_pair_eval", 0))
-            hi = int(st.get("co_pair_hits", 0))
-            lines.append(
-                f"• {label}: {hi}/{ev} = {safe_pct(hi,ev):.2f}% | "
-                f"draw con co-hit={int(st.get('cohit_draws',0))}"
-            )
-        lines.extend(["", "🧾 CO-HIT FORWARD RECENTI"] )
-        if self.freq_cohits_live:
-            for r in self.freq_cohits_live[-15:]:
-                pair = r.get("pair", [])
-                lines.append(f"• {r.get('at','-')}: {fmt_pair(pair)}")
-        else:
-            lines.append("• nessuno registrato dalla diagnostica attuale")
-        lines.extend([
-            "",
-            f"⚠️ Le coppie sono valutate solo quando ENTRAMBI i numeri hanno sessioni FREQ attive della stessa origine; upgrade retrofill fino agli ultimi {FREQ_HISTORY_MAX} draw disponibili.",
-            "CORE e FAST restano completamente esclusi.",
-        ])
-        return "\n".join(lines)
-
-    def freq_regime_text(self):
-        m = self.freq_regime_metrics()
-
-        def regime_return_line(label, rows):
-            rows = list(rows)
-            if not rows:
-                return f"• {label}: nessun H10 completato classificato da questa versione"
-            chunks = []
-            for h in FREQ_RETURN_HORIZONS:
-                hit = 0
-                for r in rows:
-                    ages = [int(x) for x in (r.get("hit_ages10", []) or [])]
-                    hit += int(any(a <= int(h) for a in ages))
-                chunks.append(f"H{h} {hit}/{len(rows)}={safe_pct(hit,len(rows)):.1f}%")
-            return f"• {label}: " + " | ".join(chunks)
-
-        live_classified = [
-            r for r in self.freq_h10_live
-            if (r.get("snapshot", {}) or {}).get("regime") in {"COMPRESSION_ACTIVE", "NORMAL"}
-        ]
-        live_hot = [r for r in live_classified if (r.get("snapshot", {}) or {}).get("regime") == "COMPRESSION_ACTIVE"]
-        live_normal = [r for r in live_classified if (r.get("snapshot", {}) or {}).get("regime") == "NORMAL"]
-
-        lines = [
-            "🧭 FREQ REGIME — SOLO SHADOW",
-            "• NON cambia la regola 2/5+2/20 e NON genera puntate",
-            f"• stato attuale = {m.get('label','NORMAL')}",
-            f"• distinti ultime 5 = {m.get('distinct5',0)} | soglia COMPRESSION <= {FREQ_REGIME_DISTINCT5_MAX}",
-            f"• H10 concluse ultimi {FREQ_REGIME_H10_LOOKBACK} draw = {m.get('completed_h10_lookback',0)} | soglia ACTIVE >= {FREQ_REGIME_H10_COMPLETED_MIN}",
-            "",
-            "📚 RIFERIMENTO BACKTEST 51.291 DRAW",
-            "• COMPRESSION_ACTIVE H10: TRAIN 91.26% | VALID 91.30% | TEST 91.34%",
-            "• baseline teorica ritorno H10 ≈ 91.90%",
-            "• quindi e' un indicatore di contesto, NON un edge operativo validato",
-            "",
-            "📊 FORWARD CLASSIFICATO DA QUESTA VERSIONE",
-            regime_return_line("COMPRESSION_ACTIVE", live_hot),
-            regime_return_line("NORMAL", live_normal),
-            f"• record H10 classificati = {len(live_classified)}",
-            "",
-            "⚠️ Non azzerare lo state: i vecchi record senza campo regime restano validi ma non entrano in questo confronto.",
-            "CORE e FAST restano completamente esclusi.",
-        ]
-        return "\n".join(lines)
-
-    def freq_stats_text(self):
-        if not FREQ_LAB_ENABLED:
-            return "🧪 FREQ LAB disabilitato (FREQ_LAB_ENABLED=0)."
-        candidates_now = self.freq_candidates()
-        lines = [
-            "🧪 FREQ LAB SHADOW — ENTRY-ONLY 2/5 + 2/20",
-            "• zero puntate / nessun impatto su CORE e FAST",
-            f"• FREQ logic = v{FREQ_LOGIC_VERSION} ENTRY-ONLY | diag v{FREQ_DIAG_VERSION}",
-            f"• bootstrap = {'OK' if self.freq_bootstrap_done else 'IN COSTRUZIONE'} | storico={len(self.freq_history)}/{FREQ_HISTORY_LEN}+",
-            f"• in condizione adesso = {', '.join(map(str, candidates_now)) or '-'}",
-            f"• sessioni vere attive = {len(self.freq_sessions)}",
-            "",
-        ]
-        lines.extend(self._freq_stats_block("📊 FORWARD FREQ LAB", self.freq_stats_live))
-        lines.extend(["", *self._freq_stats_block("🕰️ WARMUP FREQ LAB", self.freq_stats_warmup)])
-        lines.extend([
-            "",
-            "🎯 SESSIONI ATTIVE",
-            self.freq_active_text(),
-            "",
-            "Baseline teorica singolo H1 = 22.22%; >=3/5 ≈ 7.64%; >=4/10 ≈ 16.32%.",
-            "Usa /freqanalysis per pattern/pre-gap; /freqcluster per ritorni/co-uscite; /freqregime per il contesto globale.",
-        ])
-        return "\n".join(lines)
-
     async def process_draw(self, app, day, e, nums, mode="live", notify=True, persist=True):
         clean = list(map(int, nums))
-        if len(clean) != 20 or len(set(clean)) != 20 or any(n < 1 or n > 90 for n in clean):
+        if len(clean) != 20 or len(set(clean)) != 20:
             return None
         if self.already_processed(day, e):
             return None
 
-        current_key = self.remember_processed(day, e)
-        for strategy in STRATEGY_ORDER:
-            st = self._stats(mode, strategy)
-            st["draws"] = int(st.get("draws", 0)) + 1
-        if FREQ_LAB_ENABLED:
-            fst = self._freq_stats(mode)
-            fst["draws"] = int(fst.get("draws", 0)) + 1
+        await self.settle_h5_sessions(app, day, e, clean, mode=mode, notify=notify)
+        await self.settle_engine_pending(app, day, e, clean, mode=mode, notify=notify)
 
-        # 1) Chiude gli H1 CORE/FAST armati dal draw precedente.
-        results = await self.settle_pending(app, day, e, clean, mode=mode, notify=notify)
-        # 1b) Avanza e valuta le sessioni FREQ nate nei draw precedenti.
-        freq_results = await self.settle_freq_sessions(app, day, e, clean, mode=mode, notify=notify)
-        # 1c) Avanza le finestre H1/H2/H3/H5 dei soli HIGH CONFIDENCE gia' nati.
-        engine_horizon_results = await self.settle_engine_horizon_sessions(app, day, e, clean, mode=mode, notify=notify) if ENGINE_SHADOW_ENABLED else []
-        # 1d) Valuta la previsione ENGINE H1 creata PRIMA di conoscere questo draw.
-        engine_result = await self.settle_engine_pending(app, day, e, clean, mode=mode, notify=notify) if ENGINE_SHADOW_ENABLED else None
-        # 2) Aggiorna i gap CORE/FAST col draw corrente.
-        self.update_last_seen(clean)
-        # 2b) Aggiorna gli storici diagnostici col draw corrente.
-        if FREQ_LAB_ENABLED:
-            self.freq_append_history(current_key, clean)
-        if ENGINE_SHADOW_ENABLED:
-            self.engine_append_history(current_key, clean)
-        # 3) Arma CORE e FAST per il draw successivo — LOGICA INVARIATA.
-        signals = await self.arm_from_current_gaps(app, current_key, mode=mode, notify=notify)
-        # 3b) Apre nuove osservazioni FREQ-BIRTH — solo shadow.
-        freq_signals = await self.arm_freq_birth(app, current_key, mode=mode, notify=notify)
-        # 3c) Costruisce il ranking ENGINE per il SOLO draw successivo.
-        engine_signal = await self.arm_engine_shadow(app, current_key, mode=mode, notify=notify) if ENGINE_SHADOW_ENABLED else None
+        current_key = self.remember_processed(day, e)
+        self.engine_append_history(current_key, clean)
+        p = await self.arm_engine_shadow(app, current_key, mode=mode, notify=notify)
 
         if persist:
-            self.save_state(git=(mode == "live"))
+            self.save_state(git=True)
+        return p
 
-        return {
-            "results": results, "signals": signals,
-            "freq_results": freq_results, "freq_signals": freq_signals,
-            "engine_result": engine_result, "engine_signal": engine_signal,
-            "engine_horizon_results": engine_horizon_results,
-        }
-
-    # ----------------------------
-    # Warmup
-    # ----------------------------
-
-    def _reset_for_warmup(self):
-        self.processed = []
-        self.processed_set = set()
-        self.last_draw_key = None
-        self.seq = 0
-        self.last_seen_seq = {n: None for n in range(1, 91)}
-        self.pending_events = {name: None for name in STRATEGY_ORDER}
-        self.recent_events = []
-        self.stats_warmup = {name: self._new_stats() for name in STRATEGY_ORDER}
-        self.stats_live = {name: self._new_stats() for name in STRATEGY_ORDER}
-        self._reset_freq_lab()
-        self._reset_engine_shadow()
-
-    async def run_initial_warmup(self, app=None):
-        if self.warmup_done:
-            return {
-                "already_done": True,
-                "ok": True,
-                "draws": self.warmup_draws,
-                "sources": self.warmup_sources,
-            }
-
-        all_records, sources = fetch_warmup_records(WARMUP_DAYS)
-        records, sources, continuity = _select_latest_contiguous_warmup(all_records, sources)
-        integrity_problems = list(continuity.get("problems", []) or [])
-
-        if integrity_problems:
-            return {
-                "already_done": False,
-                "ok": False,
-                "draws": len(records),
-                "sources": sources,
-                "continuity_note": continuity.get("note"),
-                "reason": "warmup bloccato per integrita' nel segmento utilizzabile: " + " | ".join(integrity_problems),
-            }
-
-        if len(records) < WARMUP_MIN_DRAWS:
-            extra = f"; {continuity.get('note')}" if continuity.get("note") else ""
-            return {
-                "already_done": False,
-                "ok": False,
-                "draws": len(records),
-                "sources": sources,
-                "continuity_note": continuity.get("note"),
-                "reason": f"warmup continuo insufficiente: {len(records)}<{WARMUP_MIN_DRAWS}{extra}",
-            }
-
-        self._reset_for_warmup()
-        for d, e, nums in records:
-            await self.process_draw(
-                app=None, day=d, e=e, nums=nums,
-                mode="warmup", notify=False, persist=False,
-            )
-
-        if FREQ_LAB_ENABLED:
-            self.freq_bootstrap_done = len(self.freq_history) >= FREQ_HISTORY_LEN
-
-        unknown = [n for n in range(1, 91) if self.last_seen_seq.get(n) is None]
-        if unknown:
-            self._reset_for_warmup()
-            return {
-                "already_done": False,
-                "ok": False,
-                "draws": len(records),
-                "sources": sources,
-                "continuity_note": continuity.get("note"),
-                "reason": f"warmup senza ultima uscita nota per: {unknown}",
-            }
-
-        self.warmup_done = True
-        self.warmup_completed_at = now_txt()
-        self.warmup_draws = len(records)
-        self.warmup_sources = sources
-        self.save_state(git=True, force_git=True)
-
-        return {
-            "already_done": False,
-            "ok": True,
-            "draws": len(records),
-            "sources": sources,
-            "continuity_note": continuity.get("note"),
-            "dropped_days": continuity.get("dropped_days", []),
-        }
-
-    # ----------------------------
-    # Testi / diagnostica
-    # ----------------------------
-
-    def current_gap_lists(self):
-        nums4 = self.numbers_at_gap(GAP_A)
-        core = self.numbers_at_gap(CORE_GAP)
-        fast = {g: self.numbers_at_gap(g) for g in range(FAST_GAP_MIN, FAST_GAP_MAX + 1)}
-        return nums4, core, fast
-
-    def fast_targets_text(self):
-        _, _, fast = self.current_gap_lists()
-        parts = [f"g{g}: {','.join(map(str, nums))}" for g, nums in fast.items() if nums]
-        return " | ".join(parts) if parts else "-"
-
-    def pending_text(self):
-        blocks = []
-        for strategy in STRATEGY_ORDER:
-            cfg = STRATEGIES[strategy]
-            event = self.pending_events.get(strategy)
-            if not event:
-                blocks.append(f"• {cfg['label']}: nessun H1 armato")
-                continue
-            items = event.get("items", []) or []
-            target_by_gap = {}
-            for x in items:
-                target_by_gap.setdefault(int(x["target_gap"]), set()).add(int(x["target"]))
-            targets_txt = " | ".join(
-                f"g{g}: {','.join(map(str, sorted(vals)))}" for g, vals in sorted(target_by_gap.items())
-            ) or "-"
-            blocks.extend([
-                f"• {cfg['label']}: segnale da {event.get('signal_from_key', '-')}",
-                f"  target = {targets_txt}",
-                f"  H1 prossima = {len(items)} ambi | costo teorico = {len(items)*STAKE_H1:.2f}€",
-                f"  ambi = {self._format_pairs(items, with_gap=(strategy == 'fast'))}",
-            ])
-        return "\n".join(blocks)
-
-    def live_summary_one_line(self, strategy):
-        s = self.stats_live[strategy]
-        plays = int(s.get("h1_plays", 0))
-        hits = int(s.get("h1_hits", 0))
-        cost = float(s.get("cost", 0.0))
-        gross = float(s.get("gross", 0.0))
+    @staticmethod
+    def _stats_line(label, st):
+        ev = int(st.get("evaluated", 0) or 0)
+        sig_ev = int(st.get("signals_evaluated", 0) or 0)
         return (
-            f"HIT {hits}/{plays} ({safe_pct(hits, plays):.2f}%) | "
-            f"netto {gross-cost:+.2f}€ | ROI {safe_pct(gross-cost, cost):+.2f}%"
+            f"• {label} tutte: TOP1 {st.get('all_top1_hits',0)}/{ev} "
+            f"({safe_pct(st.get('all_top1_hits',0), ev):.2f}%)\n"
+            f"• {label} HIGH CONFIDENCE: TOP1 {st.get('signal_top1_hits',0)}/{sig_ev} "
+            f"({safe_pct(st.get('signal_top1_hits',0), sig_ev):.2f}%) | segnali creati={st.get('signals',0)}"
         )
 
-    def _stats_block(self, title, s, include_draws=True):
-        plays = int(s.get("h1_plays", 0))
-        hits = int(s.get("h1_hits", 0))
-        misses = int(s.get("h1_misses", 0))
-        result_draws = int(s.get("result_draws", 0))
-        hit_draws = int(s.get("hit_draws", 0))
-        stop_draws = int(s.get("stop_draws", 0))
-        cost = float(s.get("cost", 0.0))
-        gross = float(s.get("gross", 0.0))
-        net = gross - cost
-        break_even = 100.0 / AMBO_PAYOUT if AMBO_PAYOUT else 0.0
-        lines = [title]
-        if include_draws:
-            lines.append(f"• draw elaborati = {int(s.get('draws', 0))}")
-        lines.extend([
-            f"• draw con segnale = {int(s.get('signal_draws', 0))} | ambi segnalati = {int(s.get('pairs_signaled', 0))}",
-            f"• draw H1 chiusi = {result_draws} | con >=1 HIT = {hit_draws} ({safe_pct(hit_draws, result_draws):.2f}%) | senza HIT = {stop_draws}",
-            f"• multi-HIT nello stesso draw = {int(s.get('multi_hit_draws', 0))}",
-            f"• AMBI H1 = {hits}/{plays} ({safe_pct(hits, plays):.2f}%) | break-even = {break_even:.2f}%",
-            f"• MISS ambo = {misses} | max ambi/segnale = {int(s.get('max_pairs_signal', 0))}",
-            f"• costo = {cost:.2f}€ | lordo = {gross:.2f}€ | netto = {net:+.2f}€ | ROI = {safe_pct(net, cost):+.2f}%",
-        ])
-        return lines
+    @staticmethod
+    def _binom_prob(n, k, p):
+        return math.comb(n, k) * (p ** k) * ((1.0-p) ** (n-k))
 
-    def stats_text(self):
-        lines = []
-        for strategy in STRATEGY_ORDER:
-            cfg = STRATEGIES[strategy]
-            lines.extend(self._stats_block(
-                f"📊 FORWARD {cfg['label']} — {cfg['description']} / SOLO H1",
-                self.stats_live[strategy],
-            ))
-            lines.append("")
+    @classmethod
+    def _baseline_exact2_5(cls):
+        p = 20.0/90.0
+        return 100.0 * cls._binom_prob(5, 2, p)
 
-        lines.extend(["🎯 H1 ATTUALI", self.pending_text(), ""])
+    @classmethod
+    def _baseline_ge2_5(cls):
+        p = 20.0/90.0
+        return 100.0 * (1.0 - cls._binom_prob(5,0,p) - cls._binom_prob(5,1,p))
 
-        for strategy in STRATEGY_ORDER:
-            cfg = STRATEGIES[strategy]
-            lines.extend(self._stats_block(
-                f"🕰️ WARMUP {cfg['label']} — {cfg['description']}",
-                self.stats_warmup[strategy],
-            ))
-            lines.append("")
+    @classmethod
+    def _baseline_ge3_5(cls):
+        p = 20.0/90.0
+        return 100.0 * sum(cls._binom_prob(5,k,p) for k in range(3,6))
 
-        lines.append("ℹ️ FAST 24-29 include il CORE gap27: confronta i due laboratori, non sommare i costi.")
-        if FREQ_LAB_ENABLED:
-            fs = self.freq_stats_live
-            lines.extend([
-                "",
-                "🧪 FREQ LAB ENTRY-ONLY SHADOW — riepilogo",
-                f"• vere entry={int(fs.get('signal_draws',0))} | candidati={int(fs.get('candidates_signaled',0))} | repliche scartate={int(fs.get('suppressed_repeats',0))} | attivi={len(self.freq_sessions)}",
-                f"• target >=3/5 = {int(fs.get('target5_success',0))}/{int(fs.get('target5_eval',0))} ({safe_pct(fs.get('target5_success',0), fs.get('target5_eval',0)):.2f}%)",
-                f"• target >=4/10 = {int(fs.get('target10_success',0))}/{int(fs.get('target10_eval',0))} ({safe_pct(fs.get('target10_success',0), fs.get('target10_eval',0)):.2f}%)",
-                f"• ritorno >=1 H5 = {int(fs.get('return_hits',{}).get('5',0))}/{int(fs.get('return_eval',{}).get('5',0))} ({safe_pct(fs.get('return_hits',{}).get('5',0), fs.get('return_eval',{}).get('5',0)):.2f}%)",
-                f"• co-uscite coppie attive = {int(fs.get('co_pair_hits',0))}/{int(fs.get('co_pair_eval',0))} ({safe_pct(fs.get('co_pair_hits',0), fs.get('co_pair_eval',0)):.2f}%)",
-                "• dettagli: /freq | /freqcluster",
-            ])
-        return "\n".join(lines).rstrip()
+    @classmethod
+    def _baseline_h1miss_ge2_h2h5(cls):
+        p = 20.0/90.0
+        return 100.0 * (1.0 - cls._binom_prob(4,0,p) - cls._binom_prob(4,1,p))
 
-    def status_text(self):
-        nums4, core, _ = self.current_gap_lists()
+    @classmethod
+    def _baseline_h1hit_second_h2h5(cls):
+        p = 20.0/90.0
+        return 100.0 * (1.0 - (1.0-p)**4)
+
+    @staticmethod
+    def _summarize_h5(rows):
+        n = len(rows)
+        hist = {i: 0 for i in range(6)}
+        for r in rows:
+            h = max(0, min(5, int(r.get("hits5", len(r.get("hit_ages", []))) or 0)))
+            hist[h] += 1
+        exact2 = hist[2]
+        ge2 = sum(hist[i] for i in range(2,6))
+        ge3 = sum(hist[i] for i in range(3,6))
+        return {"n":n, "hist":hist, "exact2":exact2, "ge2":ge2, "ge3":ge3}
+
+    def _h5_summary_line(self, title, rows):
+        s = self._summarize_h5(rows)
+        n=s["n"]; h=s["hist"]
+        return (
+            f"• {title}: n={n} | 0/5 {h[0]} | 1/5 {h[1]} | ESATTO 2/5 {s['exact2']}/{n} "
+            f"({safe_pct(s['exact2'],n):.2f}%) | >=2/5 {s['ge2']}/{n} ({safe_pct(s['ge2'],n):.2f}%) | "
+            f">=3/5 {s['ge3']}/{n} ({safe_pct(s['ge3'],n):.2f}%)"
+        )
+
+    def multih5_text(self):
+        rows = list(self.engine_h5_records_live)
         lines = [
-            "🎯 DUAL GAP — CORE + FAST LAB — SOLO H1",
-            f"• modalita' = {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}",
-            f"• ultimo draw = {self.last_draw_key or '-'} | seq = {self.seq}",
-            f"• gap {GAP_A} ora = {', '.join(map(str, nums4)) or '-'}",
-            f"• CORE gap {CORE_GAP} = {', '.join(map(str, core)) or '-'}",
-            f"• FAST gap {FAST_GAP_MIN}-{FAST_GAP_MAX} = {self.fast_targets_text()}",
-            f"• H1 CORE prossima = {self.pending_pairs_count('core')} ambi",
-            f"• H1 FAST prossima = {self.pending_pairs_count('fast')} ambi",
-            f"• FREQ LAB ENTRY-ONLY = {'READY' if self.freq_bootstrap_done else 'BUILD'} | condizione ora={','.join(map(str, self.freq_candidates())) or '-'} | sessioni={len(self.freq_sessions)}",
-            f"• warmup = {'OK' if self.warmup_done else 'NO'} | {self.warmup_draws} draw",
-            f"• state checkout = {'CARICATO' if self.state_load_info.get('loaded') else 'NUOVO'} | saved_at={self.state_load_info.get('saved_at') or '-'}",
-            f"• state Git = {'OK' if self.last_git_status.get('ok') else 'ERRORE'} | {self.last_git_status.get('action', '-')} | {self.last_git_status.get('detail', '-')}",
+            "🧪 10eLOTTO ENGINE ONLY — MULTI-HIT H5",
+            "• SOLO HIGH CONFIDENCE",
+            "• TOP1 congelato alla nascita e contato nelle 5 estrazioni successive",
             "",
-            "🎯 EVENTI ATTUALI",
-            self.pending_text(),
+            self._h5_summary_line("LIVE COMPLETO", rows),
+            f"  baseline casuale: ESATTO 2/5 {self._baseline_exact2_5():.2f}% | "
+            f">=2/5 {self._baseline_ge2_5():.2f}% | >=3/5 {self._baseline_ge3_5():.2f}%",
             "",
-            f"CORE: {self.live_summary_one_line('core')}",
-            f"FAST: {self.live_summary_one_line('fast')}",
+            "📈 ROLLING",
+            self._h5_summary_line("ultimi 50", rows[-50:]),
+            self._h5_summary_line("ultimi 100", rows[-100:]),
+            "",
+            "🧩 PER CONSENSUS",
         ]
+        supports = sorted({int(r.get("support",0) or 0) for r in rows})
+        if supports:
+            for s in supports:
+                rr=[r for r in rows if int(r.get("support",0) or 0)==s]
+                lines.append(self._h5_summary_line(f"{s}/4", rr))
+        else:
+            lines.append("• nessun record")
+
+        # Test condizionali emersi dal backtest.
+        h1miss = [r for r in rows if 1 not in set(r.get("hit_ages", []))]
+        miss_success = sum(sum(1 for a in r.get("hit_ages",[]) if 2 <= int(a) <= 5) >= 2 for r in h1miss)
+        h1hit = [r for r in rows if 1 in set(r.get("hit_ages", []))]
+        hit_second = sum(any(2 <= int(a) <= 5 for a in r.get("hit_ages",[])) for r in h1hit)
+
+        lines.extend([
+            "",
+            "🔎 TEST CONDIZIONALI",
+            f"• se H1 MISS: >=2 hit tra H2-H5 = {miss_success}/{len(h1miss)} "
+            f"({safe_pct(miss_success,len(h1miss)):.2f}%) | rnd {self._baseline_h1miss_ge2_h2h5():.2f}%",
+            f"• se H1 HIT: almeno un secondo hit H2-H5 = {hit_second}/{len(h1hit)} "
+            f"({safe_pct(hit_second,len(h1hit)):.2f}%) | rnd {self._baseline_h1hit_second_h2h5():.2f}%",
+            "",
+            f"Sessioni H5 LIVE attive: {sum(1 for x in self.engine_h5_sessions if x.get('origin_mode')=='live')}",
+            "⚠️ Diagnostica forward: non modifica score, soglia o segnali.",
+        ])
         return "\n".join(lines)
+
+    def horizon_text(self):
+        rows = list(self.engine_h5_records_live)
+        lines = [
+            "🧭 ENGINE ONLY — H1/H2/H3/H5",
+            "• calcolato sui soli HIGH CONFIDENCE COMPLETATI a H5",
+            "",
+        ]
+        for h in (1,2,3,5):
+            n=len(rows)
+            exact=sum(h in set(r.get("hit_ages",[])) for r in rows)
+            cum=sum(any(int(a)<=h for a in r.get("hit_ages",[])) for r in rows)
+            baseline=100.0*(1.0-(70.0/90.0)**h)
+            lines.append(
+                f"• H{h}: exact {exact}/{n} ({safe_pct(exact,n):.2f}%) | "
+                f"entro H{h} {cum}/{n} ({safe_pct(cum,n):.2f}%) | baseline cum {baseline:.2f}%"
+            )
+        lines.append("\nDettaglio multi-hit: /multih5")
+        return "\n".join(lines)
+
+    def engine_text(self):
+        p = self.engine_pending
+        thr = self.engine_current_threshold()
+        if p:
+            if p.get("accepted"):
+                current = (
+                    f"🔥 HIGH CONFIDENCE | TOP1 {p['top1']} | conf={p['confidence']:.4f} | "
+                    f"soglia={float(p.get('threshold') or 0):.4f} | consensus={p.get('support',0)}/4"
+                )
+            else:
+                current = f"NO SIGNAL | TOP1 ranking={p['top1']} | conf={p['confidence']:.4f}"
+        else:
+            current = "nessuna previsione armata"
+
+        recent=[x for x in self.engine_recent_events if x.get("origin_mode")=="live"][-10:]
+        recent_txt="\n".join(
+            f"• {x.get('result_key','-')}: #{x.get('top1')} {'HIT' if x.get('top1_hit') else 'MISS'} "
+            f"| cons={x.get('support',0)}/4"
+            for x in recent
+        ) or "• -"
+
+        return (
+            "🧠 10eLOTTO ENGINE ONLY\n"
+            "• UNICO motore attivo\n"
+            "• frequenza/accelerazione + transizioni + vicini di stato + hazard gap\n"
+            "• filtro HIGH CONFIDENCE dinamico; focus TOP1 + MULTI-HIT H5\n\n"
+            f"Storico: {len(self.engine_history)}/{ENGINE_MIN_HISTORY}+ | "
+            f"calibrazione: {len(self.engine_margin_history)}/{ENGINE_MIN_MARGIN_SAMPLES}+\n"
+            f"Filtro target: top {ENGINE_SELECT_RATE*100:.0f}% | soglia: "
+            f"{'BUILD' if thr is None else f'{thr:.4f}'}\n"
+            f"Prossima: {current}\n\n"
+            "📊 FORWARD\n" + self._stats_line("LIVE", self.engine_stats_live) + "\n\n"
+            "🕰️ WARMUP\n" + self._stats_line("WARMUP", self.engine_stats_warmup) + "\n\n"
+            "🧾 ULTIMI HIGH CONFIDENCE\n" + recent_txt + "\n\n"
+            f"🧪 H5 completati LIVE={len(self.engine_h5_records_live)} | attivi="
+            f"{sum(1 for x in self.engine_h5_sessions if x.get('origin_mode')=='live')}\n"
+            "Dettagli: /multih5 | /engineh\n\n"
+            "Baseline H1 TOP1 casuale: 22.22%.\n"
+            "⚠️ Nessuna puntata automatica."
+        )
 
     def menu_text(self):
         return (
-            "🎯 SUPERAMBO — CORE + FAST + FREQ LAB\n\n"
-            f"CORE: GAP {GAP_A}+{CORE_GAP} esatto, decine diverse, SOLO H1.\n"
-            f"FAST LAB: GAP {GAP_A}+{FAST_GAP_MIN}-{FAST_GAP_MAX}, decine diverse, SOLO H1.\n"
-            "CORE e FAST restano invariati.\n\n"
-            "🧪 FREQ LAB ENTRY-ONLY: 2 uscite nelle ultime 5 e 2 nelle ultime 20.\n"
-            "Apre solo NON-FREQ -> FREQ; niente duplicati dello stesso episodio.\n"
-            "Segue H1/H2/H3/H5/H10; target >=3/5 e >=4/10.\n"
-            "FREQ LAB non genera puntate e non modifica CORE/FAST.\n\n"
-            "FAST include anche i casi a gap27 del CORE, ma le statistiche sono separate.\n"
-            "Non sommare CORE e FAST come due sistemi indipendenti.\n"
-            f"Pagamento diagnostico ambo: {AMBO_PAYOUT:.2f}x.\n"
-            f"Modalita' CORE/FAST: {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}; FREQ sempre SHADOW.\n\n"
-            "/status — gap correnti + H1 + stato FREQ\n"
-            "/stats — CORE/FAST + riepilogo FREQ\n"
-            "/freq — dettaglio completo FREQ LAB\n"
-            "/freqanalysis — analisi pattern/pre-gap ENTRY-ONLY\n"
-            "/freqcluster — ritorni H3/H5/H10 + co-uscite FREQ attive\n"
-            "/freqregime — regime globale COMPRESSION_ACTIVE / NORMAL\n"
-            "/engine — Top1/Top2 + confidence del 10eLotto ENGINE SHADOW\n"
-            "/engineh — risultati ENGINE H1/H2/H3/H5 + consensus\n"
-            "/enginerank — TOP5/TOP10 H1 + overlap e baseline casuale\n"
+            "🧠 10eLOTTO ENGINE ONLY\n\n"
+            "Unico motore: HIGH CONFIDENCE TOP1.\n"
+            "Il TOP1 viene seguito per 5 estrazioni per misurare ESATTO 2/5 e >=2/5.\n\n"
+            "/engine — stato, TOP1 e statistiche HIGH CONFIDENCE\n"
+            "/engineh — H1/H2/H3/H5 del TOP1\n"
+            "/multih5 — 0/5, 1/5, esatto 2/5, >=2/5, >=3/5\n"
+            "/status — stato rapido ENGINE\n"
             "/menu — questa schermata"
         )
 
 
+
 # ============================================================
-# TELEGRAM COMMANDS
+# TELEGRAM + STARTUP + LIVE
 # ============================================================
 
 async def reply(update, text):
     if update and update.message:
         await update.message.reply_text(text)
 
-
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.status_text())
-
-
-async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.stats_text())
-
-
-async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.menu_text())
-
-
-async def cmd_freq(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.freq_stats_text())
-
-
-async def cmd_freqanalysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.freq_analysis_text())
-
-
-async def cmd_freqcluster(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.freq_cluster_text())
-
-
-async def cmd_freqregime(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.freq_regime_text())
-
-
 async def cmd_engine(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.engine_text())
-
+    await reply(update, context.application.bot_data["engine"].engine_text())
 
 async def cmd_engineh(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.engine_horizon_text())
+    await reply(update, context.application.bot_data["engine"].horizon_text())
 
+async def cmd_multih5(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].multih5_text())
 
-async def cmd_enginerank(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    engine = context.application.bot_data["engine"]
-    await reply(update, engine.engine_rank_text())
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].engine_text())
 
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].menu_text())
 
 async def setup_commands(app):
     await app.bot.set_my_commands([
-        BotCommand("status", "Gap correnti, H1 CORE/FAST e stato FREQ"),
-        BotCommand("stats", "Statistiche CORE/FAST + riepilogo FREQ"),
-        BotCommand("freq", "Statistiche complete FREQ ENTRY-ONLY"),
-        BotCommand("freqanalysis", "Analisi pattern/pre-gap FREQ ENTRY-ONLY"),
-        BotCommand("freqcluster", "Ritorni e co-uscite FREQ attive"),
-        BotCommand("freqregime", "Regime globale FREQ diagnostico"),
-        BotCommand("engine", "10eLotto ENGINE Top1/Top2 shadow"),
-        BotCommand("engineh", "ENGINE H1/H2/H3/H5 + consensus"),
-        BotCommand("enginerank", "ENGINE TOP5/TOP10 overlap shadow"),
-        BotCommand("menu", "Mostra CORE, FAST, FREQ ed ENGINE"),
+        BotCommand("engine", "ENGINE ONLY: TOP1 + HIGH CONFIDENCE"),
+        BotCommand("engineh", "TOP1 H1/H2/H3/H5"),
+        BotCommand("multih5", "TOP1 multi-hit nelle 5 successive"),
+        BotCommand("status", "Stato rapido ENGINE"),
+        BotCommand("menu", "Comandi ENGINE ONLY"),
     ])
 
-
-# ============================================================
-# SINGLE INSTANCE LOCK
-# ============================================================
-
-_LOCK_HANDLE = None
-
-
-def acquire_single_instance_lock():
-    global _LOCK_HANDLE
-    _LOCK_HANDLE = open(LOCK_FILE, "a+", encoding="utf-8")
-    if fcntl is not None:
-        try:
-            fcntl.flock(_LOCK_HANDLE, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            print("⚠️ Un'altra istanza di questo bot e' gia' attiva.")
-            sys.exit(1)
-
-    _LOCK_HANDLE.seek(0)
-    _LOCK_HANDLE.truncate()
-    _LOCK_HANDLE.write(str(os.getpid()))
-    _LOCK_HANDLE.flush()
-
-    def cleanup_lock():
-        try:
-            if fcntl is not None:
-                fcntl.flock(_LOCK_HANDLE, fcntl.LOCK_UN)
-            _LOCK_HANDLE.close()
-        except Exception:
-            pass
-
-    atexit.register(cleanup_lock)
-
-
-# ============================================================
-# STARTUP / CATCH-UP / LIVE LOOP
-# ============================================================
-
-async def notify_actionable_state(engine, app):
-    active = [name for name in STRATEGY_ORDER if engine.pending_events.get(name)]
-    if not active:
-        return
-    sections = []
-    for strategy in active:
-        cfg = STRATEGIES[strategy]
-        event = engine.pending_events[strategy]
-        items = event.get("items", []) or []
-        sections.extend([
-            f"🎯 {cfg['label']} — {cfg['description']}",
-            f"Segnale da: {event.get('signal_from_key', '-')}",
-            f"Ambi ({len(items)}): {engine._format_pairs(items, with_gap=(strategy == 'fast'))}",
-            f"Costo teorico H1: {len(items)*STAKE_H1:.2f}€",
-            "",
-        ])
-    await engine.tg(
-        app,
-        f"🎯 {signal_word()} H1 GIA' ARMATI DALLO STATO CORRENTE\n\n" +
-        "\n".join(sections).rstrip() +
-        f"\n\n➡️ PROSSIMA estrazione: {STAKE_H1:.2f}€ H1 per ambo.\n"
-        "ℹ️ FAST include il CORE; statistiche separate."
-    )
-
-
-async def startup(engine, app, warmup_retry_state=None):
-    warmup_retry_state = warmup_retry_state if warmup_retry_state is not None else {}
-
-    console_log(
-        f"STARTUP tentativo warmup | logic={LOGIC_VERSION} | "
-        f"days={WARMUP_DAYS} | min_draws={WARMUP_MIN_DRAWS}"
-    )
-
+async def ensure_engine_ready(engine):
+    if engine.engine_bootstrap_done and len(engine.engine_history) >= ENGINE_MIN_HISTORY:
+        return {"ok": True, "already_done": True, "draws": len(engine.engine_history)}
     try:
-        warm = await engine.run_initial_warmup(app)
-    except Exception as exc:
-        warm = {
-            "already_done": False,
-            "ok": False,
-            "draws": 0,
-            "sources": [],
-            "continuity_note": None,
-            "reason": f"eccezione warmup: {type(exc).__name__}: {exc}",
+        all_records, sources = fetch_warmup_records(WARMUP_DAYS)
+        records, sources2, continuity = _select_latest_contiguous_warmup(all_records, sources)
+        if continuity.get("problems"):
+            return {
+                "ok": False, "draws": len(records), "sources": sources2,
+                "reason": "; ".join(continuity["problems"][:5]),
+                "continuity_note": continuity.get("note"),
+            }
+        records = sorted(records, key=lambda x:(x[0],x[1]))
+        if len(records) < ENGINE_MIN_HISTORY:
+            return {
+                "ok": False, "draws": len(records), "sources": sources2,
+                "reason": f"storico insufficiente: {len(records)}<{ENGINE_MIN_HISTORY}",
+                "continuity_note": continuity.get("note"),
+            }
+
+        ok = await engine.rebuild_engine_from_records(records[-ENGINE_HISTORY_MAX:])
+        if ok:
+            # Tutto il segmento letto e' gia' incorporato nel replay.
+            engine.processed = [draw_key(d,e) for d,e,_ in records][-PROCESSED_MAX:]
+            engine.processed_set = set(engine.processed)
+            if records:
+                engine.last_draw_key = draw_key(records[-1][0], records[-1][1])
+        return {
+            "ok": bool(ok), "already_done": False, "draws": len(records),
+            "sources": sources2, "continuity_note": continuity.get("note"),
+            "reason": None if ok else "rebuild ENGINE fallito",
         }
-
-    if not warm.get("already_done") and not warm.get("ok"):
-        reason = str(warm.get("reason", "non disponibile"))
-        sources_txt = format_warmup_sources(warm.get("sources", [])) or "-"
-        continuity_txt = warm.get("continuity_note") or "nessun taglio applicato"
-
-        console_log("WARMUP FAIL")
-        console_log(f"  draws raccolti = {warm.get('draws', 0)}")
-        console_log(f"  motivo = {reason}")
-        console_log(f"  giorni/fonti = {sources_txt}")
-        console_log(f"  continuita = {continuity_txt}")
-        console_log(f"  il processo RESTA ATTIVO; nuovo tentativo tra {WARMUP_RETRY_SEC}s")
-
-        now_ts = time.time()
-        last_reason = str(warmup_retry_state.get("last_reason", ""))
-        last_tg_ts = float(warmup_retry_state.get("last_tg_ts", 0.0) or 0.0)
-        should_tg = reason != last_reason or now_ts - last_tg_ts >= max(60, WARMUP_FAIL_TG_MIN_SECONDS)
-        if should_tg:
-            await engine.tg(
-                app,
-                "⚠️ WARMUP INIZIALE NON COMPLETATO\n\n"
-                f"• estrazioni raccolte = {warm.get('draws', 0)}\n"
-                f"• motivo = {reason}\n"
-                f"• giorni/fonti = {sources_txt}\n"
-                f"• continuita' = {continuity_txt}\n\n"
-                "⏳ Il bot RESTA ACCESO e NON entra ancora nel motore live.\n"
-                f"Riprova automaticamente ogni {WARMUP_RETRY_SEC} secondi.\n"
-                "Nel frattempo /status e /stats restano disponibili."
-            )
-            warmup_retry_state["last_tg_ts"] = now_ts
-            warmup_retry_state["last_reason"] = reason
-        return False
-
-    console_log(
-        f"WARMUP OK | already_done={bool(warm.get('already_done'))} | "
-        f"draws={warm.get('draws', engine.warmup_draws)} | "
-        f"continuita={warm.get('continuity_note') or 'state/segmento valido'}"
-    )
-    if warm.get("sources"):
-        console_log(f"WARMUP SOURCES | {format_warmup_sources(warm.get('sources', []))}")
-
-    # Se arriva da uno state CORE+FAST precedente al FREQ LAB, ricostruisce SOLO FREQ.
-    if FREQ_LAB_ENABLED and not engine.freq_bootstrap_done:
-        freq_boot = await engine.ensure_freq_lab_bootstrap()
-        if freq_boot.get("ok"):
-            console_log(
-                f"FREQ BOOTSTRAP OK | draws={freq_boot.get('draws', 0)} | "
-                f"active={len(engine.freq_sessions)}"
-            )
-        else:
-            console_log(f"FREQ BOOTSTRAP PARZIALE | {freq_boot.get('reason', '-')}")
-            await engine.tg(
-                app,
-                "⚠️ FREQ LAB NON ANCORA PRONTO\n\n"
-                f"Motivo: {freq_boot.get('reason', '-')}\n"
-                "CORE e FAST restano regolarmente attivi e INVARIATI.\n"
-                "Il FREQ LAB costruira' lo storico necessario con i prossimi draw."
-            )
-
-    # ENGINE SHADOW ha state/versione indipendenti: se e' nuovo, usa i draw gia' processati
-    # solo come calibrazione e NON altera alcun altro motore.
-    if ENGINE_SHADOW_ENABLED and not engine.engine_bootstrap_done:
-        eng_boot = await engine.ensure_engine_bootstrap()
-        if eng_boot.get("ok"):
-            console_log(
-                f"ENGINE BOOTSTRAP OK | draws={eng_boot.get('draws', 0)} | "
-                f"margins={len(engine.engine_margin_history)}"
-            )
-        else:
-            console_log(f"ENGINE BOOTSTRAP PARZIALE | {eng_boot.get('reason', '-')}")
-            await engine.tg(
-                app,
-                "⚠️ 10eLOTTO ENGINE NON ANCORA PRONTO\n\n"
-                f"Motivo: {eng_boot.get('reason', '-')}\n"
-                "CORE, FAST e FREQ restano regolarmente attivi e INVARIATI.\n"
-                "ENGINE costruira' la calibrazione con i prossimi draw."
-            )
-
-    if ENGINE_SHADOW_ENABLED and not warm.get("already_done"):
-        if engine.engine_promote_pending_to_live():
-            console_log("ENGINE pending finale warmup promosso a LIVE")
-
-    # Catch-up di eventuali draw successivi allo state/warmup.
-    try:
-        rows = parse_site_today()
-        console_log(f"CATCH-UP iniziale | righe live lette={len(rows)}")
     except Exception as exc:
-        console_log(f"CATCH-UP parser fallito | {type(exc).__name__}: {exc}")
-        await engine.tg(app, f"⚠️ Parser live iniziale fallito: {exc}")
-        rows = []
+        return {"ok": False, "draws": 0, "reason": f"{type(exc).__name__}: {exc}"}
 
-    unseen = [(d, e, nums) for d, e, nums in rows if not engine.already_processed(d, e)]
-    unseen.sort(key=lambda x: (x[0], x[1]))
-    console_log(f"CATCH-UP iniziale | unseen={len(unseen)}")
-    for d, e, nums in unseen:
-        await engine.process_draw(
-            app=None, day=d, e=e, nums=nums,
-            mode="live", notify=False, persist=False,
-        )
-
-    persist = engine.save_state(git=True, force_git=True)
-    if not persist.get("ok"):
-        await engine.tg(
-            app,
-            "⚠️ STATE NON PERSISTITO SU GITHUB\n\n"
-            f"Azione: {persist.get('action', '-')}\n"
-            f"Dettaglio: {persist.get('detail', '-')}\n\n"
-            "Il bot resta attivo, ma un riavvio potrebbe perdere lo stato forward. "
-            "Controlla `permissions: contents: write`."
-        )
-
-    if not warm.get("already_done"):
-        source_txt = format_warmup_sources(warm.get("sources", []))
-        nums4, core, _ = engine.current_gap_lists()
-        await engine.tg(
-            app,
-            "🕰️ WARMUP INIZIALE COMPLETATO — DUAL GAP\n\n"
-            f"• estrazioni = {warm.get('draws', 0)}\n"
-            f"• fonti = {source_txt or '-'}\n"
-            f"• continuita' = {warm.get('continuity_note') or 'segmento richiesto integro'}\n"
-            f"• gap {GAP_A} attuali = {', '.join(map(str, nums4)) or '-'}\n"
-            f"• CORE gap {CORE_GAP} = {', '.join(map(str, core)) or '-'}\n"
-            f"• FAST gap {FAST_GAP_MIN}-{FAST_GAP_MAX} = {engine.fast_targets_text()}\n"
-            f"• H1 CORE prossima = {engine.pending_pairs_count('core')} ambi\n"
-            f"• H1 FAST prossima = {engine.pending_pairs_count('fast')} ambi\n"
-            f"• FREQ LAB = {'READY' if engine.freq_bootstrap_done else 'BUILD'} | sessioni attive={len(engine.freq_sessions)}\n\n"
-            f"{engine.stats_text()}"
-        )
-
-    await engine.tg(
-        app,
-        "🚀 BOT CORE + FAST + FREQ LAB AVVIATO\n\n"
-        f"✅ CORE = GAP {GAP_A}+{CORE_GAP} — INVARIATO\n"
-        f"✅ FAST LAB = GAP {GAP_A}+{FAST_GAP_MIN}-{FAST_GAP_MAX} — INVARIATO\n"
-        "✅ CORE/FAST: tutte le coppie valide, decine diverse, SOLO H1\n"
-        f"✅ H1 CORE/FAST = {STAKE_H1:.2f}€ per ambo diagnostico\n"
-        "✅ nessun H2 / progressione / WAIT30 aggiunto\n"
-        f"✅ modalita' CORE/FAST = {'SHADOW/FORWARD' if SHADOW_MODE else 'PLAY'}\n"
-        "🧪 FREQ LAB = ENTRY-ONLY 2/5 + 2/20, SEMPRE SHADOW, zero puntate\n"
-        "🧪 niente duplicati stesso episodio; snapshot nascita + H1/H2/H3/H5/H10\n"
-        "🧬 diagnostica ritorno >=1 H3/H5/H10 + co-uscite tra FREQ attivi\n"
-        "🧠 ENGINE SHADOW = Top1/Top2 selettivi + H1/H2/H3/H5 + TOP5/TOP10 depth, zero puntate\n"
-        "✅ warmup continuo + state persistente GitHub\n"
-        f"✅ warmup minimo = {WARMUP_MIN_DRAWS} estrazioni continue\n"
-        f"✅ retry warmup ogni {WARMUP_RETRY_SEC}s\n\n"
-        f"H1 CORE prossima: {engine.pending_pairs_count('core')} ambi\n"
-        f"H1 FAST prossima: {engine.pending_pairs_count('fast')} ambi\n"
-        f"FREQ LAB: {'READY' if engine.freq_bootstrap_done else 'BUILD'} | sessioni={len(engine.freq_sessions)}\n"
-        f"ENGINE: {'READY' if engine.engine_bootstrap_done else 'BUILD'} | filtro target top {ENGINE_SELECT_RATE*100:.0f}%\n\n"
-        "ℹ️ FAST include il CORE a gap27: statistiche separate, costi non sommabili.\n"
-        "ℹ️ /engine per Top1/Top2; /engineh per H1/H2/H3/H5; CORE/FAST/FREQ invariati."
-    )
-    await notify_actionable_state(engine, app)
-    await notify_engine_actionable_state(engine, app)
-    console_log("STARTUP COMPLETATO -> entro nel live_loop")
-    return True
-
-
-async def notify_engine_actionable_state(engine, app):
-    if not ENGINE_SHADOW_ENABLED:
-        return
-    p = engine.engine_pending
+async def notify_pending(engine, app):
+    p=engine.engine_pending
     if not p or not p.get("accepted"):
         return
     await engine.tg(
         app,
-        "🧠 10eLOTTO ENGINE — SEGNALE GIA' ARMATO DALLO STATO CORRENTE\n\n"
+        "🔥 ENGINE ONLY — HIGH CONFIDENCE GIA' ARMATO\n\n"
         f"Segnale da: {p.get('signal_from_key','-')}\n"
         f"🎯 TOP1: {p.get('top1')}\n"
-        f"🥈 TOP2 backup: {p.get('top2')}\n"
-        f"Confidence: {float(p.get('confidence',0)):.4f} | soglia: {float(p.get('threshold',0)):.4f}\n"
+        f"Confidence: {float(p.get('confidence',0)):.4f} | soglia: {float(p.get('threshold') or 0):.4f}\n"
         f"Consensus: {p.get('support',0)}/4\n\n"
-        "⚠️ SOLO SHADOW: vale esclusivamente per la prossima estrazione."
+        "Il TOP1 viene seguito fino a H5 per MULTI-HIT."
     )
 
+async def startup(engine, app, retry_state=None):
+    retry_state = retry_state if isinstance(retry_state, dict) else {}
+    ready = await ensure_engine_ready(engine)
+    if not ready.get("ok"):
+        reason=ready.get("reason","warmup non pronto")
+        console_log(f"ENGINE WARMUP FAIL | {reason}")
+        now_ts=time.time()
+        if (reason != retry_state.get("last_reason") or
+            now_ts - float(retry_state.get("last_tg_ts",0) or 0) >= WARMUP_FAIL_TG_MIN_SECONDS):
+            await engine.tg(
+                app,
+                "⚠️ ENGINE ONLY — WARMUP NON PRONTO\n\n"
+                f"Motivo: {reason}\n"
+                f"Draw raccolti: {ready.get('draws',0)}\n"
+                f"Riprovo tra {WARMUP_RETRY_SEC}s."
+            )
+            retry_state["last_reason"]=reason
+            retry_state["last_tg_ts"]=now_ts
+        return False
+
+    # Catch-up dei draw arrivati dopo lo state/replay.
+    try:
+        rows=parse_site_today()
+    except Exception as exc:
+        console_log(f"CATCH-UP parser fail | {exc}")
+        rows=[]
+    unseen=[x for x in rows if not engine.already_processed(x[0],x[1])]
+    unseen.sort(key=lambda x:(x[0],x[1]))
+    for d,e,nums in unseen:
+        await engine.process_draw(None,d,e,nums,mode="live",notify=False,persist=False)
+
+    engine.save_state(git=True, force_git=True)
+
+    await engine.tg(
+        app,
+        "🚀 10eLOTTO ENGINE ONLY AVVIATO\n\n"
+        "✅ CORE rimosso\n"
+        "✅ FAST rimosso\n"
+        "✅ FREQ rimosso\n"
+        "✅ TOP5/TOP10 diagnostica rimossa\n"
+        "🧠 unico motore: ENGINE HIGH CONFIDENCE TOP1\n"
+        "🧪 tracker: H1-H5 + MULTI-HIT H5\n"
+        "🎯 focus: ESATTO 2/5 e >=2/5\n"
+        "✅ state persistente + autorotation\n\n"
+        f"ENGINE: {'READY' if engine.engine_bootstrap_done else 'BUILD'} | "
+        f"filtro target top {ENGINE_SELECT_RATE*100:.0f}%\n"
+        f"H5 LIVE gia' disponibili: {len(engine.engine_h5_records_live)}\n\n"
+        "Comandi: /engine /engineh /multih5 /menu"
+    )
+    await notify_pending(engine,app)
+    return True
 
 async def startup_until_ready(engine, app):
-    retry_state = {}
-    attempt = 0
+    retry={}
     while True:
-        attempt += 1
-        console_log(f"STARTUP attempt #{attempt}")
-        ok = await startup(engine, app, warmup_retry_state=retry_state)
-        if ok:
-            return True
-        await asyncio.sleep(max(30, WARMUP_RETRY_SEC))
-
+        if await startup(engine,app,retry):
+            return
+        await asyncio.sleep(max(30,WARMUP_RETRY_SEC))
 
 async def live_loop(engine, app):
-    console_log(
-        f"LIVE LOOP ATTIVO | polling sito ogni {LOOP_SEC}s | "
-        f"rotazione={BOT_MAX_RUNTIME_SECONDS}s"
-    )
-    last_error = ""
-    last_error_ts = 0.0
-    loop_started = time.monotonic()
-
+    console_log(f"ENGINE ONLY LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s")
+    started=time.monotonic()
+    last_error=""
+    last_error_ts=0.0
     while True:
-        # GitHub-hosted runner: uscita VOLONTARIA prima del limite di 6 ore.
-        # Il workflow, vedendo exit code 0, avvia automaticamente il run successivo.
-        if BOT_MAX_RUNTIME_SECONDS > 0:
-            elapsed = time.monotonic() - loop_started
-            if elapsed >= BOT_MAX_RUNTIME_SECONDS:
-                console_log(
-                    f"ROTAZIONE runner richiesta | elapsed={int(elapsed)}s | "
-                    "salvo state e termino pulito"
-                )
-                try:
-                    st = engine.save_state(git=True, force_git=True)
-                    console_log(
-                        f"ROTAZIONE state | ok={st.get('ok')} | "
-                        f"action={st.get('action')} | detail={st.get('detail', '')}"
-                    )
-                except Exception as exc:
-                    console_log(f"⚠️ ROTAZIONE save_state: {type(exc).__name__}: {exc}")
-                if BOT_ROTATION_NOTIFY:
-                    await engine.tg(
-                        app,
-                        "♻️ ROTAZIONE RUNNER AUTOMATICA\n\n"
-                        "State salvato. Il processo termina in modo ordinato prima del limite GitHub; "
-                        "il workflow avviera' automaticamente il run successivo."
-                    )
-                return "rotation"
+        if BOT_MAX_RUNTIME_SECONDS > 0 and time.monotonic()-started >= BOT_MAX_RUNTIME_SECONDS:
+            try:
+                st=engine.save_state(git=True,force_git=True)
+                console_log(f"ROTATION save | {st.get('action')} | {st.get('detail','')}")
+            except Exception as exc:
+                console_log(f"ROTATION save fail | {exc}")
+            if BOT_ROTATION_NOTIFY:
+                await engine.tg(app,"♻️ ENGINE ONLY — ROTAZIONE RUNNER\nState salvato; avvio successivo automatico.")
+            return "rotation"
 
         try:
-            rows = parse_site_today()
-            unseen = [(d, e, nums) for d, e, nums in rows if not engine.already_processed(d, e)]
-
+            rows=parse_site_today()
+            unseen=[x for x in rows if not engine.already_processed(x[0],x[1])]
+            unseen.sort(key=lambda x:(x[0],x[1]))
             if unseen:
-                unseen.sort(key=lambda x: (x[0], x[1]))
-                if len(unseen) == 1:
-                    d, e, nums = unseen[0]
-                    await engine.process_draw(
-                        app=app, day=d, e=e, nums=nums,
-                        mode="live", notify=True, persist=True,
-                    )
+                if len(unseen)==1:
+                    d,e,nums=unseen[0]
+                    await engine.process_draw(app,d,e,nums,mode="live",notify=True,persist=True)
                 else:
-                    for d, e, nums in unseen:
-                        await engine.process_draw(
-                            app=None, day=d, e=e, nums=nums,
-                            mode="live", notify=False, persist=False,
-                        )
-                    engine.save_state(git=True, force_git=True)
-                    await notify_actionable_state(engine, app)
-
+                    for d,e,nums in unseen:
+                        await engine.process_draw(None,d,e,nums,mode="live",notify=False,persist=False)
+                    engine.save_state(git=True,force_git=True)
+                    await notify_pending(engine,app)
             await asyncio.sleep(LOOP_SEC)
-
         except Exception as exc:
-            txt = f"{type(exc).__name__}: {exc}"
-            now = time.time()
-            console_log(f"⚠️ loop: {txt}")
-            if txt != last_error or now - last_error_ts >= 900:
-                await engine.tg(app, f"⚠️ ERRORE BOT\n{txt}\nRiprovo automaticamente.")
-                last_error = txt
-                last_error_ts = now
-            await asyncio.sleep(max(30, LOOP_SEC))
-
-
-# ============================================================
-# SELF TEST
-# ============================================================
+            txt=f"{type(exc).__name__}: {exc}"
+            console_log(f"LOOP ERROR | {txt}")
+            now=time.time()
+            if txt!=last_error or now-last_error_ts>=900:
+                await engine.tg(app,f"⚠️ ENGINE ONLY — ERRORE\n{txt}\nRiprovo automaticamente.")
+                last_error=txt; last_error_ts=now
+            await asyncio.sleep(max(30,LOOP_SEC))
 
 async def run_self_test():
-    eng = DualGapEngine(load=False)
-    eng.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
-
-    # Stato sintetico: 17 gap4, 73 gap27, 62 gap26.
-    eng.seq = 100
-    eng.last_seen_seq = {n: None for n in range(1, 91)}
-    eng.last_seen_seq[17] = 96
-    eng.last_seen_seq[73] = 73
-    eng.last_seen_seq[62] = 74
-    assert eng.current_gap(17) == 4
-    assert eng.current_gap(73) == 27
-    assert eng.current_gap(62) == 26
-
-    core = eng.build_signal_items("core")
-    fast = eng.build_signal_items("fast")
-    assert {tuple(x["pair"]) for x in core} == {(17, 73)}
-    assert {tuple(x["pair"]) for x in fast} == {(17, 62), (17, 73)}
-
-    # Stessa decina esclusa: 72 gap4 e 78 gap27 non possono formare ambo.
-    eng2 = DualGapEngine(load=False)
-    eng2.seq = 100
-    eng2.last_seen_seq = {n: None for n in range(1, 91)}
-    eng2.last_seen_seq[72] = 96
-    eng2.last_seen_seq[78] = 73
-    assert eng2.build_signal_items("core") == []
-    assert eng2.build_signal_items("fast") == []
-
-    # Arma entrambi. CORE=1, FAST=2. Il draw successivo centra 17-73 soltanto.
-    await eng.arm_from_current_gaps(None, "2099-01-01#100", mode="live", notify=False)
-    assert eng.pending_pairs_count("core") == 1
-    assert eng.pending_pairs_count("fast") == 2
-    draw = [17, 73] + [n for n in range(1, 91) if n not in {17, 73}][:18]
-    res = await eng.settle_pending(None, "2099-01-01", 101, draw, mode="live", notify=False)
-    assert res["core"]["plays"] == 1 and res["core"]["hits"] == 1
-    assert res["fast"]["plays"] == 2 and res["fast"]["hits"] == 1
-    assert eng.stats_live["core"]["h1_plays"] == 1
-    assert eng.stats_live["core"]["h1_hits"] == 1
-    assert eng.stats_live["fast"]["h1_plays"] == 2
-    assert eng.stats_live["fast"]["h1_hits"] == 1
-
-    # Il draw corrente aggiorna i gap prima di armare il successivo.
-    eng3 = DualGapEngine(load=False)
-    eng3.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
-    eng3.seq = 99
-    eng3.last_seen_seq = {n: 99 for n in range(1, 91)}
-    eng3.last_seen_seq[17] = 95
-    eng3.last_seen_seq[73] = 72
-    await eng3.process_draw(
-        None, "2099-01-02", 100, list(range(1, 21)),
-        mode="live", notify=False, persist=False,
-    )
-    assert eng3.current_gap(17) == 0
-    assert eng3.pending_events["core"] is None
-
-    # FREQ ENTRY-ONLY: 42 compare 2 volte nelle ultime 5 e 2 nelle ultime 20.
-    freq = DualGapEngine(load=False)
-    freq.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
-    freq._reset_freq_lab()
-    filler = list(range(1, 21))
-    for i in range(20):
-        nums = list(filler)
-        if i in (16, 19):
-            nums[-1] = 42
-        freq.freq_stats_warmup["draws"] += 1
-        await freq.settle_freq_sessions(None, "2099-02-01", i + 1, nums, mode="warmup", notify=False)
-        k = draw_key("2099-02-01", i + 1)
-        freq.freq_append_history(k, nums)
-        await freq.arm_freq_birth(None, k, mode="warmup", notify=False)
-    assert 42 in freq.freq_candidates()
-    sessions_42 = [x for x in freq.freq_sessions if x.get("number") == 42 and x.get("age") == 0]
-    assert len(sessions_42) == 1, "FREQ-BIRTH ENTRY non armata una sola volta per 42"
-    uid_before = freq.freq_uid
-
-    # Il draw successivo mantiene ancora 42 nella condizione (le due uscite restano nella finestra 5),
-    # ma NON deve aprire una seconda sessione dello stesso episodio.
-    nums = list(filler)
-    await freq.settle_freq_sessions(None, "2099-02-01", 21, nums, mode="warmup", notify=False)
-    k = draw_key("2099-02-01", 21)
-    freq.freq_append_history(k, nums)
-    await freq.arm_freq_birth(None, k, mode="warmup", notify=False)
-    assert 42 in freq.freq_candidates()
-    assert freq.freq_uid == uid_before, "ENTRY-ONLY ha duplicato la stessa nascita"
-    assert freq.freq_stats_warmup["suppressed_repeats"] >= 1
-    assert sessions_42[0].get("snapshot", {}).get("pattern5") in {"-4/-1", "-5/-2", "-3/-1", "-4/-2", "-5/-1", "-3/-2", "-2/-1", "-5/-3", "-5/-4", "-4/-3"}
-
-    # Una sessione isolata su 42 deve riconoscere 3/5.
-    testfreq = DualGapEngine(load=False)
-    testfreq.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
-    testfreq.freq_sessions = [{
-        "id": "FREQ-TEST", "number": 42, "signal_from_key": "2099-02-02#001",
-        "created_at": now_txt(), "age": 0, "hit_ages": [],
-    }]
-    for i in range(1, 6):
-        nums = list(range(1, 21))
-        if i in (1, 3, 5):
-            nums[-1] = 42
-        await testfreq.settle_freq_sessions(None, "2099-02-02", i + 1, nums, mode="live", notify=False)
-    assert testfreq.freq_stats_live["target5_eval"] == 1
-    assert testfreq.freq_stats_live["target5_success"] == 1
-    assert testfreq.freq_stats_live["return_eval"]["3"] == 1
-    assert testfreq.freq_stats_live["return_hits"]["3"] == 1
-    assert testfreq.freq_stats_live["return_eval"]["5"] == 1
-    assert testfreq.freq_stats_live["return_hits"]["5"] == 1
-
-    # Origin accounting: sessione nata in warmup ma chiusa durante un draw live resta WARMUP.
-    origin = DualGapEngine(load=False)
-    origin.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
-    origin.freq_sessions = [{
-        "id": "FREQ-ORIGIN", "number": 42, "signal_from_key": "2099-03-01#001",
-        "created_at": now_txt(), "age": 4, "hit_ages": [2], "snapshot": {},
-        "h5_hits": None, "h5_success": None, "origin_mode": "warmup",
-    }]
-    await origin.settle_freq_sessions(None, "2099-03-01", 6, list(range(1,21)), mode="live", notify=False)
-    assert origin.freq_stats_warmup["target5_eval"] == 1
-    assert origin.freq_stats_live["target5_eval"] == 0
-
-    # Co-hit: due sessioni LIVE attive, entrambe presenti nello stesso draw.
-    coh = DualGapEngine(load=False)
-    coh.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
-    coh.freq_sessions = [
-        {"id":"A", "number":42, "signal_from_key":"2099-04-01#001", "created_at":now_txt(), "age":0, "hit_ages":[], "snapshot":{}, "h5_hits":None, "h5_success":None, "origin_mode":"live"},
-        {"id":"B", "number":55, "signal_from_key":"2099-04-01#001", "created_at":now_txt(), "age":0, "hit_ages":[], "snapshot":{}, "h5_hits":None, "h5_success":None, "origin_mode":"live"},
-    ]
-    nums = [42,55] + [n for n in range(1,91) if n not in {42,55}][:18]
-    await coh.settle_freq_sessions(None, "2099-04-01", 2, nums, mode="live", notify=False)
-    assert coh.freq_stats_live["co_pair_eval"] == 1
-    assert coh.freq_stats_live["co_pair_hits"] == 1
-    assert coh.freq_cohits_live and coh.freq_cohits_live[-1]["pair"] == [42,55]
-
-    # ENGINE SHADOW: calibrazione PRE-FUTURO, Top1/Top2 validi e settlement sul solo draw successivo.
-    import random as _random
-    _random.seed(47013)
-    ee = DualGapEngine(load=False)
-    ee.save_state = lambda *a, **k: _git_status(True, "test", "no-op")
-    recs = []
+    import random
+    random.seed(5601)
+    e=EngineOnly(load=False)
+    e.save_state=lambda *a,**k:_git_status(True,"test","no-op")
+    recs=[]
     for i in range(260):
-        nums = sorted(_random.sample(range(1, 91), 20))
-        recs.append(("2099-05-01", i + 1, nums))
-    assert await ee.rebuild_engine_from_records(recs)
-    assert len(ee.engine_history) >= ENGINE_MIN_HISTORY
-    assert len(ee.engine_margin_history) >= ENGINE_MIN_MARGIN_SAMPLES
-    assert ee.engine_pending is not None
-    assert ee.engine_pending.get("origin_mode") == "live"
-    assert ee.engine_pending["top1"] != ee.engine_pending["top2"]
-    assert len(ee.engine_pending.get("top5", [])) == 5
-    assert len(ee.engine_pending.get("top10", [])) == 10
-    assert ee.engine_pending["top5"] == ee.engine_pending["top10"][:5]
-    # Nessun leakage: cambiare un draw futuro non puo' cambiare lo score gia' costruito.
-    score_before = ee.engine_score_current()
-    future = sorted(_random.sample(range(1, 91), 20))
-    assert score_before == ee.engine_score_current()
-    p0 = dict(ee.engine_pending)
-    await ee.settle_engine_pending(None, "2099-05-02", 1, future, mode="live", notify=False)
-    assert ee.engine_pending is None
-    assert ee.engine_stats_live["evaluated"] >= 1
-    assert ee.engine_rank_stats_live["evaluated"] >= 1
-    assert sum(ee.engine_rank_stats_live["all"]["5"]["hist"].values()) == ee.engine_rank_stats_live["evaluated"]
-    assert sum(ee.engine_rank_stats_live["all"]["10"]["hist"].values()) == ee.engine_rank_stats_live["evaluated"]
-    # Promozione warmup->live coerente sui contatori.
-    ep = DualGapEngine(load=False)
-    ep.engine_pending = {"top1": 1, "top2": 2, "accepted": True, "origin_mode": "warmup"}
-    ep.engine_stats_warmup["predictions"] = 1
-    ep.engine_stats_warmup["signals"] = 1
-    assert ep.engine_promote_pending_to_live()
-    assert ep.engine_stats_warmup["predictions"] == 0 and ep.engine_stats_live["predictions"] == 1
-    assert ep.engine_stats_warmup["signals"] == 0 and ep.engine_stats_live["signals"] == 1
+        recs.append(("2099-01-01",i+1,sorted(random.sample(range(1,91),20))))
+    assert await e.rebuild_engine_from_records(recs)
+    assert len(e.engine_history)>=ENGINE_MIN_HISTORY
+    assert len(e.engine_margin_history)>=ENGINE_MIN_MARGIN_SAMPLES
+    assert e.engine_pending is not None
 
-    # ENGINE HORIZON: stesso segnale congelato seguito a H1/H2/H3/H5, separato per consensus.
-    eh = DualGapEngine(load=False)
-    sig = {
-        "signal_from_key":"2099-06-01#001", "created_at":now_txt(), "origin_mode":"live",
-        "top1":11, "top2":22, "support":2, "confidence":0.60, "threshold":0.40, "accepted":True,
-    }
-    assert eh._start_engine_horizon_session(sig)
-    assert not eh._start_engine_horizon_session(sig)  # no duplicati
-    draws_h = [
-        [1,2,3,4,5,6,7,8,9,10,31,32,33,34,35,36,37,38,39,40],             # H1 miss
-        [11,1,2,3,4,5,6,7,8,9,31,32,33,34,35,36,37,38,39,40],            # H2 TOP1 hit
-        [22,1,2,3,4,5,6,7,8,9,31,32,33,34,35,36,37,38,39,40],            # H3 backup hit
-        [1,2,3,4,5,6,7,8,9,10,31,32,33,34,35,36,37,38,39,40],             # H4
-        [1,2,3,4,5,6,7,8,9,10,31,32,33,34,35,36,37,38,39,40],             # H5
-    ]
-    for i, nums in enumerate(draws_h, 1):
-        await eh.settle_engine_horizon_sessions(None, "2099-06-01", i+1, nums, mode="live", notify=False)
-    assert not eh.engine_horizon_sessions
-    rec_h2 = [r for r in eh.engine_horizon_records_live if r["horizon"] == 2][0]
-    rec_h3 = [r for r in eh.engine_horizon_records_live if r["horizon"] == 3][0]
-    assert rec_h2["top1_exact_hit"] and rec_h2["top1_cum_hit"]
-    assert rec_h3["top2_exact_any_hit"] and rec_h3["top2_cum_any_hit"] and rec_h3["support"] == 2
-
-    print("SELF-TEST OK: CORE/FAST invariati + FREQ ENTRY-ONLY/regime + ENGINE SHADOW + H1/H2/H3/H5 + TOP5/TOP10")
-
-
-# ============================================================
-# MAIN
-# ============================================================
+    # Test H5 = esattamente 2 hit.
+    x=EngineOnly(load=False)
+    x.save_state=lambda *a,**k:_git_status(True,"test","no-op")
+    p={"signal_from_key":"T#001","created_at":now_txt(),"origin_mode":"live","top1":42,
+       "confidence":0.6,"threshold":0.4,"support":2,"accepted":True}
+    assert x._start_h5_session(p)
+    for age in range(1,6):
+        nums=[n for n in range(1,91) if n != 42][:20]
+        if age in (2,5):
+            nums[-1]=42
+        await x.settle_h5_sessions(None,"2099-02-01",age,nums,mode="live",notify=False)
+    assert len(x.engine_h5_records_live)==1
+    r=x.engine_h5_records_live[0]
+    assert r["hits5"]==2 and r["hit_ages"]==[2,5]
+    s=x._summarize_h5(x.engine_h5_records_live)
+    assert s["exact2"]==1 and s["ge2"]==1 and s["ge3"]==0
+    print("SELF-TEST OK: ENGINE ONLY + HIGH CONFIDENCE + MULTI-HIT H5")
 
 async def main():
     if "--self-test" in sys.argv:
@@ -4430,51 +1962,36 @@ async def main():
         return
 
     acquire_single_instance_lock()
-
     if not TOKEN:
-        raise RuntimeError("BOT_TOKEN mancante nelle variabili ambiente")
+        raise RuntimeError("BOT_TOKEN mancante")
     if CHAT_ID is None:
-        raise RuntimeError("CHAT_ID mancante/non valido nelle variabili ambiente")
+        raise RuntimeError("CHAT_ID mancante/non valido")
 
-    app = ApplicationBuilder().token(TOKEN).build()
-    engine = DualGapEngine()
-    app.bot_data["engine"] = engine
+    app=ApplicationBuilder().token(TOKEN).build()
+    engine=EngineOnly(load=True)
+    app.bot_data["engine"]=engine
 
-    console_log(
-        f"STATE STARTUP | loaded={engine.state_load_info.get('loaded')} | "
-        f"reason={engine.state_load_info.get('reason')} | "
-        f"saved_at={engine.state_load_info.get('saved_at') or '-'}"
-    )
-
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("stats", cmd_stats))
-    app.add_handler(CommandHandler("freq", cmd_freq))
-    app.add_handler(CommandHandler("freqanalysis", cmd_freqanalysis))
-    app.add_handler(CommandHandler("freqcluster", cmd_freqcluster))
-    app.add_handler(CommandHandler("freqregime", cmd_freqregime))
-    app.add_handler(CommandHandler("engine", cmd_engine))
-    app.add_handler(CommandHandler("engineh", cmd_engineh))
-    app.add_handler(CommandHandler("enginerank", cmd_enginerank))
-    app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("engine",cmd_engine))
+    app.add_handler(CommandHandler("engineh",cmd_engineh))
+    app.add_handler(CommandHandler("multih5",cmd_multih5))
+    app.add_handler(CommandHandler("status",cmd_status))
+    app.add_handler(CommandHandler("menu",cmd_menu))
 
     await app.initialize()
     await app.start()
     await setup_commands(app)
     await app.updater.start_polling(drop_pending_updates=True)
-    console_log("TELEGRAM polling attivo; avvio/ritento warmup fino a successo")
-
     try:
-        await startup_until_ready(engine, app)
-        await live_loop(engine, app)
+        await startup_until_ready(engine,app)
+        await live_loop(engine,app)
     finally:
         try:
-            engine.save_state(git=True, force_git=True)
+            engine.save_state(git=True,force_git=True)
         except Exception:
             pass
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
