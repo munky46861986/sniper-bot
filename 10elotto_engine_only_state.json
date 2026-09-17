@@ -1,6 +1,6 @@
 {
   "state_version": 1,
-  "saved_at": "2026-09-17 06:45:28",
+  "saved_at": "2026-09-17 06:50:37",
   "processed": [
     "2026-09-08#001",
     "2026-09-08#002",
@@ -2609,37 +2609,13 @@
     "2026-09-17#078",
     "2026-09-17#079",
     "2026-09-17#080",
-    "2026-09-17#081"
+    "2026-09-17#081",
+    "2026-09-17#082"
   ],
-  "last_draw_key": "2026-09-17#081",
+  "last_draw_key": "2026-09-17#082",
   "engine_model_version": 1,
   "engine_bootstrap_done": true,
   "engine_history": [
-    {
-      "key": "2026-09-14#083",
-      "nums": [
-        2,
-        16,
-        23,
-        29,
-        32,
-        33,
-        35,
-        42,
-        47,
-        50,
-        52,
-        57,
-        60,
-        69,
-        72,
-        74,
-        77,
-        85,
-        86,
-        89
-      ]
-    },
     {
       "key": "2026-09-14#084",
       "nums": [
@@ -22614,23 +22590,47 @@
         80,
         87
       ]
+    },
+    {
+      "key": "2026-09-17#082",
+      "nums": [
+        4,
+        7,
+        12,
+        13,
+        17,
+        23,
+        24,
+        27,
+        43,
+        44,
+        49,
+        50,
+        53,
+        55,
+        57,
+        64,
+        68,
+        72,
+        73,
+        79
+      ]
     }
   ],
   "engine_pending": {
-    "signal_from_key": "2026-09-17#081",
-    "created_at": "2026-09-17 06:45:26",
+    "signal_from_key": "2026-09-17#082",
+    "created_at": "2026-09-17 06:50:37",
     "origin_mode": "live",
-    "top1": 70,
-    "score1": 2.06950132,
-    "score2": 1.35818044,
-    "margin": 0.71132088,
-    "confidence": 0.62240577,
-    "threshold": 0.53490758,
+    "top1": 4,
+    "score1": 1.89576851,
+    "score2": 1.69890018,
+    "margin": 0.19686833,
+    "confidence": 0.17225978,
+    "threshold": 0.53741481,
     "support": 2,
-    "accepted": true
+    "accepted": false
   },
   "engine_margin_history": [
-    0.16719148112211243,
     0.03977447816922558,
     0.0096104619290803,
     0.581371033781724,
@@ -22929,7 +22929,8 @@
     0.9550270248824188,
     0.9243263392219929,
     0.033572717590095585,
-    0.6224057656517012
+    0.6224057656517012,
+    0.17225978442703474
   ],
   "engine_recent_events": [
     {
@@ -25617,6 +25618,16 @@
       "threshold": 0.52270589,
       "support": 2,
       "origin_mode": "live"
+    },
+    {
+      "signal_from_key": "2026-09-17#081",
+      "result_key": "2026-09-17#082",
+      "top1": 70,
+      "top1_hit": false,
+      "confidence": 0.62240577,
+      "threshold": 0.53490758,
+      "support": 2,
+      "origin_mode": "live"
     }
   ],
   "engine_stats_warmup": {
@@ -25629,31 +25640,16 @@
     "no_signal": 599
   },
   "engine_stats_live": {
-    "predictions": 987,
-    "evaluated": 986,
+    "predictions": 988,
+    "evaluated": 987,
     "all_top1_hits": 211,
     "signals": 167,
-    "signals_evaluated": 166,
+    "signals_evaluated": 167,
     "signal_top1_hits": 41,
-    "no_signal": 820
+    "no_signal": 821
   },
   "engine_multi_diag_version": 1,
   "engine_h5_sessions": [
-    {
-      "signal_from_key": "2026-09-17#077",
-      "created_at": "2026-09-17 06:25:54",
-      "origin_mode": "live",
-      "top1": 70,
-      "support": 2,
-      "confidence": 0.54207167,
-      "threshold": 0.5083021,
-      "confidence_ratio": 1.0664360229871173,
-      "age": 4,
-      "hit_ages": [
-        1,
-        4
-      ]
-    },
     {
       "signal_from_key": "2026-09-17#078",
       "created_at": "2026-09-17 06:31:03",
@@ -25663,7 +25659,7 @@
       "confidence": 0.95502702,
       "threshold": 0.51405849,
       "confidence_ratio": 1.8578178136888661,
-      "age": 3,
+      "age": 4,
       "hit_ages": [
         3
       ]
@@ -25677,7 +25673,7 @@
       "confidence": 0.92432634,
       "threshold": 0.52270589,
       "confidence_ratio": 1.768348812752043,
-      "age": 2,
+      "age": 3,
       "hit_ages": [
         2
       ]
@@ -25691,7 +25687,7 @@
       "confidence": 0.62240577,
       "threshold": 0.53490758,
       "confidence_ratio": 1.1635762761110993,
-      "age": 0,
+      "age": 1,
       "hit_ages": []
     }
   ],
@@ -27469,6 +27465,21 @@
       "hit_ages": [
         1,
         5
+      ],
+      "hits5": 2
+    },
+    {
+      "signal_from_key": "2026-09-17#077",
+      "completed_at": "2026-09-17#082",
+      "origin_mode": "live",
+      "top1": 70,
+      "support": 2,
+      "confidence": 0.54207167,
+      "threshold": 0.5083021,
+      "confidence_ratio": 1.0664360229871173,
+      "hit_ages": [
+        1,
+        4
       ],
       "hits5": 2
     }
