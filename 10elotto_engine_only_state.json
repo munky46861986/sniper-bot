@@ -1,6 +1,6 @@
 {
   "state_version": 1,
-  "saved_at": "2026-09-18 21:10:31",
+  "saved_at": "2026-09-18 21:15:42",
   "processed": [
     "2026-09-08#001",
     "2026-09-08#002",
@@ -3069,37 +3069,13 @@
     "2026-09-18#251",
     "2026-09-18#252",
     "2026-09-18#253",
-    "2026-09-18#254"
+    "2026-09-18#254",
+    "2026-09-18#255"
   ],
-  "last_draw_key": "2026-09-18#254",
+  "last_draw_key": "2026-09-18#255",
   "engine_model_version": 1,
   "engine_bootstrap_done": true,
   "engine_history": [
-    {
-      "key": "2026-09-16#029",
-      "nums": [
-        3,
-        7,
-        8,
-        10,
-        11,
-        24,
-        29,
-        38,
-        39,
-        43,
-        44,
-        59,
-        62,
-        64,
-        72,
-        79,
-        81,
-        85,
-        88,
-        89
-      ]
-    },
     {
       "key": "2026-09-16#030",
       "nums": [
@@ -23074,23 +23050,47 @@
         85,
         88
       ]
+    },
+    {
+      "key": "2026-09-18#255",
+      "nums": [
+        8,
+        10,
+        13,
+        24,
+        25,
+        26,
+        28,
+        32,
+        46,
+        47,
+        50,
+        58,
+        65,
+        66,
+        74,
+        76,
+        79,
+        80,
+        81,
+        90
+      ]
     }
   ],
   "engine_pending": {
-    "signal_from_key": "2026-09-18#254",
-    "created_at": "2026-09-18 21:10:31",
+    "signal_from_key": "2026-09-18#255",
+    "created_at": "2026-09-18 21:15:42",
     "origin_mode": "live",
     "top1": 71,
-    "score1": 2.10950758,
-    "score2": 1.53421001,
-    "margin": 0.57529758,
-    "confidence": 0.53934148,
-    "threshold": 0.46474058,
-    "support": 3,
-    "accepted": true
+    "score1": 1.60013714,
+    "score2": 1.5217334,
+    "margin": 0.07840374,
+    "confidence": 0.06860327,
+    "threshold": 0.47064694,
+    "support": 2,
+    "accepted": false
   },
   "engine_margin_history": [
-    0.242087382587747,
     0.09592554635468054,
     0.368705505679019,
     0.055200029545656726,
@@ -23389,20 +23389,10 @@
     0.1332543318897037,
     0.60479091764634,
     0.48463544974420225,
-    0.539341479513375
+    0.539341479513375,
+    0.06860327327030233
   ],
   "engine_recent_events": [
-    {
-      "signal_from_key": "2026-09-13#084",
-      "result_key": "2026-09-13#085",
-      "top1": 57,
-      "top2": 64,
-      "top1_hit": false,
-      "top2_any_hit": false,
-      "confidence": 0.51832074,
-      "threshold": 0.3990384,
-      "origin_mode": "warmup"
-    },
     {
       "signal_from_key": "2026-09-13#098",
       "result_key": "2026-09-13#099",
@@ -26032,6 +26022,16 @@
       "threshold": 0.46474058,
       "support": 2,
       "origin_mode": "live"
+    },
+    {
+      "signal_from_key": "2026-09-18#254",
+      "result_key": "2026-09-18#255",
+      "top1": 71,
+      "top1_hit": false,
+      "confidence": 0.53934148,
+      "threshold": 0.46474058,
+      "support": 3,
+      "origin_mode": "live"
     }
   ],
   "engine_stats_warmup": {
@@ -26044,13 +26044,13 @@
     "no_signal": 599
   },
   "engine_stats_live": {
-    "predictions": 1447,
-    "evaluated": 1446,
+    "predictions": 1448,
+    "evaluated": 1447,
     "all_top1_hits": 322,
     "signals": 234,
-    "signals_evaluated": 233,
+    "signals_evaluated": 234,
     "signal_top1_hits": 55,
-    "no_signal": 1213
+    "no_signal": 1214
   },
   "engine_multi_diag_version": 1,
   "engine_h5_sessions": [
@@ -26063,7 +26063,7 @@
       "confidence": 0.60479092,
       "threshold": 0.46255489,
       "confidence_ratio": 1.307500867626759,
-      "age": 2,
+      "age": 3,
       "hit_ages": [
         1
       ]
@@ -26077,7 +26077,7 @@
       "confidence": 0.48463545,
       "threshold": 0.46474058,
       "confidence_ratio": 1.0428085492340695,
-      "age": 1,
+      "age": 2,
       "hit_ages": []
     },
     {
@@ -26089,7 +26089,7 @@
       "confidence": 0.53934148,
       "threshold": 0.46474058,
       "confidence_ratio": 1.1605215968013811,
-      "age": 0,
+      "age": 1,
       "hit_ages": []
     }
   ],
@@ -28831,13 +28831,14 @@
       "confidence": 0.60479092,
       "threshold": 0.46255489,
       "confidence_ratio": 1.307500867626759,
-      "age": 2,
+      "age": 3,
       "hit_ages": [
         1
       ],
       "activation_age": 1,
       "play_ages": [
-        2
+        2,
+        3
       ]
     },
     {
@@ -28849,7 +28850,7 @@
       "confidence": 0.48463545,
       "threshold": 0.46474058,
       "confidence_ratio": 1.0428085492340695,
-      "age": 1,
+      "age": 2,
       "hit_ages": [],
       "activation_age": null,
       "play_ages": []
@@ -28863,7 +28864,7 @@
       "confidence": 0.53934148,
       "threshold": 0.46474058,
       "confidence_ratio": 1.1605215968013811,
-      "age": 0,
+      "age": 1,
       "hit_ages": [],
       "activation_age": null,
       "play_ages": []
