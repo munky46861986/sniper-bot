@@ -1,6 +1,6 @@
 {
   "state_version": 1,
-  "saved_at": "2026-09-18 17:41:02",
+  "saved_at": "2026-09-18 17:50:20",
   "processed": [
     "2026-09-08#001",
     "2026-09-08#002",
@@ -3027,62 +3027,14 @@
     "2026-09-18#209",
     "2026-09-18#210",
     "2026-09-18#211",
-    "2026-09-18#212"
+    "2026-09-18#212",
+    "2026-09-18#213",
+    "2026-09-18#214"
   ],
-  "last_draw_key": "2026-09-18#212",
+  "last_draw_key": "2026-09-18#214",
   "engine_model_version": 1,
   "engine_bootstrap_done": true,
   "engine_history": [
-    {
-      "key": "2026-09-15#274",
-      "nums": [
-        4,
-        7,
-        10,
-        12,
-        23,
-        26,
-        28,
-        29,
-        36,
-        39,
-        44,
-        51,
-        56,
-        58,
-        65,
-        66,
-        67,
-        73,
-        78,
-        84
-      ]
-    },
-    {
-      "key": "2026-09-15#275",
-      "nums": [
-        2,
-        3,
-        5,
-        11,
-        20,
-        22,
-        26,
-        27,
-        38,
-        40,
-        46,
-        49,
-        53,
-        59,
-        62,
-        68,
-        69,
-        73,
-        75,
-        90
-      ]
-    },
     {
       "key": "2026-09-15#276",
       "nums": [
@@ -23032,24 +22984,72 @@
         83,
         86
       ]
+    },
+    {
+      "key": "2026-09-18#213",
+      "nums": [
+        1,
+        2,
+        7,
+        11,
+        17,
+        20,
+        21,
+        29,
+        30,
+        47,
+        50,
+        53,
+        54,
+        57,
+        65,
+        69,
+        71,
+        72,
+        81,
+        90
+      ]
+    },
+    {
+      "key": "2026-09-18#214",
+      "nums": [
+        5,
+        8,
+        16,
+        23,
+        45,
+        46,
+        47,
+        48,
+        50,
+        55,
+        67,
+        68,
+        71,
+        72,
+        74,
+        76,
+        80,
+        88,
+        89,
+        90
+      ]
     }
   ],
   "engine_pending": {
-    "signal_from_key": "2026-09-18#212",
-    "created_at": "2026-09-18 17:41:01",
+    "signal_from_key": "2026-09-18#214",
+    "created_at": "2026-09-18 17:50:20",
     "origin_mode": "live",
     "top1": 21,
-    "score1": 2.02710199,
-    "score2": 1.47818867,
-    "margin": 0.54891331,
-    "confidence": 0.48029915,
-    "threshold": 0.44891752,
+    "score1": 2.01337639,
+    "score2": 1.67983821,
+    "margin": 0.33353818,
+    "confidence": 0.29184591,
+    "threshold": 0.45499273,
     "support": 2,
-    "accepted": true
+    "accepted": false
   },
   "engine_margin_history": [
-    0.005666926265533306,
-    0.35663652186274925,
     0.023187236930203525,
     0.3144267852463306,
     0.7328550294344165,
@@ -23347,31 +23347,11 @@
     0.22083199601674802,
     0.06699256558651309,
     0.3296620963890113,
-    0.4802991483010258
+    0.4802991483010258,
+    0.628515488324246,
+    0.29184590882692096
   ],
   "engine_recent_events": [
-    {
-      "signal_from_key": "2026-09-13#020",
-      "result_key": "2026-09-13#021",
-      "top1": 75,
-      "top2": 85,
-      "top1_hit": false,
-      "top2_any_hit": false,
-      "confidence": 0.59522571,
-      "threshold": 0.45317539,
-      "origin_mode": "warmup"
-    },
-    {
-      "signal_from_key": "2026-09-13#024",
-      "result_key": "2026-09-13#025",
-      "top1": 40,
-      "top2": 26,
-      "top1_hit": false,
-      "top2_any_hit": false,
-      "confidence": 0.56197137,
-      "threshold": 0.44841006,
-      "origin_mode": "warmup"
-    },
     {
       "signal_from_key": "2026-09-13#028",
       "result_key": "2026-09-13#029",
@@ -26001,6 +25981,26 @@
       "threshold": 0.46498964,
       "support": 2,
       "origin_mode": "live"
+    },
+    {
+      "signal_from_key": "2026-09-18#212",
+      "result_key": "2026-09-18#213",
+      "top1": 21,
+      "top1_hit": true,
+      "confidence": 0.48029915,
+      "threshold": 0.44891752,
+      "support": 2,
+      "origin_mode": "live"
+    },
+    {
+      "signal_from_key": "2026-09-18#213",
+      "result_key": "2026-09-18#214",
+      "top1": 21,
+      "top1_hit": false,
+      "confidence": 0.62851549,
+      "threshold": 0.45236389,
+      "support": 2,
+      "origin_mode": "live"
     }
   ],
   "engine_stats_warmup": {
@@ -26013,13 +26013,13 @@
     "no_signal": 599
   },
   "engine_stats_live": {
-    "predictions": 1405,
-    "evaluated": 1404,
-    "all_top1_hits": 310,
-    "signals": 223,
-    "signals_evaluated": 222,
-    "signal_top1_hits": 51,
-    "no_signal": 1182
+    "predictions": 1407,
+    "evaluated": 1406,
+    "all_top1_hits": 311,
+    "signals": 224,
+    "signals_evaluated": 224,
+    "signal_top1_hits": 52,
+    "no_signal": 1183
   },
   "engine_multi_diag_version": 1,
   "engine_h5_sessions": [
@@ -26032,7 +26032,21 @@
       "confidence": 0.48029915,
       "threshold": 0.44891752,
       "confidence_ratio": 1.0699051130817974,
-      "age": 0,
+      "age": 2,
+      "hit_ages": [
+        1
+      ]
+    },
+    {
+      "signal_from_key": "2026-09-18#213",
+      "created_at": "2026-09-18 17:45:11",
+      "origin_mode": "live",
+      "top1": 21,
+      "support": 2,
+      "confidence": 0.62851549,
+      "threshold": 0.45236389,
+      "confidence_ratio": 1.3894024343985545,
+      "age": 1,
       "hit_ages": []
     }
   ],
@@ -28650,7 +28664,25 @@
       "confidence": 0.48029915,
       "threshold": 0.44891752,
       "confidence_ratio": 1.0699051130817974,
-      "age": 0,
+      "age": 2,
+      "hit_ages": [
+        1
+      ],
+      "activation_age": 1,
+      "play_ages": [
+        2
+      ]
+    },
+    {
+      "signal_from_key": "2026-09-18#213",
+      "created_at": "2026-09-18 17:45:11",
+      "origin_mode": "live",
+      "top1": 21,
+      "support": 2,
+      "confidence": 0.62851549,
+      "threshold": 0.45236389,
+      "confidence_ratio": 1.3894024343985545,
+      "age": 1,
       "hit_ages": [],
       "activation_age": null,
       "play_ages": []
