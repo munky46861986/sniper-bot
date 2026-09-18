@@ -1,4 +1,4 @@
-name: 10eLotto ENGINE Only
+name: 10eLotto ENGINE Only - Play Shadow
 
 on:
   workflow_dispatch:
@@ -29,6 +29,8 @@ jobs:
       ENGINE_NOTIFY_SIGNALS: "1"
       ENGINE_NOTIFY_H1_RESULT: "1"
       ENGINE_NOTIFY_H5_RESULT: "1"
+      ENGINE_NOTIFY_PLAY_CONFIRM: "1"
+      ENGINE_NOTIFY_PLAY_RESULT: "1"
 
     steps:
       - name: Checkout repo
