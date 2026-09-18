@@ -1,5 +1,5 @@
 # ============================================================
-# 🧠 10eLOTTO ENGINE ONLY — HIGH CONFIDENCE + MULTI-HIT H5
+# 🧠 10eLOTTO ENGINE ONLY — MULTI-HIT H5 + PLAY SHADOW SECOND RETURN
 # ============================================================
 #
 # UNICO MOTORE ATTIVO:
@@ -24,6 +24,13 @@
 #   • FREQ
 #   • TOP5/TOP10 ranking depth
 #   • qualsiasi puntata automatica / progressione
+#
+# PLAY SHADOW AGGIUNTO:
+#   • HC -> congela TOP1
+#   • prima uscita valida solo H1-H3 = conferma (non giocata)
+#   • dalla successiva si cerca la seconda uscita entro H5
+#   • seconda uscita = HIT + STOP; se manca entro H5 = STOP
+#   • se nessuna conferma entro H3 = NO PLAY
 #
 # MIGRAZIONE:
 #   • se esiste il vecchio state combinato, importa SOLO i campi ENGINE;
@@ -123,6 +130,12 @@ ENGINE_RECENT_MAX = int(os.getenv("ENGINE_RECENT_MAX", "250"))
 ENGINE_H5_MAX = 5
 ENGINE_H5_RECORD_MAX = int(os.getenv("ENGINE_H5_RECORD_MAX", "5000"))
 ENGINE_MULTI_DIAG_VERSION = 1
+
+# PLAY SHADOW: prima uscita H1-H3 = conferma; dalla successiva si cerca la seconda entro H5.
+ENGINE_PLAY_DIAG_VERSION = 1
+ENGINE_PLAY_RECORD_MAX = int(os.getenv("ENGINE_PLAY_RECORD_MAX", "5000"))
+ENGINE_NOTIFY_PLAY_CONFIRM = os.getenv("ENGINE_NOTIFY_PLAY_CONFIRM", "1") != "0"
+ENGINE_NOTIFY_PLAY_RESULT = os.getenv("ENGINE_NOTIFY_PLAY_RESULT", "1") != "0"
 
 PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
@@ -879,6 +892,12 @@ class EngineOnly:
         self.engine_h5_records_live = []
         self.engine_multi_diag_version = ENGINE_MULTI_DIAG_VERSION
 
+        # PLAY SHADOW derivato dal MULTI-HIT: nessun impatto su score/soglia/HC.
+        self.engine_play_diag_version = ENGINE_PLAY_DIAG_VERSION
+        self.engine_play_sessions = []
+        self.engine_play_records_warmup = []
+        self.engine_play_records_live = []
+
         self.state_load_info = {
             "loaded": False,
             "migrated_legacy": False,
@@ -1053,6 +1072,309 @@ class EngineOnly:
         if not self.engine_h5_sessions:
             self.engine_h5_sessions = self._sanitize_h5_sessions(d.get("engine_horizon_sessions", []))
 
+
+    @staticmethod
+    def _sanitize_play_sessions(raw):
+        out = []
+        seen = set()
+        for row in list(raw or []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                top1 = int(row.get("top1"))
+                age = int(row.get("age", 0) or 0)
+                support = int(row.get("support", 0) or 0)
+                activation_age = row.get("activation_age")
+                activation_age = int(activation_age) if activation_age is not None else None
+                hit_ages = sorted({int(x) for x in (row.get("hit_ages", []) or []) if 1 <= int(x) <= 5})
+                play_ages = sorted({int(x) for x in (row.get("play_ages", []) or []) if 1 <= int(x) <= 5})
+            except Exception:
+                continue
+            if not (1 <= top1 <= 90 and 0 <= age < 5 and 0 <= support <= 4):
+                continue
+            if activation_age is not None and activation_age not in (1, 2, 3):
+                continue
+            key = (str(row.get("signal_from_key") or ""), row.get("origin_mode", "live"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "signal_from_key": key[0],
+                "created_at": row.get("created_at"),
+                "origin_mode": row.get("origin_mode") if row.get("origin_mode") in {"warmup", "live"} else "live",
+                "top1": top1,
+                "support": support,
+                "confidence": float(row.get("confidence", 0.0) or 0.0),
+                "threshold": row.get("threshold"),
+                "confidence_ratio": row.get("confidence_ratio"),
+                "age": age,
+                "hit_ages": hit_ages,
+                "activation_age": activation_age,
+                "play_ages": play_ages,
+            })
+        return out[-1000:]
+
+    @staticmethod
+    def _sanitize_play_records(raw):
+        out = []
+        seen = set()
+        for row in list(raw or []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                top1 = int(row.get("top1"))
+                support = int(row.get("support", 0) or 0)
+                activation_age = row.get("activation_age")
+                activation_age = int(activation_age) if activation_age is not None else None
+                hit_age = row.get("hit_age")
+                hit_age = int(hit_age) if hit_age is not None else None
+                play_ages = [int(x) for x in (row.get("play_ages", []) or []) if 1 <= int(x) <= 5]
+                result = str(row.get("result") or "").lower()
+            except Exception:
+                continue
+            if not (1 <= top1 <= 90 and 0 <= support <= 4):
+                continue
+            if result not in {"hit", "stop", "no_play"}:
+                continue
+            if activation_age is not None and activation_age not in (1, 2, 3):
+                continue
+            if hit_age is not None and hit_age not in (2, 3, 4, 5):
+                continue
+            key = (str(row.get("signal_from_key") or ""), row.get("origin_mode", "live"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "signal_from_key": key[0],
+                "completed_at": str(row.get("completed_at") or ""),
+                "origin_mode": row.get("origin_mode") if row.get("origin_mode") in {"warmup", "live"} else "live",
+                "top1": top1,
+                "support": support,
+                "confidence": float(row.get("confidence", 0.0) or 0.0),
+                "threshold": row.get("threshold"),
+                "confidence_ratio": row.get("confidence_ratio"),
+                "activation_age": activation_age,
+                "hit_age": hit_age,
+                "play_ages": play_ages,
+                "bets": int(row.get("bets", len(play_ages)) or 0),
+                "result": result,
+            })
+        return out[-ENGINE_PLAY_RECORD_MAX:]
+
+    def _play_bank(self, mode):
+        return self.engine_play_records_warmup if mode == "warmup" else self.engine_play_records_live
+
+    @staticmethod
+    def _derive_play_record_from_h5(row):
+        hits = sorted({int(x) for x in (row.get("hit_ages", []) or []) if 1 <= int(x) <= 5})
+        activation_age = next((a for a in hits if a <= 3), None)
+        if activation_age is None:
+            result = "no_play"
+            hit_age = None
+            play_ages = []
+        else:
+            hit_age = next((a for a in hits if a > activation_age), None)
+            if hit_age is not None:
+                result = "hit"
+                play_ages = list(range(activation_age + 1, hit_age + 1))
+            else:
+                result = "stop"
+                play_ages = list(range(activation_age + 1, 6))
+        return {
+            "signal_from_key": str(row.get("signal_from_key") or ""),
+            "completed_at": str(row.get("completed_at") or ""),
+            "origin_mode": row.get("origin_mode") if row.get("origin_mode") in {"warmup", "live"} else "live",
+            "top1": int(row.get("top1")),
+            "support": int(row.get("support", 0) or 0),
+            "confidence": float(row.get("confidence", 0.0) or 0.0),
+            "threshold": row.get("threshold"),
+            "confidence_ratio": row.get("confidence_ratio"),
+            "activation_age": activation_age,
+            "hit_age": hit_age,
+            "play_ages": play_ages,
+            "bets": len(play_ages),
+            "result": result,
+        }
+
+    def _migrate_play_from_h5(self):
+        """Ricostruisce/integra la nuova strategia dai record H5 gia' salvati, senza perdere storico."""
+        # Idempotente: aggiunge solo i segnali H5 che ancora non esistono nel registro PLAY.
+        for origin, h5_bank, play_bank in (
+            ("warmup", self.engine_h5_records_warmup, self.engine_play_records_warmup),
+            ("live", self.engine_h5_records_live, self.engine_play_records_live),
+        ):
+            existing = {(str(r.get("signal_from_key") or ""), origin) for r in play_bank}
+            for h5 in h5_bank:
+                key = (str(h5.get("signal_from_key") or ""), origin)
+                if key not in existing:
+                    play_bank.append(self._derive_play_record_from_h5(h5))
+                    existing.add(key)
+        self.engine_play_records_warmup = self._sanitize_play_records(self.engine_play_records_warmup)
+        self.engine_play_records_live = self._sanitize_play_records(self.engine_play_records_live)
+
+        known = {
+            (str(r.get("signal_from_key") or ""), r.get("origin_mode", "live"))
+            for r in (self.engine_play_records_warmup + self.engine_play_records_live)
+        }
+        known.update({
+            (str(r.get("signal_from_key") or ""), r.get("origin_mode", "live"))
+            for r in self.engine_play_sessions
+        })
+        for h5 in self.engine_h5_sessions:
+            origin = h5.get("origin_mode") if h5.get("origin_mode") in {"warmup", "live"} else "live"
+            key = (str(h5.get("signal_from_key") or ""), origin)
+            if key in known:
+                continue
+            age = int(h5.get("age", 0) or 0)
+            hits = sorted({int(x) for x in (h5.get("hit_ages", []) or []) if 1 <= int(x) <= 5})
+            activation_age = next((a for a in hits if a <= 3), None)
+            second_hit = next((a for a in hits if activation_age is not None and a > activation_age), None)
+            base = {
+                "signal_from_key": key[0], "created_at": h5.get("created_at"), "origin_mode": origin,
+                "top1": int(h5.get("top1")), "support": int(h5.get("support", 0) or 0),
+                "confidence": float(h5.get("confidence", 0.0) or 0.0), "threshold": h5.get("threshold"),
+                "confidence_ratio": h5.get("confidence_ratio"),
+            }
+            if second_hit is not None:
+                rec = {**base, "completed_at": "migrated", "activation_age": activation_age,
+                       "hit_age": second_hit, "play_ages": list(range(activation_age + 1, second_hit + 1)),
+                       "bets": second_hit - activation_age, "result": "hit"}
+                self._play_bank(origin).append(rec)
+            elif activation_age is None and age >= 3:
+                rec = {**base, "completed_at": "migrated", "activation_age": None,
+                       "hit_age": None, "play_ages": [], "bets": 0, "result": "no_play"}
+                self._play_bank(origin).append(rec)
+            else:
+                play_ages = list(range(activation_age + 1, age + 1)) if activation_age is not None and age > activation_age else []
+                self.engine_play_sessions.append({**base, "age": age, "hit_ages": hits,
+                                                  "activation_age": activation_age, "play_ages": play_ages})
+            known.add(key)
+        self.engine_play_records_warmup = self._sanitize_play_records(self.engine_play_records_warmup)
+        self.engine_play_records_live = self._sanitize_play_records(self.engine_play_records_live)
+        self.engine_play_sessions = self._sanitize_play_sessions(self.engine_play_sessions)
+
+    def _start_play_session(self, pending):
+        if not pending or not pending.get("accepted"):
+            return False
+        key = str(pending.get("signal_from_key") or "")
+        origin = pending.get("origin_mode") if pending.get("origin_mode") in {"warmup", "live"} else "live"
+        if any(str(x.get("signal_from_key") or "") == key and x.get("origin_mode") == origin for x in self.engine_play_sessions):
+            return False
+        if any(str(x.get("signal_from_key") or "") == key and x.get("origin_mode") == origin
+               for x in (self.engine_play_records_warmup + self.engine_play_records_live)):
+            return False
+        conf = float(pending.get("confidence", 0.0) or 0.0)
+        thr = pending.get("threshold")
+        try:
+            thr_f = float(thr) if thr is not None else None
+        except Exception:
+            thr_f = None
+        ratio = (conf / thr_f) if thr_f and thr_f > 0 else None
+        self.engine_play_sessions.append({
+            "signal_from_key": key, "created_at": pending.get("created_at"), "origin_mode": origin,
+            "top1": int(pending["top1"]), "support": int(pending.get("support", 0) or 0),
+            "confidence": conf, "threshold": thr_f, "confidence_ratio": ratio,
+            "age": 0, "hit_ages": [], "activation_age": None, "play_ages": [],
+        })
+        self.engine_play_sessions = self.engine_play_sessions[-1000:]
+        return True
+
+    async def settle_play_sessions(self, app, day, e, nums, mode="live", notify=True):
+        if not self.engine_play_sessions:
+            return []
+        actual = set(map(int, nums))
+        result_key = draw_key(day, e)
+        kept, completed = [], []
+        for sess in self.engine_play_sessions:
+            origin = sess.get("origin_mode") if sess.get("origin_mode") in {"warmup", "live"} else mode
+            age = int(sess.get("age", 0) or 0) + 1
+            sess["age"] = age
+            hit_now = int(sess["top1"]) in actual
+            if hit_now and age not in sess["hit_ages"]:
+                sess["hit_ages"].append(age)
+
+            activation_age = sess.get("activation_age")
+            # Prima uscita entro H1-H3 = sola CONFERMA. Non e' una giocata.
+            if activation_age is None:
+                if hit_now and age <= 3:
+                    activation_age = age
+                    sess["activation_age"] = age
+                    if notify and mode == "live" and origin == "live" and ENGINE_NOTIFY_PLAY_CONFIRM:
+                        max_bets = 5 - age
+                        await self.tg(
+                            app,
+                            "✅ ENGINE PLAY SHADOW — CONFERMA\n\n"
+                            f"Segnale: {sess.get('signal_from_key','-')}\n"
+                            f"TOP1 #{sess['top1']} uscito a H{age}.\n"
+                            "Questa uscita e' SOLO conferma: nessuna giocata conteggiata.\n\n"
+                            f"▶️ DALLA PROSSIMA: PLAY #{sess['top1']}\n"
+                            f"Fino a H5, massimo {max_bets} colpi, STOP alla seconda uscita.\n"
+                            "⚠️ PLAY SHADOW: nessuna puntata automatica."
+                        )
+                elif age >= 3:
+                    rec = {
+                        "signal_from_key": sess.get("signal_from_key"), "completed_at": result_key,
+                        "origin_mode": origin, "top1": int(sess["top1"]), "support": int(sess.get("support",0) or 0),
+                        "confidence": sess.get("confidence"), "threshold": sess.get("threshold"),
+                        "confidence_ratio": sess.get("confidence_ratio"), "activation_age": None,
+                        "hit_age": None, "play_ages": [], "bets": 0, "result": "no_play",
+                    }
+                    bank = self._play_bank(origin); bank.append(rec); del bank[:-ENGINE_PLAY_RECORD_MAX]
+                    completed.append(rec)
+                    continue
+
+            # Se la conferma era gia' avvenuta in un colpo precedente, questo draw e' una PLAY.
+            activation_age = sess.get("activation_age")
+            if activation_age is not None and age > int(activation_age):
+                if age not in sess["play_ages"]:
+                    sess["play_ages"].append(age)
+                if hit_now:
+                    rec = {
+                        "signal_from_key": sess.get("signal_from_key"), "completed_at": result_key,
+                        "origin_mode": origin, "top1": int(sess["top1"]), "support": int(sess.get("support",0) or 0),
+                        "confidence": sess.get("confidence"), "threshold": sess.get("threshold"),
+                        "confidence_ratio": sess.get("confidence_ratio"), "activation_age": int(activation_age),
+                        "hit_age": age, "play_ages": list(sess["play_ages"]), "bets": len(sess["play_ages"]),
+                        "result": "hit",
+                    }
+                    bank = self._play_bank(origin); bank.append(rec); del bank[:-ENGINE_PLAY_RECORD_MAX]
+                    completed.append(rec)
+                    if notify and mode == "live" and origin == "live" and ENGINE_NOTIFY_PLAY_RESULT:
+                        await self.tg(
+                            app,
+                            "🎯 ENGINE PLAY SHADOW — HIT / STOP\n\n"
+                            f"TOP1 #{sess['top1']} | conferma H{activation_age}\n"
+                            f"Seconda uscita a H{age} | colpo giocato {len(sess['play_ages'])}\n"
+                            f"PLAY: {', '.join('H'+str(x) for x in sess['play_ages'])}\n\n"
+                            "✅ Obiettivo seconda uscita centrato. Sessione chiusa."
+                        )
+                    continue
+                if age >= 5:
+                    rec = {
+                        "signal_from_key": sess.get("signal_from_key"), "completed_at": result_key,
+                        "origin_mode": origin, "top1": int(sess["top1"]), "support": int(sess.get("support",0) or 0),
+                        "confidence": sess.get("confidence"), "threshold": sess.get("threshold"),
+                        "confidence_ratio": sess.get("confidence_ratio"), "activation_age": int(activation_age),
+                        "hit_age": None, "play_ages": list(sess["play_ages"]), "bets": len(sess["play_ages"]),
+                        "result": "stop",
+                    }
+                    bank = self._play_bank(origin); bank.append(rec); del bank[:-ENGINE_PLAY_RECORD_MAX]
+                    completed.append(rec)
+                    if notify and mode == "live" and origin == "live" and ENGINE_NOTIFY_PLAY_RESULT:
+                        await self.tg(
+                            app,
+                            "⛔ ENGINE PLAY SHADOW — STOP H5\n\n"
+                            f"TOP1 #{sess['top1']} | conferma H{activation_age}\n"
+                            f"PLAY senza seconda uscita: {', '.join('H'+str(x) for x in sess['play_ages'])}\n"
+                            f"Colpi giocati: {len(sess['play_ages'])}\n\n"
+                            "Sessione chiusa a H5."
+                        )
+                    continue
+
+            kept.append(sess)
+        self.engine_play_sessions = kept
+        return completed
+
     def load_state(self):
         path = STATE_FILE if os.path.exists(STATE_FILE) else (LEGACY_STATE_FILE if os.path.exists(LEGACY_STATE_FILE) else None)
         if not path:
@@ -1089,9 +1411,16 @@ class EngineOnly:
             self.engine_h5_records_live = self._sanitize_h5_records(d.get("engine_h5_records_live", []))
             self._migrate_h5_from_legacy_horizon(d)
 
-            # Se c'e' un pending HC ma manca la sessione H5, aggancialo senza duplicare.
+            self.engine_play_diag_version = ENGINE_PLAY_DIAG_VERSION
+            self.engine_play_sessions = self._sanitize_play_sessions(d.get("engine_play_sessions", []))
+            self.engine_play_records_warmup = self._sanitize_play_records(d.get("engine_play_records_warmup", []))
+            self.engine_play_records_live = self._sanitize_play_records(d.get("engine_play_records_live", []))
+            self._migrate_play_from_h5()
+
+            # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
             if self.engine_pending and self.engine_pending.get("accepted"):
                 self._start_h5_session(self.engine_pending)
+                self._start_play_session(self.engine_pending)
 
             migrated = os.path.abspath(path) == os.path.abspath(LEGACY_STATE_FILE)
             self.state_load_info = {
@@ -1131,6 +1460,10 @@ class EngineOnly:
             "engine_h5_sessions": self.engine_h5_sessions[-1000:],
             "engine_h5_records_warmup": self.engine_h5_records_warmup[-ENGINE_H5_RECORD_MAX:],
             "engine_h5_records_live": self.engine_h5_records_live[-ENGINE_H5_RECORD_MAX:],
+            "engine_play_diag_version": ENGINE_PLAY_DIAG_VERSION,
+            "engine_play_sessions": self.engine_play_sessions[-1000:],
+            "engine_play_records_warmup": self.engine_play_records_warmup[-ENGINE_PLAY_RECORD_MAX:],
+            "engine_play_records_live": self.engine_play_records_live[-ENGINE_PLAY_RECORD_MAX:],
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -1492,6 +1825,7 @@ class EngineOnly:
         self.engine_pending = p
         if accepted:
             self._start_h5_session(p)
+            self._start_play_session(p)
 
         # IMPORTANTISSIMO: prima si decide usando la soglia PRE-FUTURO, poi si aggiunge
         # la confidence corrente alla calibrazione. Nessun future leakage.
@@ -1507,8 +1841,9 @@ class EngineOnly:
                 f"Confidence: {p['confidence']:.4f} | soglia: {p['threshold']:.4f}\n"
                 f"Consensus mini-engine: {p['support']}/4\n\n"
                 "🧪 TRACKER: il TOP1 viene congelato e seguito per H1-H5.\n"
-                "Focus: ESATTO 2/5 e >=2/5 nelle prossime 5 estrazioni.\n"
-                "⚠️ SHADOW: nessuna puntata automatica."
+                "🎮 PLAY SHADOW: aspetta la PRIMA uscita entro H1-H3.\n"
+                "Se confermato, dalla successiva cerca la SECONDA uscita entro H5 e poi STOP.\n"
+                "⚠️ Nessuna puntata automatica."
             )
         return p
 
@@ -1523,12 +1858,16 @@ class EngineOnly:
         self.engine_h5_sessions = []
         self.engine_h5_records_warmup = []
         self.engine_h5_records_live = []
+        self.engine_play_sessions = []
+        self.engine_play_records_warmup = []
+        self.engine_play_records_live = []
 
         usable = list(records or [])[-ENGINE_HISTORY_MAX:]
         for d, e, nums in usable:
             clean = list(map(int, nums))
             if len(clean) != 20 or len(set(clean)) != 20:
                 continue
+            await self.settle_play_sessions(None, d, e, clean, mode="warmup", notify=False)
             await self.settle_h5_sessions(None, d, e, clean, mode="warmup", notify=False)
             await self.settle_engine_pending(None, d, e, clean, mode="warmup", notify=False)
             k = draw_key(d, e)
@@ -1546,6 +1885,11 @@ class EngineOnly:
                 if not (x.get("origin_mode") == "warmup" and int(x.get("age",0) or 0) == 0
                         and str(x.get("signal_from_key") or "") == str(final_key))
             ]
+            self.engine_play_sessions = [
+                x for x in self.engine_play_sessions
+                if not (x.get("origin_mode") == "warmup" and int(x.get("age",0) or 0) == 0
+                        and str(x.get("signal_from_key") or "") == str(final_key))
+            ]
             await self.arm_engine_shadow(None, final_key, mode="live", notify=False)
         return self.engine_bootstrap_done
 
@@ -1556,6 +1900,7 @@ class EngineOnly:
         if self.already_processed(day, e):
             return None
 
+        await self.settle_play_sessions(app, day, e, clean, mode=mode, notify=notify)
         await self.settle_h5_sessions(app, day, e, clean, mode=mode, notify=notify)
         await self.settle_engine_pending(app, day, e, clean, mode=mode, notify=notify)
 
@@ -1672,6 +2017,93 @@ class EngineOnly:
         ])
         return "\n".join(lines)
 
+
+    @staticmethod
+    def _summarize_play(rows):
+        activated = [r for r in rows if r.get("result") in {"hit", "stop"}]
+        hits = [r for r in activated if r.get("result") == "hit"]
+        stops = [r for r in activated if r.get("result") == "stop"]
+        no_play = [r for r in rows if r.get("result") == "no_play"]
+        bets = sum(int(r.get("bets", 0) or 0) for r in activated)
+        return {
+            "n": len(rows), "activated": len(activated), "hits": len(hits), "stops": len(stops),
+            "no_play": len(no_play), "bets": bets,
+            "hit_per_bet": safe_pct(len(hits), bets),
+            "success": safe_pct(len(hits), len(activated)),
+            "avg_bets": (bets / len(activated)) if activated else 0.0,
+        }
+
+    def _play_summary_line(self, title, rows):
+        s = self._summarize_play(rows)
+        return (
+            f"• {title}: HC={s['n']} | attivate={s['activated']} | HIT {s['hits']}/{s['activated']} "
+            f"({s['success']:.2f}%) | STOP={s['stops']} | NO PLAY={s['no_play']} | "
+            f"puntate={s['bets']} | HIT/puntata {s['hits']}/{s['bets']} ({s['hit_per_bet']:.2f}%) | "
+            f"media colpi={s['avg_bets']:.2f}"
+        )
+
+    def play_text(self):
+        rows = list(self.engine_play_records_live)
+        activated = [r for r in rows if r.get("result") in {"hit", "stop"}]
+        lines = [
+            "🎮 ENGINE ONLY — PLAY SHADOW SECONDA USCITA",
+            "• HIGH CONFIDENCE -> congela TOP1",
+            "• prima uscita valida SOLO a H1/H2/H3 = CONFERMA (non giocata)",
+            "• dalla successiva: PLAY TOP1 fino a H5",
+            "• seconda uscita = HIT + STOP; senza seconda uscita = STOP H5",
+            "• prima uscita solo a H4/H5 = NO PLAY",
+            "",
+            self._play_summary_line("LIVE COMPLETO", rows),
+            "  baseline singola puntata casuale: 22.22%",
+            "",
+            "📈 ROLLING SESSIONI ATTIVATE",
+            self._play_summary_line("ultime 50 attivate", activated[-50:]),
+            self._play_summary_line("ultime 100 attivate", activated[-100:]),
+            "",
+            "⏱ PER COLPO DI CONFERMA",
+        ]
+        for a in (1, 2, 3):
+            rr = [r for r in activated if int(r.get("activation_age", 0) or 0) == a]
+            max_tries = 5 - a
+            theoretical = 100.0 * (1.0 - (70.0/90.0) ** max_tries)
+            hit = sum(r.get("result") == "hit" for r in rr)
+            lines.append(
+                f"• conferma H{a}: HIT {hit}/{len(rr)} ({safe_pct(hit,len(rr)):.2f}%) | "
+                f"rnd entro {max_tries} colpi {theoretical:.2f}%"
+            )
+        lines.append("")
+        lines.append("🧩 PER CONSENSUS")
+        supports = sorted({int(r.get("support",0) or 0) for r in activated})
+        if supports:
+            for sp in supports:
+                rr=[r for r in activated if int(r.get("support",0) or 0)==sp]
+                hit=sum(r.get("result")=="hit" for r in rr)
+                bets=sum(int(r.get("bets",0) or 0) for r in rr)
+                lines.append(
+                    f"• {sp}/4: HIT {hit}/{len(rr)} ({safe_pct(hit,len(rr)):.2f}%) | "
+                    f"HIT/puntata {hit}/{bets} ({safe_pct(hit,bets):.2f}%)"
+                )
+        else:
+            lines.append("• nessuna sessione attivata")
+        lines.extend(["", "📍 SESSIONI ATTUALI"])
+        active = [x for x in self.engine_play_sessions if x.get("origin_mode") == "live"]
+        if not active:
+            lines.append("• nessuna")
+        else:
+            for x in active[-10:]:
+                age=int(x.get("age",0) or 0); act=x.get("activation_age")
+                if act is None:
+                    state=f"ATTESA CONFERMA | H{age}/3"
+                else:
+                    state=f"PLAY ATTIVO | conferma H{act} | prossimo H{age+1}/5"
+                lines.append(f"• {x.get('signal_from_key','-')} | #{x.get('top1')} | {state} | cons={x.get('support',0)}/4")
+        lines.extend([
+            "",
+            "⚠️ PLAY SHADOW: diagnostica forward; nessuna puntata automatica.",
+            "Lo storico MULTI-HIT originale resta separato e invariato.",
+        ])
+        return "\n".join(lines)
+
     def horizon_text(self):
         rows = list(self.engine_h5_records_live)
         lines = [
@@ -1716,7 +2148,8 @@ class EngineOnly:
             "🧠 10eLOTTO ENGINE ONLY\n"
             "• UNICO motore attivo\n"
             "• frequenza/accelerazione + transizioni + vicini di stato + hazard gap\n"
-            "• filtro HIGH CONFIDENCE dinamico; focus TOP1 + MULTI-HIT H5\n\n"
+            "• filtro HIGH CONFIDENCE dinamico; focus TOP1 + MULTI-HIT H5\n"
+            "• PLAY SHADOW: prima uscita H1-H3 -> cerca la seconda entro H5\n\n"
             f"Storico: {len(self.engine_history)}/{ENGINE_MIN_HISTORY}+ | "
             f"calibrazione: {len(self.engine_margin_history)}/{ENGINE_MIN_MARGIN_SAMPLES}+\n"
             f"Filtro target: top {ENGINE_SELECT_RATE*100:.0f}% | soglia: "
@@ -1727,7 +2160,7 @@ class EngineOnly:
             "🧾 ULTIMI HIGH CONFIDENCE\n" + recent_txt + "\n\n"
             f"🧪 H5 completati LIVE={len(self.engine_h5_records_live)} | attivi="
             f"{sum(1 for x in self.engine_h5_sessions if x.get('origin_mode')=='live')}\n"
-            "Dettagli: /multih5 | /engineh\n\n"
+            "Dettagli: /multih5 | /engineh | /play\n\n"
             "Baseline H1 TOP1 casuale: 22.22%.\n"
             "⚠️ Nessuna puntata automatica."
         )
@@ -1740,6 +2173,7 @@ class EngineOnly:
             "/engine — stato, TOP1 e statistiche HIGH CONFIDENCE\n"
             "/engineh — H1/H2/H3/H5 del TOP1\n"
             "/multih5 — 0/5, 1/5, esatto 2/5, >=2/5, >=3/5\n"
+            "/play — strategia conferma H1-H3 -> seconda uscita entro H5\n"
             "/status — stato rapido ENGINE\n"
             "/menu — questa schermata"
         )
@@ -1763,6 +2197,9 @@ async def cmd_engineh(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_multih5(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].multih5_text())
 
+async def cmd_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].play_text())
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].engine_text())
 
@@ -1774,6 +2211,7 @@ async def setup_commands(app):
         BotCommand("engine", "ENGINE ONLY: TOP1 + HIGH CONFIDENCE"),
         BotCommand("engineh", "TOP1 H1/H2/H3/H5"),
         BotCommand("multih5", "TOP1 multi-hit nelle 5 successive"),
+        BotCommand("play", "PLAY SHADOW: seconda uscita dopo conferma"),
         BotCommand("status", "Stato rapido ENGINE"),
         BotCommand("menu", "Comandi ENGINE ONLY"),
     ])
@@ -1824,7 +2262,8 @@ async def notify_pending(engine, app):
         f"🎯 TOP1: {p.get('top1')}\n"
         f"Confidence: {float(p.get('confidence',0)):.4f} | soglia: {float(p.get('threshold') or 0):.4f}\n"
         f"Consensus: {p.get('support',0)}/4\n\n"
-        "Il TOP1 viene seguito fino a H5 per MULTI-HIT."
+        "Il TOP1 viene seguito fino a H5 per MULTI-HIT.\n"
+        "PLAY SHADOW: prima uscita H1-H3 = conferma; dalla successiva cerca la seconda entro H5."
     )
 
 async def startup(engine, app, retry_state=None):
@@ -1870,11 +2309,14 @@ async def startup(engine, app, retry_state=None):
         "🧠 unico motore: ENGINE HIGH CONFIDENCE TOP1\n"
         "🧪 tracker: H1-H5 + MULTI-HIT H5\n"
         "🎯 focus: ESATTO 2/5 e >=2/5\n"
+        "🎮 PLAY SHADOW: conferma H1-H3 -> seconda uscita entro H5\n"
         "✅ state persistente + autorotation\n\n"
         f"ENGINE: {'READY' if engine.engine_bootstrap_done else 'BUILD'} | "
         f"filtro target top {ENGINE_SELECT_RATE*100:.0f}%\n"
-        f"H5 LIVE gia' disponibili: {len(engine.engine_h5_records_live)}\n\n"
-        "Comandi: /engine /engineh /multih5 /menu"
+        f"H5 LIVE gia' disponibili: {len(engine.engine_h5_records_live)}\n"
+        f"PLAY storico ricostruito: {len(engine.engine_play_records_live)} record | "
+        f"attivi={sum(1 for x in engine.engine_play_sessions if x.get('origin_mode')=='live')}\n\n"
+        "Comandi: /engine /engineh /multih5 /play /menu"
     )
     await notify_pending(engine,app)
     return True
@@ -1954,7 +2396,33 @@ async def run_self_test():
     assert r["hits5"]==2 and r["hit_ages"]==[2,5]
     s=x._summarize_h5(x.engine_h5_records_live)
     assert s["exact2"]==1 and s["ge2"]==1 and s["ge3"]==0
-    print("SELF-TEST OK: ENGINE ONLY + HIGH CONFIDENCE + MULTI-HIT H5")
+
+    # Test PLAY SHADOW: conferma H2, PLAY H3/H4, seconda uscita a H4 -> HIT + STOP.
+    y=EngineOnly(load=False)
+    y.save_state=lambda *a,**k:_git_status(True,"test","no-op")
+    p2={"signal_from_key":"P#001","created_at":now_txt(),"origin_mode":"live","top1":33,
+        "confidence":0.7,"threshold":0.5,"support":2,"accepted":True}
+    assert y._start_play_session(p2)
+    for age in range(1,5):
+        nums=[n for n in range(1,91) if n != 33][:20]
+        if age in (2,4): nums[-1]=33
+        await y.settle_play_sessions(None,"2099-03-01",age,nums,mode="live",notify=False)
+    assert len(y.engine_play_records_live)==1
+    pr=y.engine_play_records_live[0]
+    assert pr["result"]=="hit" and pr["activation_age"]==2 and pr["hit_age"]==4
+    assert pr["play_ages"]==[3,4] and pr["bets"]==2
+
+    # Test NO PLAY: nessuna prima uscita entro H3.
+    z=EngineOnly(load=False)
+    z.save_state=lambda *a,**k:_git_status(True,"test","no-op")
+    assert z._start_play_session({**p2,"signal_from_key":"P#002","top1":34})
+    for age in range(1,4):
+        nums=[n for n in range(1,91) if n != 34][:20]
+        await z.settle_play_sessions(None,"2099-03-02",age,nums,mode="live",notify=False)
+    assert len(z.engine_play_records_live)==1 and z.engine_play_records_live[0]["result"]=="no_play"
+    assert z.engine_play_records_live[0]["bets"]==0
+
+    print("SELF-TEST OK: ENGINE ONLY + MULTI-HIT H5 + PLAY SHADOW H1-H3 -> SECOND HIT")
 
 async def main():
     if "--self-test" in sys.argv:
@@ -1974,6 +2442,7 @@ async def main():
     app.add_handler(CommandHandler("engine",cmd_engine))
     app.add_handler(CommandHandler("engineh",cmd_engineh))
     app.add_handler(CommandHandler("multih5",cmd_multih5))
+    app.add_handler(CommandHandler("play",cmd_play))
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("menu",cmd_menu))
 
