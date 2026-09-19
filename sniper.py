@@ -1,5 +1,5 @@
 # ============================================================
-# 🧠 10eLOTTO ENGINE ONLY — MULTI-HIT H5 + PLAY SHADOW + AMBO H2 VIRTUALE
+# 🧠 10eLOTTO ENGINE ONLY — MULTI-HIT H5 + PLAY SHADOW + AMBO HOT5 H1-H3
 # ============================================================
 #
 # UNICO MOTORE ATTIVO:
@@ -32,14 +32,15 @@
 #   • seconda uscita = HIT + STOP; se manca entro H5 = STOP
 #   • se nessuna conferma entro H3 = NO PLAY
 #
-# AMBO H2 VIRTUALE (nuovo modulo separato):
-#   • solo HIGH CONFIDENCE nati dopo l'installazione, distanziati >=5 draw;
-#   • H1 TOP1 MISS; H2 prima uscita TOP1;
-#   • dopo H2 seleziona il primo numero del ranking diverso dal TOP1;
-#   • apri l'ambo SOLO se anche l'accompagnatore e' uscito a H2;
-#   • Telegram: avviso PRIMA di H3; segui H3/H4/H5 a puntata virtuale fissa;
+# AMBO HOT5 H1-H3 (modulo separato, simulazione con notifiche):
+#   • solo HIGH CONFIDENCE prospettici, distanziati >=5 draw;
+#   • attende la PRIMA uscita del TOP1 entro H1/H2/H3 = conferma;
+#   • nel draw di conferma considera i 19 numeri usciti insieme al TOP1;
+#   • sceglie fra questi il numero piu' frequente nelle ultime 5 estrazioni
+#     (finestra inclusiva del draw di conferma; tie-break recency, poi numero);
+#   • dalla successiva gioca virtualmente l'ambo TOP1-HOT5 fino a H5;
 #   • HIT se TOP1 e accompagnatore escono insieme; STOP alla prima seconda
-#     uscita del TOP1 anche senza accompagnatore, o comunque a H5;
+#     uscita del TOP1 senza accompagnatore, o comunque a H5;
 #   • contabilizza ogni colpo dopo l'estrazione (1 euro e premio lordo 14x default).
 #   • SOLO SIMULAZIONE: NON si collega a bookmaker/concessionari.
 #
@@ -148,18 +149,17 @@ ENGINE_PLAY_RECORD_MAX = int(os.getenv("ENGINE_PLAY_RECORD_MAX", "5000"))
 ENGINE_NOTIFY_PLAY_CONFIRM = os.getenv("ENGINE_NOTIFY_PLAY_CONFIRM", "1") != "0"
 ENGINE_NOTIFY_PLAY_RESULT = os.getenv("ENGINE_NOTIFY_PLAY_RESULT", "1") != "0"
 
-# AMBO H2: giocate VIRTUALI con notifiche Telegram, nessuna interazione con concessionari.
-# Si usa ESATTAMENTE la variante del backtest: H1 TOP1 MISS, H2 TOP1 HIT;
-# TOP2 del ranking DOPO H2 (o TOP1 corrente se diverso dal leader congelato)
-# deve essere presente nell'estrazione H2. Gioca H3-H5; stop alla seconda
-# presenza del TOP1 anche quando l'accompagnatore non esce.
+# AMBO HOT5: simulazione con notifiche Telegram, nessuna interazione con concessionari.
+# Prima uscita TOP1 entro H1-H3 = conferma. L'accompagnatore viene scelto fra
+# i numeri PRESENTI nel draw di conferma: massimo conteggio nelle ultime 5
+# estrazioni (inclusa la conferma), tie-break recency e poi numero piu' basso.
 AMBO_SIM_ENABLED = os.getenv("AMBO_SIM_ENABLED", "1") != "0"
 AMBO_SIM_STAKE_CENTS = max(1, int(os.getenv("AMBO_SIM_STAKE_CENTS", "100")))
 AMBO_SIM_PAYOUT_MULTIPLIER = float(os.getenv("AMBO_SIM_PAYOUT_MULTIPLIER", "14"))
 AMBO_SIM_NOTIFY = os.getenv("AMBO_SIM_NOTIFY", "1") != "0"
 AMBO_SIM_RECORD_MAX = max(100, int(os.getenv("AMBO_SIM_RECORD_MAX", "5000")))
 AMBO_SIM_BET_LOG_MAX = max(100, int(os.getenv("AMBO_SIM_BET_LOG_MAX", "15000")))
-AMBO_SIM_DIAG_VERSION = 1
+AMBO_SIM_DIAG_VERSION = 2
 
 PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
@@ -944,8 +944,9 @@ class EngineOnly:
         self.engine_play_records_warmup = []
         self.engine_play_records_live = []
 
-        # Registro interamente NUOVO e prospettico: il vecchio state non include
-        # il ranking dell'accompagnatore al momento della conferma H2.
+        # AMBO HOT5 e' prospettico. Se lo state contiene il precedente AMBO H2
+        # (diag v1), viene archiviato come legacy e NON mescolato nelle nuove statistiche.
+        self.ambo_h2_legacy = {}
         self.ambo_sim_draw_index = 0
         self.ambo_sim_last_candidate_index = -100000
         self.ambo_sim_skipped_overlap = 0
@@ -1432,7 +1433,7 @@ class EngineOnly:
         return completed
 
     # ========================================================
-    # AMBO H2 VIRTUALE — modulo prospettico separato dall'ENGINE
+    # AMBO HOT5 H1-H3 — simulazione prospettica separata dall'ENGINE
     # ========================================================
     @staticmethod
     def _ambo_validate_session(row):
@@ -1444,24 +1445,58 @@ class EngineOnly:
             partner = row.get('partner')
             partner = int(partner) if partner is not None else None
             phase = str(row.get('phase', ''))
-            if not (1 <= top <= 90 and 0 <= age <= 4 and
+            conf_age = row.get('confirmation_age')
+            conf_age = int(conf_age) if conf_age is not None else None
+            hot5_count = row.get('partner_hot5_count')
+            hot5_count = int(hot5_count) if hot5_count is not None else None
+            if not (1 <= top <= 90 and 0 <= age <= 5 and
                     (partner is None or (1 <= partner <= 90 and partner != top)) and
-                    phase in {'await_h1','await_h2','needs_partner','play'}):
+                    phase in {'await_h1','await_h2','await_h3','needs_partner','play'}):
                 return None
-            if phase == 'play' and partner is None:
+            if phase == 'play' and (partner is None or conf_age not in (1,2,3)):
                 return None
             return {
                 'signal_from_key': str(row.get('signal_from_key', '')),
                 'top1': top, 'support': int(row.get('support', 0)),
                 'age': age, 'phase': phase, 'partner': partner,
+                'confirmation_age': conf_age,
                 'confirmation_draw_key': row.get('confirmation_draw_key'),
+                'partner_hot5_count': hot5_count,
                 'bets': int(row.get('bets', 0)), 'wins': int(row.get('wins', 0)),
                 'created_at': row.get('created_at'),
+                'strategy': 'hot5_confirm_h1_h3',
             }
         except (ValueError, TypeError, KeyError):
             return None
 
     def _ambo_load_fields(self, data):
+        saved_ver = int(data.get('ambo_sim_diag_version', 0) or 0)
+        self.ambo_h2_legacy = dict(data.get('ambo_h2_legacy', {}) or {})
+
+        # Migrazione dal precedente AMBO H2 (diag v1): conserva lo storico in
+        # un archivio legacy ma parte da zero con HOT5, evitando statistiche miste.
+        if saved_ver != AMBO_SIM_DIAG_VERSION:
+            if saved_ver == 1 and not self.ambo_h2_legacy:
+                self.ambo_h2_legacy = {
+                    'strategy': 'ambo_h2_ranking_legacy',
+                    'diag_version': 1,
+                    'archived_at': now_txt(),
+                    'draw_index': int(data.get('ambo_sim_draw_index', 0) or 0),
+                    'skipped_overlap': int(data.get('ambo_sim_skipped_overlap', 0) or 0),
+                    'sessions': list(data.get('ambo_sim_sessions', []) or []),
+                    'records_live': list(data.get('ambo_sim_records_live', []) or []),
+                    'bets_live': list(data.get('ambo_sim_bets_live', []) or []),
+                    'account': dict(data.get('ambo_sim_account', {}) or {}),
+                }
+            self.ambo_sim_draw_index = 0
+            self.ambo_sim_last_candidate_index = -100000
+            self.ambo_sim_skipped_overlap = 0
+            self.ambo_sim_sessions = []
+            self.ambo_sim_records_live = []
+            self.ambo_sim_bets_live = []
+            self.ambo_sim_account = {"bets": 0, "wins": 0, "cost_cents": 0, "gross_cents": 0}
+            return
+
         self.ambo_sim_draw_index = max(0, int(data.get('ambo_sim_draw_index', 0) or 0))
         self.ambo_sim_last_candidate_index = int(data.get('ambo_sim_last_candidate_index', -100000) or -100000)
         self.ambo_sim_skipped_overlap = max(0, int(data.get('ambo_sim_skipped_overlap', 0) or 0))
@@ -1476,7 +1511,7 @@ class EngineOnly:
         }
 
     def _ambo_start_candidate(self, pending):
-        """Applica il lock a TUTTI i nuovi HC: almeno 5 draw fra due nascite."""
+        """Lock di 5 draw fra due nascite HC per evitare sessioni sovrapposte."""
         if not AMBO_SIM_ENABLED or not pending or not pending.get('accepted'):
             return False
         if self.ambo_sim_sessions or self.ambo_sim_draw_index - self.ambo_sim_last_candidate_index < 5:
@@ -1489,7 +1524,9 @@ class EngineOnly:
             'top1': int(pending['top1']),
             'support': int(pending.get('support', 0)),
             'age': 0, 'phase': 'await_h1', 'partner': None,
-            'confirmation_draw_key': None, 'bets': 0, 'wins': 0,
+            'confirmation_age': None, 'confirmation_draw_key': None,
+            'partner_hot5_count': None, 'bets': 0, 'wins': 0,
+            'strategy': 'hot5_confirm_h1_h3',
         }]
         return True
 
@@ -1498,6 +1535,7 @@ class EngineOnly:
             **dict(session), 'result': result, 'completed_at': current_key,
             'reason': reason, 'stake_cents': AMBO_SIM_STAKE_CENTS,
             'payout_multiplier': AMBO_SIM_PAYOUT_MULTIPLIER,
+            'strategy': 'hot5_confirm_h1_h3',
         }
         self.ambo_sim_records_live.append(record)
         self.ambo_sim_records_live = self.ambo_sim_records_live[-AMBO_SIM_RECORD_MAX:]
@@ -1512,8 +1550,41 @@ class EngineOnly:
         if notify and AMBO_SIM_NOTIFY:
             await self.tg(app, message + '\n\n⚠️ SIMULAZIONE: nessuna puntata effettuata automaticamente.')
 
+    def _ambo_hot5_partner(self, top, confirmation_nums):
+        """Numero piu' frequente nelle ultime 5 fra i co-usciti della conferma.
+
+        Finestra: ultime 5 righe di engine_history, quindi comprende il draw di
+        conferma appena aggiunto. Tie-break: recency-weighted presence, poi numero
+        piu' basso. Non usa alcun draw futuro.
+        """
+        candidates = sorted(set(map(int, confirmation_nums)) - {int(top)})
+        if not candidates:
+            return None
+        rows = self.engine_history[-5:]
+        if not rows:
+            return None
+
+        scored = []
+        for n in candidates:
+            count = sum(1 for row in rows if n in set(row.get('nums', [])))
+            # Pesi 1..N: il draw piu' recente pesa di piu' solo come tie-break.
+            recency = sum(i + 1 for i, row in enumerate(rows) if n in set(row.get('nums', [])))
+            scored.append((count, recency, -n, n))
+        count, recency, _, partner = max(scored)
+        return {
+            'partner': int(partner),
+            'count5': int(count),
+            'recency_score': int(recency),
+            'window': len(rows),
+        }
+
     async def _ambo_settle_current(self, app, current_key, nums, notify=True):
-        """Si esegue PRIMA di aggiungere il draw allo storico. Mai piazzare puntate retroattive."""
+        """Valuta il draw corrente PRIMA di aggiungerlo allo storico.
+
+        La conferma puo' avvenire a H1/H2/H3. Il partner viene scelto solo DOPO
+        l'append dello stesso draw, quindi la finestra HOT5 include la conferma
+        e non contiene futuro.
+        """
         if not self.ambo_sim_sessions:
             return
         session = self.ambo_sim_sessions[0]
@@ -1522,23 +1593,30 @@ class EngineOnly:
         top = int(session['top1'])
         actual = set(map(int, nums))
         phase = session['phase']
-        if phase == 'await_h1' and age == 1:
+
+        # Attesa della PRIMA uscita del TOP1 entro H1-H3.
+        if phase in {'await_h1', 'await_h2', 'await_h3'} and age in (1, 2, 3):
             if top in actual:
-                self._ambo_close(session, 'no_play', current_key, 'top1_gia_uscito_a_h1')
-                return
-            session['phase'] = 'await_h2'
-            return
-        if phase == 'await_h2' and age == 2:
-            if top not in actual:
-                self._ambo_close(session, 'no_play', current_key, 'prima_uscita_non_a_h2')
-            else:
                 session['phase'] = 'needs_partner'
+                session['confirmation_age'] = age
                 session['confirmation_draw_key'] = current_key
+            elif age == 1:
+                session['phase'] = 'await_h2'
+            elif age == 2:
+                session['phase'] = 'await_h3'
+            else:
+                self._ambo_close(session, 'no_play', current_key, 'nessuna_prima_uscita_entro_h3')
             return
-        if phase != 'play' or age not in (3, 4, 5):
-            # Se si perde la cronologia o lo state e' incongruente, non simulare giocate.
+
+        if phase == 'needs_partner':
+            # La finalize doveva avvenire nello stesso draw dopo append_history.
+            self._ambo_close(session, 'interrupted', current_key, 'partner_non_finalizzato')
+            return
+
+        if phase != 'play' or age not in (2, 3, 4, 5):
             self._ambo_close(session, 'interrupted', current_key, 'stato_temporale_incoerente')
             return
+
         partner = int(session['partner'])
         hit = top in actual and partner in actual
         top_hit = top in actual
@@ -1552,44 +1630,52 @@ class EngineOnly:
         session['bets'] += 1
         session['wins'] += int(hit)
         self.ambo_sim_bets_live.append({
+            'strategy': 'hot5_confirm_h1_h3',
             'signal_from_key': session['signal_from_key'], 'draw_key': current_key,
-            'age': age, 'top1': top, 'partner': partner, 'hit': bool(hit),
-            'top1_hit': bool(top_hit), 'cost_cents': stake,
-            'gross_cents': prize, 'net_cents': prize-stake,
+            'confirmation_age': session.get('confirmation_age'),
+            'age': age, 'top1': top, 'partner': partner,
+            'partner_hot5_count': session.get('partner_hot5_count'),
+            'hit': bool(hit), 'top1_hit': bool(top_hit),
+            'cost_cents': stake, 'gross_cents': prize, 'net_cents': prize-stake,
         })
         self.ambo_sim_bets_live = self.ambo_sim_bets_live[-AMBO_SIM_BET_LOG_MAX:]
+
         if hit:
-            self._ambo_close(session, 'hit', current_key, 'ambo_centrato')
-            label = '✅ AMBO CENTRATO — HIT / STOP'
+            self._ambo_close(session, 'hit', current_key, 'ambo_hot5_centrato')
+            label = '✅ AMBO HOT5 CENTRATO — HIT / STOP'
         elif top_hit:
-            self._ambo_close(session, 'stop', current_key, 'secondo_top1_senza_accompagnatore')
-            label = '⛔ STOP: TOP1 uscito senza accompagnatore'
+            self._ambo_close(session, 'stop', current_key, 'secondo_top1_senza_hot5')
+            label = '⛔ STOP: TOP1 uscito senza accompagnatore HOT5'
         elif age >= 5:
             self._ambo_close(session, 'stop', current_key, 'fine_h5')
             label = '⛔ STOP H5: nessun ambo'
         else:
             label = '❌ AMBO NON USCITO — sessione ancora aperta'
+
         await self._ambo_notice(
             app,
-            f'🎮 AMBO H2 VIRTUALE — ESITO H{age}\n'
+            f'🎮 AMBO HOT5 — ESITO H{age}\n'
             f'Segnale {session["signal_from_key"]} | estrazione {current_key}\n'
-            f'AMBO {top}-{partner} | puntata virtuale {sim_euro(stake)}\n'
+            f'Conferma TOP1 a H{session.get("confirmation_age")} | '
+            f'AMBO {top}-{partner} | HOT5 partner={session.get("partner_hot5_count")}/5\n'
+            f'Puntata virtuale {sim_euro(stake)}\n'
             f'{label}\n'
             f'Premio di questo colpo: {sim_euro(prize)}\n'
             f'Bilancio di questo colpo: {sim_euro(prize-stake)}\n'
-            f'SALDO TOTALE VIRTUALE: {sim_euro(self._ambo_balance())}' +
+            f'SALDO TOTALE VIRTUALE HOT5: {sim_euro(self._ambo_balance())}' +
             (f'\n\n▶️ PROSSIMA ESTRAZIONE: ripeti AMBO {top}-{partner} '
              f'a H{age+1} | {sim_euro(stake)} (simulati).' if self.ambo_sim_sessions else
              '\n\n🏁 Sessione chiusa, non ripetere questo ambo.'),
             notify=notify
         )
-        # Se il draw e' stato recuperato in silenzio (runner spento o parser in ritardo),
-        # NON fingiamo di aver notificato un'altra giocata: la sessione termina qui.
+
+        # Se il draw e' stato recuperato in silenzio non fingiamo che il successivo
+        # colpo fosse stato notificato prima dell'estrazione.
         if self.ambo_sim_sessions and not notify:
             self._ambo_close(session, 'interrupted', current_key, 'prossimo_colpo_non_notificato')
 
-    async def _ambo_finalize_h2(self, app, current_key, nums, notify=True):
-        """DOPO append_history(H2), PRIMA di qualunque H3: ranking H2 senza futuro."""
+    async def _ambo_finalize_confirmation(self, app, current_key, nums, notify=True):
+        """Dopo append_history del draw di conferma sceglie il partner HOT5."""
         if not self.ambo_sim_sessions:
             return
         session = self.ambo_sim_sessions[0]
@@ -1598,29 +1684,33 @@ class EngineOnly:
         if not notify:
             self._ambo_close(session, 'no_play', current_key, 'conferma_recuperata_senza_notifica')
             return
-        scored = self.engine_score_current()
-        if not scored:
-            self._ambo_close(session, 'no_play', current_key, 'ranking_non_disponibile')
-            return
+
         top = int(session['top1'])
-        partner = int(scored['top1'] if scored['top1'] != top else scored['top2_internal'])
-        if partner not in set(map(int, nums)):
-            self._ambo_close(session, 'no_play', current_key, 'accompagnatore_non_presente_a_h2')
+        pick = self._ambo_hot5_partner(top, nums)
+        if not pick:
+            self._ambo_close(session, 'no_play', current_key, 'hot5_non_disponibile')
             return
-        session['partner'] = partner
+
+        session['partner'] = int(pick['partner'])
+        session['partner_hot5_count'] = int(pick['count5'])
         session['phase'] = 'play'
+        conf_age = int(session['confirmation_age'])
+        first_play_age = conf_age + 1
         stake = AMBO_SIM_STAKE_CENTS
+
         await self._ambo_notice(
             app,
-            f'🎯 AMBO H2 VIRTUALE — SEGNALE DI GIOCATA\n'
+            f'🎯 AMBO HOT5 — SEGNALE DI GIOCATA\n'
             f'HC da {session["signal_from_key"]} | conferma {current_key}\n'
-            f'TOP1 #{top}: MISS a H1, HIT a H2.\n'
-            f'Accompagnatore #{partner}: presente nella stessa H2; scelto dal ranking aggiornato DOPO H2.\n\n'
-            f'▶️ PROSSIMA ESTRAZIONE H3: AMBO {top}-{partner}\n'
+            f'TOP1 #{top}: PRIMA uscita a H{conf_age} (solo conferma, non giocata).\n'
+            f'Accompagnatore HOT5 #{session["partner"]}: presente nello stesso draw e '
+            f'frequenza {session["partner_hot5_count"]}/5 nelle ultime 5.\n\n'
+            f'▶️ PROSSIMA ESTRAZIONE H{first_play_age}: AMBO {top}-{session["partner"]}\n'
             f'Puntata VIRTUALE: {sim_euro(stake)}\n'
-            f'Se entrambi escono: premio lordo simulato {sim_euro(round(stake*AMBO_SIM_PAYOUT_MULTIPLIER))}.\n'
+            f'Se entrambi escono: premio lordo simulato '
+            f'{sim_euro(round(stake*AMBO_SIM_PAYOUT_MULTIPLIER))}.\n'
             'Se esce TOP1 senza accompagnatore: STOP immediato.\n'
-            'Se TOP1 manca: ripeti a H4, poi eventualmente H5.',
+            'Se TOP1 manca: ripeti lo stesso ambo fino a H5.',
             notify=notify
         )
 
@@ -1634,14 +1724,17 @@ class EngineOnly:
         hit_sessions = sum(r.get('result') == 'hit' for r in completed)
         no_play = sum(r.get('result') == 'no_play' for r in completed)
         stops = sum(r.get('result') == 'stop' for r in completed)
+
         parts = [
-            '🎮 AMBO H2 — SIMULATORE CON NOTIFICHE',
-            'Regola: HC; H1 MISS; H2 prima uscita TOP1 + accompagnatore presente nella H2; PLAY H3-H5.',
-            'Accompagnatore = primo numero del ranking aggiornato DOPO H2, diverso dal TOP1 congelato.',
-            'STOP alla prima nuova presenza TOP1 (con ambo=HIT, senza=STOP) o a H5.',
-            f'💶 Puntata virtuale {sim_euro(AMBO_SIM_STAKE_CENTS)} | premio lordo ipotizzato {AMBO_SIM_PAYOUT_MULTIPLIER:g}x.',
+            '🎮 AMBO HOT5 H1-H3 — SIMULATORE CON NOTIFICHE',
+            'Regola: HC -> prima uscita TOP1 entro H1/H2/H3 = CONFERMA non giocata.',
+            'Partner = piu frequente ultime 5 fra i numeri usciti insieme al TOP1 nella conferma.',
+            'Dalla successiva: stesso ambo fino a seconda uscita TOP1 o massimo H5.',
+            'Secondo TOP1 + partner = HIT; secondo TOP1 senza partner = STOP.',
+            f'💶 Puntata virtuale {sim_euro(AMBO_SIM_STAKE_CENTS)} | '
+            f'premio lordo ipotizzato {AMBO_SIM_PAYOUT_MULTIPLIER:g}x.',
             '',
-            '📊 SOLO DATI PROSPETTICI DI QUESTO NUOVO MODULO',
+            '📊 SOLO DATI PROSPETTICI AMBO HOT5',
             f'• sessioni chiuse: {len(completed)} | HIT={hit_sessions} | STOP={stops} | NO PLAY={no_play}',
             f'• HC esclusi per lock di 5 draw: {self.ambo_sim_skipped_overlap}',
             f'• colpi virtuali {n} | AMBI HIT {wins} | HIT/puntata {safe_pct(wins,n):.2f}%',
@@ -1649,21 +1742,39 @@ class EngineOnly:
             f'• SALDO NETTO {sim_euro(net)} | ROI {safe_pct(net,a["cost_cents"]):.2f}%',
             f'• pareggio teorico: {100.0/AMBO_SIM_PAYOUT_MULTIPLIER:.2f}% '
             'di ambi per puntata (costi extra esclusi).',
-            '', '📍 SESSIONE ATTIVA',
         ]
+
+        # Split prospettico per eta' di conferma.
+        parts += ['', '⏱ PER CONFERMA']
+        for age in (1, 2, 3):
+            rows = [r for r in completed if r.get('confirmation_age') == age and r.get('result') in {'hit','stop'}]
+            h = sum(r.get('result') == 'hit' for r in rows)
+            bets = sum(int(r.get('bets', 0) or 0) for r in rows)
+            parts.append(
+                f'• H{age}: sessioni {len(rows)} | HIT {h}/{len(rows)} ({safe_pct(h,len(rows)):.2f}%) '
+                f'| colpi {bets}'
+            )
+
+        parts += ['', '📍 SESSIONE ATTIVA']
         if not active:
             parts.append('• nessuna: non giocare ambo finché non arriva un nuovo avviso.')
         else:
-            s=active[0]
+            s = active[0]
             if s['phase'] == 'play':
-                parts.append(f'• {s["signal_from_key"]}: AMBO {s["top1"]}-{s["partner"]}, '
-                             f'PROSSIMA H{s["age"]+1}, {sim_euro(AMBO_SIM_STAKE_CENTS)} VIRTUALI.')
+                parts.append(
+                    f'• {s["signal_from_key"]}: AMBO {s["top1"]}-{s["partner"]} | '
+                    f'conferma H{s.get("confirmation_age")} | HOT5 {s.get("partner_hot5_count")}/5 | '
+                    f'PROSSIMA H{s["age"]+1}, {sim_euro(AMBO_SIM_STAKE_CENTS)} VIRTUALI.'
+                )
             else:
-                parts.append(f'• {s["signal_from_key"]}: TOP1 {s["top1"]}, '
-                             f'fase {s["phase"]}, nessuna puntata ora.')
+                parts.append(
+                    f'• {s["signal_from_key"]}: TOP1 {s["top1"]}, fase {s["phase"]}, '
+                    f'prossimo H{s["age"]+1}; nessuna puntata ora.'
+                )
+
         parts.extend(['', '🧾 ULTIMI COLPI VIRTUALI'])
         if not self.ambo_sim_bets_live:
-            parts.append('• nessuna puntata ancora registrata')
+            parts.append('• nessuna puntata HOT5 ancora registrata')
         else:
             for bet in self.ambo_sim_bets_live[-8:]:
                 parts.append(
@@ -1673,7 +1784,20 @@ class EngineOnly:
                     f'| costo {sim_euro(bet.get("cost_cents",0))} '
                     f'| premio {sim_euro(bet.get("gross_cents",0))}'
                 )
-        parts.append('⚠️ Solo simulazione. I dati precedenti di /engine /multih5 /play restano invariati.')
+
+        if self.ambo_h2_legacy:
+            old_a = dict(self.ambo_h2_legacy.get('account', {}) or {})
+            old_bets = int(old_a.get('bets', 0) or 0)
+            old_wins = int(old_a.get('wins', 0) or 0)
+            old_cost = int(old_a.get('cost_cents', 0) or 0)
+            old_gross = int(old_a.get('gross_cents', 0) or 0)
+            parts += [
+                '', '📦 ARCHIVIO PRECEDENTE AMBO H2 (NON SOMMATO)',
+                f'• colpi={old_bets} | hit={old_wins} | costo={sim_euro(old_cost)} | '
+                f'lordo={sim_euro(old_gross)} | netto={sim_euro(old_gross-old_cost)}'
+            ]
+
+        parts.append('⚠️ Solo simulazione. /engine /multih5 /play e relativo storico restano invariati.')
         return '\n'.join(parts)
 
     def load_state(self):
@@ -1770,6 +1894,7 @@ class EngineOnly:
             "engine_play_records_warmup": self.engine_play_records_warmup[-ENGINE_PLAY_RECORD_MAX:],
             "engine_play_records_live": self.engine_play_records_live[-ENGINE_PLAY_RECORD_MAX:],
             "ambo_sim_diag_version": AMBO_SIM_DIAG_VERSION,
+            "ambo_h2_legacy": self.ambo_h2_legacy,
             "ambo_sim_draw_index": self.ambo_sim_draw_index,
             "ambo_sim_last_candidate_index": self.ambo_sim_last_candidate_index,
             "ambo_sim_skipped_overlap": self.ambo_sim_skipped_overlap,
@@ -2146,11 +2271,11 @@ class EngineOnly:
                 if ambo_new:
                     await self._ambo_notice(
                         app,
-                        "👀 AMBO H2 VIRTUALE — IN OSSERVAZIONE\n"
+                        "👀 AMBO HOT5 — IN OSSERVAZIONE\n"
                         f"HIGH CONFIDENCE da {current_key} | TOP1 #{p['top1']}\n"
-                        "NON giocare ora. H1 deve essere MISS; a H2 il TOP1 deve uscire "
-                        "insieme all'accompagnatore scelto dal ranking DOPO H2.\n"
-                        "Solo dopo quella conferma riceverai l'ambo e il primo colpo H3.",
+                        "NON giocare ora. Aspetto la PRIMA uscita del TOP1 entro H1-H3.\n"
+                        "Nel draw di conferma scegliero' tra i co-usciti il numero piu' "
+                        "frequente nelle ultime 5, poi riceverai l'ambo per il colpo successivo.",
                         notify=notify
                     )
 
@@ -2234,7 +2359,7 @@ class EngineOnly:
                 self._ambo_close(old, "interrupted", draw_key(day, e), "estrazioni_mancanti")
                 await self._ambo_notice(
                     app,
-                    "⚠️ AMBO H2 VIRTUALE — SESSIONE INTERROTTA\n"
+                    "⚠️ AMBO HOT5 — SESSIONE INTERROTTA\n"
                     "Mancano estrazioni consecutive: annullo la sessione per non inventare puntate.\n"
                     "Nuovi segnali saranno valutati soltanto sui draw successivi.",
                     notify=notify,
@@ -2249,8 +2374,8 @@ class EngineOnly:
         current_key = self.remember_processed(day, e)
         self.engine_append_history(current_key, clean)
         if mode == "live":
-            # Ranking H2 determinato DOPO H2, prima del draw H3.
-            await self._ambo_finalize_h2(app, current_key, clean, notify=notify)
+            # Partner HOT5 determinato DOPO il draw di conferma H1/H2/H3, senza futuro.
+            await self._ambo_finalize_confirmation(app, current_key, clean, notify=notify)
         p = await self.arm_engine_shadow(app, current_key, mode=mode, notify=notify)
 
         if persist:
@@ -2519,7 +2644,7 @@ class EngineOnly:
             "/engineh — H1/H2/H3/H5 del TOP1\n"
             "/multih5 — 0/5, 1/5, esatto 2/5, >=2/5, >=3/5\n"
             "/play — strategia conferma H1-H3 -> seconda uscita entro H5\n"
-            "/ambo — ambo H2 virtuale: notifiche, costo, premi e saldo\n"
+            "/ambo — AMBO HOT5 H1-H3: notifiche, costo, premi e saldo\n"
             "/status — stato rapido ENGINE\n"
             "/menu — questa schermata"
         )
@@ -2561,7 +2686,7 @@ async def setup_commands(app):
         BotCommand("engineh", "TOP1 H1/H2/H3/H5"),
         BotCommand("multih5", "TOP1 multi-hit nelle 5 successive"),
         BotCommand("play", "PLAY SHADOW: seconda uscita dopo conferma"),
-        BotCommand("ambo", "AMBO H2 virtuale: notifiche e saldo"),
+        BotCommand("ambo", "AMBO HOT5 H1-H3: notifiche e saldo"),
         BotCommand("status", "Stato rapido ENGINE"),
         BotCommand("menu", "Comandi ENGINE ONLY"),
     ])
@@ -2618,15 +2743,16 @@ async def notify_pending(engine, app):
 
 
 async def notify_ambo_active(engine, app):
-    """Al riavvio ricorda il prossimo colpo ancora simulabile, senza contabilizzarlo."""
+    """Al riavvio ricorda lo stato HOT5 senza contabilizzare colpi retroattivi."""
     if not AMBO_SIM_ENABLED or not engine.ambo_sim_sessions:
         return
     s = engine.ambo_sim_sessions[0]
     if s['phase'] == 'play':
         await engine._ambo_notice(
             app,
-            f'♻️ AMBO H2 — SESSIONE RECUPERATA DALLO STATE\n'
+            f'♻️ AMBO HOT5 — SESSIONE RECUPERATA DALLO STATE\n'
             f'Segnale {s["signal_from_key"]} | AMBO {s["top1"]}-{s["partner"]}\n'
+            f'Conferma H{s.get("confirmation_age")} | HOT5 {s.get("partner_hot5_count")}/5\n'
             f'▶️ PROSSIMA ESTRAZIONE H{s["age"]+1}: '
             f'puntata VIRTUALE {sim_euro(AMBO_SIM_STAKE_CENTS)}.\n'
             'Non contabilizzo il colpo finché non arriva la relativa estrazione.',
@@ -2634,10 +2760,10 @@ async def notify_ambo_active(engine, app):
     else:
         await engine._ambo_notice(
             app,
-            f'♻️ AMBO H2 — OSSERVAZIONE RIPRESA\n'
+            f'♻️ AMBO HOT5 — OSSERVAZIONE RIPRESA\n'
             f'Segnale {s["signal_from_key"]} | TOP1 {s["top1"]}\n'
             f'Fase: {s["phase"]} | prossimo H{s["age"]+1}.\n'
-            'Nessun ambo da giocare finché non arriva la conferma H2.',
+            'Nessun ambo da giocare finché non arriva la prima uscita TOP1 entro H1-H3.',
         )
 
 async def startup(engine, app, retry_state=None):
@@ -2683,7 +2809,7 @@ async def startup(engine, app, retry_state=None):
         "🧠 unico motore: ENGINE HIGH CONFIDENCE TOP1\n"
         "🧪 tracker: H1-H5 + MULTI-HIT H5\n"
         "🎯 focus: ESATTO 2/5 e >=2/5\n"
-        "🎯 AMBO H2 VIRTUALE: notifiche prima dei colpi H3-H5\n"
+        "🎯 AMBO HOT5 H1-H3: conferma TOP1 -> accompagnatore caldo -> notifiche prima dei colpi\n"
         "🎮 PLAY SHADOW: conferma H1-H3 -> seconda uscita entro H5\n"
         "✅ state persistente + autorotation\n\n"
         f"ENGINE: {'READY' if engine.engine_bootstrap_done else 'BUILD'} | "
@@ -2799,8 +2925,8 @@ async def run_self_test():
     assert len(z.engine_play_records_live)==1 and z.engine_play_records_live[0]["result"]=="no_play"
     assert z.engine_play_records_live[0]["bets"]==0
 
-    # Test AMBO H2 virtuale: H1 MISS, H2 conferma 21+72, H3 MISS,
-    # H4 ambo HIT, STOP immediato e contabilita' 2 euro -> 14 euro lordo.
+    # Test AMBO HOT5: prima uscita TOP1 a H2; nel draw di conferma il 72
+    # e' l'unico co-uscito con forte frequenza nelle ultime 5; H3 MISS, H4 AMBO HIT.
     a = EngineOnly(load=False)
     sent = []
     async def fake_tg(app, text):
@@ -2809,25 +2935,57 @@ async def run_self_test():
     ambo_p = {"signal_from_key":"2099-04-01#100", "created_at":now_txt(),
               "origin_mode":"live", "top1":21,"support":2,"accepted":True}
     assert a._ambo_start_candidate(ambo_p)
-    def draw_with(*values):
-        nums = list(range(31,51))
-        for i,n in enumerate(values):
-            nums[i] = n
-        return sorted(nums)
-    await a._ambo_settle_current(None,"2099-04-01#101",draw_with(),notify=True)
-    await a._ambo_settle_current(None,"2099-04-01#102",draw_with(21,72),notify=True)
-    a.engine_score_current = lambda: {"top1":21,"top2_internal":72}
-    await a._ambo_finalize_h2(None,"2099-04-01#102",draw_with(21,72),notify=True)
+
+    pre = [
+        sorted(list(range(1,20)) + [72]),
+        sorted(list(range(20,39)) + [72]),
+        sorted(list(range(39,58)) + [72]),
+        sorted(list(range(1,20)) + [72]),
+    ]
+    a.engine_history = [{"key":f"2099-04-01#09{i}", "nums":x} for i,x in enumerate(pre,1)]
+
+    # H1 TOP1 miss, 72 ancora presente.
+    h1 = sorted(list(range(40,59)) + [72])
+    await a._ambo_settle_current(None,"2099-04-01#101",h1,notify=True)
+    a.engine_append_history("2099-04-01#101",h1)
+    await a._ambo_finalize_confirmation(None,"2099-04-01#101",h1,notify=True)
+    assert a.ambo_sim_sessions[0]["phase"] == "await_h2"
+
+    # H2 prima uscita 21; gli altri sono 72..90. Solo 72 e' caldo.
+    h2 = [21,72] + list(range(73,91))
+    assert len(h2) == 20
+    await a._ambo_settle_current(None,"2099-04-01#102",h2,notify=True)
+    a.engine_append_history("2099-04-01#102",h2)
+    await a._ambo_finalize_confirmation(None,"2099-04-01#102",h2,notify=True)
     assert a.ambo_sim_sessions[0]["phase"] == "play"
+    assert a.ambo_sim_sessions[0]["partner"] == 72
+    assert a.ambo_sim_sessions[0]["confirmation_age"] == 2
     assert any("H3: AMBO 21-72" in msg for msg in sent)
-    await a._ambo_settle_current(None,"2099-04-01#103",draw_with(),notify=True)
+
+    # H3 miss; H4 ambo hit. 2 euro costo -> 14 lordo.
+    h3 = list(range(1,21))
+    await a._ambo_settle_current(None,"2099-04-01#103",h3,notify=True)
     assert any("H4" in msg for msg in sent)
-    await a._ambo_settle_current(None,"2099-04-01#104",draw_with(21,72),notify=True)
+    h4 = [21,72] + list(range(73,91))
+    await a._ambo_settle_current(None,"2099-04-01#104",h4,notify=True)
     assert a.ambo_sim_account == {"bets":2,"wins":1,"cost_cents":200,"gross_cents":1400}
     assert a._ambo_balance() == 1200 and not a.ambo_sim_sessions
     assert a.ambo_sim_records_live[0]["result"] == "hit"
 
-    print("SELF-TEST OK: ENGINE ONLY + MULTI-HIT H5 + PLAY SHADOW + AMBO H2 VIRTUALE")
+    # Test conferma H1: deve generare primo PLAY a H2.
+    b = EngineOnly(load=False)
+    b.tg = fake_tg
+    assert b._ambo_start_candidate({**ambo_p, "signal_from_key":"2099-04-02#100"})
+    b.engine_history = [{"key":f"X{i}", "nums":sorted(list(range(1,20))+[60])} for i in range(4)]
+    c1 = [21,60] + list(range(61,79))
+    await b._ambo_settle_current(None,"2099-04-02#101",c1,notify=True)
+    b.engine_append_history("2099-04-02#101",c1)
+    await b._ambo_finalize_confirmation(None,"2099-04-02#101",c1,notify=True)
+    assert b.ambo_sim_sessions[0]["phase"] == "play"
+    assert b.ambo_sim_sessions[0]["confirmation_age"] == 1
+    assert b.ambo_sim_sessions[0]["age"] == 1
+
+    print("SELF-TEST OK: ENGINE ONLY + MULTI-HIT H5 + PLAY SHADOW + AMBO HOT5 H1-H3")
 
 async def main():
     if "--self-test" in sys.argv:
