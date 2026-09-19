@@ -1,4 +1,4 @@
-name: 10eLotto ENGINE Only - Play Shadow
+name: 10eLotto ENGINE Only - Ambo H2 Virtuale
 
 on:
   workflow_dispatch:
@@ -31,6 +31,10 @@ jobs:
       ENGINE_NOTIFY_H5_RESULT: "1"
       ENGINE_NOTIFY_PLAY_CONFIRM: "1"
       ENGINE_NOTIFY_PLAY_RESULT: "1"
+      AMBO_SIM_ENABLED: "1"
+      AMBO_SIM_NOTIFY: "1"
+      AMBO_SIM_STAKE_CENTS: "100"
+      AMBO_SIM_PAYOUT_MULTIPLIER: "14"
 
     steps:
       - name: Checkout repo
