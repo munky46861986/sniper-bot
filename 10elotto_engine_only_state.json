@@ -1,6 +1,6 @@
 {
   "state_version": 1,
-  "saved_at": "2026-09-19 10:09:59",
+  "saved_at": "2026-09-19 10:16:08",
   "processed": [
     "2026-09-08#001",
     "2026-09-08#002",
@@ -3163,62 +3163,14 @@
     "2026-09-19#058",
     "2026-09-19#059",
     "2026-09-19#060",
-    "2026-09-19#061"
+    "2026-09-19#061",
+    "2026-09-19#062",
+    "2026-09-19#063"
   ],
-  "last_draw_key": "2026-09-19#061",
+  "last_draw_key": "2026-09-19#063",
   "engine_model_version": 1,
   "engine_bootstrap_done": true,
   "engine_history": [
-    {
-      "key": "2026-09-16#123",
-      "nums": [
-        1,
-        7,
-        8,
-        11,
-        13,
-        21,
-        27,
-        30,
-        31,
-        40,
-        50,
-        54,
-        56,
-        69,
-        70,
-        72,
-        75,
-        79,
-        85,
-        86
-      ]
-    },
-    {
-      "key": "2026-09-16#124",
-      "nums": [
-        3,
-        4,
-        8,
-        11,
-        12,
-        14,
-        20,
-        32,
-        39,
-        49,
-        50,
-        58,
-        63,
-        65,
-        67,
-        71,
-        77,
-        78,
-        81,
-        84
-      ]
-    },
     {
       "key": "2026-09-16#125",
       "nums": [
@@ -23168,24 +23120,72 @@
         86,
         89
       ]
+    },
+    {
+      "key": "2026-09-19#062",
+      "nums": [
+        21,
+        27,
+        30,
+        32,
+        33,
+        43,
+        44,
+        45,
+        48,
+        52,
+        53,
+        54,
+        58,
+        63,
+        73,
+        76,
+        79,
+        82,
+        83,
+        86
+      ]
+    },
+    {
+      "key": "2026-09-19#063",
+      "nums": [
+        3,
+        5,
+        8,
+        9,
+        17,
+        28,
+        29,
+        30,
+        32,
+        40,
+        45,
+        47,
+        50,
+        51,
+        53,
+        55,
+        61,
+        72,
+        75,
+        86
+      ]
     }
   ],
   "engine_pending": {
-    "signal_from_key": "2026-09-19#061",
-    "created_at": "2026-09-19 10:09:59",
+    "signal_from_key": "2026-09-19#063",
+    "created_at": "2026-09-19 10:16:08",
     "origin_mode": "live",
-    "top1": 59,
-    "score1": 2.01858381,
-    "score2": 1.08939012,
-    "margin": 0.92919369,
-    "confidence": 0.87111909,
-    "threshold": 0.54889318,
-    "support": 3,
-    "accepted": true
+    "top1": 53,
+    "score1": 1.73904821,
+    "score2": 1.18328263,
+    "margin": 0.55576558,
+    "confidence": 0.48629488,
+    "threshold": 0.55646797,
+    "support": 2,
+    "accepted": false
   },
   "engine_margin_history": [
-    0.07091632154830421,
-    0.23921796533101053,
     0.4223040804958629,
     0.46374223650180185,
     0.21580066726949765,
@@ -23483,31 +23483,11 @@
     0.15477975198210633,
     0.059858600589142455,
     0.07202441983467264,
-    0.8711190883469765
+    0.8711190883469765,
+    0.6162399608890491,
+    0.48629488356769657
   ],
   "engine_recent_events": [
-    {
-      "signal_from_key": "2026-09-13#267",
-      "result_key": "2026-09-13#268",
-      "top1": 86,
-      "top2": 19,
-      "top1_hit": false,
-      "top2_any_hit": true,
-      "confidence": 0.58378996,
-      "threshold": 0.4239465,
-      "origin_mode": "live"
-    },
-    {
-      "signal_from_key": "2026-09-14#003",
-      "result_key": "2026-09-14#004",
-      "top1": 48,
-      "top2": 73,
-      "top1_hit": false,
-      "top2_any_hit": true,
-      "confidence": 0.50387445,
-      "threshold": 0.4239465,
-      "origin_mode": "live"
-    },
     {
       "signal_from_key": "2026-09-14#008",
       "result_key": "2026-09-14#009",
@@ -26098,6 +26078,26 @@
       "threshold": 0.54163064,
       "support": 1,
       "origin_mode": "live"
+    },
+    {
+      "signal_from_key": "2026-09-19#061",
+      "result_key": "2026-09-19#062",
+      "top1": 59,
+      "top1_hit": false,
+      "confidence": 0.87111909,
+      "threshold": 0.54889318,
+      "support": 3,
+      "origin_mode": "live"
+    },
+    {
+      "signal_from_key": "2026-09-19#062",
+      "result_key": "2026-09-19#063",
+      "top1": 53,
+      "top1_hit": true,
+      "confidence": 0.61623996,
+      "threshold": 0.55475416,
+      "support": 3,
+      "origin_mode": "live"
     }
   ],
   "engine_stats_warmup": {
@@ -26110,30 +26110,16 @@
     "no_signal": 599
   },
   "engine_stats_live": {
-    "predictions": 1541,
-    "evaluated": 1540,
-    "all_top1_hits": 345,
-    "signals": 262,
-    "signals_evaluated": 261,
-    "signal_top1_hits": 62,
-    "no_signal": 1279
+    "predictions": 1543,
+    "evaluated": 1542,
+    "all_top1_hits": 346,
+    "signals": 263,
+    "signals_evaluated": 263,
+    "signal_top1_hits": 63,
+    "no_signal": 1280
   },
   "engine_multi_diag_version": 1,
   "engine_h5_sessions": [
-    {
-      "signal_from_key": "2026-09-19#057",
-      "created_at": "2026-09-19 09:45:52",
-      "origin_mode": "live",
-      "top1": 2,
-      "support": 1,
-      "confidence": 0.54788565,
-      "threshold": 0.54163064,
-      "confidence_ratio": 1.0115484788674436,
-      "age": 4,
-      "hit_ages": [
-        1
-      ]
-    },
     {
       "signal_from_key": "2026-09-19#061",
       "created_at": "2026-09-19 10:09:59",
@@ -26143,8 +26129,22 @@
       "confidence": 0.87111909,
       "threshold": 0.54889318,
       "confidence_ratio": 1.5870466636149496,
-      "age": 0,
+      "age": 2,
       "hit_ages": []
+    },
+    {
+      "signal_from_key": "2026-09-19#062",
+      "created_at": "2026-09-19 10:11:03",
+      "origin_mode": "live",
+      "top1": 53,
+      "support": 3,
+      "confidence": 0.61623996,
+      "threshold": 0.55475416,
+      "confidence_ratio": 1.110834319836376,
+      "age": 1,
+      "hit_ages": [
+        1
+      ]
     }
   ],
   "engine_h5_records_warmup": [],
@@ -29284,30 +29284,24 @@
         5
       ],
       "hits5": 2
-    }
-  ],
-  "engine_play_diag_version": 1,
-  "engine_play_sessions": [
+    },
     {
       "signal_from_key": "2026-09-19#057",
-      "created_at": "2026-09-19 09:45:52",
+      "completed_at": "2026-09-19#062",
       "origin_mode": "live",
       "top1": 2,
       "support": 1,
       "confidence": 0.54788565,
       "threshold": 0.54163064,
       "confidence_ratio": 1.0115484788674436,
-      "age": 4,
       "hit_ages": [
         1
       ],
-      "activation_age": 1,
-      "play_ages": [
-        2,
-        3,
-        4
-      ]
-    },
+      "hits5": 1
+    }
+  ],
+  "engine_play_diag_version": 1,
+  "engine_play_sessions": [
     {
       "signal_from_key": "2026-09-19#061",
       "created_at": "2026-09-19 10:09:59",
@@ -29317,9 +29311,25 @@
       "confidence": 0.87111909,
       "threshold": 0.54889318,
       "confidence_ratio": 1.5870466636149496,
-      "age": 0,
+      "age": 2,
       "hit_ages": [],
       "activation_age": null,
+      "play_ages": []
+    },
+    {
+      "signal_from_key": "2026-09-19#062",
+      "created_at": "2026-09-19 10:11:03",
+      "origin_mode": "live",
+      "top1": 53,
+      "support": 3,
+      "confidence": 0.61623996,
+      "threshold": 0.55475416,
+      "confidence_ratio": 1.110834319836376,
+      "age": 1,
+      "hit_ages": [
+        1
+      ],
+      "activation_age": 1,
       "play_ages": []
     }
   ],
@@ -33127,14 +33137,52 @@
       ],
       "bets": 2,
       "result": "hit"
+    },
+    {
+      "signal_from_key": "2026-09-19#057",
+      "completed_at": "2026-09-19#062",
+      "origin_mode": "live",
+      "top1": 2,
+      "support": 1,
+      "confidence": 0.54788565,
+      "threshold": 0.54163064,
+      "confidence_ratio": 1.0115484788674436,
+      "activation_age": 1,
+      "hit_age": null,
+      "play_ages": [
+        2,
+        3,
+        4,
+        5
+      ],
+      "bets": 4,
+      "result": "stop"
     }
   ],
   "ambo_sim_diag_version": 1,
-  "ambo_sim_draw_index": 2,
-  "ambo_sim_last_candidate_index": -100000,
+  "ambo_sim_draw_index": 4,
+  "ambo_sim_last_candidate_index": 3,
   "ambo_sim_skipped_overlap": 0,
   "ambo_sim_sessions": [],
-  "ambo_sim_records_live": [],
+  "ambo_sim_records_live": [
+    {
+      "signal_from_key": "2026-09-19#062",
+      "created_at": "2026-09-19 10:11:03",
+      "top1": 53,
+      "support": 3,
+      "age": 1,
+      "phase": "await_h1",
+      "partner": null,
+      "confirmation_draw_key": null,
+      "bets": 0,
+      "wins": 0,
+      "result": "no_play",
+      "completed_at": "2026-09-19#063",
+      "reason": "top1_gia_uscito_a_h1",
+      "stake_cents": 100,
+      "payout_multiplier": 14.0
+    }
+  ],
   "ambo_sim_bets_live": [],
   "ambo_sim_account": {
     "bets": 0,
