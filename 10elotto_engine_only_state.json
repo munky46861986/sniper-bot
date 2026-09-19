@@ -1,6 +1,6 @@
 {
   "state_version": 1,
-  "saved_at": "2026-09-19 06:25:59",
+  "saved_at": "2026-09-19 06:31:05",
   "processed": [
     "2026-09-08#001",
     "2026-09-08#002",
@@ -3119,37 +3119,13 @@
     "2026-09-19#014",
     "2026-09-19#015",
     "2026-09-19#016",
-    "2026-09-19#017"
+    "2026-09-19#017",
+    "2026-09-19#018"
   ],
-  "last_draw_key": "2026-09-19#017",
+  "last_draw_key": "2026-09-19#018",
   "engine_model_version": 1,
   "engine_bootstrap_done": true,
   "engine_history": [
-    {
-      "key": "2026-09-16#079",
-      "nums": [
-        5,
-        7,
-        17,
-        20,
-        25,
-        28,
-        30,
-        31,
-        36,
-        38,
-        42,
-        45,
-        46,
-        48,
-        61,
-        63,
-        68,
-        69,
-        82,
-        86
-      ]
-    },
     {
       "key": "2026-09-16#080",
       "nums": [
@@ -23124,23 +23100,47 @@
         88,
         90
       ]
+    },
+    {
+      "key": "2026-09-19#018",
+      "nums": [
+        1,
+        7,
+        10,
+        12,
+        13,
+        14,
+        17,
+        33,
+        37,
+        38,
+        41,
+        57,
+        60,
+        62,
+        63,
+        65,
+        67,
+        69,
+        82,
+        86
+      ]
     }
   ],
   "engine_pending": {
-    "signal_from_key": "2026-09-19#017",
-    "created_at": "2026-09-19 06:25:58",
+    "signal_from_key": "2026-09-19#018",
+    "created_at": "2026-09-19 06:31:05",
     "origin_mode": "live",
-    "top1": 56,
-    "score1": 2.37723135,
-    "score2": 1.25792124,
-    "margin": 1.11931011,
-    "confidence": 1.04935323,
+    "top1": 37,
+    "score1": 2.39165118,
+    "score2": 1.7223609,
+    "margin": 0.66929028,
+    "confidence": 0.62745964,
     "threshold": 0.4922316,
     "support": 3,
     "accepted": true
   },
   "engine_margin_history": [
-    0.27661029980498175,
     0.1426920831094497,
     0.013096950414733799,
     0.2633230198945241,
@@ -23439,20 +23439,10 @@
     0.7310231352180643,
     0.890335916834848,
     0.7056926332688447,
-    1.0493532304334046
+    1.0493532304334046,
+    0.627459635058855
   ],
   "engine_recent_events": [
-    {
-      "signal_from_key": "2026-09-13#164",
-      "result_key": "2026-09-13#165",
-      "top1": 53,
-      "top2": 72,
-      "top1_hit": false,
-      "top2_any_hit": false,
-      "confidence": 0.43881933,
-      "threshold": 0.42497426,
-      "origin_mode": "warmup"
-    },
     {
       "signal_from_key": "2026-09-13#166",
       "result_key": "2026-09-13#167",
@@ -26070,6 +26060,16 @@
       "threshold": 0.48544058,
       "support": 3,
       "origin_mode": "live"
+    },
+    {
+      "signal_from_key": "2026-09-19#017",
+      "result_key": "2026-09-19#018",
+      "top1": 56,
+      "top1_hit": false,
+      "confidence": 1.04935323,
+      "threshold": 0.4922316,
+      "support": 3,
+      "origin_mode": "live"
     }
   ],
   "engine_stats_warmup": {
@@ -26082,30 +26082,16 @@
     "no_signal": 599
   },
   "engine_stats_live": {
-    "predictions": 1497,
-    "evaluated": 1496,
+    "predictions": 1498,
+    "evaluated": 1497,
     "all_top1_hits": 333,
-    "signals": 246,
-    "signals_evaluated": 245,
+    "signals": 247,
+    "signals_evaluated": 246,
     "signal_top1_hits": 58,
     "no_signal": 1251
   },
   "engine_multi_diag_version": 1,
   "engine_h5_sessions": [
-    {
-      "signal_from_key": "2026-09-19#013",
-      "created_at": "2026-09-19 06:05:34",
-      "origin_mode": "live",
-      "top1": 37,
-      "support": 2,
-      "confidence": 0.49000297,
-      "threshold": 0.48033861,
-      "confidence_ratio": 1.0201198900084254,
-      "age": 4,
-      "hit_ages": [
-        1
-      ]
-    },
     {
       "signal_from_key": "2026-09-19#014",
       "created_at": "2026-09-19 06:10:40",
@@ -26115,8 +26101,10 @@
       "confidence": 0.73102314,
       "threshold": 0.48064891,
       "confidence_ratio": 1.5209087647780166,
-      "age": 3,
-      "hit_ages": []
+      "age": 4,
+      "hit_ages": [
+        4
+      ]
     },
     {
       "signal_from_key": "2026-09-19#015",
@@ -26127,8 +26115,10 @@
       "confidence": 0.89033592,
       "threshold": 0.48166454,
       "confidence_ratio": 1.8484564381675264,
-      "age": 2,
-      "hit_ages": []
+      "age": 3,
+      "hit_ages": [
+        3
+      ]
     },
     {
       "signal_from_key": "2026-09-19#016",
@@ -26139,7 +26129,7 @@
       "confidence": 0.70569263,
       "threshold": 0.48544058,
       "confidence_ratio": 1.453715777119416,
-      "age": 1,
+      "age": 2,
       "hit_ages": [
         1
       ]
@@ -26153,6 +26143,18 @@
       "confidence": 1.04935323,
       "threshold": 0.4922316,
       "confidence_ratio": 2.131828249141258,
+      "age": 1,
+      "hit_ages": []
+    },
+    {
+      "signal_from_key": "2026-09-19#018",
+      "created_at": "2026-09-19 06:31:05",
+      "origin_mode": "live",
+      "top1": 37,
+      "support": 3,
+      "confidence": 0.62745964,
+      "threshold": 0.4922316,
+      "confidence_ratio": 1.27472441834291,
       "age": 0,
       "hit_ages": []
     }
@@ -29023,30 +29025,25 @@
         2
       ],
       "hits5": 2
-    }
-  ],
-  "engine_play_diag_version": 1,
-  "engine_play_sessions": [
+    },
     {
       "signal_from_key": "2026-09-19#013",
-      "created_at": "2026-09-19 06:05:34",
+      "completed_at": "2026-09-19#018",
       "origin_mode": "live",
       "top1": 37,
       "support": 2,
       "confidence": 0.49000297,
       "threshold": 0.48033861,
       "confidence_ratio": 1.0201198900084254,
-      "age": 4,
       "hit_ages": [
-        1
+        1,
+        5
       ],
-      "activation_age": 1,
-      "play_ages": [
-        2,
-        3,
-        4
-      ]
-    },
+      "hits5": 2
+    }
+  ],
+  "engine_play_diag_version": 1,
+  "engine_play_sessions": [
     {
       "signal_from_key": "2026-09-19#015",
       "created_at": "2026-09-19 06:15:46",
@@ -29056,9 +29053,11 @@
       "confidence": 0.89033592,
       "threshold": 0.48166454,
       "confidence_ratio": 1.8484564381675264,
-      "age": 2,
-      "hit_ages": [],
-      "activation_age": null,
+      "age": 3,
+      "hit_ages": [
+        3
+      ],
+      "activation_age": 3,
       "play_ages": []
     },
     {
@@ -29070,12 +29069,14 @@
       "confidence": 0.70569263,
       "threshold": 0.48544058,
       "confidence_ratio": 1.453715777119416,
-      "age": 1,
+      "age": 2,
       "hit_ages": [
         1
       ],
       "activation_age": 1,
-      "play_ages": []
+      "play_ages": [
+        2
+      ]
     },
     {
       "signal_from_key": "2026-09-19#017",
@@ -29086,6 +29087,20 @@
       "confidence": 1.04935323,
       "threshold": 0.4922316,
       "confidence_ratio": 2.131828249141258,
+      "age": 1,
+      "hit_ages": [],
+      "activation_age": null,
+      "play_ages": []
+    },
+    {
+      "signal_from_key": "2026-09-19#018",
+      "created_at": "2026-09-19 06:31:05",
+      "origin_mode": "live",
+      "top1": 37,
+      "support": 3,
+      "confidence": 0.62745964,
+      "threshold": 0.4922316,
+      "confidence_ratio": 1.27472441834291,
       "age": 0,
       "hit_ages": [],
       "activation_age": null,
@@ -32578,6 +32593,26 @@
       "play_ages": [],
       "bets": 0,
       "result": "no_play"
+    },
+    {
+      "signal_from_key": "2026-09-19#013",
+      "completed_at": "2026-09-19#018",
+      "origin_mode": "live",
+      "top1": 37,
+      "support": 2,
+      "confidence": 0.49000297,
+      "threshold": 0.48033861,
+      "confidence_ratio": 1.0201198900084254,
+      "activation_age": 1,
+      "hit_age": 5,
+      "play_ages": [
+        2,
+        3,
+        4,
+        5
+      ],
+      "bets": 4,
+      "result": "hit"
     }
   ]
 }
