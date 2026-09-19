@@ -1,6 +1,6 @@
 {
   "state_version": 1,
-  "saved_at": "2026-09-19 06:55:33",
+  "saved_at": "2026-09-19 07:00:39",
   "processed": [
     "2026-09-08#001",
     "2026-09-08#002",
@@ -3125,37 +3125,13 @@
     "2026-09-19#020",
     "2026-09-19#021",
     "2026-09-19#022",
-    "2026-09-19#023"
+    "2026-09-19#023",
+    "2026-09-19#024"
   ],
-  "last_draw_key": "2026-09-19#023",
+  "last_draw_key": "2026-09-19#024",
   "engine_model_version": 1,
   "engine_bootstrap_done": true,
   "engine_history": [
-    {
-      "key": "2026-09-16#085",
-      "nums": [
-        1,
-        16,
-        18,
-        19,
-        22,
-        24,
-        29,
-        30,
-        32,
-        37,
-        39,
-        42,
-        43,
-        52,
-        56,
-        58,
-        65,
-        81,
-        84,
-        89
-      ]
-    },
     {
       "key": "2026-09-16#086",
       "nums": [
@@ -23130,23 +23106,47 @@
         87,
         88
       ]
+    },
+    {
+      "key": "2026-09-19#024",
+      "nums": [
+        1,
+        5,
+        9,
+        12,
+        15,
+        16,
+        17,
+        20,
+        21,
+        26,
+        30,
+        44,
+        50,
+        55,
+        59,
+        62,
+        81,
+        86,
+        87,
+        88
+      ]
     }
   ],
   "engine_pending": {
-    "signal_from_key": "2026-09-19#023",
-    "created_at": "2026-09-19 06:55:33",
+    "signal_from_key": "2026-09-19#024",
+    "created_at": "2026-09-19 07:00:39",
     "origin_mode": "live",
     "top1": 37,
-    "score1": 2.29968493,
-    "score2": 1.29493619,
-    "margin": 1.00474875,
-    "confidence": 0.94195195,
+    "score1": 1.99882859,
+    "score2": 1.63512706,
+    "margin": 0.36370153,
+    "confidence": 0.31823884,
     "threshold": 0.50894985,
-    "support": 3,
-    "accepted": true
+    "support": 2,
+    "accepted": false
   },
   "engine_margin_history": [
-    0.007901074005154468,
     0.0001407038581280745,
     0.4521724512990909,
     0.06152526272104322,
@@ -23445,20 +23445,10 @@
     0.6410975298367475,
     0.05479548491099771,
     0.5613102681251979,
-    0.9419519492973806
+    0.9419519492973806,
+    0.31823884014943626
   ],
   "engine_recent_events": [
-    {
-      "signal_from_key": "2026-09-13#179",
-      "result_key": "2026-09-13#180",
-      "top1": 36,
-      "top2": 79,
-      "top1_hit": false,
-      "top2_any_hit": false,
-      "confidence": 0.5307975,
-      "threshold": 0.43578496,
-      "origin_mode": "warmup"
-    },
     {
       "signal_from_key": "2026-09-13#188",
       "result_key": "2026-09-13#189",
@@ -26072,6 +26062,16 @@
       "threshold": 0.50598485,
       "support": 3,
       "origin_mode": "live"
+    },
+    {
+      "signal_from_key": "2026-09-19#023",
+      "result_key": "2026-09-19#024",
+      "top1": 37,
+      "top1_hit": false,
+      "confidence": 0.94195195,
+      "threshold": 0.50894985,
+      "support": 3,
+      "origin_mode": "live"
     }
   ],
   "engine_stats_warmup": {
@@ -26084,13 +26084,13 @@
     "no_signal": 599
   },
   "engine_stats_live": {
-    "predictions": 1503,
-    "evaluated": 1502,
+    "predictions": 1504,
+    "evaluated": 1503,
     "all_top1_hits": 333,
     "signals": 250,
-    "signals_evaluated": 249,
+    "signals_evaluated": 250,
     "signal_top1_hits": 58,
-    "no_signal": 1253
+    "no_signal": 1254
   },
   "engine_multi_diag_version": 1,
   "engine_h5_sessions": [
@@ -26103,7 +26103,7 @@
       "confidence": 0.64109753,
       "threshold": 0.50495165,
       "confidence_ratio": 1.2696216162478131,
-      "age": 3,
+      "age": 4,
       "hit_ages": [
         2
       ]
@@ -26117,7 +26117,7 @@
       "confidence": 0.56131027,
       "threshold": 0.50598485,
       "confidence_ratio": 1.1093420484822816,
-      "age": 1,
+      "age": 2,
       "hit_ages": []
     },
     {
@@ -26129,7 +26129,7 @@
       "confidence": 0.94195195,
       "threshold": 0.50894985,
       "confidence_ratio": 1.8507755724851866,
-      "age": 0,
+      "age": 1,
       "hit_ages": []
     }
   ],
@@ -29096,13 +29096,14 @@
       "confidence": 0.64109753,
       "threshold": 0.50495165,
       "confidence_ratio": 1.2696216162478131,
-      "age": 3,
+      "age": 4,
       "hit_ages": [
         2
       ],
       "activation_age": 2,
       "play_ages": [
-        3
+        3,
+        4
       ]
     },
     {
@@ -29114,7 +29115,7 @@
       "confidence": 0.56131027,
       "threshold": 0.50598485,
       "confidence_ratio": 1.1093420484822816,
-      "age": 1,
+      "age": 2,
       "hit_ages": [],
       "activation_age": null,
       "play_ages": []
@@ -29128,7 +29129,7 @@
       "confidence": 0.94195195,
       "threshold": 0.50894985,
       "confidence_ratio": 1.8507755724851866,
-      "age": 0,
+      "age": 1,
       "hit_ages": [],
       "activation_age": null,
       "play_ages": []
