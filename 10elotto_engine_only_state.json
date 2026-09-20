@@ -1,6 +1,6 @@
 {
   "state_version": 1,
-  "saved_at": "2026-09-20 12:10:51",
+  "saved_at": "2026-09-20 12:15:59",
   "processed": [
     "2026-09-08#001",
     "2026-09-08#002",
@@ -3475,37 +3475,13 @@
     "2026-09-20#143",
     "2026-09-20#144",
     "2026-09-20#145",
-    "2026-09-20#146"
+    "2026-09-20#146",
+    "2026-09-20#147"
   ],
-  "last_draw_key": "2026-09-20#146",
+  "last_draw_key": "2026-09-20#147",
   "engine_model_version": 1,
   "engine_bootstrap_done": true,
   "engine_history": [
-    {
-      "key": "2026-09-17#148",
-      "nums": [
-        2,
-        6,
-        18,
-        20,
-        23,
-        27,
-        35,
-        39,
-        44,
-        48,
-        50,
-        56,
-        61,
-        66,
-        76,
-        77,
-        79,
-        82,
-        84,
-        86
-      ]
-    },
     {
       "key": "2026-09-17#149",
       "nums": [
@@ -23480,23 +23456,47 @@
         85,
         89
       ]
+    },
+    {
+      "key": "2026-09-20#147",
+      "nums": [
+        4,
+        5,
+        7,
+        16,
+        17,
+        20,
+        22,
+        26,
+        29,
+        33,
+        36,
+        39,
+        43,
+        47,
+        67,
+        69,
+        75,
+        80,
+        85,
+        86
+      ]
     }
   ],
   "engine_pending": {
-    "signal_from_key": "2026-09-20#146",
-    "created_at": "2026-09-20 12:10:51",
+    "signal_from_key": "2026-09-20#147",
+    "created_at": "2026-09-20 12:15:59",
     "origin_mode": "live",
     "top1": 20,
-    "score1": 2.16523079,
-    "score2": 1.89755057,
-    "margin": 0.26768022,
-    "confidence": 0.2509502,
-    "threshold": 0.41070938,
+    "score1": 2.68176784,
+    "score2": 1.70448111,
+    "margin": 0.97728673,
+    "confidence": 0.91620631,
+    "threshold": 0.40593397,
     "support": 3,
-    "accepted": false
+    "accepted": true
   },
   "engine_margin_history": [
-    0.023171638354017615,
     0.1049994829564437,
     0.19431395873696716,
     0.10716985565559434,
@@ -23795,7 +23795,8 @@
     0.1808457123491432,
     0.061602862181220824,
     0.45592295279849054,
-    0.2509502047016089
+    0.2509502047016089,
+    0.9162063086707352
   ],
   "engine_recent_events": [
     {
@@ -26391,10 +26392,10 @@
     "no_signal": 599
   },
   "engine_stats_live": {
-    "predictions": 1853,
-    "evaluated": 1852,
-    "all_top1_hits": 401,
-    "signals": 292,
+    "predictions": 1854,
+    "evaluated": 1853,
+    "all_top1_hits": 402,
+    "signals": 293,
     "signals_evaluated": 292,
     "signal_top1_hits": 71,
     "no_signal": 1561
@@ -26410,7 +26411,21 @@
       "confidence": 0.45592295,
       "threshold": 0.40593397,
       "confidence_ratio": 1.1231455943438289,
-      "age": 1,
+      "age": 2,
+      "hit_ages": [
+        2
+      ]
+    },
+    {
+      "signal_from_key": "2026-09-20#147",
+      "created_at": "2026-09-20 12:15:59",
+      "origin_mode": "live",
+      "top1": 20,
+      "support": 3,
+      "confidence": 0.91620631,
+      "threshold": 0.40593397,
+      "confidence_ratio": 2.2570328617730615,
+      "age": 0,
       "hit_ages": []
     }
   ],
@@ -29987,7 +30002,23 @@
       "confidence": 0.45592295,
       "threshold": 0.40593397,
       "confidence_ratio": 1.1231455943438289,
-      "age": 1,
+      "age": 2,
+      "hit_ages": [
+        2
+      ],
+      "activation_age": 2,
+      "play_ages": []
+    },
+    {
+      "signal_from_key": "2026-09-20#147",
+      "created_at": "2026-09-20 12:15:59",
+      "origin_mode": "live",
+      "top1": 20,
+      "support": 3,
+      "confidence": 0.91620631,
+      "threshold": 0.40593397,
+      "confidence_ratio": 2.2570328617730615,
+      "age": 0,
       "hit_ages": [],
       "activation_age": null,
       "play_ages": []
@@ -34440,8 +34471,8 @@
       "gross_cents": 0
     }
   },
-  "ambo_sim_draw_index": 244,
-  "ambo_sim_last_candidate_index": 243,
+  "ambo_sim_draw_index": 245,
+  "ambo_sim_last_candidate_index": 245,
   "ambo_sim_skipped_overlap": 0,
   "ambo_sim_sessions": [
     {
@@ -34449,8 +34480,29 @@
       "created_at": "2026-09-20 12:05:43",
       "top1": 20,
       "support": 2,
-      "age": 1,
-      "phase": "await_h2",
+      "age": 2,
+      "phase": "play",
+      "partners": [
+        36,
+        80
+      ],
+      "confirmation_age": 2,
+      "confirmation_draw_key": "2026-09-20#147",
+      "partner_hot5_counts": [
+        4,
+        4
+      ],
+      "bets": 0,
+      "wins": 0,
+      "strategy": "two_hot5_confirm_h1_h3_nolock"
+    },
+    {
+      "signal_from_key": "2026-09-20#147",
+      "created_at": "2026-09-20 12:15:59",
+      "top1": 20,
+      "support": 3,
+      "age": 0,
+      "phase": "await_h1",
       "partners": [],
       "confirmation_age": null,
       "confirmation_draw_key": null,
