@@ -1,6 +1,6 @@
 {
   "state_version": 1,
-  "saved_at": "2026-09-20 12:35:28",
+  "saved_at": "2026-09-20 12:40:36",
   "processed": [
     "2026-09-08#001",
     "2026-09-08#002",
@@ -3480,37 +3480,13 @@
     "2026-09-20#148",
     "2026-09-20#149",
     "2026-09-20#150",
-    "2026-09-20#151"
+    "2026-09-20#151",
+    "2026-09-20#152"
   ],
-  "last_draw_key": "2026-09-20#151",
+  "last_draw_key": "2026-09-20#152",
   "engine_model_version": 1,
   "engine_bootstrap_done": true,
   "engine_history": [
-    {
-      "key": "2026-09-17#153",
-      "nums": [
-        8,
-        9,
-        11,
-        18,
-        26,
-        30,
-        31,
-        33,
-        37,
-        41,
-        43,
-        44,
-        47,
-        49,
-        51,
-        55,
-        61,
-        69,
-        79,
-        84
-      ]
-    },
     {
       "key": "2026-09-17#154",
       "nums": [
@@ -23485,23 +23461,47 @@
         78,
         86
       ]
+    },
+    {
+      "key": "2026-09-20#152",
+      "nums": [
+        1,
+        3,
+        9,
+        14,
+        15,
+        19,
+        20,
+        29,
+        31,
+        33,
+        36,
+        39,
+        44,
+        73,
+        77,
+        78,
+        81,
+        82,
+        86,
+        90
+      ]
     }
   ],
   "engine_pending": {
-    "signal_from_key": "2026-09-20#151",
-    "created_at": "2026-09-20 12:35:27",
+    "signal_from_key": "2026-09-20#152",
+    "created_at": "2026-09-20 12:40:36",
     "origin_mode": "live",
-    "top1": 20,
-    "score1": 2.3026325,
-    "score2": 1.59220358,
-    "margin": 0.71042892,
-    "confidence": 0.66602711,
-    "threshold": 0.41070938,
+    "top1": 36,
+    "score1": 2.1300809,
+    "score2": 2.123629,
+    "margin": 0.0064519,
+    "confidence": 0.00604866,
+    "threshold": 0.418108,
     "support": 3,
-    "accepted": true
+    "accepted": false
   },
   "engine_margin_history": [
-    0.195308172295379,
     0.22496466223511374,
     0.7242783735345825,
     0.08580307239947348,
@@ -23800,20 +23800,10 @@
     0.0857689801534687,
     0.23092500221202086,
     0.18305064067454635,
-    0.6660271135169592
+    0.6660271135169592,
+    0.006048659480608343
   ],
   "engine_recent_events": [
-    {
-      "signal_from_key": "2026-09-14#176",
-      "result_key": "2026-09-14#177",
-      "top1": 19,
-      "top2": 73,
-      "top1_hit": true,
-      "top2_any_hit": true,
-      "confidence": 0.51360633,
-      "threshold": 0.42833709,
-      "origin_mode": "live"
-    },
     {
       "signal_from_key": "2026-09-14#177",
       "result_key": "2026-09-14#178",
@@ -26383,6 +26373,16 @@
       "threshold": 0.40593397,
       "support": 3,
       "origin_mode": "live"
+    },
+    {
+      "signal_from_key": "2026-09-20#151",
+      "result_key": "2026-09-20#152",
+      "top1": 20,
+      "top1_hit": true,
+      "confidence": 0.66602711,
+      "threshold": 0.41070938,
+      "support": 3,
+      "origin_mode": "live"
     }
   ],
   "engine_stats_warmup": {
@@ -26395,30 +26395,16 @@
     "no_signal": 599
   },
   "engine_stats_live": {
-    "predictions": 1858,
-    "evaluated": 1857,
-    "all_top1_hits": 403,
+    "predictions": 1859,
+    "evaluated": 1858,
+    "all_top1_hits": 404,
     "signals": 294,
-    "signals_evaluated": 293,
-    "signal_top1_hits": 71,
-    "no_signal": 1564
+    "signals_evaluated": 294,
+    "signal_top1_hits": 72,
+    "no_signal": 1565
   },
   "engine_multi_diag_version": 1,
   "engine_h5_sessions": [
-    {
-      "signal_from_key": "2026-09-20#147",
-      "created_at": "2026-09-20 12:15:59",
-      "origin_mode": "live",
-      "top1": 20,
-      "support": 3,
-      "confidence": 0.91620631,
-      "threshold": 0.40593397,
-      "confidence_ratio": 2.2570328617730615,
-      "age": 4,
-      "hit_ages": [
-        4
-      ]
-    },
     {
       "signal_from_key": "2026-09-20#151",
       "created_at": "2026-09-20 12:35:27",
@@ -26428,8 +26414,10 @@
       "confidence": 0.66602711,
       "threshold": 0.41070938,
       "confidence_ratio": 1.6216505939065722,
-      "age": 0,
-      "hit_ages": []
+      "age": 1,
+      "hit_ages": [
+        1
+      ]
     }
   ],
   "engine_h5_records_warmup": [],
@@ -30006,6 +29994,21 @@
         2
       ],
       "hits5": 1
+    },
+    {
+      "signal_from_key": "2026-09-20#147",
+      "completed_at": "2026-09-20#152",
+      "origin_mode": "live",
+      "top1": 20,
+      "support": 3,
+      "confidence": 0.91620631,
+      "threshold": 0.40593397,
+      "confidence_ratio": 2.2570328617730615,
+      "hit_ages": [
+        4,
+        5
+      ],
+      "hits5": 2
     }
   ],
   "engine_play_diag_version": 1,
@@ -30019,9 +30022,11 @@
       "confidence": 0.66602711,
       "threshold": 0.41070938,
       "confidence_ratio": 1.6216505939065722,
-      "age": 0,
-      "hit_ages": [],
-      "activation_age": null,
+      "age": 1,
+      "hit_ages": [
+        1
+      ],
+      "activation_age": 1,
       "play_ages": []
     }
   ],
@@ -34506,7 +34511,7 @@
       "gross_cents": 0
     }
   },
-  "ambo_sim_draw_index": 249,
+  "ambo_sim_draw_index": 250,
   "ambo_sim_last_candidate_index": 249,
   "ambo_sim_skipped_overlap": 0,
   "ambo_sim_sessions": [
@@ -34515,12 +34520,18 @@
       "created_at": "2026-09-20 12:35:27",
       "top1": 20,
       "support": 3,
-      "age": 0,
-      "phase": "await_h1",
-      "partners": [],
-      "confirmation_age": null,
-      "confirmation_draw_key": null,
-      "partner_hot5_counts": [],
+      "age": 1,
+      "phase": "play",
+      "partners": [
+        33,
+        36
+      ],
+      "confirmation_age": 1,
+      "confirmation_draw_key": "2026-09-20#152",
+      "partner_hot5_counts": [
+        3,
+        3
+      ],
       "bets": 0,
       "wins": 0,
       "strategy": "two_hot5_confirm_h1_h3_nolock"
