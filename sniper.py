@@ -176,6 +176,8 @@ SOSIA_PRED_ENABLED = os.getenv("SOSIA_PRED_ENABLED", "1") != "0"
 SOSIA_PRED_VERSION = 1
 SOSIA_PRED_RECORD_MAX = max(100, int(os.getenv("SOSIA_PRED_RECORD_MAX", "600")))
 SOSIA_PRED_NAMES = ("hot5", "hot20", "hot100", "repeat", "transition", "engine4")
+SOSIA_PRETRAIN_FILE = os.path.join(BASE_DIR, "sosia_backtest_training.json")
+SOSIA_PRETRAIN_STRENGTH = 60.0  # peso massimo del passato rispetto ai risultati live
 
 PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
@@ -985,6 +987,9 @@ class EngineOnly:
         }
         self.sosiap_totals = {"evaluated": 0, "hits": 0, "baseline_hits": 0,
                                "baseline_n": 0, "skipped": 0, "zero": 0}
+        # Pre-training separato: non modifica i contatori prospettici, le sessioni
+        # attive o i risultati degli altri moduli.
+        self.sosiap_pretrain = None
 
         self.state_load_info = {
             "loaded": False,
@@ -996,6 +1001,7 @@ class EngineOnly:
         self.last_git_status = _git_status(True, "not-run", "nessun push ancora eseguito")
         if load:
             self.load_state()
+            self._sosiap_load_pretrain()
 
     @staticmethod
     def _new_engine_stats():
@@ -1952,15 +1958,73 @@ class EngineOnly:
                              key=lambda n: (-score[n], self._sosiap_tie(from_key, name, n)))
                 for name, score in raw.items()}
 
+    @staticmethod
+    def _sosiap_valid_pretrain(raw):
+        if not isinstance(raw, dict) or raw.get("schema") != "sosiap-pretrain-v1":
+            return None
+        experts = raw.get("experts", {})
+        if not isinstance(experts, dict):
+            return None
+        parsed = {}
+        for name in SOSIA_PRED_NAMES:
+            item = experts.get(name)
+            if not isinstance(item, dict):
+                return None
+            try:
+                n = int(item["n"])
+                ema = float(item["ema_hits"])
+                hits = int(item["hits"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return None
+            if n < 1 or not (0 <= hits <= 20 * n) or not math.isfinite(ema) or not 0 <= ema <= 20:
+                return None
+            parsed[name] = {"n": n, "hits": hits, "ema_hits": ema}
+        try:
+            train_draws = int(raw.get("training_draws", 0))
+        except (TypeError, ValueError):
+            return None
+        if train_draws < ENGINE_MIN_HISTORY:
+            return None
+        return {"schema": "sosiap-pretrain-v1", "experts": parsed,
+                "training_draws": train_draws,
+                "source_sha256": str(raw.get("source_sha256", ""))[:64],
+                "test": raw.get("test", {}) if isinstance(raw.get("test"), dict) else {}}
+
+    def _sosiap_load_pretrain(self):
+        # Priorita' allo state persistito. Un nuovo file esplicito nel repository
+        # puo' sostituire soltanto questo pretrain: mai i risultati LIVE.
+        if not os.path.isfile(SOSIA_PRETRAIN_FILE):
+            return
+        try:
+            with open(SOSIA_PRETRAIN_FILE, encoding="utf-8") as f:
+                candidate = self._sosiap_valid_pretrain(json.load(f))
+            if candidate:
+                self.sosiap_pretrain = candidate
+                console_log(f"SOSIA BACKTEST PRETRAIN CARICATO | draw train={candidate['training_draws']}")
+            else:
+                console_log("SOSIA BACKTEST PRETRAIN NON VALIDO: nessun peso importato")
+        except (OSError, ValueError) as exc:
+            console_log(f"SOSIA BACKTEST PRETRAIN NON CARICATO: {exc}")
+
     def _sosiap_weights(self):
-        # Media mobile aggiornata dai colpi REALI, mai dal colpo da prevedere.
-        # Regolarizzazione: i primi segnali non consentono pesi estremi.
+        # Prior offline + adattamento online: il passato non e' aggiunto alle
+        # metriche forward, e perde influenza man mano che arrivano esiti LIVE.
         baseline = 400.0 / 90.0
         weights = {}
+        prior = self.sosiap_pretrain or {}
+        prior_experts = prior.get("experts", {})
         for name in SOSIA_PRED_NAMES:
             st = self.sosiap_learning[name]
-            shrink = min(1.0, st["n"] / 60.0)
-            advantage = max(-3.0, min(3.0, st["ema_hits"] - baseline))
+            old = prior_experts.get(name)
+            if old:
+                effective_prior = min(SOSIA_PRETRAIN_STRENGTH, float(old["n"]))
+                n_live = max(0, st["n"])
+                ema = (effective_prior * old["ema_hits"] + n_live * st["ema_hits"]) / (effective_prior + n_live)
+                shrink = min(1.0, (effective_prior + n_live) / 60.0)
+            else:
+                ema = st["ema_hits"]
+                shrink = min(1.0, st["n"] / 60.0)
+            advantage = max(-3.0, min(3.0, ema - baseline))
             weights[name] = math.exp(0.5 * shrink * advantage)
         total = sum(weights.values())
         return {name: value / total for name, value in weights.items()}
@@ -2064,6 +2128,16 @@ class EngineOnly:
                       "• reali: " + " ".join(f"{n:02d}" for n in last["real"]),
                       f"• centrati {last['hits']}/20: " + (
                           " ".join(f"{n:02d}" for n in last["common"]) or "nessuno")]
+        if self.sosiap_pretrain:
+            prior = self.sosiap_pretrain
+            lines += ["", f"🎓 BACKTEST PRETRAIN: {prior['training_draws']} draw storici; "
+                      "pesi separati dai risultati LIVE."]
+            test = prior.get("test", {})
+            if int(test.get("n", 0) or 0):
+                lines.append(f"• verifica successiva fuori train: "
+                             f"{int(test['hits']) / int(test['n']):.3f}/20 "
+                             f"su {int(test['n'])} draw "
+                             f"| casuale {int(test.get('random_hits',0))/int(test['n']):.3f}/20")
         if pending:
             lines += ["", "⚙️ PESI APPRESI DAI RISULTATI PRECEDENTI:"]
             for name in SOSIA_PRED_NAMES:
@@ -2284,6 +2358,10 @@ class EngineOnly:
                 self._sosia_valid20(pending.get("simulation_next"))):
                 self.sosia_pending = pending
 
+            prior = self._sosiap_valid_pretrain(d.get("sosiap_pretrain"))
+            if prior:
+                self.sosiap_pretrain = prior
+
             if d.get("sosiap_version") == SOSIA_PRED_VERSION:
                 raw = d.get("sosiap_learning", {})
                 if isinstance(raw, dict):
@@ -2384,6 +2462,7 @@ class EngineOnly:
             "sosiap_records": self.sosiap_records[-SOSIA_PRED_RECORD_MAX:],
             "sosiap_learning": self.sosiap_learning,
             "sosiap_totals": self.sosiap_totals,
+            "sosiap_pretrain": self.sosiap_pretrain,
         }
         atomic_write_json(STATE_FILE, data)
         if git:
