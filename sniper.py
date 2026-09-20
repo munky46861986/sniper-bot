@@ -56,11 +56,14 @@
 # ============================================================
 
 import asyncio
+import hashlib
+from collections import Counter
 import atexit
 import json
 import math
 import os
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -160,6 +163,19 @@ AMBO_SIM_NOTIFY = os.getenv("AMBO_SIM_NOTIFY", "1") != "0"
 AMBO_SIM_RECORD_MAX = max(100, int(os.getenv("AMBO_SIM_RECORD_MAX", "5000")))
 AMBO_SIM_BET_LOG_MAX = max(100, int(os.getenv("AMBO_SIM_BET_LOG_MAX", "15000")))
 AMBO_SIM_DIAG_VERSION = 3
+
+# SOSIA 20/90: campione uniforme indipendente, generato PRIMA del draw reale successivo.
+# NON altera ENGINE, HIGH CONFIDENCE, MULTI-HIT, PLAY o AMBO.
+SOSIA_ENABLED = os.getenv("SOSIA_ENABLED", "1") != "0"
+SOSIA_RECORD_MAX = max(100, int(os.getenv("SOSIA_RECORD_MAX", "600")))
+SOSIA_VERSION = 1
+SOSIA_RANDOM = secrets.SystemRandom()
+# SOSIA ADATTIVO: emette 20 numeri PRIMA del draw successivo, poi apprende
+# soltanto dal risultato successivo. Il vecchio SOSIA uniforme resta un controllo.
+SOSIA_PRED_ENABLED = os.getenv("SOSIA_PRED_ENABLED", "1") != "0"
+SOSIA_PRED_VERSION = 1
+SOSIA_PRED_RECORD_MAX = max(100, int(os.getenv("SOSIA_PRED_RECORD_MAX", "600")))
+SOSIA_PRED_NAMES = ("hot5", "hot20", "hot100", "repeat", "transition", "engine4")
 
 PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
@@ -955,6 +971,20 @@ class EngineOnly:
         self.ambo_sim_records_live = []
         self.ambo_sim_bets_live = []
         self.ambo_sim_account = {"bets": 0, "wins": 0, "cost_cents": 0, "gross_cents": 0}
+
+        # Registro indipendente e prospettico del generatore-sosia casuale 20/90.
+        self.sosia_pending = None
+        self.sosia_records = []
+        self.sosia_totals = self._new_sosia_totals()
+        # Un registro IN PIU': non azzerare o sostituire gli altri moduli.
+        self.sosiap_pending = None
+        self.sosiap_records = []
+        self.sosiap_learning = {
+            name: {"n": 0, "hits": 0, "ema_hits": 20.0 / 90.0 * 20.0}
+            for name in SOSIA_PRED_NAMES
+        }
+        self.sosiap_totals = {"evaluated": 0, "hits": 0, "baseline_hits": 0,
+                               "baseline_n": 0, "skipped": 0, "zero": 0}
 
         self.state_load_info = {
             "loaded": False,
@@ -1889,6 +1919,305 @@ class EngineOnly:
         parts.append('⚠️ Solo simulazione. ENGINE / MULTI-HIT / PLAY e relativo storico restano invariati.')
         return '\n'.join(parts)
 
+    @staticmethod
+    def _sosiap_tie(key, name, n):
+        # Pareggi pseudo-casuali RIPRODUCIBILI solo da info note al segnale.
+        seed = f"{key}|{name}|{n}".encode("utf-8")
+        return int.from_bytes(hashlib.blake2s(seed, digest_size=8).digest(), "big")
+
+    def _sosiap_experts(self, from_key):
+        # Ogni mappa e' ricavata ESCLUSIVAMENTE dai draw originali gia' noti.
+        hist = self.engine_history
+        if len(hist) < ENGINE_MIN_HISTORY:
+            return {}
+        rows = [set(row["nums"]) for row in hist]
+        last = rows[-1]
+        raw = {}
+        for window in (5, 20, 100):
+            cnt = Counter(n for row in rows[-window:] for n in row)
+            raw[f"hot{window}"] = {n: cnt[n] for n in range(1, 91)}
+        raw["repeat"] = {n: int(n in last) for n in range(1, 91)}
+        raw["transition"] = self._engine_transition_scores()
+        # Stessi mini-engine dell'ENGINE, ma usa la classifica di TUTTI i 90.
+        comp_raw = {"freq": self._engine_frequency_scores(),
+                    "transition": raw["transition"],
+                    "neighbor": self._engine_neighbor_scores(),
+                    "gap": self._engine_gap_hazard_scores()}
+        comp = {name: self._engine_standardize(vals) for name, vals in comp_raw.items()}
+        weights = {"freq": .35, "transition": .30, "neighbor": .20, "gap": .15}
+        raw["engine4"] = {n: sum(weights[k] * comp[k][n] for k in weights)
+                          for n in range(1, 91)}
+        # I pareggi non devono favorire sistematicamente i numeri 1-20.
+        return {name: sorted(range(1, 91),
+                             key=lambda n: (-score[n], self._sosiap_tie(from_key, name, n)))
+                for name, score in raw.items()}
+
+    def _sosiap_weights(self):
+        # Media mobile aggiornata dai colpi REALI, mai dal colpo da prevedere.
+        # Regolarizzazione: i primi segnali non consentono pesi estremi.
+        baseline = 400.0 / 90.0
+        weights = {}
+        for name in SOSIA_PRED_NAMES:
+            st = self.sosiap_learning[name]
+            shrink = min(1.0, st["n"] / 60.0)
+            advantage = max(-3.0, min(3.0, st["ema_hits"] - baseline))
+            weights[name] = math.exp(0.5 * shrink * advantage)
+        total = sum(weights.values())
+        return {name: value / total for name, value in weights.items()}
+
+    def _sosiap_arm(self, current_key):
+        if not SOSIA_PRED_ENABLED or len(self.engine_history) < ENGINE_MIN_HISTORY:
+            return
+        if self.sosiap_pending and self.sosiap_pending.get("from_key") == current_key:
+            return
+        experts = self._sosiap_experts(current_key)
+        if any(len(experts.get(name, [])) != 90 for name in SOSIA_PRED_NAMES):
+            return
+        weights = self._sosiap_weights()
+        total = {n: 0.0 for n in range(1, 91)}
+        selections = {}
+        for name in SOSIA_PRED_NAMES:
+            ranking = experts[name]
+            selections[name] = sorted(ranking[:20])
+            for position, n in enumerate(ranking):
+                total[n] += weights[name] * (89 - position) / 89.0
+        ranking = sorted(range(1, 91),
+                         key=lambda n: (-total[n], self._sosiap_tie(current_key, "ensemble", n)))
+        self.sosiap_pending = {"from_key": str(current_key), "prediction": sorted(ranking[:20]),
+                               "experts": selections, "weights": weights,
+                               "previous": list(self.engine_history[-1]["nums"])}
+
+    def _sosiap_settle(self, day, e, nums):
+        p = self.sosiap_pending
+        if not SOSIA_PRED_ENABLED or not p:
+            return
+        self.sosiap_pending = None
+        if not sim_draw_is_consecutive(p.get("from_key"), day, e):
+            self.sosiap_totals["skipped"] += 1
+            return
+        if not self._sosia_valid20(p.get("prediction")) or not all(
+                self._sosia_valid20(p.get("experts", {}).get(name))
+                for name in SOSIA_PRED_NAMES):
+            self.sosiap_totals["skipped"] += 1
+            return
+        actual = set(nums)
+        hits = len(actual.intersection(p["prediction"]))
+        expert_hits = {name: len(actual.intersection(p["experts"][name]))
+                       for name in SOSIA_PRED_NAMES}
+        # Il sosia casuale era a sua volta congelato prima del draw; non creare
+        # un nuovo random dopo aver visto l'estrazione da confrontare.
+        baseline_hits = None
+        if self.sosia_records and self.sosia_records[-1].get("key") == draw_key(day, e):
+            br = self.sosia_records[-1]
+            if br.get("source_key") == p["from_key"]:
+                baseline_hits = int(br["overlap"])
+        rec = {"key": draw_key(day, e), "source_key": p["from_key"],
+               "prediction": p["prediction"], "real": sorted(nums), "hits": hits,
+               "common": sorted(actual.intersection(p["prediction"])),
+               "previous_repeated": len(actual.intersection(p["previous"])),
+               "baseline_hits": baseline_hits, "expert_hits": expert_hits,
+               "weights_before": p["weights"]}
+        self.sosiap_records.append(rec)
+        self.sosiap_records = self.sosiap_records[-SOSIA_PRED_RECORD_MAX:]
+        t = self.sosiap_totals
+        t["evaluated"] += 1
+        t["hits"] += hits
+        t["zero"] += int(hits == 0)
+        if baseline_hits is not None:
+            t["baseline_n"] += 1
+            t["baseline_hits"] += baseline_hits
+        for name, count in expert_hits.items():
+            st = self.sosiap_learning[name]
+            st["n"] += 1
+            st["hits"] += count
+            # Il modello puo' cambiare preferenza se cambia il comportamento
+            # osservato, senza riottimizzare le vecchie predizioni.
+            st["ema_hits"] = 0.96 * st["ema_hits"] + 0.04 * count
+
+    def sosiap_text(self):
+        pending = self.sosiap_pending
+        t = self.sosiap_totals
+        count = int(t["evaluated"])
+        rows = self.sosiap_records
+        lines = ["🧠 SOSIA ADATTIVO — PREVISIONE DI 20 NUMERI PER LA PROSSIMA ESTRAZIONE",
+                 "Legge le estrazioni reali precedenti, emette la previsione, poi aggiorna i criteri dopo l'esito.",
+                 "Non modifica ENGINE TOP1 / AMBO. Nessuna puntata automatica.", ""]
+        if pending:
+            lines += [f"🎯 PREVISIONE CONGELATA DOPO {pending['from_key']}:",
+                      " ".join(f"{n:02d}" for n in pending["prediction"]),
+                      "Valida soltanto per l'estrazione immediatamente successiva."]
+        else:
+            lines += ["🎯 In attesa di un nuovo draw originale per generare la prossima previsione."]
+        lines += ["", f"📊 CONFRONTI PROSPETTICI: {count} | salti: {t['skipped']}",
+                  f"• numeri indovinati: {t['hits']}/{count * 20} | media {t['hits']/count:.3f}/20" if count
+                  else "• primi risultati: in attesa della prossima estrazione",
+                  "• riferimento casuale teorico: 4,444 su 20"]
+        if t["baseline_n"]:
+            lines.append(f"• controllo SOSIA casuale sugli stessi {t['baseline_n']} draw: "
+                         f"{t['baseline_hits']/t['baseline_n']:.3f}/20")
+        if rows:
+            last = rows[-1]
+            tail = rows[-min(100, len(rows)):]
+            lines += [f"• ultimi {len(tail)} draw: {sum(x['hits'] for x in tail)/len(tail):.3f}/20", "",
+                      f"🧾 ULTIMO CONFRONTO {last['key']}",
+                      "• previsti: " + " ".join(f"{n:02d}" for n in last["prediction"]),
+                      "• reali: " + " ".join(f"{n:02d}" for n in last["real"]),
+                      f"• centrati {last['hits']}/20: " + (
+                          " ".join(f"{n:02d}" for n in last["common"]) or "nessuno")]
+        if pending:
+            lines += ["", "⚙️ PESI APPRESI DAI RISULTATI PRECEDENTI:"]
+            for name in SOSIA_PRED_NAMES:
+                st = self.sosiap_learning[name]
+                lines.append(f"• {name}: peso {pending['weights'][name]*100:.1f}% "
+                             f"| media storica {st['hits']/st['n']:.2f}/20" if st["n"]
+                             else f"• {name}: peso {pending['weights'][name]*100:.1f}% | nessun esito ancora")
+        lines += ["", "⚠️ L'apprendimento e' verificabile, ma non garantisce un vantaggio: "
+                  "i draw indipendenti non sono prevedibili dallo storico.",
+                  "Controllo uniforme separato: /sosiarandom"]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _new_sosia_totals():
+        return {
+            "evaluated": 0, "skipped_gaps": 0, "overlap_sum": 0,
+            "sim_repeat_count": 0,
+            "real_repeat_sum": 0, "sim_repeat_sum": 0,
+            "real_dense4_sum": 0, "sim_dense4_sum": 0,
+            "real_any_dense4": 0, "sim_any_dense4": 0,
+        }
+
+    @staticmethod
+    def _sosia_sample():
+        # secrets.SystemRandom usa il generatore casuale del sistema operativo.
+        # L'estrazione e' uniforme senza reinserimento; nessuna quota di numeri
+        # frequenti, ritardatari, ripetuti o di una particolare decina e' forzata.
+        return sorted(SOSIA_RANDOM.sample(range(1, 91), 20))
+
+    @staticmethod
+    def _sosia_dense4_count(nums):
+        # Decine convenzionali 10-19,...,80-89: include esattamente 50-59.
+        # 1-9 e 90 sono esclusi da QUESTO specifico diagnostico, non dal gioco.
+        return sum(sum(10*d <= int(n) <= 10*d+9 for n in nums) >= 4 for d in range(1, 9))
+
+    @staticmethod
+    def _sosia_valid20(nums):
+        return (isinstance(nums, list) and len(nums) == 20 and
+                all(type(n) is int and 1 <= n <= 90 for n in nums) and
+                len(set(nums)) == 20)
+
+    def _sosia_arm(self, current_key, current_nums):
+        if not SOSIA_ENABLED:
+            self.sosia_pending = None
+            return
+        self.sosia_pending = {
+            "from_key": str(current_key),
+            "real_previous": sorted(current_nums),
+            "simulation_previous": (
+                list(self.sosia_records[-1]["simulation"])
+                if self.sosia_records and self.sosia_records[-1].get("key") == current_key
+                else None
+            ),
+            "simulation_next": self._sosia_sample(),
+        }
+
+    def _sosia_settle(self, day, e, nums):
+        if not SOSIA_ENABLED:
+            return
+        pending = self.sosia_pending
+        if pending is None:
+            return
+        self.sosia_pending = None
+        if not sim_draw_is_consecutive(pending.get("from_key"), day, e):
+            self.sosia_totals["skipped_gaps"] += 1
+            return
+        simulated = pending.get("simulation_next")
+        before_real = pending.get("real_previous")
+        before_sim = pending.get("simulation_previous")
+        if not self._sosia_valid20(simulated) or not self._sosia_valid20(before_real):
+            self.sosia_totals["skipped_gaps"] += 1
+            return
+        real_set, sim_set = set(nums), set(simulated)
+        n_overlap = len(real_set & sim_set)
+        real_rep = len(real_set & set(before_real))
+        sim_rep = len(sim_set & set(before_sim)) if self._sosia_valid20(before_sim) else None
+        real_dense = self._sosia_dense4_count(nums)
+        sim_dense = self._sosia_dense4_count(simulated)
+        rec = {
+            "key": draw_key(day, e), "source_key": pending.get("from_key"),
+            "real": sorted(nums), "simulation": list(simulated),
+            "overlap": n_overlap, "real_repeat": real_rep,
+            "simulation_repeat": sim_rep, "real_dense4": real_dense,
+            "simulation_dense4": sim_dense,
+        }
+        self.sosia_records.append(rec)
+        self.sosia_records = self.sosia_records[-SOSIA_RECORD_MAX:]
+        totals = self.sosia_totals
+        totals["evaluated"] += 1
+        totals["overlap_sum"] += n_overlap
+        totals["real_repeat_sum"] += real_rep
+        if sim_rep is not None:
+            totals["sim_repeat_sum"] += sim_rep
+            totals["sim_repeat_count"] += 1
+        totals["real_dense4_sum"] += real_dense
+        totals["sim_dense4_sum"] += sim_dense
+        totals["real_any_dense4"] += int(real_dense > 0)
+        totals["sim_any_dense4"] += int(sim_dense > 0)
+
+    def sosia_text(self):
+        rows = list(self.sosia_records)
+        totals = self.sosia_totals
+        n = int(totals["evaluated"])
+        lines = [
+            "🎲 10eLOTTO — GENERATORE SOSIA 20/90 (SHADOW)",
+            "20 numeri distinti fra 1 e 90, scelti uniformemente, senza reinserimento.",
+            "La simulazione viene congelata PRIMA dell'estrazione reale successiva.",
+            "Non modifica ENGINE, HIGH CONFIDENCE, PLAY o AMBO.",
+            "",
+            f"📊 ESTRAZIONI CONFRONTATE: {n} | salti non valutati: {totals['skipped_gaps']}",
+            f"• coincidenze reali/sosia nello stesso draw: "
+            f"{totals['overlap_sum']/n:.2f} su 20 in media" if n else "• coincidenze: in attesa dei primi confronti",
+            "• riferimento uniforme: 4.44 numeri comuni su 20",
+        ]
+        if n:
+            recent = rows[-100:]
+            # Il primo draw del sosia non ha una simulazione precedente.
+            recent_sim_reps = [r['simulation_repeat'] for r in recent if r['simulation_repeat'] is not None]
+            lines += [
+                f"• ripetizioni reali / sosia fra draw consecutivi: "
+                f"{totals['real_repeat_sum']/n:.2f} / "
+                f"{totals['sim_repeat_sum']/totals['sim_repeat_count']:.2f}" if totals['sim_repeat_count'] else
+                f"• ripetizioni reali: {totals['real_repeat_sum']/n:.2f}; sosia in avvio",
+                f"• decine 10-19,...,80-89 con almeno 4 numeri per draw: "
+                f"reale {totals['real_dense4_sum']/n:.2f} / "
+                f"sosia {totals['sim_dense4_sum']/n:.2f}",
+                f"• almeno una decina con 4+ numeri: "
+                f"reale {safe_pct(totals['real_any_dense4'], n):.1f}% / "
+                f"sosia {safe_pct(totals['sim_any_dense4'], n):.1f}%",
+                "",
+                f"📈 ULTIMI {len(recent)} CONFRONTI",
+                f"• numeri comuni: {sum(r['overlap'] for r in recent)/len(recent):.2f} / 20",
+                f"• ripetizioni reali: {sum(r['real_repeat'] for r in recent)/len(recent):.2f} "
+                + (f"| sosia: {sum(recent_sim_reps)/len(recent_sim_reps):.2f}" if recent_sim_reps else ""),
+            ]
+            last = rows[-1]
+            lines += [
+                "",
+                f"🧾 ULTIMO CONFRONTO {last['key']}",
+                f"• reale: {' '.join(f'{v:02d}' for v in last['real'])}",
+                f"• sosia: {' '.join(f'{v:02d}' for v in last['simulation'])}",
+                f"• numeri comuni: {last['overlap']}/20",
+            ]
+        pending = self.sosia_pending
+        if pending:
+            lines += ["", f"🎯 SOSIA GIA' GENERATO dopo {pending['from_key']} "
+                      "per la prossima estrazione:",
+                      " ".join(f"{v:02d}" for v in pending['simulation_next'])]
+        else:
+            lines += ["", "🎯 Prossimo campione: in attesa della prossima estrazione elaborata."]
+        lines += ["", "⚠️ SOSIA STATISTICO, NON una previsione dei numeri vincenti. "
+                  "Nessuna puntata o modifica del motore predittivo."]
+        return "\n".join(lines)
+
     def load_state(self):
         path = STATE_FILE if os.path.exists(STATE_FILE) else (LEGACY_STATE_FILE if os.path.exists(LEGACY_STATE_FILE) else None)
         if not path:
@@ -1934,6 +2263,60 @@ class EngineOnly:
             # Lo storico ENGINE/MULTI-HIT/PLAY esistente NON viene azzerato.
             # L'AMBO parte da zero: manca il partner/ranking H2 nei vecchi record.
             self._ambo_load_fields(d)
+
+            # SOSIA v1: se il vecchio state non contiene questi campi, parte
+            # prospetticamente, senza alterare lo storico degli altri moduli.
+            totals = d.get("sosia_totals")
+            if isinstance(totals, dict):
+                for field in self.sosia_totals:
+                    try:
+                        self.sosia_totals[field] = max(0, int(totals.get(field, 0)))
+                    except (ValueError, TypeError):
+                        pass
+            recs = d.get("sosia_records", [])
+            if isinstance(recs, list):
+                self.sosia_records = [r for r in recs if isinstance(r, dict) and
+                                      self._sosia_valid20(r.get("real")) and
+                                      self._sosia_valid20(r.get("simulation"))][-SOSIA_RECORD_MAX:]
+            pending = d.get("sosia_pending")
+            if (isinstance(pending, dict) and pending.get("from_key") and
+                self._sosia_valid20(pending.get("real_previous")) and
+                self._sosia_valid20(pending.get("simulation_next"))):
+                self.sosia_pending = pending
+
+            if d.get("sosiap_version") == SOSIA_PRED_VERSION:
+                raw = d.get("sosiap_learning", {})
+                if isinstance(raw, dict):
+                    for name in SOSIA_PRED_NAMES:
+                        source = raw.get(name)
+                        if not isinstance(source, dict):
+                            continue
+                        try:
+                            n = max(0, int(source.get("n", 0)))
+                            self.sosiap_learning[name] = {
+                                "n": n, "hits": max(0, int(source.get("hits", 0))),
+                                "ema_hits": max(0.0, min(20.0, float(source.get("ema_hits", 400/90))))}
+                        except (TypeError, ValueError):
+                            pass
+                totals = d.get("sosiap_totals", {})
+                if isinstance(totals, dict):
+                    for k in self.sosiap_totals:
+                        try:
+                            self.sosiap_totals[k] = max(0, int(totals.get(k, 0)))
+                        except (TypeError, ValueError):
+                            pass
+                records = d.get("sosiap_records", [])
+                if isinstance(records, list):
+                    self.sosiap_records = [r for r in records if isinstance(r, dict)
+                                           and self._sosia_valid20(r.get("prediction"))
+                                           and self._sosia_valid20(r.get("real"))][-SOSIA_PRED_RECORD_MAX:]
+                p = d.get("sosiap_pending")
+                if (isinstance(p, dict) and p.get("from_key") and
+                    self._sosia_valid20(p.get("prediction")) and
+                    self._sosia_valid20(p.get("previous")) and
+                    isinstance(p.get("experts"), dict) and
+                    all(self._sosia_valid20(p["experts"].get(n)) for n in SOSIA_PRED_NAMES)):
+                    self.sosiap_pending = p
 
             # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
             if self.engine_pending and self.engine_pending.get("accepted"):
@@ -1992,6 +2375,15 @@ class EngineOnly:
             "ambo_sim_records_live": self.ambo_sim_records_live[-AMBO_SIM_RECORD_MAX:],
             "ambo_sim_bets_live": self.ambo_sim_bets_live[-AMBO_SIM_BET_LOG_MAX:],
             "ambo_sim_account": self.ambo_sim_account,
+            "sosia_version": SOSIA_VERSION,
+            "sosia_pending": self.sosia_pending,
+            "sosia_records": self.sosia_records[-SOSIA_RECORD_MAX:],
+            "sosia_totals": self.sosia_totals,
+            "sosiap_version": SOSIA_PRED_VERSION,
+            "sosiap_pending": self.sosiap_pending,
+            "sosiap_records": self.sosiap_records[-SOSIA_PRED_RECORD_MAX:],
+            "sosiap_learning": self.sosiap_learning,
+            "sosiap_totals": self.sosiap_totals,
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -2445,6 +2837,10 @@ class EngineOnly:
             return None
 
         if mode == "live":
+            # Il campione era stato predisposto ALLA estrazione precedente:
+            # nessun dato del draw attuale entra nella simulazione valutata.
+            self._sosia_settle(day, e, clean)
+            self._sosiap_settle(day, e, clean)
             if self.ambo_sim_sessions and not sim_draw_is_consecutive(self.last_draw_key, day, e):
                 interrupted = list(self.ambo_sim_sessions)
                 for old in interrupted:
@@ -2469,6 +2865,9 @@ class EngineOnly:
             # Due partner HOT5 determinati DOPO il draw di conferma H1/H2/H3, senza futuro.
             await self._ambo_finalize_confirmation(app, current_key, clean, notify=notify)
         p = await self.arm_engine_shadow(app, current_key, mode=mode, notify=notify)
+        if mode == "live":
+            self._sosia_arm(current_key, clean)
+            self._sosiap_arm(current_key)
 
         if persist:
             self.save_state(git=True)
@@ -2722,7 +3121,7 @@ class EngineOnly:
             "🧾 ULTIMI HIGH CONFIDENCE\n" + recent_txt + "\n\n"
             f"🧪 H5 completati LIVE={len(self.engine_h5_records_live)} | attivi="
             f"{sum(1 for x in self.engine_h5_sessions if x.get('origin_mode')=='live')}\n"
-            "Dettagli: /multih5 | /engineh | /play | /ambo\n\n"
+            "Dettagli: /multih5 | /engineh | /play | /ambo | /sosia\n\n"
             "Baseline H1 TOP1 casuale: 22.22%.\n"
             "⚠️ Nessuna puntata automatica."
         )
@@ -2737,6 +3136,8 @@ class EngineOnly:
             "/multih5 — 0/5, 1/5, esatto 2/5, >=2/5, >=3/5\n"
             "/play — strategia conferma H1-H3 -> seconda uscita entro H5\n"
             "/ambo — AMBO 2xHOT5 H1-H3 NO-LOCK: notifiche, costo, premi e saldo\n"
+            "/sosia — SOSIA adattivo: 20 previsti e confronto con la prossima reale\n"
+            "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
             "/menu — questa schermata"
         )
@@ -2766,6 +3167,12 @@ async def cmd_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_ambo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].ambo_sim_text())
 
+async def cmd_sosia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].sosiap_text())
+
+async def cmd_sosiarandom(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].sosia_text())
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].engine_text())
 
@@ -2779,6 +3186,8 @@ async def setup_commands(app):
         BotCommand("multih5", "TOP1 multi-hit nelle 5 successive"),
         BotCommand("play", "PLAY SHADOW: seconda uscita dopo conferma"),
         BotCommand("ambo", "AMBO 2xHOT5 NO-LOCK: notifiche e saldo"),
+        BotCommand("sosia", "20 numeri appresi: previsione H1 e hit"),
+        BotCommand("sosiarandom", "Controllo casuale 20/90"),
         BotCommand("status", "Stato rapido ENGINE"),
         BotCommand("menu", "Comandi ENGINE ONLY"),
     ])
@@ -2886,6 +3295,13 @@ async def startup(engine, app, retry_state=None):
     except Exception as exc:
         console_log(f"CATCH-UP parser fail | {exc}")
         rows=[]
+    # Se lo state e' ancora all'ULTIMO draw pubblicato, possiamo congelare
+    # una previsione nuova. Se il sito ne mostra gia' altri, non ricostruiamo
+    # retroattivamente previsioni per draw dei quali conosciamo l'esito.
+    if (rows and engine.engine_history and not engine.sosiap_pending and
+        engine.last_draw_key == engine.engine_history[-1]["key"] and
+        draw_key(max(rows, key=lambda r: (r[0], r[1]))[0], max(rows, key=lambda r: (r[0], r[1]))[1]) == engine.last_draw_key):
+        engine._sosiap_arm(engine.last_draw_key)
     unseen=[x for x in rows if not engine.already_processed(x[0],x[1])]
     unseen.sort(key=lambda x:(x[0],x[1]))
     for d,e,nums in unseen:
@@ -2905,13 +3321,14 @@ async def startup(engine, app, retry_state=None):
         "🎯 focus: ESATTO 2/5 e >=2/5\n"
         "🎯 AMBO 2xHOT5 H1-H3 NO-LOCK: conferma TOP1 -> DUE accompagnatori caldi -> notifiche prima dei colpi\n"
         "🎮 PLAY SHADOW: conferma H1-H3 -> seconda uscita entro H5\n"
+        "🧠 SOSIA ADATTIVO: prevede i prossimi 20 numeri /sosia; casuale /sosiarandom\n"
         "✅ state persistente + autorotation\n\n"
         f"ENGINE: {'READY' if engine.engine_bootstrap_done else 'BUILD'} | "
         f"filtro target top {ENGINE_SELECT_RATE*100:.0f}%\n"
         f"H5 LIVE gia' disponibili: {len(engine.engine_h5_records_live)}\n"
         f"PLAY storico ricostruito: {len(engine.engine_play_records_live)} record | "
         f"attivi={sum(1 for x in engine.engine_play_sessions if x.get('origin_mode')=='live')}\n\n"
-        "Comandi: /engine /engineh /multih5 /play /ambo /menu"
+        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiarandom /menu"
     )
     await notify_pending(engine,app)
     await notify_ambo_active(engine,app)
@@ -3105,7 +3522,44 @@ async def run_self_test():
     assert m.ambo_hot5_single_legacy.get('account', {}).get('bets') == 9
     assert m.ambo_sim_account['bets'] == 0 and not m.ambo_sim_sessions
 
-    print("SELF-TEST OK: ENGINE ONLY + MULTI-HIT H5 + PLAY SHADOW + AMBO 2xHOT5 H1-H3 NO-LOCK")
+    # Test prospettico SOSIA: campione pronto prima del draw, stato invariato
+    # e confronto anche fra estrazioni della stessa decina.
+    so = EngineOnly(load=False)
+    assert all(len(x) == 20 and len(set(x)) == 20 and min(x) >= 1 and max(x) <= 90
+               for x in (so._sosia_sample() for _ in range(300)))
+    so._sosia_arm("2099-05-01#100", list(range(1,21)))
+    first = list(so.sosia_pending["simulation_next"])
+    so._sosia_settle("2099-05-01", 101, list(range(1,21)))
+    assert len(so.sosia_records) == 1 and so.sosia_records[0]["simulation"] == first
+    assert so.sosia_totals["evaluated"] == 1 and so.sosia_records[0]["real_repeat"] == 20
+    so._sosia_arm("2099-05-01#101", list(range(1,21)))
+    so._sosia_settle("2099-05-01", 103, list(range(1,21)))
+    assert so.sosia_totals["evaluated"] == 1 and so.sosia_totals["skipped_gaps"] == 1
+    assert so.sosia_pending is None
+    assert "/sosia" in so.menu_text()
+
+    # Due previsioni indipendenti congelate prima del draw; il feedback
+    # aggiorna pesi solo DOPO il confronto, senza riscrivere la previsione.
+    pred = EngineOnly(load=False)
+    hist = []
+    for i in range(120):
+        nums = SOSIA_RANDOM.sample(range(1, 91), 20)
+        hist.append({"key": f"2099-05-02#{i+1:03d}", "nums": nums})
+    pred.engine_history = hist
+    pred._sosiap_arm("2099-05-02#120")
+    frozen = list(pred.sosiap_pending["prediction"])
+    assert pred._sosia_valid20(frozen) and len(pred.sosiap_pending["experts"]) == 6
+    assert all(s["n"] == 0 for s in pred.sosiap_learning.values())
+    pred._sosiap_settle("2099-05-02", 121, frozen)
+    assert pred.sosiap_records[-1]["hits"] == 20 and pred.sosiap_totals["evaluated"] == 1
+    assert all(s["n"] == 1 for s in pred.sosiap_learning.values())
+    pred._sosiap_arm("2099-05-02#121")
+    assert pred._sosia_valid20(pred.sosiap_pending["prediction"])
+    pred._sosiap_settle("2099-05-02", 123, frozen)
+    assert pred.sosiap_totals["skipped"] == 1 and pred.sosiap_totals["evaluated"] == 1
+    assert "/sosiarandom" in pred.menu_text()
+
+    print("SELF-TEST OK: ENGINE/MULTI-HIT/PLAY/AMBO invariati + SOSIA adattivo e controllo casuale")
 
 async def main():
     if "--self-test" in sys.argv:
@@ -3127,6 +3581,8 @@ async def main():
     app.add_handler(CommandHandler("multih5",cmd_multih5))
     app.add_handler(CommandHandler("play",cmd_play))
     app.add_handler(CommandHandler("ambo",cmd_ambo))
+    app.add_handler(CommandHandler("sosia",cmd_sosia))
+    app.add_handler(CommandHandler("sosiarandom",cmd_sosiarandom))
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("menu",cmd_menu))
 
