@@ -58,6 +58,7 @@
 import asyncio
 import hashlib
 from collections import Counter
+from itertools import combinations
 import atexit
 import json
 import math
@@ -187,6 +188,11 @@ SOSIA_SNIPER_NOTIFY = os.getenv("SOSIA_SNIPER_NOTIFY", "1") != "0"
 # Soglia fissata PRIMA del forward: 90° percentile del gap TOP1-TOP2 nel
 # blocco storico di verifica separato da 600 draw. Non viene riottimizzata live.
 SOSIA_SNIPER_STRONG_GAP = float(os.getenv("SOSIA_SNIPER_STRONG_GAP", "0.07691307328092588"))
+# Nuovi tracker SHADOW: non alterano il SOSIA adattivo. Le soglie ULTRA sono
+# ipotesi congelate da validare in forward, non vengono riottimizzate live.
+SOSIA_SNIPER_ULTRA_SCORE = float(os.getenv("SOSIA_SNIPER_ULTRA_SCORE", "0.95"))
+SOSIA_SNIPER_ULTRA_GAP = float(os.getenv("SOSIA_SNIPER_ULTRA_GAP", "0.05"))
+SOSIA_SNIPER_PAIR_LOOKBACK = max(30, int(os.getenv("SOSIA_SNIPER_PAIR_LOOKBACK", "200")))
 
 PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
@@ -1006,8 +1012,14 @@ class EngineOnly:
         self.sosiasniper_records = []
         self.sosiasniper_totals = {
             "evaluated": 0, "skipped": 0, "top1_hits": 0, "top2_hits": 0,
+            "rank3_hits": 0, "rank4_hits": 0, "rank5_hits": 0,
             "ambo_hits": 0, "strong_evaluated": 0, "strong_top1_hits": 0,
             "strong_ambo_hits": 0,
+            "prob_evaluated": 0, "prob_hits": 0,
+            "bestpair_evaluated": 0, "bestpair_hits": 0,
+            "fusion_evaluated": 0, "fusion_hits": 0,
+            "fusion_top3_evaluated": 0, "fusion_top3_hits": 0,
+            "ultra_evaluated": 0, "ultra_hits": 0,
         }
 
         self.state_load_info = {
@@ -1024,6 +1036,7 @@ class EngineOnly:
             # Upgrade non distruttivo: se il vecchio state ha gia' una previsione
             # SOSIA adattiva congelata, ricava subito TOP1/TOP2 senza cambiarla.
             self._sosiasniper_migrate_pending()
+            self._sosiasniper_upgrade_pending()
 
     @staticmethod
     def _new_engine_stats():
@@ -2169,12 +2182,12 @@ class EngineOnly:
                              else f"• {name}: peso {pending['weights'][name]*100:.1f}% | nessun esito ancora")
         lines += ["", "⚠️ L'apprendimento e' verificabile, ma non garantisce un vantaggio: "
                   "i draw indipendenti non sono prevedibili dallo storico.",
-                  "Classifica interna TOP1/TOP2 e risultati H1: /sosiasniper",
+                  "TOP5 interno, SNIPER PROB, coppia 190 e FUSION: /sosiasniper",
                   "Controllo uniforme separato: /sosiarandom"]
         return "\n".join(lines)
 
     def _sosiasniper_rank(self, from_key, weights=None):
-        """Ricostruisce la graduatoria interna senza usare il draw futuro."""
+        """Graduatoria interna del SOSIA, calcolata senza usare il draw futuro."""
         experts = self._sosiap_experts(from_key)
         if any(len(experts.get(name, [])) != 90 for name in SOSIA_PRED_NAMES):
             return None
@@ -2189,25 +2202,106 @@ class EngineOnly:
             return None
         w = {name: value / sw for name, value in w.items()}
         total = {n: 0.0 for n in range(1, 91)}
+        expert_pos = {n: {} for n in range(1, 91)}
         top20 = {}
         for name in SOSIA_PRED_NAMES:
             ranking = experts[name]
             top20[name] = set(ranking[:20])
             for position, n in enumerate(ranking):
+                expert_pos[n][name] = position + 1
                 total[n] += w[name] * (89 - position) / 89.0
         ranking = sorted(range(1, 91),
                          key=lambda n: (-total[n], self._sosiap_tie(from_key, "ensemble", n)))
-        a, b = ranking[0], ranking[1]
+        top = ranking[:20]
+        if len(top) < 5:
+            return None
+        # ProbScore = indice comparativo, NON probabilita' reale. Serve solo a
+        # riordinare i 20 candidati con segnali indipendenti dal futuro.
+        top_scores = [total[n] for n in top]
+        lo, hi = min(top_scores), max(top_scores)
+        span = max(1e-12, hi - lo)
+        engine_p = self.engine_pending if isinstance(self.engine_pending, dict) else None
+        engine_hc = bool(engine_p and engine_p.get("accepted") and
+                         str(engine_p.get("signal_from_key") or "") == str(from_key))
+        engine_num = int(engine_p.get("top1")) if engine_hc and engine_p.get("top1") else None
+        prob_score = {}
+        consensus_map = {}
+        for rank_idx, n in enumerate(top, start=1):
+            cons = sum(n in top20[name] for name in SOSIA_PRED_NAMES)
+            consensus_map[n] = int(cons)
+            norm_score = (total[n] - lo) / span
+            rank_bonus = (20 - rank_idx) / 19.0
+            # L'ENGINE entra solo se ha creato HIGH CONFIDENCE PRIMA del draw futuro.
+            fusion_bonus = 1.0 if engine_num == n else 0.0
+            prob_score[n] = (0.58 * norm_score + 0.24 * (cons / 6.0) +
+                             0.10 * rank_bonus + 0.08 * fusion_bonus)
+        prob_rank = sorted(top, key=lambda n: (-prob_score[n], -total[n],
+                                               self._sosiap_tie(from_key, "prob", n)))
+
+        # Miglior coppia tra tutte le 190 coppie dei TOP20. La co-uscita e' solo
+        # una componente piccola; non deve dominare i due punteggi individuali.
+        recent = self.engine_history[-SOSIA_SNIPER_PAIR_LOOKBACK:]
+        pair_counts = Counter()
+        if recent:
+            top_set = set(top)
+            for row in recent:
+                vals = sorted(top_set.intersection(set(map(int, row.get("nums", [])))))
+                for a, b in combinations(vals, 2):
+                    pair_counts[(a, b)] += 1
+        max_pair = max(pair_counts.values(), default=1)
+        best_pair = None
+        best_pair_score = -1.0
+        for a, b in combinations(top, 2):
+            key = tuple(sorted((a, b)))
+            co = pair_counts.get(key, 0)
+            co_norm = co / max_pair if max_pair else 0.0
+            sc = 0.45 * prob_score[a] + 0.45 * prob_score[b] + 0.10 * co_norm
+            if sc > best_pair_score:
+                best_pair_score = sc
+                best_pair = key
+        a, b = top[0], top[1]
+        engine_rank = (top.index(engine_num) + 1) if engine_num in top else None
         return {
-            "ranking": ranking,
-            "top1": a,
-            "top2": b,
-            "score": float(total[a]),
-            "score2": float(total[b]),
+            "ranking": ranking, "top20": top, "top5": top[:5],
+            "top1": a, "top2": b,
+            "score": float(total[a]), "score2": float(total[b]),
             "gap": float(total[a] - total[b]),
-            "consensus": int(sum(a in top20[name] for name in SOSIA_PRED_NAMES)),
-            "consensus2": int(sum(b in top20[name] for name in SOSIA_PRED_NAMES)),
-            "weights": w,
+            "consensus": int(consensus_map[a]), "consensus2": int(consensus_map[b]),
+            "weights": w, "scores": {n: float(total[n]) for n in top},
+            "consensus_map": consensus_map, "expert_pos": expert_pos,
+            "prob_score": {n: float(prob_score[n]) for n in top},
+            "prob_rank": prob_rank, "prob_pick": int(prob_rank[0]),
+            "best_pair": list(best_pair) if best_pair else [a, b],
+            "best_pair_score": float(best_pair_score),
+            "engine_hc": engine_hc, "engine_top1": engine_num,
+            "engine_rank": engine_rank,
+        }
+
+    def _sosiasniper_build_pending(self, current_key, info):
+        prob_pick = int(info["prob_pick"])
+        pair = [int(x) for x in info["best_pair"]]
+        return {
+            "from_key": str(current_key),
+            "top1": int(info["top1"]), "top2": int(info["top2"]),
+            "top5": [int(x) for x in info["top5"]],
+            "score": info["score"], "score2": info["score2"],
+            "gap": info["gap"], "consensus": info["consensus"],
+            "consensus2": info["consensus2"],
+            "strong": bool(info["gap"] >= SOSIA_SNIPER_STRONG_GAP),
+            "strong_threshold": SOSIA_SNIPER_STRONG_GAP,
+            "prob_pick": prob_pick,
+            "prob_score": float(info["prob_score"][prob_pick]),
+            "prob_consensus": int(info["consensus_map"].get(prob_pick, 0)),
+            "prob_rank_original": int(info["top20"].index(prob_pick) + 1),
+            "best_pair": pair,
+            "best_pair_score": float(info["best_pair_score"]),
+            "engine_hc": bool(info.get("engine_hc")),
+            "engine_top1": info.get("engine_top1"),
+            "engine_rank": info.get("engine_rank"),
+            "ultra": bool(info["score"] >= SOSIA_SNIPER_ULTRA_SCORE and
+                          info["gap"] >= SOSIA_SNIPER_ULTRA_GAP),
+            "ultra_score_threshold": SOSIA_SNIPER_ULTRA_SCORE,
+            "ultra_gap_threshold": SOSIA_SNIPER_ULTRA_GAP,
         }
 
     def _sosiasniper_arm(self, current_key):
@@ -2219,30 +2313,38 @@ class EngineOnly:
         info = self._sosiasniper_rank(current_key, p.get("weights"))
         if not info:
             return None
-        # Controllo di coerenza: il TOP20 ordinato per score deve essere
-        # esattamente lo stesso insieme gia' congelato dal SOSIA adattivo.
         if sorted(info["ranking"][:20]) != sorted(p.get("prediction", [])):
             console_log("SOSIA SNIPER: ranking non coerente col TOP20 congelato; nessun segnale")
             return None
-        self.sosiasniper_pending = {
-            "from_key": str(current_key),
-            "top1": int(info["top1"]), "top2": int(info["top2"]),
-            "score": info["score"], "score2": info["score2"],
-            "gap": info["gap"], "consensus": info["consensus"],
-            "consensus2": info["consensus2"],
-            "strong": bool(info["gap"] >= SOSIA_SNIPER_STRONG_GAP),
-            "strong_threshold": SOSIA_SNIPER_STRONG_GAP,
-        }
+        self.sosiasniper_pending = self._sosiasniper_build_pending(current_key, info)
         return self.sosiasniper_pending
 
     def _sosiasniper_migrate_pending(self):
-        # Migrazione dal vecchio state: non tocca la previsione SOSIA esistente.
         if self.sosiasniper_pending or not self.sosiap_pending or not self.engine_history:
             return False
         from_key = str(self.sosiap_pending.get("from_key") or "")
         if not from_key or str(self.engine_history[-1].get("key") or "") != from_key:
             return False
         return bool(self._sosiasniper_arm(from_key))
+
+    def _sosiasniper_upgrade_pending(self):
+        """Arricchisce un pending creato dalla versione precedente senza cambiarne il draw."""
+        p = self.sosiasniper_pending
+        if not p or p.get("top5") or not self.sosiap_pending:
+            return False
+        from_key = str(p.get("from_key") or "")
+        if str(self.sosiap_pending.get("from_key") or "") != from_key:
+            return False
+        info = self._sosiasniper_rank(from_key, self.sosiap_pending.get("weights"))
+        if not info:
+            return False
+        upgraded = self._sosiasniper_build_pending(from_key, info)
+        # TOP1/TOP2 della vecchia previsione devono essere identici; altrimenti
+        # non sostituiamo retroattivamente il segnale gia' congelato.
+        if int(upgraded["top1"]) != int(p.get("top1", -1)) or int(upgraded["top2"]) != int(p.get("top2", -1)):
+            return False
+        p.update(upgraded)
+        return True
 
     def _sosiasniper_settle(self, day, e, nums):
         p = self.sosiasniper_pending
@@ -2255,14 +2357,29 @@ class EngineOnly:
                     "top1": p.get("top1"), "top2": p.get("top2")}
         actual = set(map(int, nums))
         top1 = int(p["top1"]); top2 = int(p["top2"])
+        top5 = [int(x) for x in p.get("top5", [top1, top2])][:5]
         h1 = top1 in actual; h2 = top2 in actual; ambo = h1 and h2
+        rank_hits = [n in actual for n in top5]
+        prob_pick = int(p.get("prob_pick", top1)); prob_hit = prob_pick in actual
+        pair = [int(x) for x in p.get("best_pair", [top1, top2])][:2]
+        pair_hit = len(pair) == 2 and pair[0] in actual and pair[1] in actual
+        engine_hc = bool(p.get("engine_hc")); engine_num = p.get("engine_top1")
+        fusion_hit = bool(engine_hc and engine_num is not None and int(engine_num) in actual)
         rec = {
             "key": draw_key(day, e), "source_key": str(p["from_key"]),
-            "top1": top1, "top2": top2, "score": float(p["score"]),
-            "score2": float(p["score2"]), "gap": float(p["gap"]),
+            "top1": top1, "top2": top2, "top5": top5,
+            "score": float(p["score"]), "score2": float(p["score2"]), "gap": float(p["gap"]),
             "consensus": int(p["consensus"]), "consensus2": int(p.get("consensus2", 0)),
             "strong": bool(p.get("strong")), "strong_threshold": float(p.get("strong_threshold", SOSIA_SNIPER_STRONG_GAP)),
             "top1_hit": bool(h1), "top2_hit": bool(h2), "ambo_hit": bool(ambo),
+            "rank_hits": rank_hits,
+            "prob_pick": prob_pick, "prob_score": float(p.get("prob_score", 0.0)),
+            "prob_rank_original": int(p.get("prob_rank_original", 1)), "prob_hit": bool(prob_hit),
+            "best_pair": pair, "best_pair_score": float(p.get("best_pair_score", 0.0)),
+            "best_pair_hit": bool(pair_hit),
+            "engine_hc": engine_hc, "engine_top1": engine_num, "engine_rank": p.get("engine_rank"),
+            "fusion_hit": fusion_hit,
+            "ultra": bool(p.get("ultra")), "ultra_hit": bool(h1 and p.get("ultra")),
             "real": sorted(actual),
         }
         self.sosiasniper_records.append(rec)
@@ -2270,26 +2387,42 @@ class EngineOnly:
         t = self.sosiasniper_totals
         t["evaluated"] += 1
         t["top1_hits"] += int(h1); t["top2_hits"] += int(h2); t["ambo_hits"] += int(ambo)
+        for idx, key in ((2, "rank3_hits"), (3, "rank4_hits"), (4, "rank5_hits")):
+            if len(rank_hits) > idx:
+                t[key] += int(rank_hits[idx])
         if rec["strong"]:
-            t["strong_evaluated"] += 1
-            t["strong_top1_hits"] += int(h1)
-            t["strong_ambo_hits"] += int(ambo)
+            t["strong_evaluated"] += 1; t["strong_top1_hits"] += int(h1); t["strong_ambo_hits"] += int(ambo)
+        t["prob_evaluated"] += 1; t["prob_hits"] += int(prob_hit)
+        t["bestpair_evaluated"] += 1; t["bestpair_hits"] += int(pair_hit)
+        if engine_hc:
+            t["fusion_evaluated"] += 1; t["fusion_hits"] += int(fusion_hit)
+            if p.get("engine_rank") is not None and int(p.get("engine_rank")) <= 3:
+                t["fusion_top3_evaluated"] += 1; t["fusion_top3_hits"] += int(fusion_hit)
+        if rec["ultra"]:
+            t["ultra_evaluated"] += 1; t["ultra_hits"] += int(h1)
         return rec
 
     @staticmethod
     def _sosiasniper_signal_lines(p):
         if not p:
             return ["🎯 Nessun segnale SOSIA SNIPER pronto."]
-        return [
+        top5 = [int(x) for x in p.get("top5", [p['top1'], p['top2']])]
+        pair = [int(x) for x in p.get("best_pair", [p['top1'], p['top2']])]
+        lines = [
             f"🎯 SOSIA SNIPER — PROSSIMA H1 (da {p['from_key']})",
-            f"Ambata #1: {int(p['top1']):02d}",
-            f"Score: {float(p['score']):.3f}",
-            f"Consensus: {int(p['consensus'])}/6",
-            f"Gap dal #2: +{float(p['gap']):.3f}",
-            f"🔥 STRONG: {'SÌ' if p.get('strong') else 'NO'}",
-            f"Secondo: {int(p['top2']):02d}",
-            f"Ambo sperimentale: {int(p['top1']):02d}-{int(p['top2']):02d}",
+            f"TOP5 interno: " + " > ".join(f"{n:02d}" for n in top5),
+            f"Ambata ranking #1: {int(p['top1']):02d} | score {float(p['score']):.3f} | cons {int(p['consensus'])}/6",
+            f"Gap #1-#2: +{float(p['gap']):.3f} | STRONG vecchio: {'SÌ' if p.get('strong') else 'NO'}",
+            f"🧠 SNIPER PROB: {int(p.get('prob_pick', p['top1'])):02d} | indice {float(p.get('prob_score',0)):.3f} "
+            f"| rank originale #{int(p.get('prob_rank_original',1))} | cons {int(p.get('prob_consensus',0))}/6",
+            f"🔗 MIGLIOR COPPIA 190: {pair[0]:02d}-{pair[1]:02d} | indice {float(p.get('best_pair_score',0)):.3f}",
         ]
+        if p.get("engine_hc"):
+            lines.append(f"⚡ FUSION ENGINE: TOP1 ENGINE {int(p['engine_top1']):02d} | posizione SOSIA #{int(p['engine_rank']) if p.get('engine_rank') else 0}")
+        else:
+            lines.append("⚡ FUSION ENGINE: nessun HIGH CONFIDENCE su questo draw")
+        lines.append(f"🧪 ULTRA SHADOW: {'SÌ' if p.get('ultra') else 'NO'} | richiede score≥{SOSIA_SNIPER_ULTRA_SCORE:.2f} e gap≥{SOSIA_SNIPER_ULTRA_GAP:.2f}")
+        return lines
 
     async def _sosiasniper_notice(self, app, result, notify=True):
         if not notify or not SOSIA_SNIPER_NOTIFY:
@@ -2299,50 +2432,65 @@ class EngineOnly:
             lines += ["⚠️ SOSIA SNIPER — RISULTATO NON VALUTATO",
                       f"Manca la consecutività dopo {result.get('source_key','-')}; nessun HIT/MISS inventato.", ""]
         elif result:
+            pair = result.get("best_pair", [result['top1'], result['top2']])
             lines += [
                 f"🧾 SOSIA SNIPER — RISULTATO {result['key']}",
                 f"Segnale da: {result['source_key']}",
-                f"Ambata #1 {result['top1']:02d}: {'✅ HIT' if result['top1_hit'] else '❌ MISS'}",
-                f"Secondo {result['top2']:02d}: {'✅ HIT' if result['top2_hit'] else '❌ MISS'}",
-                f"Ambo {result['top1']:02d}-{result['top2']:02d}: {'✅ HIT' if result['ambo_hit'] else '❌ MISS'}",
-                f"Segnale STRONG: {'SÌ' if result['strong'] else 'NO'} | gap +{result['gap']:.3f}", "",
+                f"Ranking #1 {result['top1']:02d}: {'✅ HIT' if result['top1_hit'] else '❌ MISS'}",
+                f"SNIPER PROB {result.get('prob_pick', result['top1']):02d}: {'✅ HIT' if result.get('prob_hit') else '❌ MISS'}",
+                f"Miglior coppia {int(pair[0]):02d}-{int(pair[1]):02d}: {'✅ HIT' if result.get('best_pair_hit') else '❌ MISS'}",
             ]
+            if result.get("engine_hc"):
+                lines.append(f"FUSION ENGINE {int(result['engine_top1']):02d} (rank SOSIA #{int(result['engine_rank']) if result.get('engine_rank') else 0}): "
+                             f"{'✅ HIT' if result.get('fusion_hit') else '❌ MISS'}")
+            if result.get("ultra"):
+                lines.append(f"🧪 ULTRA SHADOW ranking #1: {'✅ HIT' if result.get('ultra_hit') else '❌ MISS'}")
+            lines.append("")
         else:
             lines += ["🧾 SOSIA SNIPER — PRIMO AVVIO", "Nessun risultato precedente da valutare.", ""]
         lines += self._sosiasniper_signal_lines(self.sosiasniper_pending)
-        t = self.sosiasniper_totals
-        ev = int(t.get("evaluated", 0) or 0)
-        se = int(t.get("strong_evaluated", 0) or 0)
+        t = self.sosiasniper_totals; ev = int(t.get("evaluated",0) or 0)
         if ev:
             lines += ["", "📊 FORWARD SOSIA SNIPER",
-                      f"• Ambata #1: {t['top1_hits']}/{ev} ({safe_pct(t['top1_hits'], ev):.2f}%) | casuale 22.22%",
-                      f"• Ambo #1-#2: {t['ambo_hits']}/{ev} ({safe_pct(t['ambo_hits'], ev):.2f}%) | casuale 4.74%"]
-        if se:
-            lines.append(f"• STRONG ambata: {t['strong_top1_hits']}/{se} ({safe_pct(t['strong_top1_hits'], se):.2f}%)")
-        lines += ["", "⚠️ Tracker sperimentale: nessuna puntata automatica."]
+                      f"• rank #1: {t['top1_hits']}/{ev} ({safe_pct(t['top1_hits'],ev):.2f}%)",
+                      f"• SNIPER PROB: {t['prob_hits']}/{t['prob_evaluated']} ({safe_pct(t['prob_hits'],t['prob_evaluated']):.2f}%)",
+                      f"• coppia 190: {t['bestpair_hits']}/{t['bestpair_evaluated']} ({safe_pct(t['bestpair_hits'],t['bestpair_evaluated']):.2f}%)"]
+        fe=int(t.get("fusion_evaluated",0) or 0); f3=int(t.get("fusion_top3_evaluated",0) or 0); ue=int(t.get("ultra_evaluated",0) or 0)
+        if fe: lines.append(f"• FUSION ENGINE: {t['fusion_hits']}/{fe} ({safe_pct(t['fusion_hits'],fe):.2f}%)")
+        if f3: lines.append(f"• FUSION ENGINE in SOSIA TOP3: {t['fusion_top3_hits']}/{f3} ({safe_pct(t['fusion_top3_hits'],f3):.2f}%)")
+        if ue: lines.append(f"• ULTRA SHADOW: {t['ultra_hits']}/{ue} ({safe_pct(t['ultra_hits'],ue):.2f}%)")
+        lines += ["", "⚠️ Tutto shadow/sperimentale: nessuna puntata automatica."]
         await self.tg(app, "\n".join(lines))
 
     def sosiasniper_text(self):
-        p = self.sosiasniper_pending
-        t = self.sosiasniper_totals
-        ev = int(t.get("evaluated", 0) or 0); se = int(t.get("strong_evaluated", 0) or 0)
-        lines = ["🎯 SOSIA SNIPER — TOP1 / TOP2 H1", ""] + self._sosiasniper_signal_lines(p)
+        p=self.sosiasniper_pending; t=self.sosiasniper_totals; ev=int(t.get("evaluated",0) or 0)
+        lines=["🎯 SOSIA SNIPER PROB + FUSION", ""] + self._sosiasniper_signal_lines(p)
         lines += ["", f"📊 FORWARD: {ev} valutati | salti: {int(t.get('skipped',0) or 0)}"]
         if ev:
-            lines += [f"• Ambata #1: {t['top1_hits']}/{ev} ({safe_pct(t['top1_hits'],ev):.2f}%) | baseline 22.22%",
-                      f"• Secondo #2: {t['top2_hits']}/{ev} ({safe_pct(t['top2_hits'],ev):.2f}%)",
-                      f"• Ambo #1-#2: {t['ambo_hits']}/{ev} ({safe_pct(t['ambo_hits'],ev):.2f}%) | baseline 4.74%"]
-        if se:
-            lines += [f"• STRONG: {se} segnali | ambata {t['strong_top1_hits']}/{se} ({safe_pct(t['strong_top1_hits'],se):.2f}%)",
-                      f"• STRONG ambo: {t['strong_ambo_hits']}/{se} ({safe_pct(t['strong_ambo_hits'],se):.2f}%)"]
+            lines += [
+                f"• rank #1: {t['top1_hits']}/{ev} ({safe_pct(t['top1_hits'],ev):.2f}%) | baseline 22.22%",
+                f"• rank #2: {t['top2_hits']}/{ev} ({safe_pct(t['top2_hits'],ev):.2f}%)",
+                f"• rank #3: {t['rank3_hits']}/{ev} ({safe_pct(t['rank3_hits'],ev):.2f}%)",
+                f"• rank #4: {t['rank4_hits']}/{ev} ({safe_pct(t['rank4_hits'],ev):.2f}%)",
+                f"• rank #5: {t['rank5_hits']}/{ev} ({safe_pct(t['rank5_hits'],ev):.2f}%)",
+                f"• vecchio ambo #1-#2: {t['ambo_hits']}/{ev} ({safe_pct(t['ambo_hits'],ev):.2f}%) | baseline 4.74%",
+                f"• SNIPER PROB: {t['prob_hits']}/{t['prob_evaluated']} ({safe_pct(t['prob_hits'],t['prob_evaluated']):.2f}%)",
+                f"• miglior coppia 190: {t['bestpair_hits']}/{t['bestpair_evaluated']} ({safe_pct(t['bestpair_hits'],t['bestpair_evaluated']):.2f}%) | baseline 4.74%",
+            ]
+        fe=int(t.get("fusion_evaluated",0) or 0); f3=int(t.get("fusion_top3_evaluated",0) or 0); ue=int(t.get("ultra_evaluated",0) or 0)
+        if fe: lines.append(f"• FUSION ENGINE: {t['fusion_hits']}/{fe} ({safe_pct(t['fusion_hits'],fe):.2f}%)")
+        if f3: lines.append(f"• FUSION ENGINE quando ENGINE e' SOSIA TOP3: {t['fusion_top3_hits']}/{f3} ({safe_pct(t['fusion_top3_hits'],f3):.2f}%)")
+        if ue: lines.append(f"• ULTRA SHADOW score/gap: {t['ultra_hits']}/{ue} ({safe_pct(t['ultra_hits'],ue):.2f}%)")
+        se=int(t.get("strong_evaluated",0) or 0)
+        if se: lines.append(f"• STRONG storico gap: {t['strong_top1_hits']}/{se} ({safe_pct(t['strong_top1_hits'],se):.2f}%)")
         if self.sosiasniper_records:
-            last = self.sosiasniper_records[-1]
+            last=self.sosiasniper_records[-1]; pair=last.get("best_pair",[last['top1'],last['top2']])
             lines += ["", f"🧾 ULTIMO ESITO {last['key']}",
-                      f"• #{last['top1']:02d} {'HIT' if last['top1_hit'] else 'MISS'} | "
-                      f"#{last['top2']:02d} {'HIT' if last['top2_hit'] else 'MISS'} | "
-                      f"ambo {'HIT' if last['ambo_hit'] else 'MISS'}"]
-        lines += ["", f"🔥 STRONG se gap TOP1-TOP2 >= {SOSIA_SNIPER_STRONG_GAP:.3f}.",
-                  "Soglia fissata dal blocco storico di verifica; non viene adattata agli esiti live.",
+                      f"• rank #1 {last['top1']:02d}: {'HIT' if last['top1_hit'] else 'MISS'}",
+                      f"• PROB {last.get('prob_pick',last['top1']):02d}: {'HIT' if last.get('prob_hit') else 'MISS'}",
+                      f"• coppia {int(pair[0]):02d}-{int(pair[1]):02d}: {'HIT' if last.get('best_pair_hit') else 'MISS'}"]
+        lines += ["", "ℹ️ ProbScore e indice coppia sono punteggi comparativi, non probabilita' garantite.",
+                  "Le nuove regole sono tracciate in shadow e non riscrivono lo storico precedente.",
                   "⚠️ Nessuna puntata automatica."]
         return "\n".join(lines)
 
@@ -3438,7 +3586,7 @@ class EngineOnly:
             "/play — strategia conferma H1-H3 -> seconda uscita entro H5\n"
             "/ambo — AMBO 2xHOT5 H1-H3 NO-LOCK: notifiche, costo, premi e saldo\n"
             "/sosia — SOSIA adattivo: 20 previsti e confronto con la prossima reale\n"
-            "/sosiasniper — TOP1/TOP2 interno: ambata, ambo, score, consensus e STRONG\n"
+            "/sosiasniper — TOP5 + SNIPER PROB + coppia 190 + FUSION ENGINE\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
             "/menu — questa schermata"
@@ -3492,7 +3640,7 @@ async def setup_commands(app):
         BotCommand("play", "PLAY SHADOW: seconda uscita dopo conferma"),
         BotCommand("ambo", "AMBO 2xHOT5 NO-LOCK: notifiche e saldo"),
         BotCommand("sosia", "20 numeri appresi: previsione H1 e hit"),
-        BotCommand("sosiasniper", "TOP1/TOP2 SOSIA: ambata, ambo e STRONG"),
+        BotCommand("sosiasniper", "TOP5, PROB, coppia 190 e FUSION"),
         BotCommand("sosiarandom", "Controllo casuale 20/90"),
         BotCommand("status", "Stato rapido ENGINE"),
         BotCommand("menu", "Comandi ENGINE ONLY"),
