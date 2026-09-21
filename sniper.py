@@ -179,6 +179,15 @@ SOSIA_PRED_NAMES = ("hot5", "hot20", "hot100", "repeat", "transition", "engine4"
 SOSIA_PRETRAIN_FILE = os.path.join(BASE_DIR, "sosia_backtest_training.json")
 SOSIA_PRETRAIN_STRENGTH = 60.0  # peso massimo del passato rispetto ai risultati live
 
+# SOSIA SNIPER: estrae la classifica interna del SOSIA adattivo e segue H1
+# di TOP1 / TOP2 / ambo TOP1-TOP2. Nessuna puntata automatica.
+SOSIA_SNIPER_VERSION = 1
+SOSIA_SNIPER_RECORD_MAX = max(100, int(os.getenv("SOSIA_SNIPER_RECORD_MAX", "1500")))
+SOSIA_SNIPER_NOTIFY = os.getenv("SOSIA_SNIPER_NOTIFY", "1") != "0"
+# Soglia fissata PRIMA del forward: 90° percentile del gap TOP1-TOP2 nel
+# blocco storico di verifica separato da 600 draw. Non viene riottimizzata live.
+SOSIA_SNIPER_STRONG_GAP = float(os.getenv("SOSIA_SNIPER_STRONG_GAP", "0.07691307328092588"))
+
 PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
 _LAST_GIT_COMMIT_TS = 0.0
@@ -991,6 +1000,16 @@ class EngineOnly:
         # attive o i risultati degli altri moduli.
         self.sosiap_pretrain = None
 
+        # SOSIA SNIPER e' SOLO un tracker prospettico della graduatoria interna
+        # del SOSIA adattivo. E' aggiuntivo: non azzera e non modifica nulla.
+        self.sosiasniper_pending = None
+        self.sosiasniper_records = []
+        self.sosiasniper_totals = {
+            "evaluated": 0, "skipped": 0, "top1_hits": 0, "top2_hits": 0,
+            "ambo_hits": 0, "strong_evaluated": 0, "strong_top1_hits": 0,
+            "strong_ambo_hits": 0,
+        }
+
         self.state_load_info = {
             "loaded": False,
             "migrated_legacy": False,
@@ -1002,6 +1021,9 @@ class EngineOnly:
         if load:
             self.load_state()
             self._sosiap_load_pretrain()
+            # Upgrade non distruttivo: se il vecchio state ha gia' una previsione
+            # SOSIA adattiva congelata, ricava subito TOP1/TOP2 senza cambiarla.
+            self._sosiasniper_migrate_pending()
 
     @staticmethod
     def _new_engine_stats():
@@ -2147,7 +2169,181 @@ class EngineOnly:
                              else f"• {name}: peso {pending['weights'][name]*100:.1f}% | nessun esito ancora")
         lines += ["", "⚠️ L'apprendimento e' verificabile, ma non garantisce un vantaggio: "
                   "i draw indipendenti non sono prevedibili dallo storico.",
+                  "Classifica interna TOP1/TOP2 e risultati H1: /sosiasniper",
                   "Controllo uniforme separato: /sosiarandom"]
+        return "\n".join(lines)
+
+    def _sosiasniper_rank(self, from_key, weights=None):
+        """Ricostruisce la graduatoria interna senza usare il draw futuro."""
+        experts = self._sosiap_experts(from_key)
+        if any(len(experts.get(name, [])) != 90 for name in SOSIA_PRED_NAMES):
+            return None
+        if not isinstance(weights, dict) or any(name not in weights for name in SOSIA_PRED_NAMES):
+            weights = self._sosiap_weights()
+        try:
+            w = {name: float(weights[name]) for name in SOSIA_PRED_NAMES}
+        except (TypeError, ValueError, KeyError):
+            return None
+        sw = sum(w.values())
+        if not math.isfinite(sw) or sw <= 0:
+            return None
+        w = {name: value / sw for name, value in w.items()}
+        total = {n: 0.0 for n in range(1, 91)}
+        top20 = {}
+        for name in SOSIA_PRED_NAMES:
+            ranking = experts[name]
+            top20[name] = set(ranking[:20])
+            for position, n in enumerate(ranking):
+                total[n] += w[name] * (89 - position) / 89.0
+        ranking = sorted(range(1, 91),
+                         key=lambda n: (-total[n], self._sosiap_tie(from_key, "ensemble", n)))
+        a, b = ranking[0], ranking[1]
+        return {
+            "ranking": ranking,
+            "top1": a,
+            "top2": b,
+            "score": float(total[a]),
+            "score2": float(total[b]),
+            "gap": float(total[a] - total[b]),
+            "consensus": int(sum(a in top20[name] for name in SOSIA_PRED_NAMES)),
+            "consensus2": int(sum(b in top20[name] for name in SOSIA_PRED_NAMES)),
+            "weights": w,
+        }
+
+    def _sosiasniper_arm(self, current_key):
+        if not SOSIA_PRED_ENABLED or not self.sosiap_pending:
+            return None
+        p = self.sosiap_pending
+        if str(p.get("from_key") or "") != str(current_key):
+            return None
+        info = self._sosiasniper_rank(current_key, p.get("weights"))
+        if not info:
+            return None
+        # Controllo di coerenza: il TOP20 ordinato per score deve essere
+        # esattamente lo stesso insieme gia' congelato dal SOSIA adattivo.
+        if sorted(info["ranking"][:20]) != sorted(p.get("prediction", [])):
+            console_log("SOSIA SNIPER: ranking non coerente col TOP20 congelato; nessun segnale")
+            return None
+        self.sosiasniper_pending = {
+            "from_key": str(current_key),
+            "top1": int(info["top1"]), "top2": int(info["top2"]),
+            "score": info["score"], "score2": info["score2"],
+            "gap": info["gap"], "consensus": info["consensus"],
+            "consensus2": info["consensus2"],
+            "strong": bool(info["gap"] >= SOSIA_SNIPER_STRONG_GAP),
+            "strong_threshold": SOSIA_SNIPER_STRONG_GAP,
+        }
+        return self.sosiasniper_pending
+
+    def _sosiasniper_migrate_pending(self):
+        # Migrazione dal vecchio state: non tocca la previsione SOSIA esistente.
+        if self.sosiasniper_pending or not self.sosiap_pending or not self.engine_history:
+            return False
+        from_key = str(self.sosiap_pending.get("from_key") or "")
+        if not from_key or str(self.engine_history[-1].get("key") or "") != from_key:
+            return False
+        return bool(self._sosiasniper_arm(from_key))
+
+    def _sosiasniper_settle(self, day, e, nums):
+        p = self.sosiasniper_pending
+        if not p:
+            return None
+        self.sosiasniper_pending = None
+        if not sim_draw_is_consecutive(p.get("from_key"), day, e):
+            self.sosiasniper_totals["skipped"] += 1
+            return {"skipped": True, "key": draw_key(day, e), "source_key": p.get("from_key"),
+                    "top1": p.get("top1"), "top2": p.get("top2")}
+        actual = set(map(int, nums))
+        top1 = int(p["top1"]); top2 = int(p["top2"])
+        h1 = top1 in actual; h2 = top2 in actual; ambo = h1 and h2
+        rec = {
+            "key": draw_key(day, e), "source_key": str(p["from_key"]),
+            "top1": top1, "top2": top2, "score": float(p["score"]),
+            "score2": float(p["score2"]), "gap": float(p["gap"]),
+            "consensus": int(p["consensus"]), "consensus2": int(p.get("consensus2", 0)),
+            "strong": bool(p.get("strong")), "strong_threshold": float(p.get("strong_threshold", SOSIA_SNIPER_STRONG_GAP)),
+            "top1_hit": bool(h1), "top2_hit": bool(h2), "ambo_hit": bool(ambo),
+            "real": sorted(actual),
+        }
+        self.sosiasniper_records.append(rec)
+        self.sosiasniper_records = self.sosiasniper_records[-SOSIA_SNIPER_RECORD_MAX:]
+        t = self.sosiasniper_totals
+        t["evaluated"] += 1
+        t["top1_hits"] += int(h1); t["top2_hits"] += int(h2); t["ambo_hits"] += int(ambo)
+        if rec["strong"]:
+            t["strong_evaluated"] += 1
+            t["strong_top1_hits"] += int(h1)
+            t["strong_ambo_hits"] += int(ambo)
+        return rec
+
+    @staticmethod
+    def _sosiasniper_signal_lines(p):
+        if not p:
+            return ["🎯 Nessun segnale SOSIA SNIPER pronto."]
+        return [
+            f"🎯 SOSIA SNIPER — PROSSIMA H1 (da {p['from_key']})",
+            f"Ambata #1: {int(p['top1']):02d}",
+            f"Score: {float(p['score']):.3f}",
+            f"Consensus: {int(p['consensus'])}/6",
+            f"Gap dal #2: +{float(p['gap']):.3f}",
+            f"🔥 STRONG: {'SÌ' if p.get('strong') else 'NO'}",
+            f"Secondo: {int(p['top2']):02d}",
+            f"Ambo sperimentale: {int(p['top1']):02d}-{int(p['top2']):02d}",
+        ]
+
+    async def _sosiasniper_notice(self, app, result, notify=True):
+        if not notify or not SOSIA_SNIPER_NOTIFY:
+            return
+        lines = []
+        if result and result.get("skipped"):
+            lines += ["⚠️ SOSIA SNIPER — RISULTATO NON VALUTATO",
+                      f"Manca la consecutività dopo {result.get('source_key','-')}; nessun HIT/MISS inventato.", ""]
+        elif result:
+            lines += [
+                f"🧾 SOSIA SNIPER — RISULTATO {result['key']}",
+                f"Segnale da: {result['source_key']}",
+                f"Ambata #1 {result['top1']:02d}: {'✅ HIT' if result['top1_hit'] else '❌ MISS'}",
+                f"Secondo {result['top2']:02d}: {'✅ HIT' if result['top2_hit'] else '❌ MISS'}",
+                f"Ambo {result['top1']:02d}-{result['top2']:02d}: {'✅ HIT' if result['ambo_hit'] else '❌ MISS'}",
+                f"Segnale STRONG: {'SÌ' if result['strong'] else 'NO'} | gap +{result['gap']:.3f}", "",
+            ]
+        else:
+            lines += ["🧾 SOSIA SNIPER — PRIMO AVVIO", "Nessun risultato precedente da valutare.", ""]
+        lines += self._sosiasniper_signal_lines(self.sosiasniper_pending)
+        t = self.sosiasniper_totals
+        ev = int(t.get("evaluated", 0) or 0)
+        se = int(t.get("strong_evaluated", 0) or 0)
+        if ev:
+            lines += ["", "📊 FORWARD SOSIA SNIPER",
+                      f"• Ambata #1: {t['top1_hits']}/{ev} ({safe_pct(t['top1_hits'], ev):.2f}%) | casuale 22.22%",
+                      f"• Ambo #1-#2: {t['ambo_hits']}/{ev} ({safe_pct(t['ambo_hits'], ev):.2f}%) | casuale 4.74%"]
+        if se:
+            lines.append(f"• STRONG ambata: {t['strong_top1_hits']}/{se} ({safe_pct(t['strong_top1_hits'], se):.2f}%)")
+        lines += ["", "⚠️ Tracker sperimentale: nessuna puntata automatica."]
+        await self.tg(app, "\n".join(lines))
+
+    def sosiasniper_text(self):
+        p = self.sosiasniper_pending
+        t = self.sosiasniper_totals
+        ev = int(t.get("evaluated", 0) or 0); se = int(t.get("strong_evaluated", 0) or 0)
+        lines = ["🎯 SOSIA SNIPER — TOP1 / TOP2 H1", ""] + self._sosiasniper_signal_lines(p)
+        lines += ["", f"📊 FORWARD: {ev} valutati | salti: {int(t.get('skipped',0) or 0)}"]
+        if ev:
+            lines += [f"• Ambata #1: {t['top1_hits']}/{ev} ({safe_pct(t['top1_hits'],ev):.2f}%) | baseline 22.22%",
+                      f"• Secondo #2: {t['top2_hits']}/{ev} ({safe_pct(t['top2_hits'],ev):.2f}%)",
+                      f"• Ambo #1-#2: {t['ambo_hits']}/{ev} ({safe_pct(t['ambo_hits'],ev):.2f}%) | baseline 4.74%"]
+        if se:
+            lines += [f"• STRONG: {se} segnali | ambata {t['strong_top1_hits']}/{se} ({safe_pct(t['strong_top1_hits'],se):.2f}%)",
+                      f"• STRONG ambo: {t['strong_ambo_hits']}/{se} ({safe_pct(t['strong_ambo_hits'],se):.2f}%)"]
+        if self.sosiasniper_records:
+            last = self.sosiasniper_records[-1]
+            lines += ["", f"🧾 ULTIMO ESITO {last['key']}",
+                      f"• #{last['top1']:02d} {'HIT' if last['top1_hit'] else 'MISS'} | "
+                      f"#{last['top2']:02d} {'HIT' if last['top2_hit'] else 'MISS'} | "
+                      f"ambo {'HIT' if last['ambo_hit'] else 'MISS'}"]
+        lines += ["", f"🔥 STRONG se gap TOP1-TOP2 >= {SOSIA_SNIPER_STRONG_GAP:.3f}.",
+                  "Soglia fissata dal blocco storico di verifica; non viene adattata agli esiti live.",
+                  "⚠️ Nessuna puntata automatica."]
         return "\n".join(lines)
 
     @staticmethod
@@ -2396,6 +2592,22 @@ class EngineOnly:
                     all(self._sosia_valid20(p["experts"].get(n)) for n in SOSIA_PRED_NAMES)):
                     self.sosiap_pending = p
 
+            if d.get("sosiasniper_version") == SOSIA_SNIPER_VERSION:
+                totals = d.get("sosiasniper_totals", {})
+                if isinstance(totals, dict):
+                    for k in self.sosiasniper_totals:
+                        try:
+                            self.sosiasniper_totals[k] = max(0, int(totals.get(k, 0)))
+                        except (TypeError, ValueError):
+                            pass
+                recs = d.get("sosiasniper_records", [])
+                if isinstance(recs, list):
+                    self.sosiasniper_records = [r for r in recs if isinstance(r, dict)
+                                                and r.get("top1") and r.get("top2")][-SOSIA_SNIPER_RECORD_MAX:]
+                sp = d.get("sosiasniper_pending")
+                if isinstance(sp, dict) and sp.get("from_key") and sp.get("top1") and sp.get("top2"):
+                    self.sosiasniper_pending = sp
+
             # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
             if self.engine_pending and self.engine_pending.get("accepted"):
                 self._start_h5_session(self.engine_pending)
@@ -2463,6 +2675,10 @@ class EngineOnly:
             "sosiap_learning": self.sosiap_learning,
             "sosiap_totals": self.sosiap_totals,
             "sosiap_pretrain": self.sosiap_pretrain,
+            "sosiasniper_version": SOSIA_SNIPER_VERSION,
+            "sosiasniper_pending": self.sosiasniper_pending,
+            "sosiasniper_records": self.sosiasniper_records[-SOSIA_SNIPER_RECORD_MAX:],
+            "sosiasniper_totals": self.sosiasniper_totals,
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -2908,17 +3124,20 @@ class EngineOnly:
             await self.arm_engine_shadow(None, final_key, mode="live", notify=False)
         return self.engine_bootstrap_done
 
-    async def process_draw(self, app, day, e, nums, mode="live", notify=True, persist=True):
+    async def process_draw(self, app, day, e, nums, mode="live", notify=True, persist=True, sniper_notify=None):
         clean = list(map(int, nums))
         if len(clean) != 20 or len(set(clean)) != 20:
             return None
         if self.already_processed(day, e):
             return None
 
+        sniper_result = None
         if mode == "live":
             # Il campione era stato predisposto ALLA estrazione precedente:
             # nessun dato del draw attuale entra nella simulazione valutata.
             self._sosia_settle(day, e, clean)
+            # Valuta TOP1/TOP2 PRIMA che _sosiap_settle cancelli il pending adattivo.
+            sniper_result = self._sosiasniper_settle(day, e, clean)
             self._sosiap_settle(day, e, clean)
             if self.ambo_sim_sessions and not sim_draw_is_consecutive(self.last_draw_key, day, e):
                 interrupted = list(self.ambo_sim_sessions)
@@ -2947,6 +3166,9 @@ class EngineOnly:
         if mode == "live":
             self._sosia_arm(current_key, clean)
             self._sosiap_arm(current_key)
+            self._sosiasniper_arm(current_key)
+            sniper_notice_flag = notify if sniper_notify is None else bool(sniper_notify)
+            await self._sosiasniper_notice(app, sniper_result, notify=sniper_notice_flag)
 
         if persist:
             self.save_state(git=True)
@@ -3200,7 +3422,7 @@ class EngineOnly:
             "🧾 ULTIMI HIGH CONFIDENCE\n" + recent_txt + "\n\n"
             f"🧪 H5 completati LIVE={len(self.engine_h5_records_live)} | attivi="
             f"{sum(1 for x in self.engine_h5_sessions if x.get('origin_mode')=='live')}\n"
-            "Dettagli: /multih5 | /engineh | /play | /ambo | /sosia\n\n"
+            "Dettagli: /multih5 | /engineh | /play | /ambo | /sosia | /sosiasniper\n\n"
             "Baseline H1 TOP1 casuale: 22.22%.\n"
             "⚠️ Nessuna puntata automatica."
         )
@@ -3216,6 +3438,7 @@ class EngineOnly:
             "/play — strategia conferma H1-H3 -> seconda uscita entro H5\n"
             "/ambo — AMBO 2xHOT5 H1-H3 NO-LOCK: notifiche, costo, premi e saldo\n"
             "/sosia — SOSIA adattivo: 20 previsti e confronto con la prossima reale\n"
+            "/sosiasniper — TOP1/TOP2 interno: ambata, ambo, score, consensus e STRONG\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
             "/menu — questa schermata"
@@ -3249,6 +3472,9 @@ async def cmd_ambo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_sosia(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].sosiap_text())
 
+async def cmd_sosiasniper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].sosiasniper_text())
+
 async def cmd_sosiarandom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].sosia_text())
 
@@ -3266,6 +3492,7 @@ async def setup_commands(app):
         BotCommand("play", "PLAY SHADOW: seconda uscita dopo conferma"),
         BotCommand("ambo", "AMBO 2xHOT5 NO-LOCK: notifiche e saldo"),
         BotCommand("sosia", "20 numeri appresi: previsione H1 e hit"),
+        BotCommand("sosiasniper", "TOP1/TOP2 SOSIA: ambata, ambo e STRONG"),
         BotCommand("sosiarandom", "Controllo casuale 20/90"),
         BotCommand("status", "Stato rapido ENGINE"),
         BotCommand("menu", "Comandi ENGINE ONLY"),
@@ -3400,14 +3627,14 @@ async def startup(engine, app, retry_state=None):
         "🎯 focus: ESATTO 2/5 e >=2/5\n"
         "🎯 AMBO 2xHOT5 H1-H3 NO-LOCK: conferma TOP1 -> DUE accompagnatori caldi -> notifiche prima dei colpi\n"
         "🎮 PLAY SHADOW: conferma H1-H3 -> seconda uscita entro H5\n"
-        "🧠 SOSIA ADATTIVO: prevede i prossimi 20 numeri /sosia; casuale /sosiarandom\n"
+        "🧠 SOSIA ADATTIVO: prevede i prossimi 20 numeri /sosia; SNIPER /sosiasniper; casuale /sosiarandom\n"
         "✅ state persistente + autorotation\n\n"
         f"ENGINE: {'READY' if engine.engine_bootstrap_done else 'BUILD'} | "
         f"filtro target top {ENGINE_SELECT_RATE*100:.0f}%\n"
         f"H5 LIVE gia' disponibili: {len(engine.engine_h5_records_live)}\n"
         f"PLAY storico ricostruito: {len(engine.engine_play_records_live)} record | "
         f"attivi={sum(1 for x in engine.engine_play_sessions if x.get('origin_mode')=='live')}\n\n"
-        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiarandom /menu"
+        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiarandom /menu"
     )
     await notify_pending(engine,app)
     await notify_ambo_active(engine,app)
@@ -3446,7 +3673,9 @@ async def live_loop(engine, app):
                     await engine.process_draw(app,d,e,nums,mode="live",notify=True,persist=True)
                 else:
                     for d,e,nums in unseen:
-                        await engine.process_draw(None,d,e,nums,mode="live",notify=False,persist=False)
+                        # Recupero multi-draw: gli altri moduli restano silenziosi,
+                        # ma SOSIA SNIPER notifica OGNI estrazione come richiesto.
+                        await engine.process_draw(app,d,e,nums,mode="live",notify=False,persist=False,sniper_notify=True)
                     engine.save_state(git=True,force_git=True)
                     await notify_pending(engine,app)
                     await notify_ambo_active(engine,app)
@@ -3637,6 +3866,7 @@ async def run_self_test():
     pred._sosiap_settle("2099-05-02", 123, frozen)
     assert pred.sosiap_totals["skipped"] == 1 and pred.sosiap_totals["evaluated"] == 1
     assert "/sosiarandom" in pred.menu_text()
+    assert "/sosiasniper" in pred.menu_text()
 
     print("SELF-TEST OK: ENGINE/MULTI-HIT/PLAY/AMBO invariati + SOSIA adattivo e controllo casuale")
 
@@ -3661,6 +3891,7 @@ async def main():
     app.add_handler(CommandHandler("play",cmd_play))
     app.add_handler(CommandHandler("ambo",cmd_ambo))
     app.add_handler(CommandHandler("sosia",cmd_sosia))
+    app.add_handler(CommandHandler("sosiasniper",cmd_sosiasniper))
     app.add_handler(CommandHandler("sosiarandom",cmd_sosiarandom))
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("menu",cmd_menu))
