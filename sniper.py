@@ -966,6 +966,430 @@ def acquire_single_instance_lock():
 # ENGINE ONLY
 # ============================================================
 
+# ============================================================
+# DUAL TARGET ENGINE v1 — LABORATORIO SHADOW H1, INDEPENDENTE
+# Le features e la coppia sono congelate a t; settlement solo a t+1.
+# L'indice di ordinamento non e' una probabilita' calibrata.
+# ============================================================
+
+DUAL_VERSION = 1
+DUAL_PRETRAIN_FILE = os.path.join(BASE_DIR, "dual_target_pretrain.json")
+DUAL_PRETRAIN_PRIOR_CAP = 400.0  # massimo 400 osservazioni per esperto; LIVE prevale nel tempo
+DUAL_MIN_HISTORY = max(40, int(os.getenv("DUAL_MIN_HISTORY", "120")))
+DUAL_RECORD_MAX = max(500, int(os.getenv("DUAL_RECORD_MAX", "5000")))
+DUAL_NOTIFY = os.getenv("DUAL_NOTIFY", "0") == "1"  # default silenzioso: comando /dual
+DUAL_P0 = 20.0 / 90.0
+DUAL_PAIR_P0 = (20.0 * 19.0) / (90.0 * 89.0)
+DUAL_AT_LEAST_ONE_P0 = 1.0 - (70.0 * 69.0) / (90.0 * 89.0)
+DUAL_EXPERTS = ("hot8", "hot40", "hot160", "accel", "transition", "gap", "sosia", "engine")
+
+
+class DualTargetLab:
+    """Misuratore forward, non gestisce puntate e non interviene nei motori preesistenti."""
+
+    def __init__(self):
+        self.pending = None
+        self.records = []
+        self.totals = {"evaluated": 0, "skipped": 0, "any": 0, "both": 0,
+                       "hits": 0, "random_any": 0, "random_both": 0,
+                       "random_hits": 0, "paired_wins": 0, "paired_losses": 0,
+                       "paired_ties": 0}
+        self.experts = {name: {"n": 0, "hits": 0} for name in DUAL_EXPERTS}
+        self.last_result = None
+        self.pretrain = None  # training storico separato, MAI confluito nei contatori LIVE
+
+    def load_pretrain(self, path=None):
+        """Legge un prior storico versionato, senza cambiare pending o risultati live."""
+        path = path or DUAL_PRETRAIN_FILE
+        if not os.path.isfile(path):
+            return False
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("schema") != "dual-target-pretrain-v1":
+                return False
+            exper = data.get("experts")
+            if not isinstance(exper, dict) or not isinstance(data.get("source_sha256"), str):
+                return False
+            parsed = {}
+            for name in ("hot8", "hot40", "hot160", "accel", "transition", "gap"):
+                row = exper.get(name)
+                if not isinstance(row, dict):
+                    return False
+                n, hits = int(row["n"]), int(row["hits"])
+                if n <= 0 or hits < 0 or hits > n:
+                    return False
+                parsed[name] = {"n": n, "hits": hits}
+            self.pretrain = {"experts": parsed, "source_sha256": data["source_sha256"],
+                             "train_rows": int(data.get("train_rows", 0)),
+                             "validation": data.get("validation", {}), "test": data.get("test", {})}
+            return True
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+
+    @staticmethod
+    def _valid_pair(obj):
+        return (isinstance(obj, (list, tuple)) and len(obj) == 2 and
+                all(type(n) is int and 1 <= n <= 90 for n in obj) and obj[0] != obj[1])
+
+    @staticmethod
+    def _clip(x, low=-3.0, high=3.0):
+        return max(low, min(high, float(x)))
+
+    @staticmethod
+    def _wilson(hits, trials, z=1.96):
+        if trials <= 0:
+            return (0.0, 1.0)
+        p = hits / trials
+        d = 1.0 + z * z / trials
+        c = (p + z * z / (2.0 * trials)) / d
+        r = z * math.sqrt(p * (1.0 - p) / trials + z*z / (4.0*trials*trials)) / d
+        return max(0.0, c-r), min(1.0, c+r)
+
+    @staticmethod
+    def _hash_tie(key, name, value):
+        h = hashlib.sha256(f"DUAL_V1|{key}|{name}|{value}".encode()).digest()
+        return int.from_bytes(h[:8], "big")
+
+    def load(self, raw):
+        if not isinstance(raw, dict) or raw.get("version") != DUAL_VERSION:
+            return
+        totals = raw.get("totals", {})
+        if isinstance(totals, dict):
+            for k in self.totals:
+                try:
+                    self.totals[k] = max(0, int(totals.get(k, 0)))
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        expert_raw = raw.get("experts", {})
+        if isinstance(expert_raw, dict):
+            for name in DUAL_EXPERTS:
+                row = expert_raw.get(name, {})
+                if isinstance(row, dict):
+                    try:
+                        self.experts[name] = {"n": max(0, int(row.get("n", 0))),
+                                              "hits": max(0, int(row.get("hits", 0)))}
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+        rows = raw.get("records", [])
+        if isinstance(rows, list):
+            self.records = [r for r in rows if isinstance(r, dict) and
+                            isinstance(r.get("key"), str) and
+                            self._valid_pair(r.get("pair"))][-DUAL_RECORD_MAX:]
+        p = raw.get("pending")
+        if (isinstance(p, dict) and isinstance(p.get("from_key"), str) and
+                self._valid_pair(p.get("pair")) and self._valid_pair(p.get("random_pair"))):
+            self.pending = p
+        bootstrap = raw.get("history_bootstrap")
+        if (isinstance(bootstrap, dict) and bootstrap.get("kind") == "state-history-bootstrap-v1"
+                and isinstance(bootstrap.get("experts"), dict)):
+            try:
+                for name in ("hot8", "hot40", "hot160", "accel", "transition", "gap"):
+                    row = bootstrap["experts"][name]
+                    n, hits = int(row["n"]), int(row["hits"])
+                    if n <= 0 or not 0 <= hits <= n:
+                        raise ValueError(name)
+                self.pretrain = bootstrap
+            except (KeyError, ValueError, TypeError):
+                pass
+
+    def bootstrap_from_history(self, history):
+        """Un solo warmstart da storico del vecchio state; nessun backfill nei contatori LIVE."""
+        if self.pretrain is not None or not isinstance(history, list) or len(history) < 520:
+            return False
+        rows = []
+        try:
+            for r in history[-800:]:
+                key, nums = str(r["key"]), list(map(int, r["nums"]))
+                if len(nums) != 20 or len(set(nums)) != 20 or not all(1 <= n <= 90 for n in nums):
+                    return False
+                day, index = key.rsplit("#", 1)
+                datetime.fromisoformat(day)
+                int(index)
+                rows.append({"key": key, "nums": nums})
+        except (KeyError, ValueError, TypeError, AttributeError):
+            return False
+        # Guardia sui dati del vecchio state: scarta distribuzioni fortemente
+        # anomale (es. il file esterno che contiene quasi zero occorrenze del 90).
+        qc = rows[-min(500, len(rows)):]
+        qc_counts = Counter(n for record in qc for n in record["nums"])
+        if (min(qc_counts.get(n, 0) for n in range(1,91)) < len(qc)*0.08
+                or max(qc_counts.get(n,0) for n in range(1,91)) > len(qc)*0.38):
+            return False
+        names = ("hot8", "hot40", "hot160", "accel", "transition", "gap")
+        # Usiamo una copia indipendente, MAI engine_history originale o i vecchi pending.
+        class Replay:
+            engine_pending = None
+            sosiapattern_pending = None
+            engine_history = []
+        replay = Replay()
+        train = {name: {"n": 0, "hits": 0} for name in names}
+        holdout = {"evaluated": 0, "any": 0, "random_any": 0}
+        first_holdout = len(rows) - 80
+        for i in range(321, first_holdout):
+            key = rows[i-1]["key"]
+            current_day, current_index = rows[i]["key"].rsplit("#",1)
+            if not sim_draw_is_consecutive(key, current_day, int(current_index)):
+                continue  # gap: nessun successo o insuccesso inventato
+            replay.engine_history = rows[max(0,i-321):i]
+            feats = self._features(replay, key)
+            if not feats:
+                continue
+            actual = set(rows[i]["nums"])
+            for name in names:
+                vals = feats[name]
+                pair = sorted(range(1,91), key=lambda n: (-vals[n], self._hash_tie(key,name,n)))[:2]
+                train[name]["n"] += 2
+                train[name]["hits"] += len(actual.intersection(pair))
+        if min(x["n"] for x in train.values()) < 120:
+            return False
+        # Il blocco finale non ricalibra i pesi; serve solo come controllo separato.
+        self.pretrain = {"kind": "state-history-bootstrap-v1", "experts": train,
+            "train_rows": train[names[0]]["n"]//2, "test": holdout,
+            "source_start": rows[0]["key"], "source_end": rows[-1]["key"]}
+        old_pending = self.pending
+        try:
+            for i in range(first_holdout, len(rows)):
+                key = rows[i-1]["key"]
+                current_day, current_index = rows[i]["key"].rsplit("#",1)
+                if not sim_draw_is_consecutive(key, current_day, int(current_index)):
+                    continue
+                replay.engine_history = rows[max(0,i-321):i]
+                self.pending = None
+                p = self.arm(replay,key)
+                if not p:
+                    continue
+                actual = set(rows[i]["nums"])
+                holdout["evaluated"] += 1
+                holdout["any"] += bool(actual.intersection(p["pair"]))
+                holdout["random_any"] += bool(actual.intersection(p["random_pair"]))
+        finally:
+            self.pending = old_pending
+        return True
+
+    def dump(self):
+        return {"version": DUAL_VERSION, "pending": self.pending,
+                "totals": self.totals, "experts": self.experts,
+                "records": self.records[-DUAL_RECORD_MAX:],
+                "history_bootstrap": self.pretrain if (self.pretrain or {}).get("kind") == "state-history-bootstrap-v1" else None}
+
+    def _features(self, engine, current_key):
+        """Richiede storia che termina in current_key. Nessuna estrazione futura."""
+        hist = engine.engine_history
+        if len(hist) < DUAL_MIN_HISTORY or str(hist[-1].get("key")) != str(current_key):
+            return None
+        rows = [set(map(int, r["nums"])) for r in hist]
+        last = rows[-1]
+        names = {}
+
+        def recent_z(window):
+            rr = rows[-window:]
+            cnt = Counter(n for s in rr for n in s)
+            sigma = math.sqrt(len(rr) * DUAL_P0 * (1.0-DUAL_P0))
+            return {n: self._clip((cnt[n] - len(rr)*DUAL_P0)/max(1.0,sigma))
+                    for n in range(1,91)}
+
+        for w, name in ((8,"hot8"),(40,"hot40"),(160,"hot160")):
+            names[name] = recent_z(w)
+        names["accel"] = {n: self._clip((names["hot8"][n] - names["hot160"][n])*0.7)
+                          for n in range(1,91)}
+
+        # Transition ha un prior uniforme esplicito; usa coppie (stato_i, draw_i+1)
+        # fino al SOLO draw corrente, senza usare il prossimo draw da prevedere.
+        response = Counter()
+        support = 0.0
+        old = rows[-321:]
+        for i in range(len(old)-1):
+            overlap = len(old[i] & last)
+            if overlap < 3:
+                continue
+            weight = overlap / 20.0
+            support += weight
+            for n in old[i+1]:
+                response[n] += weight
+        sigma = math.sqrt(max(1.0,support) * DUAL_P0 * (1-DUAL_P0))
+        names["transition"] = {n: self._clip((response[n] - support*DUAL_P0) / sigma)
+                                for n in range(1,91)}
+
+        # Lag e ripetizioni sono features esplorative: l'apprendimento forward
+        # puo' ridurne il peso, NON implicano che un ritardatario sia 'dovuto'.
+        gap = {}
+        for n in range(1,91):
+            g = next((i for i, s in enumerate(reversed(rows[-75:])) if n in s), 75)
+            gap[n] = self._clip((min(g, 18) - 3.5)/6.0)
+        names["gap"] = gap
+        sosia = engine.sosiapattern_pending
+        if isinstance(sosia, dict) and str(sosia.get("from_key")) == str(current_key):
+            ranked = sosia.get("rank20", [])
+            if engine._sosia_valid20(ranked):
+                positions = {int(n): i for i,n in enumerate(ranked)}
+                names["sosia"] = {n: (1.7 - positions[n]/10.0) if n in positions else -0.38
+                                  for n in range(1,91)}
+        # Il vecchio ENGINE resta una fonte di evidenza, non viene riaddestrato.
+        ep = engine.engine_pending
+        if (isinstance(ep, dict) and ep.get("accepted") and
+                str(ep.get("signal_from_key")) == str(current_key) and ep.get("top1")):
+            top = int(ep["top1"])
+            names["engine"] = {n: 2.5 if n == top else 0.0 for n in range(1,91)}
+        return names
+
+    def _weights(self, available):
+        """Shrink forte dei rendimenti PRECEDENTI, senza ottimizzare sul futuro."""
+        raw = {}
+        for name in available:
+            r = self.experts[name]
+            n, hits = int(r["n"]), int(r["hits"])
+            historic = (self.pretrain or {}).get("experts", {}).get(name, {})
+            hist_n = max(0, int(historic.get("n", 0)))
+            hist_hits = max(0, int(historic.get("hits", 0)))
+            # Storico come prior leggero (n NON aggiunto alle statistiche LIVE).
+            # SOSIA/ENGINE: senza replay dei loro segnali originali, nessun prior sintetico.
+            hist_strength = min(DUAL_PRETRAIN_PRIOR_CAP, hist_n)
+            hist_rate = hist_hits / hist_n if hist_n else DUAL_P0
+            posterior = (hits + 200.0*DUAL_P0 + hist_strength*hist_rate) / (n+200.0+hist_strength)
+            raw[name] = max(0.65, min(1.35, 1.0+3.0*(posterior-DUAL_P0)))
+        scale = sum(raw.values()) or 1.0
+        return {name: value/scale for name,value in raw.items()}
+
+    def arm(self, engine, current_key):
+        if self.pending is not None:
+            # Non sovrascrivere mai una previsione precedente non ancora valutata.
+            return self.pending if self.pending.get("from_key") == current_key else None
+        feats = self._features(engine, current_key)
+        if not feats:
+            return None
+        weights = self._weights(feats)
+        combined = {n: sum(weights[name]*f[n] for name,f in feats.items())
+                    for n in range(1,91)}
+        # Baseline H1 esatta: p >=1 di due numeri distinti = 39.70%.
+        # Scelta sulla totalita' delle 4005 coppie, con debole penalita' per
+        # co-occorrenze storiche sopra il prior teorico. Non e' probabilita' reale.
+        recent = [set(map(int,r["nums"])) for r in engine.engine_history[-250:]]
+        co = Counter()
+        for nums in recent:
+            for pair in combinations(sorted(nums), 2):
+                co[pair] += 1
+        best = None
+        best_score = -float("inf")
+        for a in range(1,90):
+            for b in range(a+1,91):
+                joint = (co[(a,b)] + 160.0*DUAL_PAIR_P0) / (len(recent)+160.0)
+                # Non interpretare come p stimata, e' SOLO indice ordinante.
+                score = combined[a] + combined[b] - 5.0*(joint-DUAL_PAIR_P0)
+                tie = self._hash_tie(current_key, "pair", f"{a}-{b}")
+                if score > best_score + 1e-12 or (abs(score-best_score) <= 1e-12 and
+                                                   (best is None or tie < best[2])):
+                    best, best_score = (a,b,tie), score
+        pair = [best[0], best[1]]
+        # Il controllo casuale e' congelato allo stesso tempo, ma indipendente
+        # da scores/risultati. Seed riproducibile per audit dopo il riavvio.
+        rand = sorted(range(1,91), key=lambda n: self._hash_tie(current_key,"blind",n))[:2]
+        expert_pairs = {}
+        for name, vals in feats.items():
+            expert_pairs[name] = sorted(range(1,91),
+                key=lambda n: (-vals[n],self._hash_tie(current_key,name,n)))[:2]
+        self.pending = {"from_key": str(current_key), "pair": pair,
+                        "random_pair": rand, "experts": expert_pairs,
+                        "weights": {k: round(v,6) for k,v in weights.items()},
+                        "score_index": round(best_score,6),
+                        "rank20_sosia": (list(engine.sosiapattern_pending.get("rank20",[]))
+                            if isinstance(engine.sosiapattern_pending,dict) and
+                            engine.sosiapattern_pending.get("from_key") == current_key else []),
+                        "created_at": now_txt()}
+        return self.pending
+
+    def settle(self, day, e, nums):
+        p = self.pending
+        if not p:
+            return None
+        # Settlement prima di armare: il vecchio pending non puo' essere rimpiazzato.
+        self.pending = None
+        key = draw_key(day,e)
+        if not sim_draw_is_consecutive(p["from_key"], day, e):
+            self.totals["skipped"] += 1
+            self.last_result = {"key":key,"skipped":True,"from_key":p["from_key"]}
+            return self.last_result
+        actual = set(map(int,nums))
+        hit = sorted(actual.intersection(p["pair"]))
+        blind_hit = sorted(actual.intersection(p["random_pair"]))
+        rec = {"key":key, "from_key":p["from_key"], "pair":list(p["pair"]),
+               "random_pair":list(p["random_pair"]), "hit":hit,
+               "random_hit":blind_hit, "count":len(hit), "random_count":len(blind_hit),
+               "expert_hits":{}, "score_index":p.get("score_index")}
+        t = self.totals
+        t["evaluated"] += 1
+        t["hits"] += len(hit); t["any"] += bool(hit); t["both"] += (len(hit)==2)
+        t["random_hits"] += len(blind_hit)
+        t["random_any"] += bool(blind_hit); t["random_both"] += (len(blind_hit)==2)
+        t["paired_wins"] += (bool(hit) and not bool(blind_hit))
+        t["paired_losses"] += (not bool(hit) and bool(blind_hit))
+        t["paired_ties"] += (bool(hit) == bool(blind_hit))
+        for name, pair in p.get("experts", {}).items():
+            if name in self.experts and self._valid_pair(pair):
+                hits = len(actual.intersection(pair))
+                self.experts[name]["n"] += 2
+                self.experts[name]["hits"] += hits
+                rec["expert_hits"][name] = hits
+        self.records.append(rec)
+        self.records = self.records[-DUAL_RECORD_MAX:]
+        self.last_result = rec
+        return rec
+
+    def text(self):
+        p, t = self.pending, self.totals
+        n = t["evaluated"]
+        lines = ["🧠 DUAL TARGET ENGINE v1 — H1 SHADOW",
+                 "Obiettivo: >=1 HIT fra 2 numeri nella prossima estrazione.",
+                 "No puntate automatiche. Indici NON sono probabilita' predittive."]
+        if p:
+            lines.extend([f"🎯 COPPIA CONGELATA da {p['from_key']}: "
+                          f"{p['pair'][0]:02d} + {p['pair'][1]:02d}",
+                          f"Indice comparativo: {p.get('score_index',0):+.4f}",
+                          "🧪 CONTROLLO CASUALE congelato: " +
+                          " + ".join(f"{x:02d}" for x in p["random_pair"]),
+                          "Pesi esperti: " + " ".join(f"{k}={v:.2f}" for k,v in
+                                                         p.get("weights",{}).items())])
+        else:
+            lines.append("Nessun pending H1: attendo il prossimo draw e lo storico minimo.")
+        pre = self.pretrain
+        if pre:
+            va, te = pre.get("validation", {}), pre.get("test", {})
+            source_txt = "storico STATE" if pre.get("kind") == "state-history-bootstrap-v1" else "file esterno"
+            lines.append(f"📚 PRETRAIN {source_txt}: {pre.get('train_rows',0)} draw TRAIN | "+
+                         f"validation {va.get('evaluated',0)} | test {te.get('evaluated',0)} (SEPARATI da LIVE)")
+            if te.get("evaluated"):
+                lines.append(f"• TEST storico DUAL >=1: {te.get('any',0)}/{te['evaluated']} | " +
+                             f"random {te.get('random_any',0)}/{te['evaluated']}")
+        else:
+            lines.append("📚 PRETRAIN: non caricato (manca dual_target_pretrain.json)")
+        lines.append(f"📊 FORWARD SOLO FUTURO: {n} confronti | salti {t['skipped']}")
+        if n:
+            low,high = self._wilson(t["any"],n)
+            lines.extend([f"• DUAL >=1: {t['any']}/{n} ({safe_pct(t['any'],n):.2f}%)",
+                          f"• IC Wilson 95% (descrittivo, non corretto per selezione): "
+                          f"{100*low:.2f}–{100*high:.2f}%",
+                          f"• DUAL 2/2: {t['both']}/{n} | HIT totali {t['hits']}/{2*n}",
+                          f"• RANDOM >=1: {t['random_any']}/{n} "
+                          f"({safe_pct(t['random_any'],n):.2f}%) | 2/2: {t['random_both']}/{n}",
+                          f"• Confronto appaiato DUAL vince/perde/pareggia: "
+                          f"{t['paired_wins']}/{t['paired_losses']}/{t['paired_ties']}",
+                          f"• Teorico >=1 39.70% | 2/2 4.74% | singolo 22.22%"])
+            for count in (100,300):
+                subset = self.records[-count:]
+                if len(subset) >= count:
+                    lines.append(f"• Rolling {count}: DUAL "
+                        f"{sum(bool(r['count']) for r in subset)}/{count} | RANDOM "
+                        f"{sum(bool(r['random_count']) for r in subset)}/{count}")
+            if self.last_result:
+                r = self.last_result
+                lines.append(f"Ultimo {r['key']}: " +
+                    ("SALTO: non valutato" if r.get("skipped") else
+                     f"DUAL {r['count']}/2, RANDOM {r['random_count']}/2"))
+        lines.append("⚠️ Complessita' e overfitting non aumentano la probabilita' fisica di estrazione.")
+        return "\n".join(lines)
+
+
+
 class EngineOnly:
     def __init__(self, load=True):
         self.processed = []
@@ -1058,6 +1482,9 @@ class EngineOnly:
             "transition_ties": 0,
         }
 
+        # Stato isolato: nessuno dei contatori preesistenti viene modificato.
+        self.dual = DualTargetLab()
+
         self.state_load_info = {
             "loaded": False,
             "migrated_legacy": False,
@@ -1069,6 +1496,8 @@ class EngineOnly:
         if load:
             self.load_state()
             self._sosiap_load_pretrain()
+            self.dual.load_pretrain()  # file esterno SOLO se esplicitamente presente nella root
+            self.dual.bootstrap_from_history(self.engine_history)  # warmstart dal vecchio state LIVE
             # Upgrade non distruttivo: se il vecchio state ha gia' una previsione
             # SOSIA adattiva congelata, ricava subito TOP1/TOP2 senza cambiarla.
             self._sosiasniper_migrate_pending()
@@ -1078,6 +1507,9 @@ class EngineOnly:
             _pending_key = str((self.sosiap_pending or {}).get("from_key") or "")
             self._sosiapattern_arm(_pending_key)
             self._sosiapatternlab_arm(_pending_key)
+            # Al riavvio, congela soltanto se il prossimo draw NON e' ancora noto.
+            # Il nuovo motore non ricostruisce risultati retroattivi.
+            self.dual.arm(self, _pending_key) if _pending_key else None
 
     @staticmethod
     def _new_engine_stats():
@@ -3258,6 +3690,8 @@ class EngineOnly:
                 if isinstance(lp, dict) and lp.get("from_key") and lp.get("position_pick"):
                     self.sosiapatternlab_pending = lp
 
+            self.dual.load(d.get("dual_target_v1"))
+
             # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
             if self.engine_pending and self.engine_pending.get("accepted"):
                 self._start_h5_session(self.engine_pending)
@@ -3337,6 +3771,7 @@ class EngineOnly:
             "sosiapatternlab_pending": self.sosiapatternlab_pending,
             "sosiapatternlab_records": self.sosiapatternlab_records[-SOSIA_SNIPER_RECORD_MAX:],
             "sosiapatternlab_totals": self.sosiapatternlab_totals,
+            "dual_target_v1": self.dual.dump(),
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -3795,6 +4230,7 @@ class EngineOnly:
         if mode == "live":
             # Il campione era stato predisposto ALLA estrazione precedente:
             # nessun dato del draw attuale entra nella simulazione valutata.
+            dual_result = self.dual.settle(day, e, clean)
             self._sosia_settle(day, e, clean)
             # Valuta TOP1/TOP2 PRIMA che _sosiap_settle cancelli il pending adattivo.
             sniper_result = self._sosiasniper_settle(day, e, clean)
@@ -3831,6 +4267,10 @@ class EngineOnly:
             self._sosiasniper_arm(current_key)
             self._sosiapattern_arm(current_key)
             self._sosiapatternlab_arm(current_key)
+            self.dual.bootstrap_from_history(self.engine_history)
+            self.dual.arm(self, current_key)
+            if DUAL_NOTIFY and notify and (dual_result or self.dual.pending):
+                await self.tg(app, self.dual.text())
             sniper_notice_flag = notify if sniper_notify is None else bool(sniper_notify)
             await self._sosiasniper_notice(app, sniper_result, notify=sniper_notice_flag,
                                            pattern_result=pattern_result, lab_result=patternlab_result)
@@ -4105,6 +4545,7 @@ class EngineOnly:
             "/sosia — SOSIA adattivo: 20 previsti e confronto con la prossima reale\n"
             "/sosiasniper — TOP5 + SNIPER PROB + coppia 190 + FUSION ENGINE\n"
             "/sosiapattern — posizioni + calibrated + transition + number watch\n"
+            "/dual — DUAL TARGET v1: due numeri H1, controllo casuale e forward\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
             "/menu — questa schermata"
@@ -4144,6 +4585,9 @@ async def cmd_sosiasniper(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_sosiapattern(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].sosiapattern_text())
 
+async def cmd_dual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].dual.text())
+
 async def cmd_sosiarandom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].sosia_text())
 
@@ -4163,6 +4607,7 @@ async def setup_commands(app):
         BotCommand("sosia", "20 numeri appresi: previsione H1 e hit"),
         BotCommand("sosiasniper", "TOP5, PROB, coppia 190 e FUSION"),
         BotCommand("sosiapattern", "Pattern, calibrated, transition e watch"),
+        BotCommand("dual", "DUAL TARGET: due numeri H1 e confronto random"),
         BotCommand("sosiarandom", "Controllo casuale 20/90"),
         BotCommand("status", "Stato rapido ENGINE"),
         BotCommand("menu", "Comandi ENGINE ONLY"),
@@ -4587,6 +5032,7 @@ async def main():
     app.add_handler(CommandHandler("sosia",cmd_sosia))
     app.add_handler(CommandHandler("sosiasniper",cmd_sosiasniper))
     app.add_handler(CommandHandler("sosiapattern",cmd_sosiapattern))
+    app.add_handler(CommandHandler("dual",cmd_dual))
     app.add_handler(CommandHandler("sosiarandom",cmd_sosiarandom))
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("menu",cmd_menu))
