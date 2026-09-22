@@ -196,6 +196,19 @@ SOSIA_SNIPER_PAIR_LOOKBACK = max(30, int(os.getenv("SOSIA_SNIPER_PAIR_LOOKBACK",
 # Pattern: nuovo tracker SOLO osservativo per posizione, numeri e co-HIT del SOSIA.
 SOSIA_PATTERN_VERSION = 1
 
+# PATTERN LAB: tre piste SHADOW aggiuntive, tutte congelate PRIMA del draw futuro.
+# - POSITION CALIBRATED: corregge con shrink la resa storica delle posizioni #1..#20.
+# - PATTERN TRANSITION: osserva il passaggio fra fasce A/B/C/D del ranking.
+# - NUMBER WATCH: segue 5 numeri del TOP20 con miglior resa storica shrinkata.
+# Nessuna di queste piste modifica SOSIA, ENGINE, pesi, soglie o giocate.
+SOSIA_PATTERN_LAB_VERSION = 1
+SOSIA_POS_PRIOR_DRAWS = max(20.0, float(os.getenv("SOSIA_POS_PRIOR_DRAWS", "120")))
+SOSIA_POS_CAL_EXPONENT = max(0.0, min(2.0, float(os.getenv("SOSIA_POS_CAL_EXPONENT", "0.60"))))
+SOSIA_NUMBER_WATCH_PRIOR = max(10.0, float(os.getenv("SOSIA_NUMBER_WATCH_PRIOR", "60")))
+SOSIA_NUMBER_WATCH_SIZE = max(1, min(10, int(os.getenv("SOSIA_NUMBER_WATCH_SIZE", "5"))))
+SOSIA_NUMBER_WATCH_MIN_SELECT = max(1, int(os.getenv("SOSIA_NUMBER_WATCH_MIN_SELECT", "15")))
+SOSIA_TRANSITION_MIN_SUPPORT = max(3, int(os.getenv("SOSIA_TRANSITION_MIN_SUPPORT", "8")))
+
 PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
 _LAST_GIT_COMMIT_TS = 0.0
@@ -1030,6 +1043,21 @@ class EngineOnly:
         self.sosiapattern_records = []
         self.sosiapattern_skipped = 0
 
+        # Laboratorio prospettico sopra SOSIA PATTERN. Parte dal momento in cui
+        # viene installato: usa il vecchio pattern come training, ma NON inventa
+        # risultati retroattivi per le nuove regole.
+        self.sosiapatternlab_pending = None
+        self.sosiapatternlab_records = []
+        self.sosiapatternlab_totals = {
+            "evaluated": 0, "skipped": 0,
+            "pos_evaluated": 0, "pos_hits": 0,
+            "watch_evaluated": 0, "watch_picks": 0, "watch_hits": 0,
+            "watch_top1_hits": 0,
+            "transition_evaluated": 0, "transition_band_hits": 0,
+            "transition_dom_evaluated": 0, "transition_dom_correct": 0,
+            "transition_ties": 0,
+        }
+
         self.state_load_info = {
             "loaded": False,
             "migrated_legacy": False,
@@ -1047,7 +1075,9 @@ class EngineOnly:
             self._sosiasniper_upgrade_pending()
             # Se lo state ha gia' un SOSIA congelato, agganciamo la medesima
             # previsione: NON creiamo una previsione alternativa per quel draw.
-            self._sosiapattern_arm(str((self.sosiap_pending or {}).get("from_key") or ""))
+            _pending_key = str((self.sosiap_pending or {}).get("from_key") or "")
+            self._sosiapattern_arm(_pending_key)
+            self._sosiapatternlab_arm(_pending_key)
 
     @staticmethod
     def _new_engine_stats():
@@ -2538,10 +2568,306 @@ class EngineOnly:
             mask = " ".join("".join("X" if i in good else "·" for i in range(start,start+5))
                             for start in (1,6,11,16))
             lines.append(f"• {row['key']}: {mask} ({row['hits']}/20)")
+        lines += self._sosiapatternlab_summary_lines()
         lines += ["", "Le posizioni nella lista numerica 01..90 NON sono il ranking per score.",
+                  "POSITION/TRANSITION/WATCH usano shrink e sono tracker prospettici, non probabilita' garantite.",
                   "La frequenza di uno schema passato non garantisce ripetizioni future.",
                   "Non cambia previsione, pesi, ENGINE o giocate: ricerca SHADOW."]
         return "\n".join(lines)
+
+    @staticmethod
+    def _pattern_band_counts(row):
+        good = set(int(x) for x in row.get("hit_ranks", []) if isinstance(x, (int, float)))
+        return [sum(start <= r <= start + 4 for r in good) for start in (1, 6, 11, 16)]
+
+    @classmethod
+    def _pattern_dominant_band(cls, row):
+        counts = cls._pattern_band_counts(row)
+        if not counts or max(counts) <= 0:
+            return None
+        m = max(counts)
+        winners = [i for i, value in enumerate(counts) if value == m]
+        return winners[0] if len(winners) == 1 else None
+
+    @staticmethod
+    def _pattern_band_name(idx):
+        return ("A #1-5", "B #6-10", "C #11-15", "D #16-20")[idx] if idx in range(4) else "-"
+
+    @staticmethod
+    def _pattern_keys_consecutive(a, b):
+        try:
+            day, draw_id = str(b).rsplit("#", 1)
+            return sim_draw_is_consecutive(a, day, int(draw_id))
+        except Exception:
+            return False
+
+    def _sosiapattern_position_stats(self):
+        """Posterior shrink per ogni posizione, usando SOLO draw gia' conclusi."""
+        rows = self.sosiapattern_records
+        n = len(rows)
+        hits = [0] * 20
+        for row in rows:
+            for r in row.get("hit_ranks", []):
+                try:
+                    rr = int(r)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= rr <= 20:
+                    hits[rr - 1] += 1
+        base = 20.0 / 90.0
+        prior = SOSIA_POS_PRIOR_DRAWS
+        posterior = [(h + prior * base) / (n + prior) for h in hits]
+        return {"n": n, "hits": hits, "posterior": posterior, "baseline": base}
+
+    def _sosiapattern_number_stats(self):
+        selected = Counter(); hits = Counter()
+        for row in self.sosiapattern_records:
+            good = set(int(x) for x in row.get("hit_nums", []))
+            for num in row.get("rank20", []):
+                try:
+                    n = int(num)
+                except (TypeError, ValueError):
+                    continue
+                selected[n] += 1
+                if n in good:
+                    hits[n] += 1
+        base = 20.0 / 90.0
+        prior = SOSIA_NUMBER_WATCH_PRIOR
+        out = {}
+        for n in range(1, 91):
+            sel = int(selected.get(n, 0)); hit = int(hits.get(n, 0))
+            post = (hit + prior * base) / (sel + prior)
+            out[n] = {"selected": sel, "hits": hit, "posterior": post,
+                      "raw": (hit / sel) if sel else None}
+        return out
+
+    def _sosiapattern_transition_stats(self):
+        """Transizioni fra fascia dominante, ignorando tie e buchi temporali."""
+        matrix = [[0 for _ in range(4)] for _ in range(4)]
+        rows = self.sosiapattern_records
+        for left, right in zip(rows, rows[1:]):
+            if not self._pattern_keys_consecutive(left.get("key"), right.get("key")):
+                continue
+            a = self._pattern_dominant_band(left)
+            b = self._pattern_dominant_band(right)
+            if a is None or b is None:
+                continue
+            matrix[a][b] += 1
+        last_band = self._pattern_dominant_band(rows[-1]) if rows else None
+        support = sum(matrix[last_band]) if last_band is not None else 0
+        predicted = None
+        if last_band is not None and support >= SOSIA_TRANSITION_MIN_SUPPORT:
+            # Laplace non cambia l'ordine ma rende esplicito che non trattiamo
+            # pochi casi come una probabilita' certa.
+            vals = [matrix[last_band][j] + 1 for j in range(4)]
+            best = max(vals)
+            winners = [j for j, v in enumerate(vals) if v == best]
+            if len(winners) == 1:
+                predicted = winners[0]
+        return {"matrix": matrix, "last_band": last_band,
+                "support": support, "predicted": predicted}
+
+    def _sosiapatternlab_arm(self, current_key):
+        """Congela le tre nuove piste prima del prossimo draw."""
+        if not current_key:
+            return None
+        old = self.sosiapatternlab_pending
+        if old:
+            return old if str(old.get("from_key")) == str(current_key) else None
+        pat = self.sosiapattern_pending
+        if not pat or str(pat.get("from_key") or "") != str(current_key):
+            return None
+        rank20 = [int(x) for x in pat.get("rank20", [])]
+        if not self._sosia_valid20(rank20):
+            return None
+        scores = list(pat.get("scores", []))
+        cons = list(pat.get("consensus", []))
+        if len(scores) != 20:
+            scores = [20 - i for i in range(20)]
+        if len(cons) != 20:
+            cons = [0] * 20
+
+        # 1) POSITION CALIBRATED. Il posterior e' shrinkato verso 22.22%; non e'
+        # una probabilita' garantita. La correzione resta moderata.
+        pst = self._sosiapattern_position_stats()
+        base = pst["baseline"]
+        pos_post = pst["posterior"]
+        calibrated = []
+        for i, n in enumerate(rank20):
+            raw_score = max(1e-9, float(scores[i]))
+            ratio = max(0.50, min(1.50, pos_post[i] / base))
+            idx = raw_score * (ratio ** SOSIA_POS_CAL_EXPONENT)
+            calibrated.append((idx, raw_score, pos_post[i], n, i + 1, int(cons[i])))
+        calibrated.sort(key=lambda x: (-x[0], x[4], x[3]))
+        best = calibrated[0]
+
+        # 2) NUMBER WATCH: soltanto numeri gia' nel TOP20 corrente. Il confronto
+        # prospettico parte ora; lo storico serve solo a creare il ranking iniziale.
+        nstats = self._sosiapattern_number_stats()
+        watch_rows = []
+        for rank_idx, n in enumerate(rank20, start=1):
+            st = nstats[n]
+            mature = st["selected"] >= SOSIA_NUMBER_WATCH_MIN_SELECT
+            watch_rows.append((1 if mature else 0, st["posterior"], st["selected"],
+                               -rank_idx, n, rank_idx, st["hits"], st["raw"]))
+        watch_rows.sort(reverse=True)
+        watch_rows = watch_rows[:SOSIA_NUMBER_WATCH_SIZE]
+        watch = [{"num": int(x[4]), "rank": int(x[5]), "selected": int(x[2]),
+                  "hits": int(x[6]), "posterior": float(x[1]),
+                  "mature": bool(x[0])} for x in watch_rows]
+
+        # 3) PATTERN TRANSITION: previsione della fascia dominante successiva,
+        # solo se lo stato precedente ha supporto storico minimo.
+        trans = self._sosiapattern_transition_stats()
+
+        self.sosiapatternlab_pending = {
+            "from_key": str(current_key),
+            "position_pick": int(best[3]), "position_rank": int(best[4]),
+            "position_index": float(best[0]), "position_raw_score": float(best[1]),
+            "position_posterior": float(best[2]), "position_history_n": int(pst["n"]),
+            "watch": watch,
+            "transition_from": trans["last_band"],
+            "transition_pred": trans["predicted"],
+            "transition_support": int(trans["support"]),
+        }
+        return self.sosiapatternlab_pending
+
+    def _sosiapatternlab_settle(self, day, e, nums, pattern_result=None):
+        p = self.sosiapatternlab_pending
+        if not p:
+            return None
+        self.sosiapatternlab_pending = None
+        key = draw_key(day, e)
+        if not sim_draw_is_consecutive(p.get("from_key"), day, e):
+            self.sosiapatternlab_totals["skipped"] += 1
+            return {"skipped": True, "key": key, "from_key": p.get("from_key")}
+        actual = set(map(int, nums))
+        pos_pick = int(p["position_pick"])
+        pos_hit = pos_pick in actual
+        watch = [dict(x) for x in p.get("watch", []) if isinstance(x, dict) and x.get("num")]
+        watch_hit_nums = [int(x["num"]) for x in watch if int(x["num"]) in actual]
+        watch_top1_hit = bool(watch and int(watch[0]["num"]) in actual)
+
+        trans_pred = p.get("transition_pred")
+        trans_band_hits = None
+        trans_dom = None
+        trans_dom_correct = None
+        if pattern_result and not pattern_result.get("skipped"):
+            trans_dom = self._pattern_dominant_band(pattern_result)
+            if trans_pred is not None:
+                lo = 1 + 5 * int(trans_pred)
+                good = set(int(x) for x in pattern_result.get("hit_ranks", []))
+                trans_band_hits = sum(lo <= r <= lo + 4 for r in good)
+                if trans_dom is not None:
+                    trans_dom_correct = int(trans_dom) == int(trans_pred)
+
+        rec = {
+            "key": key, "from_key": str(p["from_key"]),
+            "position_pick": pos_pick, "position_rank": int(p["position_rank"]),
+            "position_posterior": float(p["position_posterior"]),
+            "position_hit": bool(pos_hit),
+            "watch": watch, "watch_hit_nums": watch_hit_nums,
+            "watch_hits": len(watch_hit_nums), "watch_top1_hit": watch_top1_hit,
+            "transition_from": p.get("transition_from"),
+            "transition_pred": trans_pred, "transition_support": int(p.get("transition_support", 0)),
+            "transition_band_hits": trans_band_hits,
+            "transition_actual_dom": trans_dom,
+            "transition_dom_correct": trans_dom_correct,
+        }
+        self.sosiapatternlab_records.append(rec)
+        self.sosiapatternlab_records = self.sosiapatternlab_records[-SOSIA_SNIPER_RECORD_MAX:]
+        t = self.sosiapatternlab_totals
+        t["evaluated"] += 1
+        t["pos_evaluated"] += 1; t["pos_hits"] += int(pos_hit)
+        if watch:
+            t["watch_evaluated"] += 1
+            t["watch_picks"] += len(watch)
+            t["watch_hits"] += len(watch_hit_nums)
+            t["watch_top1_hits"] += int(watch_top1_hit)
+        if trans_pred is not None and trans_band_hits is not None:
+            t["transition_evaluated"] += 1
+            t["transition_band_hits"] += int(trans_band_hits)
+            if trans_dom is None:
+                t["transition_ties"] += 1
+            else:
+                t["transition_dom_evaluated"] += 1
+                t["transition_dom_correct"] += int(bool(trans_dom_correct))
+        return rec
+
+    @classmethod
+    def _sosiapatternlab_result_lines(cls, r):
+        if not r:
+            return []
+        if r.get("skipped"):
+            return ["🧭 PATTERN LAB: draw non consecutivo, nessun esito inventato."]
+        watch_nums = [int(x["num"]) for x in r.get("watch", [])]
+        wh = set(int(x) for x in r.get("watch_hit_nums", []))
+        lines = [
+            "🧭 PATTERN LAB — RISULTATO",
+            f"• POSITION CALIBRATED {int(r['position_pick']):02d} (rank originale #{int(r['position_rank'])}): "
+            f"{'✅ HIT' if r.get('position_hit') else '❌ MISS'}",
+        ]
+        if watch_nums:
+            lines.append(f"• NUMBER WATCH: {len(wh)}/{len(watch_nums)} HIT | " +
+                         " ".join(f"{n:02d}{'✅' if n in wh else '❌'}" for n in watch_nums))
+        if r.get("transition_pred") is not None:
+            pred = int(r["transition_pred"])
+            bh = r.get("transition_band_hits")
+            dom = r.get("transition_actual_dom")
+            dom_txt = "tie/non unico" if dom is None else cls._pattern_band_name(int(dom))
+            lines.append(f"• TRANSITION watch {cls._pattern_band_name(pred)}: {int(bh or 0)}/5 HIT | "
+                         f"dominante reale {dom_txt}" +
+                         (" | ✅" if r.get("transition_dom_correct") is True else
+                          " | ❌" if r.get("transition_dom_correct") is False else ""))
+        return lines
+
+    @classmethod
+    def _sosiapatternlab_signal_lines(cls, p):
+        if not p:
+            return ["🧭 PATTERN LAB: in attesa del prossimo congelamento."]
+        watch = p.get("watch", [])
+        lines = [
+            "🧭 PATTERN LAB — PROSSIMA H1",
+            f"🎛 POSITION CALIBRATED: {int(p['position_pick']):02d} | rank originale #{int(p['position_rank'])} "
+            f"| resa posizione shrink {100*float(p['position_posterior']):.1f}%",
+        ]
+        if watch:
+            parts = []
+            for x in watch:
+                mark = "*" if x.get("mature") else "~"
+                parts.append(f"{int(x['num']):02d}{mark}(r#{int(x['rank'])},{100*float(x['posterior']):.1f}%)")
+            lines.append("👁 NUMBER WATCH: " + " ".join(parts))
+            lines.append(f"  *=≥{SOSIA_NUMBER_WATCH_MIN_SELECT} selezioni storiche; ~=campione piccolo")
+        if p.get("transition_pred") is None:
+            prev = cls._pattern_band_name(p.get("transition_from")) if p.get("transition_from") is not None else "-"
+            lines.append(f"🔄 PATTERN TRANSITION: stato {prev} | nessun segnale (supporto {int(p.get('transition_support',0))}/{SOSIA_TRANSITION_MIN_SUPPORT})")
+        else:
+            lines.append(f"🔄 PATTERN TRANSITION: {cls._pattern_band_name(int(p['transition_from']))} → "
+                         f"{cls._pattern_band_name(int(p['transition_pred']))} | supporto {int(p.get('transition_support',0))}")
+        return lines
+
+    def _sosiapatternlab_summary_lines(self):
+        t = self.sosiapatternlab_totals
+        pe = int(t.get("pos_evaluated", 0) or 0)
+        wp = int(t.get("watch_picks", 0) or 0)
+        we = int(t.get("watch_evaluated", 0) or 0)
+        te = int(t.get("transition_evaluated", 0) or 0)
+        de = int(t.get("transition_dom_evaluated", 0) or 0)
+        lines = ["", "🧭 PATTERN LAB — FORWARD NUOVE PISTE"]
+        lines += self._sosiapatternlab_signal_lines(self.sosiapatternlab_pending)
+        if pe:
+            lines.append(f"• POSITION CALIBRATED: {int(t['pos_hits'])}/{pe} ({safe_pct(t['pos_hits'],pe):.2f}%) | baseline 22.22%")
+        if wp:
+            lines.append(f"• NUMBER WATCH: {int(t['watch_hits'])}/{wp} numeri ({safe_pct(t['watch_hits'],wp):.2f}%) | baseline 22.22%")
+            if we:
+                lines.append(f"• NUMBER WATCH #1: {int(t['watch_top1_hits'])}/{we} ({safe_pct(t['watch_top1_hits'],we):.2f}%)")
+        if te:
+            avg = float(t["transition_band_hits"]) / te
+            lines.append(f"• TRANSITION fascia scelta: {int(t['transition_band_hits'])}/{5*te} ({safe_pct(t['transition_band_hits'],5*te):.2f}% per numero) "
+                         f"| media {avg:.3f}/5 | casuale 1.111/5")
+        if de:
+            lines.append(f"• TRANSITION dominante corretta: {int(t['transition_dom_correct'])}/{de} ({safe_pct(t['transition_dom_correct'],de):.2f}%) | tie esclusi")
+        return lines
 
     @staticmethod
     def _sosiasniper_signal_lines(p):
@@ -2565,7 +2891,7 @@ class EngineOnly:
         lines.append(f"🧪 ULTRA SHADOW: {'SÌ' if p.get('ultra') else 'NO'} | richiede score≥{SOSIA_SNIPER_ULTRA_SCORE:.2f} e gap≥{SOSIA_SNIPER_ULTRA_GAP:.2f}")
         return lines
 
-    async def _sosiasniper_notice(self, app, result, notify=True, pattern_result=None):
+    async def _sosiasniper_notice(self, app, result, notify=True, pattern_result=None, lab_result=None):
         if not notify or not SOSIA_SNIPER_NOTIFY:
             return
         lines = []
@@ -2591,7 +2917,10 @@ class EngineOnly:
             lines += ["🧾 SOSIA SNIPER — PRIMO AVVIO", "Nessun risultato precedente da valutare.", ""]
         if pattern_result:
             lines += self._sosiapattern_result_lines(pattern_result) + [""]
+        if lab_result:
+            lines += self._sosiapatternlab_result_lines(lab_result) + [""]
         lines += self._sosiasniper_signal_lines(self.sosiasniper_pending)
+        lines += [""] + self._sosiapatternlab_signal_lines(self.sosiapatternlab_pending)
         t = self.sosiasniper_totals; ev = int(t.get("evaluated",0) or 0)
         if ev:
             lines += ["", "📊 FORWARD SOSIA SNIPER",
@@ -2632,8 +2961,9 @@ class EngineOnly:
                       f"• rank #1 {last['top1']:02d}: {'HIT' if last['top1_hit'] else 'MISS'}",
                       f"• PROB {last.get('prob_pick',last['top1']):02d}: {'HIT' if last.get('prob_hit') else 'MISS'}",
                       f"• coppia {int(pair[0]):02d}-{int(pair[1]):02d}: {'HIT' if last.get('best_pair_hit') else 'MISS'}"]
+        lines += self._sosiapatternlab_summary_lines()
         lines += ["", "ℹ️ ProbScore e indice coppia sono punteggi comparativi, non probabilita' garantite.",
-                  "Posizioni complete dei numeri centrati: /sosiapattern",
+                  "Posizioni + POSITION CALIBRATED + TRANSITION + NUMBER WATCH: /sosiapattern",
                   "Le nuove regole sono tracciate in shadow e non riscrivono lo storico precedente.",
                   "⚠️ Nessuna puntata automatica."]
         return "\n".join(lines)
@@ -2912,6 +3242,22 @@ class EngineOnly:
                 if isinstance(pt, dict) and pt.get("from_key") and self._sosia_valid20(pt.get("rank20")):
                     self.sosiapattern_pending = pt
 
+            if d.get("sosiapatternlab_version") == SOSIA_PATTERN_LAB_VERSION:
+                totals = d.get("sosiapatternlab_totals", {})
+                if isinstance(totals, dict):
+                    for k in self.sosiapatternlab_totals:
+                        try:
+                            self.sosiapatternlab_totals[k] = max(0, int(totals.get(k, 0) or 0))
+                        except (TypeError, ValueError):
+                            pass
+                lr = d.get("sosiapatternlab_records", [])
+                if isinstance(lr, list):
+                    self.sosiapatternlab_records = [r for r in lr if isinstance(r, dict)
+                        and isinstance(r.get("key"), str) and r.get("position_pick")][-SOSIA_SNIPER_RECORD_MAX:]
+                lp = d.get("sosiapatternlab_pending")
+                if isinstance(lp, dict) and lp.get("from_key") and lp.get("position_pick"):
+                    self.sosiapatternlab_pending = lp
+
             # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
             if self.engine_pending and self.engine_pending.get("accepted"):
                 self._start_h5_session(self.engine_pending)
@@ -2987,6 +3333,10 @@ class EngineOnly:
             "sosiapattern_pending": self.sosiapattern_pending,
             "sosiapattern_records": self.sosiapattern_records,
             "sosiapattern_skipped": self.sosiapattern_skipped,
+            "sosiapatternlab_version": SOSIA_PATTERN_LAB_VERSION,
+            "sosiapatternlab_pending": self.sosiapatternlab_pending,
+            "sosiapatternlab_records": self.sosiapatternlab_records[-SOSIA_SNIPER_RECORD_MAX:],
+            "sosiapatternlab_totals": self.sosiapatternlab_totals,
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -3441,6 +3791,7 @@ class EngineOnly:
 
         sniper_result = None
         pattern_result = None
+        patternlab_result = None
         if mode == "live":
             # Il campione era stato predisposto ALLA estrazione precedente:
             # nessun dato del draw attuale entra nella simulazione valutata.
@@ -3448,6 +3799,7 @@ class EngineOnly:
             # Valuta TOP1/TOP2 PRIMA che _sosiap_settle cancelli il pending adattivo.
             sniper_result = self._sosiasniper_settle(day, e, clean)
             pattern_result = self._sosiapattern_settle(day, e, clean)
+            patternlab_result = self._sosiapatternlab_settle(day, e, clean, pattern_result=pattern_result)
             self._sosiap_settle(day, e, clean)
             if self.ambo_sim_sessions and not sim_draw_is_consecutive(self.last_draw_key, day, e):
                 interrupted = list(self.ambo_sim_sessions)
@@ -3478,8 +3830,10 @@ class EngineOnly:
             self._sosiap_arm(current_key)
             self._sosiasniper_arm(current_key)
             self._sosiapattern_arm(current_key)
+            self._sosiapatternlab_arm(current_key)
             sniper_notice_flag = notify if sniper_notify is None else bool(sniper_notify)
-            await self._sosiasniper_notice(app, sniper_result, notify=sniper_notice_flag, pattern_result=pattern_result)
+            await self._sosiasniper_notice(app, sniper_result, notify=sniper_notice_flag,
+                                           pattern_result=pattern_result, lab_result=patternlab_result)
 
         if persist:
             self.save_state(git=True)
@@ -3750,7 +4104,7 @@ class EngineOnly:
             "/ambo — AMBO 2xHOT5 H1-H3 NO-LOCK: notifiche, costo, premi e saldo\n"
             "/sosia — SOSIA adattivo: 20 previsti e confronto con la prossima reale\n"
             "/sosiasniper — TOP5 + SNIPER PROB + coppia 190 + FUSION ENGINE\n"
-            "/sosiapattern — posizioni di tutti i 20 HIT e schemi storici\n"
+            "/sosiapattern — posizioni + calibrated + transition + number watch\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
             "/menu — questa schermata"
@@ -3808,7 +4162,7 @@ async def setup_commands(app):
         BotCommand("ambo", "AMBO 2xHOT5 NO-LOCK: notifiche e saldo"),
         BotCommand("sosia", "20 numeri appresi: previsione H1 e hit"),
         BotCommand("sosiasniper", "TOP5, PROB, coppia 190 e FUSION"),
-        BotCommand("sosiapattern", "Posizioni dei numeri centrati SOSIA"),
+        BotCommand("sosiapattern", "Pattern, calibrated, transition e watch"),
         BotCommand("sosiarandom", "Controllo casuale 20/90"),
         BotCommand("status", "Stato rapido ENGINE"),
         BotCommand("menu", "Comandi ENGINE ONLY"),
@@ -3945,7 +4299,7 @@ async def startup(engine, app, retry_state=None):
         "🎯 focus: ESATTO 2/5 e >=2/5\n"
         "🎯 AMBO 2xHOT5 H1-H3 NO-LOCK: conferma TOP1 -> DUE accompagnatori caldi -> notifiche prima dei colpi\n"
         "🎮 PLAY SHADOW: conferma H1-H3 -> seconda uscita entro H5\n"
-        "🧠 SOSIA ADATTIVO: 20 numeri /sosia; SNIPER /sosiasniper; posizioni HIT /sosiapattern; casuale /sosiarandom\n"
+        "🧠 SOSIA ADATTIVO: 20 numeri /sosia; SNIPER /sosiasniper; PATTERN LAB /sosiapattern; casuale /sosiarandom\n"
         "✅ state persistente + autorotation\n\n"
         f"ENGINE: {'READY' if engine.engine_bootstrap_done else 'BUILD'} | "
         f"filtro target top {ENGINE_SELECT_RATE*100:.0f}%\n"
@@ -4187,7 +4541,28 @@ async def run_self_test():
     assert "/sosiasniper" in pred.menu_text()
     assert "/sosiapattern" in pred.menu_text()
 
-    print("SELF-TEST OK: ENGINE/MULTI-HIT/PLAY/AMBO invariati + SOSIA adattivo e controllo casuale")
+    # PATTERN LAB: usa record conclusi come training ma crea esiti SOLO in avanti.
+    lab = EngineOnly(load=False)
+    lab.engine_history = hist[-120:]
+    lab._sosiap_arm("2099-05-02#120")
+    lab._sosiasniper_arm("2099-05-02#120")
+    lab._sosiapattern_arm("2099-05-02#120")
+    # Inseriamo solo storico pattern gia' concluso; non produce contatori LAB retroattivi.
+    for j in range(30):
+        rank20 = list(range(1, 21))
+        hit_ranks = [((j + z) % 20) + 1 for z in range(4)]
+        lab.sosiapattern_records.append({
+            "key": f"2099-04-30#{j+1:03d}", "from_key": "x", "rank20": rank20,
+            "hits": len(hit_ranks), "hit_ranks": hit_ranks,
+            "hit_nums": [rank20[r-1] for r in hit_ranks],
+            "hit_pred_numeric_positions": hit_ranks, "hit_real_numeric_positions": hit_ranks,
+        })
+    lp = lab._sosiapatternlab_arm("2099-05-02#120")
+    assert lp and lp["position_pick"] in lab.sosiapattern_pending["rank20"]
+    assert len(lp["watch"]) == SOSIA_NUMBER_WATCH_SIZE
+    assert lab.sosiapatternlab_totals["evaluated"] == 0
+
+    print("SELF-TEST OK: ENGINE/MULTI-HIT/PLAY/AMBO invariati + SOSIA adattivo + PATTERN LAB shadow")
 
 async def main():
     if "--self-test" in sys.argv:
