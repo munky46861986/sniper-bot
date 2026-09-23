@@ -1651,6 +1651,257 @@ class DecinaEngine:
         return "\n".join(lines)
 
 
+# ============================================================
+# DECINA BURST LAB v1 — SHADOW 5+/6+ alla PROSSIMA H1
+# 288 draw di warmup da STATE/ENGINE HISTORY, NON rigioca il passato.
+# I nove gruppi sono gli stessi del DECINA ENGINE v3.
+# ============================================================
+BURST_VERSION = 1
+BURST_WARMUP = max(288, int(os.getenv("BURST_WARMUP", "288")))
+BURST_RECORD_MAX = max(300, int(os.getenv("BURST_RECORD_MAX", "5000")))
+BURST_NOTIFY = os.getenv("BURST_NOTIFY", "0") == "1"
+# Per una decina specifica: P(X>=5), P(X>=6) con X ipergeometrica(90,10,20)
+BURST_BASE_5 = sum(math.comb(10,k)*math.comb(80,20-k)/math.comb(90,20)
+                   for k in range(5, 11))
+BURST_BASE_6 = sum(math.comb(10,k)*math.comb(80,20-k)/math.comb(90,20)
+                   for k in range(6, 11))
+
+
+class DecinaBurstLab:
+    """Una decina H1 congelata e un controllo uniforme sullo STESSO draw.
+
+    Il warmup e' osservazionale: registra statistiche del passato, non successes
+    forward. Nessuna giocata e nessun peso trasmesso a ENGINE, SOSIA o DUAL.
+    """
+    def __init__(self):
+        self.pending = None
+        self.records = []
+        self.last_result = None
+        self.warmup = None
+        self.totals = {"evaluated":0, "skipped":0, "pred5":0, "pred6":0,
+                       "random5":0, "random6":0, "pred_numbers":0,
+                       "random_numbers":0, "paired_wins":0,
+                       "paired_losses":0, "paired_ties":0}
+        self.by_group = {label: {"n":0,"hit5":0,"hit6":0,"numbers":0}
+                         for label in DECINA_LABELS}
+
+    def load(self, obj):
+        if not isinstance(obj, dict) or obj.get("version") != BURST_VERSION:
+            return
+        for name in self.totals:
+            x = (obj.get("totals") or {}).get(name)
+            if type(x) is int and x >= 0:
+                self.totals[name] = x
+        old_groups = obj.get("by_group") or {}
+        for label, stats in self.by_group.items():
+            row = old_groups.get(label) if isinstance(old_groups, dict) else None
+            if isinstance(row, dict):
+                for name in stats:
+                    val = row.get(name)
+                    if type(val) is int and val >= 0:
+                        stats[name] = val
+        rows = obj.get("records")
+        if isinstance(rows,list):
+            self.records = [r for r in rows if isinstance(r,dict) and
+                            isinstance(r.get("key"),str) and
+                            type(r.get("group_index")) is int and
+                            0 <= r["group_index"] < 9][-BURST_RECORD_MAX:]
+        p = obj.get("pending")
+        if (isinstance(p,dict) and isinstance(p.get("from_key"),str) and
+            type(p.get("group_index")) is int and 0 <= p["group_index"] < 9 and
+            type(p.get("control_index")) is int and 0 <= p["control_index"] < 9):
+            self.pending = p
+        self.warmup = obj.get("warmup") if isinstance(obj.get("warmup"),dict) else None
+
+    def dump(self):
+        return {"version":BURST_VERSION,"pending":self.pending,"warmup":self.warmup,
+                "records":self.records[-BURST_RECORD_MAX:],
+                "totals":self.totals,"by_group":self.by_group}
+
+    @staticmethod
+    def _history_window(history):
+        """Conserva l'ordine reale delle righe; niente training su file non fidati."""
+        rows = []
+        for row in history[-BURST_WARMUP:]:
+            if not isinstance(row,dict) or not isinstance(row.get("key"),str):
+                return None
+            raw = row.get("nums")
+            if not isinstance(raw,(list,tuple)) or len(raw) != 20:
+                return None
+            try:
+                nums = set(int(n) for n in raw)
+            except (ValueError, TypeError):
+                return None
+            if len(nums) != 20 or min(nums) < 1 or max(nums) > 90:
+                return None
+            rows.append((row["key"], nums))
+        if len(rows) < BURST_WARMUP:
+            return None
+        keys = [x[0] for x in rows]
+        if len(set(keys)) != len(keys):
+            return None
+        # Barriera minima anti-archivio distorto: tutti i 90 numeri
+        # devono avere una presenza plausibile sulla finestra di 288.
+        freq=Counter(n for _,nums in rows for n in nums)
+        n=len(rows)
+        if min(freq.get(i,0) for i in range(1,91)) < n*0.06 or max(freq.values()) > n*0.40:
+            return None
+        return rows
+
+    def bootstrap(self, history):
+        """Ricostruisce SEMPRE statistiche dal passato, mai i contatori live."""
+        rows=self._history_window(history)
+        if rows is None:
+            self.warmup={"ready":False,"available":min(len(history),BURST_WARMUP),
+                         "required":BURST_WARMUP,"reason":"storico insufficiente o anomalo"}
+            return False
+        groups = [[len(nums.intersection(g)) for g in DECINA_GROUPS] for _,nums in rows]
+        overview=[]
+        for j,label in enumerate(DECINA_LABELS):
+            counts=[x[j] for x in groups]
+            bursts=[i for i,v in enumerate(counts) if v>=5]
+            last_burst=(len(counts)-1-bursts[-1]) if bursts else len(counts)
+            prior={str(k):{"n":0,"hit5":0,"hit6":0} for k in range(5)}
+            for i in range(len(counts)-1):
+                # Se fra due draw manca un'estrazione, non e' una transizione H1.
+                nd,ne=rows[i+1][0].split('#')
+                if not sim_draw_is_consecutive(rows[i][0],nd,int(ne)):
+                    continue
+                cat=str(min(4,counts[i]))
+                prior[cat]["n"]+=1
+                prior[cat]["hit5"]+=int(counts[i+1]>=5)
+                prior[cat]["hit6"]+=int(counts[i+1]>=6)
+            overview.append({"label":label,"last8":sum(counts[-8:]),
+                "last40":sum(counts[-40:]),"last160":sum(counts[-160:]),
+                "last288":sum(counts),"recent":counts[-1],
+                "events5":sum(v>=5 for v in counts),
+                "events6":sum(v>=6 for v in counts),
+                "gap5":last_burst,"transitions":prior})
+        self.warmup={"ready":True,"required":BURST_WARMUP,"available":len(rows),
+                     "last_key":rows[-1][0],"overview":overview}
+        return True
+
+    @staticmethod
+    def _rank(overview):
+        """Indice esplorativo predefinito, fortemente regolarizzato."""
+        scored=[]
+        v=20*(10/90)*(80/90)*(70/89)
+        for i,row in enumerate(overview):
+            z8=(row["last8"]-8*20/9)/math.sqrt(8*v)
+            z40=(row["last40"]-40*20/9)/math.sqrt(40*v)
+            z160=(row["last160"]-160*20/9)/math.sqrt(160*v)
+            state=str(min(4,row["recent"]))
+            cond=row["transitions"][state]
+            # prior 200 osservazioni: impedisce a 2-3 coincidenze di dominare.
+            posterior=(cond["hit5"]+200*BURST_BASE_5)/(cond["n"]+200)
+            conditional=(posterior-BURST_BASE_5)/BURST_BASE_5
+            raw=(0.15*z8 + 0.25*z40 + 0.12*z160 + 0.15*(z8-z160)
+                 + 0.15*max(-1.,min(1.,conditional)))
+            scored.append((max(-2.,min(2.,raw)),i))
+        return sorted(scored,key=lambda x:(-x[0],x[1]))
+
+    def arm(self, history, key):
+        if self.pending is not None:
+            return self.pending if self.pending.get("from_key")==key else None
+        if not history or history[-1].get("key") != key or not self.bootstrap(history):
+            return None
+        ranks=self._rank(self.warmup["overview"])
+        idx=ranks[0][1]
+        # Controllo uniforme indipendente e congelato prima del draw.
+        ctrl=secrets.randbelow(len(DECINA_GROUPS))
+        self.pending={"from_key":key,"group_index":idx,"control_index":ctrl,
+             "index":round(ranks[0][0],4),"warmup_draws":self.warmup["available"],
+             "overview":self.warmup["overview"],"created_at":now_txt()}
+        return self.pending
+
+    def settle(self, day, draw_id, nums):
+        p=self.pending
+        if p is None:
+            return None
+        self.pending=None
+        key=draw_key(day,draw_id)
+        if not sim_draw_is_consecutive(p["from_key"],day,draw_id):
+            self.totals["skipped"]+=1
+            self.last_result={"key":key,"skipped":True}
+            return self.last_result
+        actual=set(int(n) for n in nums)
+        idx=p["group_index"]
+        count=len(actual.intersection(DECINA_GROUPS[idx]))
+        rc=len(actual.intersection(DECINA_GROUPS[p["control_index"]]))
+        r={"key":key,"from_key":p["from_key"],"group_index":idx,
+           "group":DECINA_LABELS[idx],"control_index":p["control_index"],
+           "count":count,"control_count":rc,"hit5":count>=5,
+           "hit6":count>=6,"control5":rc>=5,"control6":rc>=6}
+        self.records.append(r)
+        self.records=self.records[-BURST_RECORD_MAX:]
+        t=self.totals
+        t["evaluated"]+=1
+        t["pred5"]+=int(count>=5)
+        t["pred6"]+=int(count>=6)
+        t["random5"]+=int(rc>=5)
+        t["random6"]+=int(rc>=6)
+        t["pred_numbers"]+=count
+        t["random_numbers"]+=rc
+        t["paired_wins"]+=int(count>=5 and rc<5)
+        t["paired_losses"]+=int(count<5 and rc>=5)
+        t["paired_ties"]+=int((count>=5)==(rc>=5))
+        g=self.by_group[DECINA_LABELS[idx]]
+        g["n"]+=1; g["hit5"]+=int(count>=5)
+        g["hit6"]+=int(count>=6); g["numbers"]+=count
+        self.last_result=r
+        return r
+
+    def text(self):
+        w=self.warmup or {}
+        t=self.totals
+        n=t["evaluated"]
+        lines=["🔟 DECINA BURST LAB v1 — H1 SHADOW",
+            "Obiettivo: decina con 5+ o 6+ numeri nella PROSSIMA estrazione.",
+            f"📚 WARMUP STATE: {w.get('available',0)}/{BURST_WARMUP} | " +
+                ("READY" if w.get("ready") else "NON PRONTO: "+w.get("reason","storico assente"))]
+        p=self.pending
+        if p:
+            i=p["group_index"]; c=p["control_index"]
+            lines.extend([f"🎯 DECINA CONGELATA dopo {p['from_key']}: {DECINA_LABELS[i]}",
+                "Numeri: "+" ".join(f"{x:02d}" for x in DECINA_GROUPS[i]),
+                f"Indice comparativo (non probabilita'): {p['index']:+.3f}",
+                f"🧪 CONTROLLO CASUALE: {DECINA_LABELS[c]}"])
+        elif w.get("ready"):
+            lines.append("🎯 Nessun segnale H1 ancora congelato: attendo una nuova estrazione live.")
+        if w.get("ready"):
+            lines.append("📦 STORICO WARMUP: presenze 8/40/160/288 | eventi 5+/6+ nel warmup:")
+            for row in w.get("overview",[]):
+                lines.append(f"• {row['label']}: {row['last8']}/{row['last40']}/"
+                    f"{row['last160']}/{row['last288']} | 5+ {row['events5']}, "
+                    f"6+ {row['events6']} | distanza ultimo 5+: {row['gap5']}")
+        lines.extend([f"📊 FORWARD ESCLUSIVAMENTE LIVE: {n} valutati | salti {t['skipped']}",
+            f"• BURST 5+: {t['pred5']}/{n} ({safe_pct(t['pred5'],n):.2f}%) | "
+                f"random {t['random5']}/{n} ({safe_pct(t['random5'],n):.2f}%)",
+            f"• BURST 6+: {t['pred6']}/{n} ({safe_pct(t['pred6'],n):.2f}%) | "
+                f"random {t['random6']}/{n} ({safe_pct(t['random6'],n):.2f}%)",
+            f"• Numeri centrati nella decina: {t['pred_numbers']}/{10*n} "
+                f"(media {t['pred_numbers']/n if n else 0:.3f}/10) | "
+                f"random {t['random_numbers']/n if n else 0:.3f}/10",
+            f"• Appaiato 5+ BURST vs random: +{t['paired_wins']}/-"
+                f"{t['paired_losses']}/={t['paired_ties']}",
+            f"• Teorico singola decina H1: 5+ {100*BURST_BASE_5:.3f}% "
+                f"| 6+ {100*BURST_BASE_6:.3f}% | media 2.222/10"])
+        if self.last_result:
+            r=self.last_result
+            if r.get("skipped"):
+                lines.append(f"🧾 Ultima H1 {r['key']}: salto, nessun HIT attribuito.")
+            else:
+                lines.append(f"🧾 Ultima H1 {r['key']}: {r['group']} "
+                             f"{r['count']}/10 | random {r['control_count']}/10")
+        if n:
+            lines.append("📍 RISULTATI PER FASCIA (solo decine selezionate prima della H1):")
+            for label,s in self.by_group.items():
+                if s["n"]:
+                    lines.append(f"• {label}: 5+ {s['hit5']}/{s['n']} | 6+ {s['hit6']}/{s['n']}")
+        lines.append("⚠️ Warmup e' storico descrittivo; nessun HIT retroattivo o puntata automatica.")
+        return "\n".join(lines)
+
+
 class EngineOnly:
     def __init__(self, load=True):
         self.processed = []
@@ -1746,6 +1997,7 @@ class EngineOnly:
         # Stato isolato: nessuno dei contatori preesistenti viene modificato.
         self.dual = DualTargetLab()
         self.decina = DecinaEngine()
+        self.burst = DecinaBurstLab()
 
         self.state_load_info = {
             "loaded": False,
@@ -1760,6 +2012,7 @@ class EngineOnly:
             self._sosiap_load_pretrain()
             self.dual.load_pretrain()  # file esterno SOLO se esplicitamente presente nella root
             self.dual.bootstrap_from_history(self.engine_history)  # warmstart dal vecchio state LIVE
+            self.burst.bootstrap(self.engine_history)  # warmup storico, NON previsione retroattiva
             # Upgrade non distruttivo: se il vecchio state ha gia' una previsione
             # SOSIA adattiva congelata, ricava subito TOP1/TOP2 senza cambiarla.
             self._sosiasniper_migrate_pending()
@@ -3954,6 +4207,7 @@ class EngineOnly:
 
             self.dual.load(d.get("dual_target_v1"))
             self.decina.load(d.get("dual_decina_v1"))
+            self.burst.load(d.get("decina_burst_v1"))
 
             # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
             if self.engine_pending and self.engine_pending.get("accepted"):
@@ -4036,6 +4290,7 @@ class EngineOnly:
             "sosiapatternlab_totals": self.sosiapatternlab_totals,
             "dual_target_v1": self.dual.dump(),
             "dual_decina_v1": self.decina.dump(),
+            "decina_burst_v1": self.burst.dump(),
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -4496,6 +4751,7 @@ class EngineOnly:
             # nessun dato del draw attuale entra nella simulazione valutata.
             dual_result = self.dual.settle(day, e, clean)
             decina_result = self.decina.settle(day, e, clean)
+            burst_result = self.burst.settle(day, e, clean)
             self._sosia_settle(day, e, clean)
             # Valuta TOP1/TOP2 PRIMA che _sosiap_settle cancelli il pending adattivo.
             sniper_result = self._sosiasniper_settle(day, e, clean)
@@ -4537,6 +4793,9 @@ class EngineOnly:
             # Non ricostruisce segnali a posteriori nel catch-up silenzioso.
             if notify:
                 self.decina.arm(self, current_key)
+                self.burst.arm(self.engine_history, current_key)
+            if BURST_NOTIFY and notify and (burst_result or self.burst.pending):
+                await self.tg(app, self.burst.text())
             if DECINA_NOTIFY and notify and (decina_result or self.decina.pending):
                 await self.tg(app, self.decina.short_text())
             if DUAL_NOTIFY and notify and (dual_result or self.dual.pending):
@@ -4817,6 +5076,7 @@ class EngineOnly:
             "/sosiapattern — posizioni + calibrated + transition + number watch\n"
             "/dual — DUAL TARGET v1: due numeri H1, controllo casuale e forward\n"
             "/decine — coppie nella stessa decina, DUAL+DECINE e confronto forward\n"
+            "/burst — decina 5+/6+ H1: warmup 288 e confronto random\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
             "/menu — questa schermata"
@@ -4863,6 +5123,9 @@ async def cmd_dual(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_decine(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].decina.text())
 
+async def cmd_burst(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].burst.text())
+
 async def cmd_sosiarandom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].sosia_text())
 
@@ -4884,6 +5147,7 @@ async def setup_commands(app):
         BotCommand("sosiapattern", "Pattern, calibrated, transition e watch"),
         BotCommand("dual", "DUAL TARGET: due numeri H1 e confronto random"),
         BotCommand("decine", "DECINA ENGINE: DUAL+DECINE e coppia stessa decina"),
+        BotCommand("burst", "BURST LAB: decina 5+/6+ H1 e warmup 288"),
         BotCommand("sosiarandom", "Controllo casuale 20/90"),
         BotCommand("status", "Stato rapido ENGINE"),
         BotCommand("menu", "Comandi ENGINE ONLY"),
@@ -5005,6 +5269,15 @@ async def startup(engine, app, retry_state=None):
     unseen.sort(key=lambda x:(x[0],x[1]))
     for d,e,nums in unseen:
         await engine.process_draw(None,d,e,nums,mode="live",notify=False,persist=False)
+
+    # Warmup BURST su STATE prima del primo H1 realmente futuro.
+    # Se il sito non conferma che l'ultimo draw e' il nostro ultimo draw,
+    # nessuna previsione retrodatata viene inventata.
+    engine.burst.bootstrap(engine.engine_history)
+    if rows and engine.engine_history:
+        latest=max(rows,key=lambda r:(r[0],r[1]))
+        if draw_key(latest[0],latest[1]) == engine.engine_history[-1]["key"]:
+            engine.burst.arm(engine.engine_history,engine.engine_history[-1]["key"])
 
     engine.save_state(git=True, force_git=True)
 
@@ -5283,7 +5556,31 @@ async def run_self_test():
     assert len(lp["watch"]) == SOSIA_NUMBER_WATCH_SIZE
     assert lab.sosiapatternlab_totals["evaluated"] == 0
 
-    print("SELF-TEST OK: ENGINE/MULTI-HIT/PLAY/AMBO invariati + SOSIA adattivo + PATTERN LAB shadow")
+    # BURST warmup: no live retroattivo, freeze, settlement H1, gap, persistence.
+    burst=DecinaBurstLab()
+    bhar=[]
+    for i in range(288):
+        r=random.Random(i+99901)
+        bhar.append({"key":f"2099-06-01#{i+1:03d}",
+                     "nums":sorted(r.sample(range(1,91),20))})
+    assert burst.bootstrap(bhar) and burst.warmup["available"] == 288
+    assert burst.totals["evaluated"] == 0
+    frozen=burst.arm(bhar,bhar[-1]["key"])
+    assert frozen and len(DECINA_GROUPS[frozen["group_index"]])==10
+    assert burst.arm(bhar,bhar[-1]["key"]) is frozen
+    roundtrip=DecinaBurstLab(); roundtrip.load(burst.dump())
+    assert roundtrip.pending == frozen and roundtrip.totals["evaluated"] == 0
+    nums=sorted(random.Random(7788).sample(range(1,91),20))
+    result=roundtrip.settle("2099-06-02",1,nums)
+    assert result and 0 <= result["count"] <= 10
+    assert roundtrip.totals["evaluated"]==1 and roundtrip.pending is None
+    assert roundtrip.totals["pred5"]==int(result["count"]>=5)
+    g=DecinaBurstLab(); g.arm(bhar,bhar[-1]["key"])
+    assert g.settle("2099-06-02",2,nums).get("skipped") is True
+    assert g.totals["skipped"]==1 and g.totals["evaluated"]==0
+    assert "/burst" in e.menu_text()
+
+    print("SELF-TEST OK: ENGINE/MULTI-HIT/PLAY/AMBO invariati + SOSIA/PATTERN + BURST warmup/H1/gap")
 
 async def main():
     if "--self-test" in sys.argv:
@@ -5310,6 +5607,7 @@ async def main():
     app.add_handler(CommandHandler("sosiapattern",cmd_sosiapattern))
     app.add_handler(CommandHandler("dual",cmd_dual))
     app.add_handler(CommandHandler("decine",cmd_decine))
+    app.add_handler(CommandHandler("burst",cmd_burst))
     app.add_handler(CommandHandler("sosiarandom",cmd_sosiarandom))
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("menu",cmd_menu))
