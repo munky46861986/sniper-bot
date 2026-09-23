@@ -1390,6 +1390,267 @@ class DualTargetLab:
 
 
 
+# ============================================================
+# DUAL TARGET — DECINA ENGINE v3 (isolato, solo SHADOW)
+# Decine: 90/01..09, 10..19, ... 80..89; 405 coppie interne.
+# Il DUAL originale rimane baseline e conserva TUTTO il suo stato.
+# ============================================================
+DECINA_VERSION = 1
+DECINA_GROUPS = ((90, *range(1, 10)),) + tuple(tuple(range(s, s+10)) for s in range(10, 90, 10))
+DECINA_LABELS = ("90–09",) + tuple(f"{s:02d}–{s+9:02d}" for s in range(10, 90, 10))
+DECINA_BY_NUMBER = {n: i for i, group in enumerate(DECINA_GROUPS) for n in group}
+DECINA_WITHIN_PAIRS = tuple(tuple(sorted(pair)) for group in DECINA_GROUPS
+                            for pair in combinations(group, 2))
+DECINA_RECORD_MAX = 5000
+DECINA_NOTIFY = os.getenv("DECINA_NOTIFY", "0") == "1"
+
+
+class DecinaEngine:
+    """Analisi prospettica a decine; NON riscrive la scelta del DUAL originale.
+
+    L'indice confronta tutte le coppie tramite: ranking numerico originale +
+    densita' corrente e accelerazione delle decine + frequenza congiunta
+    shrinkata. Una coppia della stessa decina e' monitorata separatamente.
+    Nessuna stima di probabilita' predittiva e nessuna puntata automatica.
+    """
+    def __init__(self):
+        self.pending = None
+        self.records = []
+        self.last_result = None
+        self.totals = dict(evaluated=0, skipped=0, fusion_any=0, fusion_both=0,
+                           within_any=0, within_both=0, original_any=0,
+                           random_any=0, fusion_wins=0, fusion_losses=0,
+                           fusion_ties=0, within_wins=0, within_losses=0,
+                           within_ties=0)
+
+    @staticmethod
+    def _valid_pair(pair):
+        return DualTargetLab._valid_pair(pair)
+
+    @staticmethod
+    def _scaled(count, n, expected, prior, clip=2.5):
+        if n <= 0:
+            return 0.0
+        # Effetto della frequenza regolarizzato verso il valore uniforme.
+        strength = n / (n + prior)
+        z = (count - n * expected) / math.sqrt(max(1., n * expected * (1 - expected)))
+        return max(-clip, min(clip, strength * z))
+
+    def load(self, obj):
+        if not isinstance(obj, dict) or obj.get("version") != DECINA_VERSION:
+            return
+        totals = obj.get("totals", {})
+        if isinstance(totals, dict):
+            for key in self.totals:
+                value = totals.get(key)
+                if type(value) is int and value >= 0:
+                    self.totals[key] = value
+        rows = obj.get("records", [])
+        if isinstance(rows, list):
+            self.records = [r for r in rows if isinstance(r, dict) and
+                            isinstance(r.get("key"), str) and
+                            self._valid_pair(r.get("fusion_pair")) and
+                            self._valid_pair(r.get("within_pair"))][-DECINA_RECORD_MAX:]
+        p = obj.get("pending")
+        if isinstance(p, dict) and isinstance(p.get("from_key"), str) and all(
+                self._valid_pair(p.get(k)) for k in
+                ("fusion_pair", "within_pair", "original_pair", "random_pair")):
+            self.pending = p
+
+    def dump(self):
+        return {"version": DECINA_VERSION, "pending": self.pending,
+                "records": self.records[-DECINA_RECORD_MAX:], "totals": self.totals}
+
+    def _signals(self, history, dual, engine, key):
+        """Tutte le statistiche usano draw fino a key; nessun risultato futuro."""
+        if len(history) < DUAL_MIN_HISTORY or history[-1].get("key") != key:
+            return None
+        last_rows = [set(int(n) for n in r["nums"]) for r in history[-320:]]
+        if any(len(x) != 20 for x in last_rows):
+            return None
+        available = dual._features(engine, key)
+        if not available:
+            return None
+        weights = dual._weights(available)
+        base = {n: sum(weights[name] * signal[n] for name, signal in available.items())
+                for n in range(1,91)}
+        # Ogni decina ha 10 numeri: l'atteso per draw e' 2.2222.
+        count_groups = [[len(s.intersection(group)) for group in DECINA_GROUPS]
+                        for s in last_rows]
+        current = count_groups[-1]
+        group_index = []
+        for j in range(9):
+            n8 = len(count_groups[-8:]); n40 = len(count_groups[-40:]); n160 = len(count_groups[-160:])
+            c8 = sum(x[j] for x in count_groups[-8:]); c40 = sum(x[j] for x in count_groups[-40:])
+            c160 = sum(x[j] for x in count_groups[-160:])
+            # Z per somme ipergeometriche: Var(X)=n*K/N*(1-K/N)*(N-n)/(N-1).
+            variance = 20*(10/90)*(80/90)*(70/89)
+            z8 = (c8 - n8*20/9) / math.sqrt(max(1., n8*variance))
+            z40 = (c40 - n40*20/9) / math.sqrt(max(1., n40*variance))
+            z160 = (c160 - n160*20/9) / math.sqrt(max(1., n160*variance))
+            strength = 0.16*z8 + 0.35*z40 + 0.20*z160 + 0.08*(z8-z160)
+            # Condizionale su decina affollata nell'ultimo draw: apprendimento
+            # solo da transizioni gia' concluse e supporto Bayesiano elevato.
+            label = min(4, current[j])
+            prior_states = [i for i in range(len(count_groups)-1)
+                            if min(4,count_groups[i][j]) == label]
+            if len(prior_states) >= 10:
+                next_avg = sum(count_groups[i+1][j] for i in prior_states)/len(prior_states)
+                strength += 0.30 * (next_avg - 20/9) * len(prior_states)/(len(prior_states)+100)
+            group_index.append(max(-2.0, min(2.0, strength)))
+        recent = last_rows[-160:]
+        pair_counts = Counter()
+        for nums in recent:
+            for pair in combinations(sorted(nums), 2):
+                pair_counts[pair] += 1
+        # Nessuna coppia e' considerata 'dovuta' per via del ritardo.
+        # 160 draw => ~7.6 co-uscite casuali per coppia: prior forte.
+        joint = {pair: (pair_counts[pair] + 240*DUAL_PAIR_P0)/(len(recent)+240)
+                 for pair in combinations(range(1,91),2)}
+        def pair_score(a, b):
+            j = joint[(a,b)]
+            # La penalita' di co-uscita e' coerente con obiettivo >=1/2;
+            # la co-uscita rimane registrata anche come obiettivo alternativo 2/2.
+            band = 0.20 * (group_index[DECINA_BY_NUMBER[a]] + group_index[DECINA_BY_NUMBER[b]])
+            return base[a] + base[b] + band - 5.0*(j-DUAL_PAIR_P0)
+        # Identica regola per la coppia 'mista' e quella nella medesima decina.
+        all_pairs = combinations(range(1,91), 2)
+        fusion = max(all_pairs, key=lambda p: (pair_score(*p),
+                     -dual._hash_tie(key, "decina-fusion", f"{p[0]}-{p[1]}")))
+        within = max(DECINA_WITHIN_PAIRS, key=lambda p: (pair_score(*p),
+                     -dual._hash_tie(key, "decina-within", f"{p[0]}-{p[1]}")))
+        # Diagnostica di OGNI fascia: coppia piu' frequente nelle ultime 160,
+        # con co-uscite reali; non e' la stessa cosa di una previsione.
+        overview = []
+        for j, group in enumerate(DECINA_GROUPS):
+            within_pairs = [tuple(sorted(p)) for p in combinations(group, 2)]
+            top3 = sorted(within_pairs, key=lambda p: (-pair_counts[p], p[0], p[1]))[:3]
+            fav = top3[0]
+            overview.append({"label": DECINA_LABELS[j], "last8": sum(x[j] for x in count_groups[-8:]),
+                             "last40": sum(x[j] for x in count_groups[-40:]),
+                             "last160": sum(x[j] for x in count_groups[-160:]),
+                             "band_index": round(group_index[j],4),
+                             "common_pair": list(fav), "co160": pair_counts[fav],
+                             "co_window": len(recent),
+                             "top3_pairs": [{"pair": list(q), "co160": pair_counts[q]}
+                                            for q in top3]})
+        return fusion, within, overview, pair_score(*fusion), pair_score(*within)
+
+    def arm(self, engine, key):
+        if self.pending is not None:
+            return self.pending if self.pending.get("from_key") == key else None
+        original = engine.dual.pending
+        if not (original and original.get("from_key") == key):
+            return None
+        # Usa esclusivamente lo storico e le previsioni originali gia' congelate;
+        # non modifica alcun campo del DUAL.
+        signals = self._signals(engine.engine_history, engine.dual, engine, key)
+        if not signals:
+            return None
+        fusion, within, overview, fscore, wscore = signals
+        self.pending = {"from_key": key, "fusion_pair": list(fusion),
+                        "within_pair": list(within), "original_pair": list(original["pair"]),
+                        "random_pair": list(original["random_pair"]),
+                        "fusion_index": round(fscore,5), "within_index": round(wscore,5),
+                        "overview": overview, "created_at": now_txt()}
+        return self.pending
+
+    def settle(self, day, draw_id, nums):
+        p = self.pending
+        if p is None:
+            return None
+        self.pending = None
+        key = draw_key(day, draw_id)
+        if not sim_draw_is_consecutive(p["from_key"], day, draw_id):
+            self.totals["skipped"] += 1
+            self.last_result = {"key": key, "skipped": True}
+            return self.last_result
+        actual = set(map(int, nums))
+        outcomes = {name: len(actual.intersection(p[field])) for name, field in
+                    (("fusion","fusion_pair"),( "within","within_pair"),
+                     ("original","original_pair"),( "random","random_pair"))}
+        rec = {"key":key, "from_key":p["from_key"], "fusion_pair":p["fusion_pair"],
+               "within_pair":p["within_pair"], "original_pair":p["original_pair"],
+               "random_pair":p["random_pair"], "counts":outcomes,
+               "within_group":DECINA_LABELS[DECINA_BY_NUMBER[p["within_pair"][0]]]}
+        t = self.totals
+        t["evaluated"] += 1
+        for name in ("fusion", "within", "original", "random"):
+            t[f"{name}_any"] += int(outcomes[name]>0)
+        t["fusion_both"] += int(outcomes["fusion"]==2)
+        t["within_both"] += int(outcomes["within"]==2)
+        for method in ("fusion", "within"):
+            x, y = outcomes[method]>0, outcomes["original"]>0
+            t[f"{method}_wins"] += int(x and not y)
+            t[f"{method}_losses"] += int(y and not x)
+            t[f"{method}_ties"] += int(x==y)
+        self.records.append(rec)
+        self.records = self.records[-DECINA_RECORD_MAX:]
+        self.last_result = rec
+        return rec
+
+    def short_text(self):
+        p, t = self.pending, self.totals
+        if not p:
+            return "🔟 DECINA ENGINE: nessuna nuova coppia congelata (attendo H1)."
+        n = t["evaluated"]
+        return (f"🔟 DUAL+DECINE PROSSIMA H1: {p['fusion_pair'][0]:02d}+{p['fusion_pair'][1]:02d} "
+                f"| stessa decina {p['within_pair'][0]:02d}+{p['within_pair'][1]:02d} "
+                f"({DECINA_LABELS[DECINA_BY_NUMBER[p['within_pair'][0]]]})\n"
+                f"Forward DUAL+DECINE {t['fusion_any']}/{n} | coppia decina {t['within_any']}/{n} "
+                f"| DUAL originario sugli stessi draw {t['original_any']}/{n} "
+                f"| casuale {t['random_any']}/{n}.")
+
+    def text(self):
+        p, t = self.pending, self.totals
+        lines = ["🔟 DUAL TARGET — DECINA ENGINE v3 SHADOW",
+                 "Fasce: 90–09 (90+01..09), 10–19, …, 80–89. 9 fasce × 45 = 405 coppie interne.",
+                 "Obiettivo principale: >=1 HIT fra 2 numeri alla prossima H1."]
+        if p:
+            lines.extend([f"🎯 DUAL+DECINE: {p['fusion_pair'][0]:02d} + {p['fusion_pair'][1]:02d}",
+                          f"🔗 STESSA DECINA: {p['within_pair'][0]:02d} + {p['within_pair'][1]:02d} "
+                          f"({DECINA_LABELS[DECINA_BY_NUMBER[p['within_pair'][0]]]})",
+                          f"📎 DUAL ORIGINALE: {p['original_pair'][0]:02d} + {p['original_pair'][1]:02d}",
+                          f"Origine del segnale: {p['from_key']} | indici {p['fusion_index']:+.3f}/{p['within_index']:+.3f}"])
+            lines.append("📦 DECINE: conteggi numeri usciti nelle ultime 8/40/160 estrazioni disponibili; "
+                         "TOP3 coppie co-uscite nelle ultime max 160:")
+            for d in p["overview"]:
+                a,b=d["common_pair"]
+                strongest = ", ".join(
+                    f"{q['pair'][0]:02d}+{q['pair'][1]:02d}:{q['co160']}"
+                    for q in d.get("top3_pairs", [{"pair": [a,b], "co160":d["co160"]}]))
+                lines.append(f"• {d['label']}: {d['last8']}/{d['last40']}/{d['last160']} "
+                             f"| TOP3 co-uscite/{d.get('co_window',160)}: {strongest} "
+                             f"| indice {d['band_index']:+.2f}")
+        else:
+            lines.append("Nessun pending valido: /decine mostrera' la nuova coppia dopo il prossimo draw live.")
+        n=t["evaluated"]
+        lines.extend([f"📊 FORWARD DECINA v3: {n} valutati | salti {t['skipped']}",
+            f"• DUAL+DECINE >=1: {t['fusion_any']}/{n} ({safe_pct(t['fusion_any'],n):.2f}%) | 2/2 {t['fusion_both']}/{n}",
+            f"• STESSA DECINA >=1: {t['within_any']}/{n} ({safe_pct(t['within_any'],n):.2f}%) | 2/2 {t['within_both']}/{n}",
+            f"• DUAL ORIGINALE stessi draw >=1: {t['original_any']}/{n} ({safe_pct(t['original_any'],n):.2f}%)",
+            f"• RANDOM stessi draw >=1: {t['random_any']}/{n} ({safe_pct(t['random_any'],n):.2f}%)",
+            f"• Appaiato DECINE vs DUAL: +{t['fusion_wins']}/-{t['fusion_losses']}/={t['fusion_ties']}",
+            f"• Appaiato STESSA DECINA vs DUAL: +{t['within_wins']}/-{t['within_losses']}/={t['within_ties']}"])
+        if self.records:
+            lines.append("📍 COPPIA STESSA DECINA: forward per fascia (solo segnali congelati):")
+            for label in DECINA_LABELS:
+                subset=[r for r in self.records if r.get("within_group")==label]
+                if subset:
+                    k=sum(r["counts"]["within"]>0 for r in subset)
+                    z=sum(r["counts"]["within"]==2 for r in subset)
+                    lines.append(f"• {label}: >=1 {k}/{len(subset)} ({safe_pct(k,len(subset)):.2f}%) | 2/2 {z}/{len(subset)}")
+        for window in (100,300):
+            if len(self.records)>=window:
+                sub=self.records[-window:]
+                lines.append(f"• Ultimi {window}: DUAL+DECINE "
+                    f"{sum(r['counts']['fusion']>0 for r in sub)}/{window} | stessa decina "
+                    f"{sum(r['counts']['within']>0 for r in sub)}/{window} | DUAL "
+                    f"{sum(r['counts']['original']>0 for r in sub)}/{window}")
+        lines.append("⚠️ Frequenze e co-uscite passate sono descrittive, non prove di previsione; nessuna puntata automatica.")
+        return "\n".join(lines)
+
+
 class EngineOnly:
     def __init__(self, load=True):
         self.processed = []
@@ -1484,6 +1745,7 @@ class EngineOnly:
 
         # Stato isolato: nessuno dei contatori preesistenti viene modificato.
         self.dual = DualTargetLab()
+        self.decina = DecinaEngine()
 
         self.state_load_info = {
             "loaded": False,
@@ -3691,6 +3953,7 @@ class EngineOnly:
                     self.sosiapatternlab_pending = lp
 
             self.dual.load(d.get("dual_target_v1"))
+            self.decina.load(d.get("dual_decina_v1"))
 
             # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
             if self.engine_pending and self.engine_pending.get("accepted"):
@@ -3772,6 +4035,7 @@ class EngineOnly:
             "sosiapatternlab_records": self.sosiapatternlab_records[-SOSIA_SNIPER_RECORD_MAX:],
             "sosiapatternlab_totals": self.sosiapatternlab_totals,
             "dual_target_v1": self.dual.dump(),
+            "dual_decina_v1": self.decina.dump(),
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -4231,6 +4495,7 @@ class EngineOnly:
             # Il campione era stato predisposto ALLA estrazione precedente:
             # nessun dato del draw attuale entra nella simulazione valutata.
             dual_result = self.dual.settle(day, e, clean)
+            decina_result = self.decina.settle(day, e, clean)
             self._sosia_settle(day, e, clean)
             # Valuta TOP1/TOP2 PRIMA che _sosiap_settle cancelli il pending adattivo.
             sniper_result = self._sosiasniper_settle(day, e, clean)
@@ -4269,6 +4534,11 @@ class EngineOnly:
             self._sosiapatternlab_arm(current_key)
             self.dual.bootstrap_from_history(self.engine_history)
             self.dual.arm(self, current_key)
+            # Non ricostruisce segnali a posteriori nel catch-up silenzioso.
+            if notify:
+                self.decina.arm(self, current_key)
+            if DECINA_NOTIFY and notify and (decina_result or self.decina.pending):
+                await self.tg(app, self.decina.short_text())
             if DUAL_NOTIFY and notify and (dual_result or self.dual.pending):
                 await self.tg(app, self.dual.text())
             sniper_notice_flag = notify if sniper_notify is None else bool(sniper_notify)
@@ -4546,6 +4816,7 @@ class EngineOnly:
             "/sosiasniper — TOP5 + SNIPER PROB + coppia 190 + FUSION ENGINE\n"
             "/sosiapattern — posizioni + calibrated + transition + number watch\n"
             "/dual — DUAL TARGET v1: due numeri H1, controllo casuale e forward\n"
+            "/decine — coppie nella stessa decina, DUAL+DECINE e confronto forward\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
             "/menu — questa schermata"
@@ -4586,7 +4857,11 @@ async def cmd_sosiapattern(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].sosiapattern_text())
 
 async def cmd_dual(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await reply(update, context.application.bot_data["engine"].dual.text())
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.dual.text() + "\n\n" + engine.decina.short_text())
+
+async def cmd_decine(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].decina.text())
 
 async def cmd_sosiarandom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].sosia_text())
@@ -4608,6 +4883,7 @@ async def setup_commands(app):
         BotCommand("sosiasniper", "TOP5, PROB, coppia 190 e FUSION"),
         BotCommand("sosiapattern", "Pattern, calibrated, transition e watch"),
         BotCommand("dual", "DUAL TARGET: due numeri H1 e confronto random"),
+        BotCommand("decine", "DECINA ENGINE: DUAL+DECINE e coppia stessa decina"),
         BotCommand("sosiarandom", "Controllo casuale 20/90"),
         BotCommand("status", "Stato rapido ENGINE"),
         BotCommand("menu", "Comandi ENGINE ONLY"),
@@ -5033,6 +5309,7 @@ async def main():
     app.add_handler(CommandHandler("sosiasniper",cmd_sosiasniper))
     app.add_handler(CommandHandler("sosiapattern",cmd_sosiapattern))
     app.add_handler(CommandHandler("dual",cmd_dual))
+    app.add_handler(CommandHandler("decine",cmd_decine))
     app.add_handler(CommandHandler("sosiarandom",cmd_sosiarandom))
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("menu",cmd_menu))
