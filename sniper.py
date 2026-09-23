@@ -1652,14 +1652,24 @@ class DecinaEngine:
 
 
 # ============================================================
-# DECINA BURST LAB v1 — SHADOW 5+/6+ alla PROSSIMA H1
-# 288 draw di warmup da STATE/ENGINE HISTORY, NON rigioca il passato.
-# I nove gruppi sono gli stessi del DECINA ENGINE v3.
+# DECINA FLOW LAB v1 + BURST EVENT DETECTOR v2 — SHADOW H1
+# FLOW ricostruisce 288 draw × 9 decine. BURST v2 usa SOLO
+# informazioni disponibili prima della H1 e puo' restituire NO SIGNAL.
+# I risultati BURST v1 esistenti vengono migrati senza reset.
 # ============================================================
-BURST_VERSION = 1
+FLOW_VERSION = 1
+FLOW_WARMUP = max(288, int(os.getenv("FLOW_WARMUP", "288")))
+FLOW_RECORD_MAX = max(300, int(os.getenv("FLOW_RECORD_MAX", "5000")))
+
+BURST_VERSION = 2
 BURST_WARMUP = max(288, int(os.getenv("BURST_WARMUP", "288")))
 BURST_RECORD_MAX = max(300, int(os.getenv("BURST_RECORD_MAX", "5000")))
 BURST_NOTIFY = os.getenv("BURST_NOTIFY", "0") == "1"
+BURST_GATE_SCORE_Q = min(0.95, max(0.50, float(os.getenv("BURST_GATE_SCORE_Q", "0.80"))))
+BURST_GATE_MARGIN_Q = min(0.95, max(0.25, float(os.getenv("BURST_GATE_MARGIN_Q", "0.55"))))
+BURST_EXTREME_SCORE_Q = min(0.99, max(BURST_GATE_SCORE_Q, float(os.getenv("BURST_EXTREME_SCORE_Q", "0.93"))))
+BURST_MIN_CALIBRATION = max(20, int(os.getenv("BURST_MIN_CALIBRATION", "30")))
+
 # Per una decina specifica: P(X>=5), P(X>=6) con X ipergeometrica(90,10,20)
 BURST_BASE_5 = sum(math.comb(10,k)*math.comb(80,20-k)/math.comb(90,20)
                    for k in range(5, 11))
@@ -1667,27 +1677,311 @@ BURST_BASE_6 = sum(math.comb(10,k)*math.comb(80,20-k)/math.comb(90,20)
                    for k in range(6, 11))
 
 
-class DecinaBurstLab:
-    """Una decina H1 congelata e un controllo uniforme sullo STESSO draw.
+def _decina_quantile(values, q):
+    vals = sorted(float(x) for x in values if isinstance(x, (int, float)) and math.isfinite(float(x)))
+    if not vals:
+        return 0.0
+    if len(vals) == 1:
+        return vals[0]
+    pos = (len(vals)-1) * min(1.0, max(0.0, float(q)))
+    lo = int(math.floor(pos)); hi = int(math.ceil(pos))
+    if lo == hi:
+        return vals[lo]
+    w = pos-lo
+    return vals[lo]*(1.0-w) + vals[hi]*w
 
-    Il warmup e' osservazionale: registra statistiche del passato, non successes
-    forward. Nessuna giocata e nessun peso trasmesso a ENGINE, SOSIA o DUAL.
+
+def _decina_history_rows(history, limit):
+    """Ultimi `limit` draw validi, in ordine, senza inventare dati mancanti."""
+    rows = []
+    for row in history[-limit:]:
+        if not isinstance(row, dict) or not isinstance(row.get("key"), str):
+            return None
+        raw = row.get("nums")
+        if not isinstance(raw, (list, tuple)) or len(raw) != 20:
+            return None
+        try:
+            nums = set(int(n) for n in raw)
+        except (ValueError, TypeError):
+            return None
+        if len(nums) != 20 or min(nums) < 1 or max(nums) > 90:
+            return None
+        rows.append((row["key"], nums))
+    if len(rows) < limit:
+        return None
+    keys = [x[0] for x in rows]
+    if len(set(keys)) != len(keys):
+        return None
+    # Barriera minima anti-storico distorto. Su 288 draw l'atteso per numero
+    # e' 64; i limiti 6%-40% sono volutamente larghi e servono solo a bloccare
+    # archivi palesemente corrotti, non a selezionare risultati favorevoli.
+    freq = Counter(n for _, nums in rows for n in nums)
+    n = len(rows)
+    if min(freq.get(i, 0) for i in range(1, 91)) < n*0.06 or max(freq.values()) > n*0.40:
+        return None
+    return rows
+
+
+class DecinaFlowLab:
+    """Tracker descrittivo draw-by-draw delle nove decine.
+
+    Ricostruisce la matrice 288x9 dal normale ENGINE HISTORY. Non crea HIT
+    retroattivi e non modifica ENGINE/SOSIA/DUAL. Le statistiche di transizione
+    sono disponibili al BURST v2 soltanto DOPO il draw che le ha generate.
+    """
+    def __init__(self):
+        self.warmup = None
+        self.last_snapshot = None
+        self.live_rows = []
+
+    def load(self, obj):
+        if not isinstance(obj, dict) or obj.get("version") != FLOW_VERSION:
+            return
+        rows = obj.get("live_rows")
+        if isinstance(rows, list):
+            clean = []
+            for r in rows[-FLOW_RECORD_MAX:]:
+                if (isinstance(r, dict) and isinstance(r.get("key"), str) and
+                    isinstance(r.get("counts"), list) and len(r["counts"]) == 9):
+                    try:
+                        counts = [max(0, min(10, int(x))) for x in r["counts"]]
+                    except (TypeError, ValueError):
+                        continue
+                    clean.append({"key": r["key"], "counts": counts})
+            self.live_rows = clean
+        if isinstance(obj.get("warmup"), dict):
+            self.warmup = obj.get("warmup")
+        if isinstance(obj.get("last_snapshot"), dict):
+            self.last_snapshot = obj.get("last_snapshot")
+
+    def dump(self):
+        return {"version": FLOW_VERSION, "warmup": self.warmup,
+                "last_snapshot": self.last_snapshot,
+                "live_rows": self.live_rows[-FLOW_RECORD_MAX:]}
+
+    @staticmethod
+    def _gap(counts, threshold):
+        for back, value in enumerate(reversed(counts)):
+            if value >= threshold:
+                return back
+        return len(counts)
+
+    @staticmethod
+    def _streak(counts, predicate):
+        n = 0
+        for value in reversed(counts):
+            if predicate(value):
+                n += 1
+            else:
+                break
+        return n
+
+    @staticmethod
+    def _unique_dominant(row):
+        m = max(row)
+        ids = [i for i, x in enumerate(row) if x == m]
+        return (ids[0], m) if len(ids) == 1 else (None, m)
+
+    @classmethod
+    def build_snapshot_from_rows(cls, rows):
+        matrix = [[len(nums.intersection(g)) for g in DECINA_GROUPS] for _, nums in rows]
+        n = len(matrix)
+        if not matrix:
+            return None
+
+        # Dominanti uniche + matrice delle transizioni dominante -> dominante.
+        dom = [cls._unique_dominant(r) for r in matrix]
+        trans = [[0 for _ in range(9)] for _ in range(9)]
+        dom_support = [0]*9
+        dom_repeat = 0
+        dom_repeat_den = 0
+        ties = 0
+        for i, (idx, _) in enumerate(dom):
+            if idx is None:
+                ties += 1
+            if i >= n-1:
+                continue
+            nd, ne = rows[i+1][0].split('#')
+            if not sim_draw_is_consecutive(rows[i][0], nd, int(ne)):
+                continue
+            a, b = dom[i][0], dom[i+1][0]
+            if a is not None:
+                dom_support[a] += 1
+            if a is not None and b is not None:
+                trans[a][b] += 1
+                dom_repeat_den += 1
+                dom_repeat += int(a == b)
+
+        current_dom, current_dom_count = dom[-1]
+        overview = []
+        expected = 20.0/9.0
+        for j, label in enumerate(DECINA_LABELS):
+            counts = [r[j] for r in matrix]
+            windows = {}
+            for w in (8, 20, 40, 80, 160, 288):
+                use = counts[-min(w, len(counts)):]
+                windows[str(w)] = sum(use)
+            avg8 = windows["8"] / min(8, len(counts))
+            avg40 = windows["40"] / min(40, len(counts))
+            avg160 = windows["160"] / min(160, len(counts))
+            prev = counts[-2] if len(counts) >= 2 else counts[-1]
+
+            # Stato della stessa decina -> comportamento della H1 successiva.
+            state_trans = {str(k): {"n":0, "sum_next":0, "hit4":0, "hit5":0, "hit6":0}
+                           for k in range(6)}
+            for i in range(len(counts)-1):
+                nd, ne = rows[i+1][0].split('#')
+                if not sim_draw_is_consecutive(rows[i][0], nd, int(ne)):
+                    continue
+                cat = str(min(5, counts[i]))
+                nxt = counts[i+1]
+                d = state_trans[cat]
+                d["n"] += 1; d["sum_next"] += nxt
+                d["hit4"] += int(nxt >= 4); d["hit5"] += int(nxt >= 5); d["hit6"] += int(nxt >= 6)
+
+            # Quante volte la decina e' risultata dominante unica nelle finestre recenti.
+            dom40 = sum(1 for idx, _ in dom[-min(40, n):] if idx == j)
+            dom160 = sum(1 for idx, _ in dom[-min(160, n):] if idx == j)
+
+            if current_dom is not None and dom_support[current_dom] > 0:
+                next_dom_raw = trans[current_dom][j] / dom_support[current_dom]
+                # shrink verso 1/9, cosi pochi passaggi non dominano il punteggio.
+                next_dom_shrink = (trans[current_dom][j] + 8*(1/9)) / (dom_support[current_dom] + 8)
+            else:
+                next_dom_raw = 1/9
+                next_dom_shrink = 1/9
+
+            overview.append({
+                "label": label,
+                "counts": counts[-16:],
+                "recent": counts[-1], "prev": prev, "delta": counts[-1]-prev,
+                "last8": windows["8"], "last20": windows["20"],
+                "last40": windows["40"], "last80": windows["80"],
+                "last160": windows["160"], "last288": windows["288"],
+                "avg8": avg8, "avg40": avg40, "avg160": avg160,
+                "accel8_40": avg8-avg40, "accel40_160": avg40-avg160,
+                "gap4": cls._gap(counts, 4), "gap5": cls._gap(counts, 5),
+                "gap6": cls._gap(counts, 6),
+                "streak_high": cls._streak(counts, lambda x: x >= 3),
+                "streak_low": cls._streak(counts, lambda x: x <= 1),
+                "events4": sum(x >= 4 for x in counts),
+                "events5": sum(x >= 5 for x in counts),
+                "events6": sum(x >= 6 for x in counts),
+                "dom40": dom40, "dom160": dom160,
+                "state_transitions": state_trans,
+                "next_dom_raw": next_dom_raw, "next_dom_shrink": next_dom_shrink,
+                "expected": expected,
+            })
+
+        return {
+            "ready": True, "required": FLOW_WARMUP, "available": n,
+            "last_key": rows[-1][0], "matrix_tail": matrix[-12:],
+            "keys_tail": [k for k, _ in rows[-12:]], "overview": overview,
+            "current_dominant": current_dom,
+            "current_dominant_label": DECINA_LABELS[current_dom] if current_dom is not None else None,
+            "current_dominant_count": current_dom_count,
+            "dominant_ties": ties,
+            "dominant_repeat": dom_repeat, "dominant_repeat_den": dom_repeat_den,
+            "dominant_transitions": trans, "dominant_support": dom_support,
+        }
+
+    def bootstrap(self, history):
+        rows = _decina_history_rows(history, FLOW_WARMUP)
+        if rows is None:
+            self.warmup = {"ready":False, "available":min(len(history), FLOW_WARMUP),
+                           "required":FLOW_WARMUP, "reason":"storico insufficiente o anomalo"}
+            self.last_snapshot = self.warmup
+            return False
+        snap = self.build_snapshot_from_rows(rows)
+        self.warmup = snap
+        self.last_snapshot = snap
+        return True
+
+    def observe_live(self, key, nums):
+        try:
+            s = set(int(x) for x in nums)
+        except (TypeError, ValueError):
+            return
+        if len(s) != 20:
+            return
+        row = {"key": key, "counts": [len(s.intersection(g)) for g in DECINA_GROUPS]}
+        if not self.live_rows or self.live_rows[-1].get("key") != key:
+            self.live_rows.append(row)
+            self.live_rows = self.live_rows[-FLOW_RECORD_MAX:]
+
+    def group_feature(self, idx):
+        w = self.last_snapshot or self.warmup or {}
+        ov = w.get("overview") or []
+        return ov[idx] if 0 <= idx < len(ov) else None
+
+    def text(self):
+        w = self.last_snapshot or self.warmup or {}
+        lines = ["🌊 DECINA FLOW LAB v1 — WARMUP 288",
+                 "Conta quante presenze fa ogni decina a OGNI estrazione e studia transizioni/ripetizioni.",
+                 f"📚 FLOW STATE: {w.get('available',0)}/{FLOW_WARMUP} | " +
+                 ("READY" if w.get("ready") else "NON PRONTO: "+w.get("reason","storico assente"))]
+        if not w.get("ready"):
+            return "\n".join(lines)
+        dom = w.get("current_dominant")
+        domtxt = (f"{DECINA_LABELS[dom]} ({w.get('current_dominant_count',0)})"
+                  if dom is not None else f"PARI ({w.get('current_dominant_count',0)})")
+        den = int(w.get("dominant_repeat_den",0) or 0)
+        rep = int(w.get("dominant_repeat",0) or 0)
+        lines.extend([f"🎯 Dominante ultimo draw: {domtxt}",
+                      f"🔁 Dominante unica ripetuta alla H1 nel warmup: {rep}/{den} ({safe_pct(rep,den):.2f}%)",
+                      "📦 STATO ATTUALE — ultimo/Δ1, media8/40, gap5, e comportamento H1 dopo lo stesso stato:"])
+        for row in w.get("overview", []):
+            cat=str(min(5,int(row['recent'])))
+            tr=row.get('state_transitions',{}).get(cat,{})
+            tn=int(tr.get('n',0) or 0); tsum=int(tr.get('sum_next',0) or 0)
+            next_mean=(tsum/tn) if tn else 0.0
+            state=('SCARICA' if row['recent']<=1 else ('RICCA' if row['recent']>=4 else 'NORMALE'))
+            lines.append(f"• {row['label']}: {row['recent']}/{row['delta']:+d} {state} | "
+                         f"μ8 {row['avg8']:.2f} μ40 {row['avg40']:.2f} | gap5 {row['gap5']} | "
+                         f"H1 stesso stato n={tn}: μ {next_mean:.2f}, 4+ {safe_pct(tr.get('hit4',0),tn):.1f}%, "
+                         f"5+ {safe_pct(tr.get('hit5',0),tn):.1f}%")
+        lines.append("🧩 ULTIMI 8 DRAW — vettore presenze per 9 decine:")
+        keys = w.get("keys_tail", [])[-8:]
+        matrix = w.get("matrix_tail", [])[-8:]
+        for key, row in zip(keys, matrix):
+            lines.append(f"• {key}: " + " ".join(str(x) for x in row))
+        if dom is not None:
+            trans = w.get("dominant_transitions", [])
+            support = w.get("dominant_support", [])
+            if len(trans) == 9 and len(support) == 9 and support[dom] > 0:
+                order = sorted(range(9), key=lambda j: (-trans[dom][j], j))[:3]
+                lines.append(f"🔀 Dopo dominante {DECINA_LABELS[dom]} (supporto {support[dom]}): " +
+                             ", ".join(f"{DECINA_LABELS[j]} {trans[dom][j]}" for j in order))
+        lines.append("⚠️ FLOW e' descrittivo/shadow: usa solo draw gia' conclusi e non modifica ENGINE/SOSIA/DUAL.")
+        return "\n".join(lines)
+
+
+class DecinaBurstLab:
+    """BURST v2: selettivo, con NO SIGNAL e profilo EXTREME-6 separato.
+
+    Migra integralmente i risultati v1. Il gate v2 e' calibrato sulla DISTRIBUZIONE
+    degli score passati, non sugli esiti futuri: score e margin devono essere
+    abbastanza anomali rispetto ai 288 draw di warmup.
     """
     def __init__(self):
         self.pending = None
         self.records = []
         self.last_result = None
         self.warmup = None
-        self.totals = {"evaluated":0, "skipped":0, "pred5":0, "pred6":0,
-                       "random5":0, "random6":0, "pred_numbers":0,
-                       "random_numbers":0, "paired_wins":0,
-                       "paired_losses":0, "paired_ties":0}
+        self.totals = {
+            "evaluated":0, "skipped":0, "pred5":0, "pred6":0,
+            "random5":0, "random6":0, "pred_numbers":0, "random_numbers":0,
+            "paired_wins":0, "paired_losses":0, "paired_ties":0,
+            "abstained":0, "abstained_any5":0, "abstained_any6":0,
+            "extreme_evaluated":0, "extreme_hits":0,
+        }
         self.by_group = {label: {"n":0,"hit5":0,"hit6":0,"numbers":0}
                          for label in DECINA_LABELS}
 
     def load(self, obj):
-        if not isinstance(obj, dict) or obj.get("version") != BURST_VERSION:
+        if not isinstance(obj, dict) or obj.get("version") not in (1, BURST_VERSION):
             return
+        old_version = int(obj.get("version", 1) or 1)
         for name in self.totals:
             x = (obj.get("totals") or {}).get(name)
             if type(x) is int and x >= 0:
@@ -1701,204 +1995,257 @@ class DecinaBurstLab:
                     if type(val) is int and val >= 0:
                         stats[name] = val
         rows = obj.get("records")
-        if isinstance(rows,list):
-            self.records = [r for r in rows if isinstance(r,dict) and
-                            isinstance(r.get("key"),str) and
-                            type(r.get("group_index")) is int and
-                            0 <= r["group_index"] < 9][-BURST_RECORD_MAX:]
+        if isinstance(rows, list):
+            self.records = [r for r in rows if isinstance(r, dict) and isinstance(r.get("key"), str)
+                            and type(r.get("group_index")) is int and 0 <= r["group_index"] < 9][-BURST_RECORD_MAX:]
         p = obj.get("pending")
-        if (isinstance(p,dict) and isinstance(p.get("from_key"),str) and
+        if (isinstance(p, dict) and isinstance(p.get("from_key"), str) and
             type(p.get("group_index")) is int and 0 <= p["group_index"] < 9 and
             type(p.get("control_index")) is int and 0 <= p["control_index"] < 9):
-            self.pending = p
-        self.warmup = obj.get("warmup") if isinstance(obj.get("warmup"),dict) else None
+            self.pending = dict(p)
+            # Un pending v1 era sempre un vero segnale: non cambiamo la previsione gia' congelata.
+            if old_version == 1:
+                self.pending.setdefault("signal", True)
+                self.pending.setdefault("model_version", 1)
+                self.pending.setdefault("extreme6", False)
+        self.warmup = obj.get("warmup") if isinstance(obj.get("warmup"), dict) else None
 
     def dump(self):
-        return {"version":BURST_VERSION,"pending":self.pending,"warmup":self.warmup,
+        return {"version":BURST_VERSION, "pending":self.pending, "warmup":self.warmup,
                 "records":self.records[-BURST_RECORD_MAX:],
-                "totals":self.totals,"by_group":self.by_group}
+                "totals":self.totals, "by_group":self.by_group}
 
     @staticmethod
-    def _history_window(history):
-        """Conserva l'ordine reale delle righe; niente training su file non fidati."""
-        rows = []
-        for row in history[-BURST_WARMUP:]:
-            if not isinstance(row,dict) or not isinstance(row.get("key"),str):
-                return None
-            raw = row.get("nums")
-            if not isinstance(raw,(list,tuple)) or len(raw) != 20:
-                return None
-            try:
-                nums = set(int(n) for n in raw)
-            except (ValueError, TypeError):
-                return None
-            if len(nums) != 20 or min(nums) < 1 or max(nums) > 90:
-                return None
-            rows.append((row["key"], nums))
-        if len(rows) < BURST_WARMUP:
-            return None
-        keys = [x[0] for x in rows]
-        if len(set(keys)) != len(keys):
-            return None
-        # Barriera minima anti-archivio distorto: tutti i 90 numeri
-        # devono avere una presenza plausibile sulla finestra di 288.
-        freq=Counter(n for _,nums in rows for n in nums)
-        n=len(rows)
-        if min(freq.get(i,0) for i in range(1,91)) < n*0.06 or max(freq.values()) > n*0.40:
-            return None
-        return rows
+    def _score_snapshot(snapshot):
+        ov = snapshot.get("overview") or []
+        if len(ov) != 9:
+            return []
+        # cross-sectional z delle finestre recenti: in ogni draw le nove decine
+        # dividono sempre gli stessi 20 numeri, quindi lo scarto relativo e' informativo.
+        vals8 = [r["avg8"] for r in ov]
+        vals40 = [r["avg40"] for r in ov]
+        m8 = sum(vals8)/9; m40 = sum(vals40)/9
+        sd8 = math.sqrt(sum((x-m8)**2 for x in vals8)/9) or 1.0
+        sd40 = math.sqrt(sum((x-m40)**2 for x in vals40)/9) or 1.0
+        scored = []
+        for i, row in enumerate(ov):
+            state = str(min(5, int(row["recent"])))
+            cond = row["state_transitions"][state]
+            # shrink robusto verso comportamento teorico: il warmup non puo' dare
+            # un vantaggio enorme a una transizione vista poche volte.
+            post5 = (cond["hit5"] + 120*BURST_BASE_5) / (cond["n"] + 120)
+            cond_lift = (post5-BURST_BASE_5) / BURST_BASE_5
+            cross8 = (row["avg8"]-m8)/sd8
+            cross40 = (row["avg40"]-m40)/sd40
+            accel = row["accel8_40"]
+            trans_dom = (row["next_dom_shrink"] - 1/9) / (1/9)
+            drought = min(1.5, row["gap5"]/40.0)
+            streak = min(3, row["streak_high"])/3.0
+            # Punteggio complesso ma regolarizzato. Nessun termine usa la H1 futura.
+            raw = (0.27*cross8 + 0.18*cross40 + 0.22*accel +
+                   0.12*max(-1.5, min(1.5, cond_lift)) +
+                   0.09*max(-1.5, min(1.5, trans_dom)) +
+                   0.06*streak + 0.06*drought)
+            scored.append((max(-3.0, min(3.0, raw)), i))
+        return sorted(scored, key=lambda x:(-x[0], x[1]))
 
-    def bootstrap(self, history):
-        """Ricostruisce SEMPRE statistiche dal passato, mai i contatori live."""
-        rows=self._history_window(history)
+    @classmethod
+    def _calibrate_gate(cls, rows):
+        top_scores = []
+        margins = []
+        # Replay puramente cronologico: score al tempo t usa solo draw <=t.
+        # Campioniamo al massimo 48 punti del warmup: stessa logica, costo stabile.
+        start = max(80, len(rows)-220)
+        candidates = list(range(start, len(rows)-1))
+        if len(candidates) > 48:
+            step = int(math.ceil(len(candidates)/48.0))
+            candidates = candidates[::step]
+        for end in candidates:
+            prefix = rows[max(0, end-FLOW_WARMUP+1):end+1]
+            if len(prefix) < 80:
+                continue
+            snap = DecinaFlowLab.build_snapshot_from_rows(prefix)
+            ranks = cls._score_snapshot(snap or {})
+            if len(ranks) < 2:
+                continue
+            top_scores.append(ranks[0][0])
+            margins.append(ranks[0][0]-ranks[1][0])
+        score_thr = _decina_quantile(top_scores, BURST_GATE_SCORE_Q)
+        margin_thr = _decina_quantile(margins, BURST_GATE_MARGIN_Q)
+        extreme_thr = _decina_quantile(top_scores, BURST_EXTREME_SCORE_Q)
+        return {"n":len(top_scores), "score_threshold":score_thr,
+                "margin_threshold":margin_thr, "extreme_threshold":extreme_thr,
+                "score_q":BURST_GATE_SCORE_Q, "margin_q":BURST_GATE_MARGIN_Q,
+                "extreme_q":BURST_EXTREME_SCORE_Q}
+
+    def bootstrap(self, history, flow=None):
+        rows = _decina_history_rows(history, BURST_WARMUP)
         if rows is None:
-            self.warmup={"ready":False,"available":min(len(history),BURST_WARMUP),
-                         "required":BURST_WARMUP,"reason":"storico insufficiente o anomalo"}
+            self.warmup = {"ready":False, "available":min(len(history), BURST_WARMUP),
+                           "required":BURST_WARMUP, "reason":"storico insufficiente o anomalo"}
             return False
-        groups = [[len(nums.intersection(g)) for g in DECINA_GROUPS] for _,nums in rows]
-        overview=[]
-        for j,label in enumerate(DECINA_LABELS):
-            counts=[x[j] for x in groups]
-            bursts=[i for i,v in enumerate(counts) if v>=5]
-            last_burst=(len(counts)-1-bursts[-1]) if bursts else len(counts)
-            prior={str(k):{"n":0,"hit5":0,"hit6":0} for k in range(5)}
-            for i in range(len(counts)-1):
-                # Se fra due draw manca un'estrazione, non e' una transizione H1.
-                nd,ne=rows[i+1][0].split('#')
-                if not sim_draw_is_consecutive(rows[i][0],nd,int(ne)):
-                    continue
-                cat=str(min(4,counts[i]))
-                prior[cat]["n"]+=1
-                prior[cat]["hit5"]+=int(counts[i+1]>=5)
-                prior[cat]["hit6"]+=int(counts[i+1]>=6)
-            overview.append({"label":label,"last8":sum(counts[-8:]),
-                "last40":sum(counts[-40:]),"last160":sum(counts[-160:]),
-                "last288":sum(counts),"recent":counts[-1],
-                "events5":sum(v>=5 for v in counts),
-                "events6":sum(v>=6 for v in counts),
-                "gap5":last_burst,"transitions":prior})
-        self.warmup={"ready":True,"required":BURST_WARMUP,"available":len(rows),
-                     "last_key":rows[-1][0],"overview":overview}
+        if flow is not None:
+            flow.bootstrap(history)
+            snap = flow.last_snapshot
+        else:
+            snap = DecinaFlowLab.build_snapshot_from_rows(rows)
+        if not snap or not snap.get("ready"):
+            self.warmup = {"ready":False, "available":len(rows), "required":BURST_WARMUP,
+                           "reason":"FLOW non disponibile"}
+            return False
+        gate = self._calibrate_gate(rows)
+        overview = []
+        for row in snap.get("overview", []):
+            overview.append({
+                "label":row["label"], "last8":row["last8"], "last40":row["last40"],
+                "last160":row["last160"], "last288":row["last288"], "recent":row["recent"],
+                "events5":row["events5"], "events6":row["events6"],
+                "gap5":row["gap5"], "gap6":row["gap6"], "delta":row["delta"],
+                "avg8":row["avg8"], "avg40":row["avg40"], "streak_high":row["streak_high"]
+            })
+        self.warmup = {"ready":True, "required":BURST_WARMUP, "available":len(rows),
+                       "last_key":rows[-1][0], "overview":overview,
+                       "gate":gate, "flow_snapshot":snap}
         return True
 
-    @staticmethod
-    def _rank(overview):
-        """Indice esplorativo predefinito, fortemente regolarizzato."""
-        scored=[]
-        v=20*(10/90)*(80/90)*(70/89)
-        for i,row in enumerate(overview):
-            z8=(row["last8"]-8*20/9)/math.sqrt(8*v)
-            z40=(row["last40"]-40*20/9)/math.sqrt(40*v)
-            z160=(row["last160"]-160*20/9)/math.sqrt(160*v)
-            state=str(min(4,row["recent"]))
-            cond=row["transitions"][state]
-            # prior 200 osservazioni: impedisce a 2-3 coincidenze di dominare.
-            posterior=(cond["hit5"]+200*BURST_BASE_5)/(cond["n"]+200)
-            conditional=(posterior-BURST_BASE_5)/BURST_BASE_5
-            raw=(0.15*z8 + 0.25*z40 + 0.12*z160 + 0.15*(z8-z160)
-                 + 0.15*max(-1.,min(1.,conditional)))
-            scored.append((max(-2.,min(2.,raw)),i))
-        return sorted(scored,key=lambda x:(-x[0],x[1]))
-
-    def arm(self, history, key):
+    def arm(self, history, key, flow=None):
         if self.pending is not None:
-            return self.pending if self.pending.get("from_key")==key else None
-        if not history or history[-1].get("key") != key or not self.bootstrap(history):
+            return self.pending if self.pending.get("from_key") == key else None
+        if not history or history[-1].get("key") != key or not self.bootstrap(history, flow=flow):
             return None
-        ranks=self._rank(self.warmup["overview"])
-        idx=ranks[0][1]
-        # Controllo uniforme indipendente e congelato prima del draw.
-        ctrl=secrets.randbelow(len(DECINA_GROUPS))
-        self.pending={"from_key":key,"group_index":idx,"control_index":ctrl,
-             "index":round(ranks[0][0],4),"warmup_draws":self.warmup["available"],
-             "overview":self.warmup["overview"],"created_at":now_txt()}
+        snap = self.warmup.get("flow_snapshot") or {}
+        ranks = self._score_snapshot(snap)
+        if len(ranks) < 2:
+            return None
+        top_score, idx = ranks[0]
+        second_score, second_idx = ranks[1]
+        margin = top_score-second_score
+        gate = self.warmup.get("gate") or {}
+        calibrated = int(gate.get("n",0) or 0) >= BURST_MIN_CALIBRATION
+        score_thr = float(gate.get("score_threshold", 0.0) or 0.0)
+        margin_thr = float(gate.get("margin_threshold", 0.0) or 0.0)
+        extreme_thr = float(gate.get("extreme_threshold", score_thr) or score_thr)
+        signal = bool(calibrated and top_score >= score_thr and margin >= margin_thr and top_score > 0)
+        extreme6 = bool(signal and top_score >= extreme_thr and margin >= margin_thr)
+        ctrl = secrets.randbelow(len(DECINA_GROUPS))
+        feat = (snap.get("overview") or [{}]*9)[idx]
+        self.pending = {
+            "from_key":key, "group_index":idx, "control_index":ctrl,
+            "signal":signal, "extreme6":extreme6, "model_version":BURST_VERSION,
+            "index":round(top_score,4), "second_index":round(second_score,4),
+            "second_group_index":second_idx, "margin":round(margin,4),
+            "score_threshold":round(score_thr,4), "margin_threshold":round(margin_thr,4),
+            "extreme_threshold":round(extreme_thr,4), "calibration_n":int(gate.get("n",0) or 0),
+            "warmup_draws":self.warmup["available"], "created_at":now_txt(),
+            "flow": {"recent":feat.get("recent"), "delta":feat.get("delta"),
+                     "avg8":feat.get("avg8"), "avg40":feat.get("avg40"),
+                     "gap5":feat.get("gap5"), "gap6":feat.get("gap6"),
+                     "streak_high":feat.get("streak_high")},
+        }
         return self.pending
 
     def settle(self, day, draw_id, nums):
-        p=self.pending
+        p = self.pending
         if p is None:
             return None
-        self.pending=None
-        key=draw_key(day,draw_id)
-        if not sim_draw_is_consecutive(p["from_key"],day,draw_id):
-            self.totals["skipped"]+=1
-            self.last_result={"key":key,"skipped":True}
+        self.pending = None
+        key = draw_key(day, draw_id)
+        if not sim_draw_is_consecutive(p["from_key"], day, draw_id):
+            self.totals["skipped"] += 1
+            self.last_result = {"key":key, "skipped":True, "signal":bool(p.get("signal", True))}
             return self.last_result
-        actual=set(int(n) for n in nums)
-        idx=p["group_index"]
-        count=len(actual.intersection(DECINA_GROUPS[idx]))
-        rc=len(actual.intersection(DECINA_GROUPS[p["control_index"]]))
-        r={"key":key,"from_key":p["from_key"],"group_index":idx,
-           "group":DECINA_LABELS[idx],"control_index":p["control_index"],
-           "count":count,"control_count":rc,"hit5":count>=5,
-           "hit6":count>=6,"control5":rc>=5,"control6":rc>=6}
+        actual = set(int(n) for n in nums)
+        idx = p["group_index"]
+        count = len(actual.intersection(DECINA_GROUPS[idx]))
+        rc = len(actual.intersection(DECINA_GROUPS[p["control_index"]]))
+        all_counts = [len(actual.intersection(g)) for g in DECINA_GROUPS]
+        signal = bool(p.get("signal", True))  # v1 pending migrato => vero segnale
+        extreme6 = bool(p.get("extreme6", False))
+        r = {"key":key, "from_key":p["from_key"], "group_index":idx,
+             "group":DECINA_LABELS[idx], "control_index":p["control_index"],
+             "count":count, "control_count":rc, "hit5":count>=5, "hit6":count>=6,
+             "control5":rc>=5, "control6":rc>=6, "signal":signal,
+             "extreme6":extreme6, "index":p.get("index"), "margin":p.get("margin"),
+             "any5":max(all_counts)>=5, "any6":max(all_counts)>=6, "max_count":max(all_counts)}
         self.records.append(r)
-        self.records=self.records[-BURST_RECORD_MAX:]
-        t=self.totals
-        t["evaluated"]+=1
-        t["pred5"]+=int(count>=5)
-        t["pred6"]+=int(count>=6)
-        t["random5"]+=int(rc>=5)
-        t["random6"]+=int(rc>=6)
-        t["pred_numbers"]+=count
-        t["random_numbers"]+=rc
-        t["paired_wins"]+=int(count>=5 and rc<5)
-        t["paired_losses"]+=int(count<5 and rc>=5)
-        t["paired_ties"]+=int((count>=5)==(rc>=5))
-        g=self.by_group[DECINA_LABELS[idx]]
-        g["n"]+=1; g["hit5"]+=int(count>=5)
-        g["hit6"]+=int(count>=6); g["numbers"]+=count
-        self.last_result=r
+        self.records = self.records[-BURST_RECORD_MAX:]
+        t = self.totals
+        if signal:
+            t["evaluated"] += 1
+            t["pred5"] += int(count>=5); t["pred6"] += int(count>=6)
+            t["random5"] += int(rc>=5); t["random6"] += int(rc>=6)
+            t["pred_numbers"] += count; t["random_numbers"] += rc
+            t["paired_wins"] += int(count>=5 and rc<5)
+            t["paired_losses"] += int(count<5 and rc>=5)
+            t["paired_ties"] += int((count>=5)==(rc>=5))
+            if extreme6:
+                t["extreme_evaluated"] += 1
+                t["extreme_hits"] += int(count>=6)
+            g = self.by_group[DECINA_LABELS[idx]]
+            g["n"] += 1; g["hit5"] += int(count>=5); g["hit6"] += int(count>=6); g["numbers"] += count
+        else:
+            t["abstained"] += 1
+            t["abstained_any5"] += int(max(all_counts)>=5)
+            t["abstained_any6"] += int(max(all_counts)>=6)
+        self.last_result = r
         return r
 
     def text(self):
-        w=self.warmup or {}
-        t=self.totals
-        n=t["evaluated"]
-        lines=["🔟 DECINA BURST LAB v1 — H1 SHADOW",
-            "Obiettivo: decina con 5+ o 6+ numeri nella PROSSIMA estrazione.",
-            f"📚 WARMUP STATE: {w.get('available',0)}/{BURST_WARMUP} | " +
-                ("READY" if w.get("ready") else "NON PRONTO: "+w.get("reason","storico assente"))]
-        p=self.pending
+        w = self.warmup or {}
+        t = self.totals
+        n = t["evaluated"]
+        abst = t.get("abstained", 0)
+        decisions = n + abst
+        lines = ["🔟 DECINA BURST EVENT DETECTOR v2 — H1 SHADOW",
+                 "Obiettivo: segnalare SOLO configurazioni selettive per 5+; EXTREME-6 separato.",
+                 f"📚 WARMUP/FLOW: {w.get('available',0)}/{BURST_WARMUP} | " +
+                 ("READY" if w.get("ready") else "NON PRONTO: "+w.get("reason","storico assente"))]
+        p = self.pending
         if p:
-            i=p["group_index"]; c=p["control_index"]
-            lines.extend([f"🎯 DECINA CONGELATA dopo {p['from_key']}: {DECINA_LABELS[i]}",
-                "Numeri: "+" ".join(f"{x:02d}" for x in DECINA_GROUPS[i]),
-                f"Indice comparativo (non probabilita'): {p['index']:+.3f}",
-                f"🧪 CONTROLLO CASUALE: {DECINA_LABELS[c]}"])
+            i = p["group_index"]; c = p["control_index"]
+            status = "✅ SIGNAL" if p.get("signal", True) else "⏸ NO SIGNAL"
+            lines.extend([f"{status} dopo {p['from_key']}: candidato {DECINA_LABELS[i]}",
+                          "Numeri: "+" ".join(f"{x:02d}" for x in DECINA_GROUPS[i]),
+                          f"Score {float(p.get('index',0)):+.3f} | #2 {float(p.get('second_index',0)):+.3f} | "
+                          f"gap {float(p.get('margin',0)):+.3f}",
+                          f"Gate: score≥{float(p.get('score_threshold',0)):+.3f} e gap≥{float(p.get('margin_threshold',0)):+.3f} "
+                          f"(calibrazione {p.get('calibration_n',0)})",
+                          f"🔥 EXTREME-6: {'ON' if p.get('extreme6') else 'OFF'} | soglia score≥{float(p.get('extreme_threshold',0)):+.3f}",
+                          f"🧪 Controllo casuale congelato: {DECINA_LABELS[c]}"])
+            f = p.get("flow") or {}
+            lines.append(f"🌊 FLOW candidato: ultimo {f.get('recent','-')} | Δ1 {f.get('delta','-')} | "
+                         f"media8 {float(f.get('avg8',0)):.2f} | media40 {float(f.get('avg40',0)):.2f} | "
+                         f"gap5 {f.get('gap5','-')} | streak≥3 {f.get('streak_high','-')}")
         elif w.get("ready"):
-            lines.append("🎯 Nessun segnale H1 ancora congelato: attendo una nuova estrazione live.")
+            lines.append("⏸ Nessuna decisione H1 congelata: attendo il prossimo draw live.")
+
         if w.get("ready"):
-            lines.append("📦 STORICO WARMUP: presenze 8/40/160/288 | eventi 5+/6+ nel warmup:")
-            for row in w.get("overview",[]):
-                lines.append(f"• {row['label']}: {row['last8']}/{row['last40']}/"
-                    f"{row['last160']}/{row['last288']} | 5+ {row['events5']}, "
-                    f"6+ {row['events6']} | distanza ultimo 5+: {row['gap5']}")
-        lines.extend([f"📊 FORWARD ESCLUSIVAMENTE LIVE: {n} valutati | salti {t['skipped']}",
-            f"• BURST 5+: {t['pred5']}/{n} ({safe_pct(t['pred5'],n):.2f}%) | "
-                f"random {t['random5']}/{n} ({safe_pct(t['random5'],n):.2f}%)",
-            f"• BURST 6+: {t['pred6']}/{n} ({safe_pct(t['pred6'],n):.2f}%) | "
-                f"random {t['random6']}/{n} ({safe_pct(t['random6'],n):.2f}%)",
-            f"• Numeri centrati nella decina: {t['pred_numbers']}/{10*n} "
-                f"(media {t['pred_numbers']/n if n else 0:.3f}/10) | "
-                f"random {t['random_numbers']/n if n else 0:.3f}/10",
-            f"• Appaiato 5+ BURST vs random: +{t['paired_wins']}/-"
-                f"{t['paired_losses']}/={t['paired_ties']}",
-            f"• Teorico singola decina H1: 5+ {100*BURST_BASE_5:.3f}% "
-                f"| 6+ {100*BURST_BASE_6:.3f}% | media 2.222/10"])
+            lines.append("📦 WARMUP 288: presenze 8/40/160/288 | 5+/6+ | gap5:")
+            for row in w.get("overview", []):
+                lines.append(f"• {row['label']}: {row['last8']}/{row['last40']}/{row['last160']}/{row['last288']} "
+                             f"| {row['events5']}/{row['events6']} | {row['gap5']}")
+        coverage = safe_pct(n, decisions)
+        lines.extend([f"📊 FORWARD LIVE: segnali valutati {n} | NO SIGNAL {abst} | copertura {coverage:.2f}% | salti {t['skipped']}",
+                      f"• SIGNAL 5+: {t['pred5']}/{n} ({safe_pct(t['pred5'],n):.2f}%) | random {t['random5']}/{n} ({safe_pct(t['random5'],n):.2f}%)",
+                      f"• SIGNAL 6+: {t['pred6']}/{n} ({safe_pct(t['pred6'],n):.2f}%) | random {t['random6']}/{n} ({safe_pct(t['random6'],n):.2f}%)",
+                      f"• Media numeri nei SIGNAL: {t['pred_numbers']/n if n else 0:.3f}/10 | random {t['random_numbers']/n if n else 0:.3f}/10",
+                      f"• EXTREME-6: {t.get('extreme_hits',0)}/{t.get('extreme_evaluated',0)}",
+                      f"• NO SIGNAL con almeno una decina 5+/6+ nel draw: {t.get('abstained_any5',0)}/{t.get('abstained_any6',0)} su {abst}",
+                      f"• Teorico decina preselezionata: 5+ {100*BURST_BASE_5:.3f}% | 6+ {100*BURST_BASE_6:.3f}% | media 2.222/10"])
         if self.last_result:
-            r=self.last_result
+            r = self.last_result
             if r.get("skipped"):
                 lines.append(f"🧾 Ultima H1 {r['key']}: salto, nessun HIT attribuito.")
+            elif r.get("signal"):
+                lines.append(f"🧾 Ultima H1 {r['key']}: SIGNAL {r['group']} {r['count']}/10 | random {r['control_count']}/10")
             else:
-                lines.append(f"🧾 Ultima H1 {r['key']}: {r['group']} "
-                             f"{r['count']}/10 | random {r['control_count']}/10")
+                lines.append(f"🧾 Ultima H1 {r['key']}: NO SIGNAL | candidato shadow {r['group']} {r['count']}/10 | max decina reale {r['max_count']}/10")
         if n:
-            lines.append("📍 RISULTATI PER FASCIA (solo decine selezionate prima della H1):")
-            for label,s in self.by_group.items():
+            lines.append("📍 RISULTATI PER FASCIA — solo SIGNAL congelati:")
+            for label, s in self.by_group.items():
                 if s["n"]:
-                    lines.append(f"• {label}: 5+ {s['hit5']}/{s['n']} | 6+ {s['hit6']}/{s['n']}")
-        lines.append("⚠️ Warmup e' storico descrittivo; nessun HIT retroattivo o puntata automatica.")
+                    lines.append(f"• {label}: 5+ {s['hit5']}/{s['n']} | 6+ {s['hit6']}/{s['n']} | media {s['numbers']/s['n']:.2f}")
+        lines.append("⚠️ Warmup/FLOW sono descrittivi; risultati v1 conservati, v2 resta shadow e non effettua puntate.")
         return "\n".join(lines)
 
 
@@ -1997,6 +2344,7 @@ class EngineOnly:
         # Stato isolato: nessuno dei contatori preesistenti viene modificato.
         self.dual = DualTargetLab()
         self.decina = DecinaEngine()
+        self.flow = DecinaFlowLab()
         self.burst = DecinaBurstLab()
 
         self.state_load_info = {
@@ -2012,7 +2360,8 @@ class EngineOnly:
             self._sosiap_load_pretrain()
             self.dual.load_pretrain()  # file esterno SOLO se esplicitamente presente nella root
             self.dual.bootstrap_from_history(self.engine_history)  # warmstart dal vecchio state LIVE
-            self.burst.bootstrap(self.engine_history)  # warmup storico, NON previsione retroattiva
+            self.flow.bootstrap(self.engine_history)  # matrice 288x9 descrittiva
+            self.burst.bootstrap(self.engine_history, flow=self.flow)  # warmup storico, NON previsione retroattiva
             # Upgrade non distruttivo: se il vecchio state ha gia' una previsione
             # SOSIA adattiva congelata, ricava subito TOP1/TOP2 senza cambiarla.
             self._sosiasniper_migrate_pending()
@@ -4207,7 +4556,8 @@ class EngineOnly:
 
             self.dual.load(d.get("dual_target_v1"))
             self.decina.load(d.get("dual_decina_v1"))
-            self.burst.load(d.get("decina_burst_v1"))
+            self.flow.load(d.get("decina_flow_v1"))
+            self.burst.load(d.get("decina_burst_v2") or d.get("decina_burst_v1"))
 
             # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
             if self.engine_pending and self.engine_pending.get("accepted"):
@@ -4290,7 +4640,8 @@ class EngineOnly:
             "sosiapatternlab_totals": self.sosiapatternlab_totals,
             "dual_target_v1": self.dual.dump(),
             "dual_decina_v1": self.decina.dump(),
-            "decina_burst_v1": self.burst.dump(),
+            "decina_flow_v1": self.flow.dump(),
+            "decina_burst_v2": self.burst.dump(),
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -4790,10 +5141,13 @@ class EngineOnly:
             self._sosiapatternlab_arm(current_key)
             self.dual.bootstrap_from_history(self.engine_history)
             self.dual.arm(self, current_key)
+            # FLOW registra il draw appena concluso e ricostruisce il contesto 288.
+            self.flow.observe_live(current_key, clean)
+            self.flow.bootstrap(self.engine_history)
             # Non ricostruisce segnali a posteriori nel catch-up silenzioso.
             if notify:
                 self.decina.arm(self, current_key)
-                self.burst.arm(self.engine_history, current_key)
+                self.burst.arm(self.engine_history, current_key, flow=self.flow)
             if BURST_NOTIFY and notify and (burst_result or self.burst.pending):
                 await self.tg(app, self.burst.text())
             if DECINA_NOTIFY and notify and (decina_result or self.decina.pending):
@@ -5076,7 +5430,8 @@ class EngineOnly:
             "/sosiapattern — posizioni + calibrated + transition + number watch\n"
             "/dual — DUAL TARGET v1: due numeri H1, controllo casuale e forward\n"
             "/decine — coppie nella stessa decina, DUAL+DECINE e confronto forward\n"
-            "/burst — decina 5+/6+ H1: warmup 288 e confronto random\n"
+            "/burst — EVENT DETECTOR 5+/6+ H1: warmup 288, NO SIGNAL e EXTREME-6\n"
+            "/flow — presenze per decina a ogni draw, transizioni e streak su 288\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
             "/menu — questa schermata"
@@ -5126,6 +5481,9 @@ async def cmd_decine(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_burst(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].burst.text())
 
+async def cmd_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].flow.text())
+
 async def cmd_sosiarandom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].sosia_text())
 
@@ -5147,7 +5505,8 @@ async def setup_commands(app):
         BotCommand("sosiapattern", "Pattern, calibrated, transition e watch"),
         BotCommand("dual", "DUAL TARGET: due numeri H1 e confronto random"),
         BotCommand("decine", "DECINA ENGINE: DUAL+DECINE e coppia stessa decina"),
-        BotCommand("burst", "BURST LAB: decina 5+/6+ H1 e warmup 288"),
+        BotCommand("burst", "BURST v2: EVENT DETECTOR 5+/6+ con NO SIGNAL"),
+        BotCommand("flow", "FLOW: 9 decine draw-by-draw, transizioni e streak"),
         BotCommand("sosiarandom", "Controllo casuale 20/90"),
         BotCommand("status", "Stato rapido ENGINE"),
         BotCommand("menu", "Comandi ENGINE ONLY"),
@@ -5270,14 +5629,15 @@ async def startup(engine, app, retry_state=None):
     for d,e,nums in unseen:
         await engine.process_draw(None,d,e,nums,mode="live",notify=False,persist=False)
 
-    # Warmup BURST su STATE prima del primo H1 realmente futuro.
+    # Warmup FLOW + BURST su STATE prima del primo H1 realmente futuro.
     # Se il sito non conferma che l'ultimo draw e' il nostro ultimo draw,
     # nessuna previsione retrodatata viene inventata.
-    engine.burst.bootstrap(engine.engine_history)
+    engine.flow.bootstrap(engine.engine_history)
+    engine.burst.bootstrap(engine.engine_history, flow=engine.flow)
     if rows and engine.engine_history:
         latest=max(rows,key=lambda r:(r[0],r[1]))
         if draw_key(latest[0],latest[1]) == engine.engine_history[-1]["key"]:
-            engine.burst.arm(engine.engine_history,engine.engine_history[-1]["key"])
+            engine.burst.arm(engine.engine_history,engine.engine_history[-1]["key"],flow=engine.flow)
 
     engine.save_state(git=True, force_git=True)
 
@@ -5294,13 +5654,15 @@ async def startup(engine, app, retry_state=None):
         "🎯 AMBO 2xHOT5 H1-H3 NO-LOCK: conferma TOP1 -> DUE accompagnatori caldi -> notifiche prima dei colpi\n"
         "🎮 PLAY SHADOW: conferma H1-H3 -> seconda uscita entro H5\n"
         "🧠 SOSIA ADATTIVO: 20 numeri /sosia; SNIPER /sosiasniper; PATTERN LAB /sosiapattern; casuale /sosiarandom\n"
+        "🌊 DECINA FLOW LAB: warmup 288, transizioni/streak /flow\n"
+        "🔟 BURST EVENT DETECTOR v2: SIGNAL/NO SIGNAL + EXTREME-6 /burst\n"
         "✅ state persistente + autorotation\n\n"
         f"ENGINE: {'READY' if engine.engine_bootstrap_done else 'BUILD'} | "
         f"filtro target top {ENGINE_SELECT_RATE*100:.0f}%\n"
         f"H5 LIVE gia' disponibili: {len(engine.engine_h5_records_live)}\n"
         f"PLAY storico ricostruito: {len(engine.engine_play_records_live)} record | "
         f"attivi={sum(1 for x in engine.engine_play_sessions if x.get('origin_mode')=='live')}\n\n"
-        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /sosiarandom /menu"
+        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /sosiarandom /menu"
     )
     await notify_pending(engine,app)
     await notify_ambo_active(engine,app)
@@ -5556,31 +5918,51 @@ async def run_self_test():
     assert len(lp["watch"]) == SOSIA_NUMBER_WATCH_SIZE
     assert lab.sosiapatternlab_totals["evaluated"] == 0
 
-    # BURST warmup: no live retroattivo, freeze, settlement H1, gap, persistence.
-    burst=DecinaBurstLab()
+    # FLOW + BURST v2: warmup 288, NO SIGNAL, settlement H1 e migrazione v1.
     bhar=[]
     for i in range(288):
         r=random.Random(i+99901)
         bhar.append({"key":f"2099-06-01#{i+1:03d}",
                      "nums":sorted(r.sample(range(1,91),20))})
-    assert burst.bootstrap(bhar) and burst.warmup["available"] == 288
-    assert burst.totals["evaluated"] == 0
-    frozen=burst.arm(bhar,bhar[-1]["key"])
+    flow=DecinaFlowLab()
+    assert flow.bootstrap(bhar) and flow.warmup["available"] == 288
+    assert len(flow.warmup["overview"]) == 9 and len(flow.warmup["matrix_tail"]) == 12
+    assert sum(flow.warmup["matrix_tail"][-1]) == 20
+    assert "DECINA FLOW LAB" in flow.text()
+
+    burst=DecinaBurstLab()
+    assert burst.bootstrap(bhar,flow=flow) and burst.warmup["available"] == 288
+    assert burst.totals["evaluated"] == 0 and burst.totals["abstained"] == 0
+    frozen=burst.arm(bhar,bhar[-1]["key"],flow=flow)
     assert frozen and len(DECINA_GROUPS[frozen["group_index"]])==10
-    assert burst.arm(bhar,bhar[-1]["key"]) is frozen
+    assert isinstance(frozen.get("signal"),bool) and frozen.get("model_version")==2
+    assert burst.arm(bhar,bhar[-1]["key"],flow=flow) is frozen
     roundtrip=DecinaBurstLab(); roundtrip.load(burst.dump())
     assert roundtrip.pending == frozen and roundtrip.totals["evaluated"] == 0
     nums=sorted(random.Random(7788).sample(range(1,91),20))
     result=roundtrip.settle("2099-06-02",1,nums)
-    assert result and 0 <= result["count"] <= 10
-    assert roundtrip.totals["evaluated"]==1 and roundtrip.pending is None
-    assert roundtrip.totals["pred5"]==int(result["count"]>=5)
-    g=DecinaBurstLab(); g.arm(bhar,bhar[-1]["key"])
+    assert result and 0 <= result["count"] <= 10 and roundtrip.pending is None
+    if result["signal"]:
+        assert roundtrip.totals["evaluated"]==1 and roundtrip.totals["abstained"]==0
+        assert roundtrip.totals["pred5"]==int(result["count"]>=5)
+    else:
+        assert roundtrip.totals["evaluated"]==0 and roundtrip.totals["abstained"]==1
+    g=DecinaBurstLab(); g.arm(bhar,bhar[-1]["key"],flow=flow)
     assert g.settle("2099-06-02",2,nums).get("skipped") is True
     assert g.totals["skipped"]==1 and g.totals["evaluated"]==0
-    assert "/burst" in e.menu_text()
 
-    print("SELF-TEST OK: ENGINE/MULTI-HIT/PLAY/AMBO invariati + SOSIA/PATTERN + BURST warmup/H1/gap")
+    # Migrazione di uno state BURST v1: contatori e pending non devono sparire.
+    legacy={"version":1,"totals":{"evaluated":58,"pred5":2,"pred6":2,"random5":2,"random6":1,
+            "pred_numbers":130,"random_numbers":134,"skipped":0,"paired_wins":2,"paired_losses":2,"paired_ties":54},
+            "by_group":{"40–49":{"n":10,"hit5":1,"hit6":1,"numbers":25}},
+            "records":[],"pending":{"from_key":"2099-06-01#288","group_index":4,"control_index":3,"index":0.5}}
+    migrated=DecinaBurstLab(); migrated.load(legacy)
+    assert migrated.totals["evaluated"]==58 and migrated.totals["pred6"]==2
+    assert migrated.pending and migrated.pending["signal"] is True and migrated.pending["model_version"]==1
+    assert migrated.by_group["40–49"]["n"]==10
+    assert "/burst" in e.menu_text() and "/flow" in e.menu_text()
+
+    print("SELF-TEST OK: ENGINE/SOSIA/DUAL invariati + FLOW warmup 288 + BURST v2 gate/NO-SIGNAL + migrazione v1")
 
 async def main():
     if "--self-test" in sys.argv:
@@ -5608,6 +5990,7 @@ async def main():
     app.add_handler(CommandHandler("dual",cmd_dual))
     app.add_handler(CommandHandler("decine",cmd_decine))
     app.add_handler(CommandHandler("burst",cmd_burst))
+    app.add_handler(CommandHandler("flow",cmd_flow))
     app.add_handler(CommandHandler("sosiarandom",cmd_sosiarandom))
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("menu",cmd_menu))
