@@ -2027,6 +2027,223 @@ class DecinaFlowLab:
         return "\n".join(lines)
 
 
+
+# ============================================================
+# DECINA POST-BURST LAB v1 — analisi descrittiva H1/H2/H3
+# Una coorte = una decina con 5 numeri esatti oppure 6+ in un draw.
+# Le coorti dei draw con >=2 decine 5+ sono anche esposte separatamente.
+# Lo storico 288 (rolling) NON incrementa i contatori LIVE.
+# Nessuna feature POST-BURST modifica i gate BURST/DUAL esistenti.
+# ============================================================
+POSTBURST_VERSION = 1
+POSTBURST_WARMUP = 288
+POSTBURST_RECORD_MAX = max(100, int(os.getenv('POSTBURST_RECORD_MAX', '2000')))
+
+
+class DecinaPostBurstLab:
+    """Segue ciascuna decina 5/6+ fino a H3, senza attribuire colpi mancanti."""
+
+    def __init__(self):
+        self.warmup = None
+        self.active = []
+        self.live_records = []
+        self.last_seen_key = None
+        self.skipped = 0
+        self.last_result = None
+
+    @staticmethod
+    def _counts(nums):
+        values = set(int(x) for x in nums)
+        if len(values) != 20 or min(values) < 1 or max(values) > 90:
+            raise ValueError('estrazione non valida per POST-BURST')
+        return [len(values.intersection(g)) for g in DECINA_GROUPS]
+
+    @staticmethod
+    def _origins(counts):
+        multi = sum(x >= 5 for x in counts) >= 2
+        return [{'group_index':j, 'origin_count':v, 'double':multi}
+                for j,v in enumerate(counts) if v >= 5]
+
+    @staticmethod
+    def _category(origin):
+        return '6+' if origin['origin_count'] >= 6 else '5 esatti'
+
+    @staticmethod
+    def _next_metrics(group_index, next_counts):
+        same = next_counts[group_index]
+        other = [j for j,x in enumerate(next_counts) if j != group_index and x >= 5]
+        # La fascia 90-09 non e' adiacente numericamene a 80-89.
+        nearby = [j for j in other if abs(j-group_index) == 1]
+        return {'same_count':same, 'same_4':same >= 4,
+                'same_5':same >= 5, 'same_6':same >= 6,
+                'other_5':bool(other), 'other_count':len(other),
+                'other_groups':other, 'adjacent_5':bool(nearby),
+                'any_5':max(next_counts) >= 5}
+
+    @classmethod
+    def _hist_stats(cls, rows):
+        matrix = [cls._counts(nums) for _,nums in rows]
+        classes = ('TUTTE 5+', '5 esatti', '6+', 'DOPPIO 5+')
+        stats = {c:{str(h):{'n':0, 'same_sum':0, 'same_4':0, 'same_5':0,
+                              'same_6':0, 'other_5':0, 'adjacent_5':0,
+                              'any_5':0, 'same_distribution':[0]*11}
+                    for h in (1,2,3)} for c in classes}
+        latest=[]
+        for i,counts in enumerate(matrix):
+            origins=cls._origins(counts)
+            if i >= len(matrix)-8 and origins:
+                latest.append({'key':rows[i][0], 'decine':[
+                    {'label':DECINA_LABELS[o['group_index']], 'n':o['origin_count']}
+                    for o in origins]})
+            for origin in origins:
+                categories=['TUTTE 5+', cls._category(origin)]
+                if origin['double']:
+                    categories.append('DOPPIO 5+')
+                j=origin['group_index']
+                for h in (1,2,3):
+                    k=i+h
+                    if k >= len(matrix):
+                        continue
+                    # Tutti i passaggi intermedi devono essere veri draw consecutivi.
+                    valid=True
+                    for step in range(i,k):
+                        day, draw_id=rows[step+1][0].rsplit('#',1)
+                        if not sim_draw_is_consecutive(rows[step][0], day, int(draw_id)):
+                            valid=False; break
+                    if not valid:
+                        continue
+                    m=cls._next_metrics(j,matrix[k])
+                    for cat in categories:
+                        st=stats[cat][str(h)]
+                        st['n']+=1; st['same_sum']+=m['same_count']
+                        st['same_distribution'][m['same_count']]+=1
+                        for flag in ('same_4','same_5','same_6','other_5','adjacent_5','any_5'):
+                            st[flag]+=int(m[flag])
+        return {'stats':stats, 'recent_bursts':latest[-8:]}
+
+    def bootstrap(self, history):
+        rows=_decina_history_rows(history, POSTBURST_WARMUP)
+        if rows is None:
+            self.warmup={'ready':False, 'available':min(len(history),POSTBURST_WARMUP),
+                         'reason':'storico insufficiente o anomalo'}
+            return False
+        snap=self._hist_stats(rows)
+        self.warmup={'ready':True, 'available':len(rows), 'last_key':rows[-1][0], **snap}
+        return True
+
+    def load(self, obj):
+        if not isinstance(obj,dict) or obj.get('version') != POSTBURST_VERSION:
+            return
+        self.warmup=obj.get('warmup') if isinstance(obj.get('warmup'),dict) else None
+        self.last_seen_key=obj.get('last_seen_key') if isinstance(obj.get('last_seen_key'),str) else None
+        self.skipped=max(0,int(obj.get('skipped',0) or 0))
+        self.last_result=obj.get('last_result') if isinstance(obj.get('last_result'),dict) else None
+        active=obj.get('active',[])
+        if isinstance(active,list):
+            for p in active[-40:]:
+                if (isinstance(p,dict) and isinstance(p.get('origin_key'),str)
+                    and isinstance(p.get('last_key'),str)
+                    and isinstance(p.get('group_index'),int) and 0<=p['group_index']<9
+                    and isinstance(p.get('age'),int) and 0<=p['age']<3
+                    and isinstance(p.get('origin_count'),int) and 5<=p['origin_count']<=10):
+                    self.active.append(dict(p))
+        rec=obj.get('live_records',[])
+        if isinstance(rec,list):
+            self.live_records=[dict(r) for r in rec[-POSTBURST_RECORD_MAX:]
+                               if isinstance(r,dict) and isinstance(r.get('origin_key'),str)
+                               and r.get('horizon') in (1,2,3)]
+
+    def dump(self):
+        return {'version':POSTBURST_VERSION, 'warmup':self.warmup,
+                'last_seen_key':self.last_seen_key, 'active':self.active[-40:],
+                'live_records':self.live_records[-POSTBURST_RECORD_MAX:],
+                'skipped':self.skipped, 'last_result':self.last_result}
+
+    def observe_live(self, day, draw_id, nums, open_new=True):
+        """Valuta coorti gia' aperte. Nuove coorti solo da nuovi draw notificabili."""
+        key=draw_key(day,draw_id)
+        if key==self.last_seen_key:
+            return None
+        counts=self._counts(nums)
+        still=[]; closed=[]
+        for p in self.active:
+            if not sim_draw_is_consecutive(p['last_key'],day,draw_id):
+                self.skipped += 3-p['age']
+                continue
+            horizon=p['age']+1
+            metrics=self._next_metrics(p['group_index'],counts)
+            result={'key':key,'origin_key':p['origin_key'],
+                    'group_index':p['group_index'],'group':DECINA_LABELS[p['group_index']],
+                    'origin_count':p['origin_count'],'double':p['double'],
+                    'horizon':horizon, **metrics}
+            self.live_records.append(result)
+            self.last_result=result
+            closed.append(result)
+            if horizon<3:
+                updated=dict(p); updated['age']=horizon; updated['last_key']=key
+                still.append(updated)
+        self.active=still
+        for origin in (self._origins(counts) if open_new else []):
+            self.active.append({'origin_key':key,'last_key':key,
+                                'group_index':origin['group_index'],
+                                'origin_count':origin['origin_count'],
+                                'double':origin['double'],'age':0})
+        self.live_records=self.live_records[-POSTBURST_RECORD_MAX:]
+        self.last_seen_key=key
+        return closed
+
+    def text(self):
+        w=self.warmup or {}
+        lines=['🌋 DECINA POST-BURST LAB v1 — H1/H2/H3 SHADOW',
+               'Segue la STESSA decina dopo 5 esatti o 6+, e controlla se un nuovo 5+ passa ad ALTRA decina.',
+               f"📚 WARMUP: {w.get('available',0)}/{POSTBURST_WARMUP} | " +
+               ('READY' if w.get('ready') else 'NON PRONTO: '+w.get('reason','storico assente'))]
+        if w.get('ready'):
+            lines.append('📦 STORICO WARMUP — una coorte per decina 5+; i casi DOPPIO si sovrappongono alle altre categorie:')
+            for cat in ('TUTTE 5+', '5 esatti', '6+', 'DOPPIO 5+'):
+                lines.append('• '+cat+':')
+                for h in (1,2,3):
+                    st=w['stats'][cat][str(h)]; n=st['n']
+                    mean=st['same_sum']/n if n else 0.0
+                    lines.append(f"  H{h} n={n} | stessa μ {mean:.2f}/10, 4+ {safe_pct(st['same_4'],n):.1f}%, "
+                                 f"5+ {safe_pct(st['same_5'],n):.1f}%, 6+ {safe_pct(st['same_6'],n):.1f}% | "
+                                 f"altra 5+ {safe_pct(st['other_5'],n):.1f}% "
+                                 f"(adiacente {safe_pct(st['adjacent_5'],n):.1f}%) | "
+                                 f"qualsiasi 5+ {safe_pct(st['any_5'],n):.1f}%")
+                    if h==1 and n:
+                        dist=st['same_distribution']
+                        lines.append('    Distribuzione stessa H1: ' + ' | '.join(
+                            f'{k}={dist[k]}' for k in range(5)) +
+                            f" | 5={dist[5]} | 6+={sum(dist[6:])}")
+            latest=w.get('recent_bursts') or []
+            if latest:
+                lines.append('🧩 EVENTI 5+ RECENTI nel warmup:')
+                for event in latest[-5:]:
+                    lines.append('• '+event['key']+': '+', '.join(f"{x['label']}={x['n']}" for x in event['decine']))
+        lines.append(f'🧪 FORWARD LIVE SOLO NUOVI EVENTI: {len(self.live_records)} valutazioni di coorte | '
+                     f'coorti ancora aperte {len(self.active)} | orizzonti saltati {self.skipped}')
+        for cat in ('TUTTE 5+', '5 esatti', '6+', 'DOPPIO 5+'):
+            chosen=[r for r in self.live_records if (cat=='TUTTE 5+' or
+                    (cat=='5 esatti' and r['origin_count']==5) or
+                    (cat=='6+' and r['origin_count']>=6) or
+                    (cat=='DOPPIO 5+' and r['double']))]
+            vals=[r for r in chosen if r['horizon']==1]
+            if vals:
+                n=len(vals)
+                lines.append(f"• {cat} H1: stessa 5+ {sum(r['same_5'] for r in vals)}/{n} "
+                             f"({safe_pct(sum(r['same_5'] for r in vals),n):.1f}%) | "
+                             f"altra 5+ {sum(r['other_5'] for r in vals)}/{n} | "
+                             f"media stessa {sum(r['same_count'] for r in vals)/n:.2f}/10")
+        if self.last_result:
+            r=self.last_result
+            lines.append(f"🧾 Ultimo: {r['origin_key']} {r['group']} {r['origin_count']}/10 → "
+                         f"H{r['horizon']} {r['key']}: stessa {r['same_count']}/10 | "
+                         f"altre 5+ {', '.join(DECINA_LABELS[j] for j in r['other_groups']) or 'nessuna'}")
+        lines.append('⚠️ Coorti per decina, non estrazioni indipendenti; warmup descrittivo, forward separato. '
+                     'POST-BURST non altera BURST v3 o le altre previsioni.')
+        return '\n'.join(lines)
+
+
 class DecinaBurstLab:
     """BURST v3: selettivo, FLOW REGIME, NO SIGNAL ed EXTREME-6 separato.
 
@@ -2444,6 +2661,7 @@ class EngineOnly:
         self.decina = DecinaEngine()
         self.flow = DecinaFlowLab()
         self.burst = DecinaBurstLab()
+        self.postburst = DecinaPostBurstLab()
 
         self.state_load_info = {
             "loaded": False,
@@ -4656,6 +4874,7 @@ class EngineOnly:
             self.decina.load(d.get("dual_decina_v1"))
             self.flow.load(d.get("decina_flow_v1"))
             self.burst.load(d.get("decina_burst_v2") or d.get("decina_burst_v1"))
+            self.postburst.load(d.get("decina_postburst_v1"))
 
             # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
             if self.engine_pending and self.engine_pending.get("accepted"):
@@ -4740,6 +4959,7 @@ class EngineOnly:
             "dual_decina_v1": self.decina.dump(),
             "decina_flow_v1": self.flow.dump(),
             "decina_burst_v2": self.burst.dump(),
+            "decina_postburst_v1": self.postburst.dump(),
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -5201,6 +5421,7 @@ class EngineOnly:
             dual_result = self.dual.settle(day, e, clean)
             decina_result = self.decina.settle(day, e, clean)
             burst_result = self.burst.settle(day, e, clean)
+            self.postburst.observe_live(day, e, clean, open_new=notify)
             self._sosia_settle(day, e, clean)
             # Valuta TOP1/TOP2 PRIMA che _sosiap_settle cancelli il pending adattivo.
             sniper_result = self._sosiasniper_settle(day, e, clean)
@@ -5242,6 +5463,7 @@ class EngineOnly:
             # FLOW registra il draw appena concluso e ricostruisce il contesto 288.
             self.flow.observe_live(current_key, clean)
             self.flow.bootstrap(self.engine_history)
+            self.postburst.bootstrap(self.engine_history)
             # Non ricostruisce segnali a posteriori nel catch-up silenzioso.
             if notify:
                 self.decina.arm(self, current_key)
@@ -5530,6 +5752,7 @@ class EngineOnly:
             "/decine — coppie nella stessa decina, DUAL+DECINE e confronto forward\n"
             "/burst — EVENT DETECTOR 5+/6+ H1: warmup 288, NO SIGNAL e EXTREME-6\n"
             "/flow — presenze per decina a ogni draw, transizioni e streak su 288\n"
+            "/postburst — dopo 5/6+ nella stessa decina: H1/H2/H3 e passaggio ad altre fasce\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
             "/menu — questa schermata"
@@ -5582,6 +5805,9 @@ async def cmd_burst(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].flow.text())
 
+async def cmd_postburst(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].postburst.text())
+
 async def cmd_sosiarandom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].sosia_text())
 
@@ -5605,6 +5831,7 @@ async def setup_commands(app):
         BotCommand("decine", "DECINA ENGINE: DUAL+DECINE e coppia stessa decina"),
         BotCommand("burst", "BURST v2: EVENT DETECTOR 5+/6+ con NO SIGNAL"),
         BotCommand("flow", "FLOW: 9 decine draw-by-draw, transizioni e streak"),
+        BotCommand("postburst", "POST-BURST: stessa/altra decina H1-H3"),
         BotCommand("sosiarandom", "Controllo casuale 20/90"),
         BotCommand("status", "Stato rapido ENGINE"),
         BotCommand("menu", "Comandi ENGINE ONLY"),
@@ -5731,6 +5958,7 @@ async def startup(engine, app, retry_state=None):
     # Se il sito non conferma che l'ultimo draw e' il nostro ultimo draw,
     # nessuna previsione retrodatata viene inventata.
     engine.flow.bootstrap(engine.engine_history)
+    engine.postburst.bootstrap(engine.engine_history)
     engine.burst.bootstrap(engine.engine_history, flow=engine.flow)
     if rows and engine.engine_history:
         latest=max(rows,key=lambda r:(r[0],r[1]))
@@ -5753,6 +5981,7 @@ async def startup(engine, app, retry_state=None):
         "🎮 PLAY SHADOW: conferma H1-H3 -> seconda uscita entro H5\n"
         "🧠 SOSIA ADATTIVO: 20 numeri /sosia; SNIPER /sosiasniper; PATTERN LAB /sosiapattern; casuale /sosiarandom\n"
         "🌊 DECINA FLOW LAB v2: warmup 288 + FLOW REGIME /flow\n"
+        "🌋 POST-BURST LAB v1: eventi 5/6+ -> H1/H2/H3 /postburst\n"
         "🔟 BURST EVENT DETECTOR v3: FLOW REGIME + SIGNAL/NO SIGNAL + EXTREME-6 /burst\n"
         "✅ state persistente + autorotation\n\n"
         f"ENGINE: {'READY' if engine.engine_bootstrap_done else 'BUILD'} | "
@@ -5760,7 +5989,7 @@ async def startup(engine, app, retry_state=None):
         f"H5 LIVE gia' disponibili: {len(engine.engine_h5_records_live)}\n"
         f"PLAY storico ricostruito: {len(engine.engine_play_records_live)} record | "
         f"attivi={sum(1 for x in engine.engine_play_sessions if x.get('origin_mode')=='live')}\n\n"
-        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /sosiarandom /menu"
+        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /postburst /sosiarandom /menu"
     )
     await notify_pending(engine,app)
     await notify_ambo_active(engine,app)
@@ -6070,9 +6299,53 @@ async def run_self_test():
     migrated2=DecinaBurstLab(); migrated2.load(legacy2)
     assert migrated2.totals["evaluated"]==4 and migrated2.totals["abstained"]==9
     assert migrated2.pending and migrated2.pending["signal"] is False and migrated2.pending["model_version"]==2
-    assert "/burst" in e.menu_text() and "/flow" in e.menu_text()
+    # POST-BURST: warmup 288, due decine simultanee da 5, H1-H3, skip e roundtrip.
+    post=DecinaPostBurstLab()
+    assert post.bootstrap(bhar) and post.warmup['available']==288
+    assert len(post.live_records)==0 and not post.active
+    origin_nums=sorted(set(range(40,45)) | set(range(60,65)) |
+                       {1,2,11,12,21,22,31,32,51,52})
+    assert len(origin_nums)==20
+    post.observe_live('2099-06-01',288,origin_nums)
+    assert len(post.active)==2 and all(p['double'] for p in post.active)
+    assert post.observe_live('2099-06-01',288,origin_nums) is None
+    assert len(post.active)==2
+    round_post=DecinaPostBurstLab(); round_post.load(post.dump())
+    assert len(round_post.active)==2 and round_post.last_seen_key=='2099-06-01#288'
+    h1=sorted(set(range(40,45)) | {60,61,1,2,3,11,12,13,21,22,23,31,32,51,52})
+    assert len(h1)==20
+    round_post.observe_live('2099-06-02',1,h1)
+    oldh1=[r for r in round_post.live_records if r['origin_key']=='2099-06-01#288' and r['horizon']==1]
+    assert len(oldh1)==2 and any(r['same_5'] for r in oldh1)
+    assert any(r['other_5'] for r in oldh1)
+    round_post.observe_live('2099-06-02',2,nums)
+    round_post.observe_live('2099-06-02',3,nums)
+    oldrec=[r for r in round_post.live_records if r['origin_key']=='2099-06-01#288']
+    assert len(oldrec)==6 and all(r['horizon'] in (1,2,3) for r in oldrec)
+    replay=DecinaPostBurstLab()
+    replay.observe_live('2099-06-01',288,origin_nums,open_new=False)
+    assert not replay.active and not replay.live_records
+    replay.observe_live('2099-06-02',1,h1,open_new=True)
+    assert len(replay.active)==1 and replay.active[0]['group_index']==4
+    replay.observe_live('2099-06-02',2,nums,open_new=False)
+    assert any(r['origin_key']=='2099-06-02#001' for r in replay.live_records)
+    assert not any(p['origin_key']=='2099-06-02#002' for p in replay.active)
+    interrupted=DecinaPostBurstLab()
+    interrupted.observe_live('2099-06-01',288,origin_nums)
+    interrupted.observe_live('2099-06-02',2,nums)
+    assert interrupted.skipped==6 and not any(r['origin_key']=='2099-06-01#288' for r in interrupted.live_records)
+    six_nums=sorted(set(range(40,46)) | {1,2,3,11,12,13,21,22,23,31,32,51,52,53})
+    assert len(six_nums)==20
+    from_six=DecinaPostBurstLab()
+    from_six.observe_live('2099-06-01',288,six_nums)
+    assert len(from_six.active)==1 and from_six.active[0]['origin_count']==6
+    from_six.observe_live('2099-06-02',1,h1)
+    assert len(from_six.live_records)==1 and from_six.live_records[0]['same_count']==5
+    assert from_six.live_records[0]['origin_count']==6
+    assert 'POST-BURST' in round_post.text()
+    assert "/burst" in e.menu_text() and "/flow" in e.menu_text() and "/postburst" in e.menu_text()
 
-    print("SELF-TEST OK: ENGINE/SOSIA/DUAL invariati + FLOW REGIME 288 + BURST v3 gate/NO-SIGNAL + migrazione v1/v2")
+    print("SELF-TEST OK: ENGINE/SOSIA/DUAL invariati + FLOW REGIME 288 + BURST v3 migrazione + POST-BURST warmup/forward/skip/roundtrip")
 
 async def main():
     if "--self-test" in sys.argv:
@@ -6101,6 +6374,7 @@ async def main():
     app.add_handler(CommandHandler("decine",cmd_decine))
     app.add_handler(CommandHandler("burst",cmd_burst))
     app.add_handler(CommandHandler("flow",cmd_flow))
+    app.add_handler(CommandHandler("postburst",cmd_postburst))
     app.add_handler(CommandHandler("sosiarandom",cmd_sosiarandom))
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("menu",cmd_menu))
