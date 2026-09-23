@@ -1652,16 +1652,17 @@ class DecinaEngine:
 
 
 # ============================================================
-# DECINA FLOW LAB v1 + BURST EVENT DETECTOR v2 — SHADOW H1
-# FLOW ricostruisce 288 draw × 9 decine. BURST v2 usa SOLO
+# DECINA FLOW LAB v2 + FLOW REGIME + BURST EVENT DETECTOR v3 — SHADOW H1
+# FLOW ricostruisce 288 draw × 9 decine e classifica COMPRESSION/NORMAL/DISPERSION.
+# BURST v3 usa SOLO
 # informazioni disponibili prima della H1 e puo' restituire NO SIGNAL.
 # I risultati BURST v1 esistenti vengono migrati senza reset.
 # ============================================================
-FLOW_VERSION = 1
+FLOW_VERSION = 2
 FLOW_WARMUP = max(288, int(os.getenv("FLOW_WARMUP", "288")))
 FLOW_RECORD_MAX = max(300, int(os.getenv("FLOW_RECORD_MAX", "5000")))
 
-BURST_VERSION = 2
+BURST_VERSION = 3
 BURST_WARMUP = max(288, int(os.getenv("BURST_WARMUP", "288")))
 BURST_RECORD_MAX = max(300, int(os.getenv("BURST_RECORD_MAX", "5000")))
 BURST_NOTIFY = os.getenv("BURST_NOTIFY", "0") == "1"
@@ -1725,9 +1726,10 @@ def _decina_history_rows(history, limit):
 class DecinaFlowLab:
     """Tracker descrittivo draw-by-draw delle nove decine.
 
-    Ricostruisce la matrice 288x9 dal normale ENGINE HISTORY. Non crea HIT
-    retroattivi e non modifica ENGINE/SOSIA/DUAL. Le statistiche di transizione
-    sono disponibili al BURST v2 soltanto DOPO il draw che le ha generate.
+    Ricostruisce la matrice 288x9 dal normale ENGINE HISTORY e classifica ogni
+    draw in COMPRESSION/NORMAL/DISPERSION. Non crea HIT retroattivi e non
+    modifica ENGINE/SOSIA/DUAL. Le statistiche sono disponibili al BURST v3
+    soltanto DOPO il draw che le ha generate.
     """
     def __init__(self):
         self.warmup = None
@@ -1735,7 +1737,7 @@ class DecinaFlowLab:
         self.live_rows = []
 
     def load(self, obj):
-        if not isinstance(obj, dict) or obj.get("version") != FLOW_VERSION:
+        if not isinstance(obj, dict) or obj.get("version") not in (1, FLOW_VERSION):
             return
         rows = obj.get("live_rows")
         if isinstance(rows, list):
@@ -1782,6 +1784,30 @@ class DecinaFlowLab:
         ids = [i for i, x in enumerate(row) if x == m]
         return (ids[0], m) if len(ids) == 1 else (None, m)
 
+    @staticmethod
+    def _regime(row):
+        """Regime globale delle nove decine nel draw gia' concluso.
+
+        COMPRESSION: max-min <= 1
+        NORMAL:      max-min == 2
+        DISPERSION:  max-min >= 3
+        La classificazione usa soltanto il draw corrente, quindi e' disponibile
+        prima della H1 successiva.
+        """
+        lo=min(row); hi=max(row); spread=hi-lo
+        mean=sum(row)/len(row)
+        sd=math.sqrt(sum((x-mean)**2 for x in row)/len(row))
+        if spread <= 1:
+            name='COMPRESSION'
+        elif spread == 2:
+            name='NORMAL'
+        else:
+            name='DISPERSION'
+        strength=('FORTE' if (name=='COMPRESSION' and spread<=1) or
+                  (name=='DISPERSION' and (spread>=4 or hi>=6)) else 'STANDARD')
+        return {"name":name, "strength":strength, "spread":spread,
+                "min":lo, "max":hi, "sd":sd}
+
     @classmethod
     def build_snapshot_from_rows(cls, rows):
         matrix = [[len(nums.intersection(g)) for g in DECINA_GROUPS] for _, nums in rows]
@@ -1791,6 +1817,30 @@ class DecinaFlowLab:
 
         # Dominanti uniche + matrice delle transizioni dominante -> dominante.
         dom = [cls._unique_dominant(r) for r in matrix]
+        regimes = [cls._regime(r) for r in matrix]
+        regime_names = ("COMPRESSION", "NORMAL", "DISPERSION")
+        regime_stats = {name:{"n":0, "next_sum_max":0, "next_any4":0,
+                              "next_any5":0, "next_any6":0,
+                              "next_group5":[0]*9, "next_group6":[0]*9,
+                              "next_regime":{x:0 for x in regime_names}}
+                        for name in regime_names}
+        # Ogni record t usa il regime del draw t e misura SOLO il draw t+1.
+        for i in range(n-1):
+            nd, ne = rows[i+1][0].split('#')
+            if not sim_draw_is_consecutive(rows[i][0], nd, int(ne)):
+                continue
+            rs = regime_stats[regimes[i]["name"]]
+            nxt = matrix[i+1]
+            rs["n"] += 1
+            rs["next_sum_max"] += max(nxt)
+            rs["next_any4"] += int(max(nxt) >= 4)
+            rs["next_any5"] += int(max(nxt) >= 5)
+            rs["next_any6"] += int(max(nxt) >= 6)
+            for j, value in enumerate(nxt):
+                rs["next_group5"][j] += int(value >= 5)
+                rs["next_group6"][j] += int(value >= 6)
+            rs["next_regime"][regimes[i+1]["name"]] += 1
+
         trans = [[0 for _ in range(9)] for _ in range(9)]
         dom_support = [0]*9
         dom_repeat = 0
@@ -1883,6 +1933,9 @@ class DecinaFlowLab:
             "dominant_ties": ties,
             "dominant_repeat": dom_repeat, "dominant_repeat_den": dom_repeat_den,
             "dominant_transitions": trans, "dominant_support": dom_support,
+            "current_regime": regimes[-1],
+            "regime_stats": regime_stats,
+            "regime_tail": [r["name"] for r in regimes[-12:]],
         }
 
     def bootstrap(self, history):
@@ -1916,8 +1969,8 @@ class DecinaFlowLab:
 
     def text(self):
         w = self.last_snapshot or self.warmup or {}
-        lines = ["🌊 DECINA FLOW LAB v1 — WARMUP 288",
-                 "Conta quante presenze fa ogni decina a OGNI estrazione e studia transizioni/ripetizioni.",
+        lines = ["🌊 DECINA FLOW LAB v2 + FLOW REGIME — WARMUP 288",
+                 "Conta ogni decina a OGNI estrazione e studia transizioni, ripetizioni e COMPRESSION/NORMAL/DISPERSION.",
                  f"📚 FLOW STATE: {w.get('available',0)}/{FLOW_WARMUP} | " +
                  ("READY" if w.get("ready") else "NON PRONTO: "+w.get("reason","storico assente"))]
         if not w.get("ready"):
@@ -1928,8 +1981,24 @@ class DecinaFlowLab:
         den = int(w.get("dominant_repeat_den",0) or 0)
         rep = int(w.get("dominant_repeat",0) or 0)
         lines.extend([f"🎯 Dominante ultimo draw: {domtxt}",
-                      f"🔁 Dominante unica ripetuta alla H1 nel warmup: {rep}/{den} ({safe_pct(rep,den):.2f}%)",
-                      "📦 STATO ATTUALE — ultimo/Δ1, media8/40, gap5, e comportamento H1 dopo lo stesso stato:"])
+                      f"🔁 Dominante unica ripetuta alla H1 nel warmup: {rep}/{den} ({safe_pct(rep,den):.2f}%)"])
+        rg = w.get("current_regime") or {}
+        rg_name = rg.get("name", "-")
+        rg_stats = (w.get("regime_stats") or {}).get(rg_name, {})
+        rn = int(rg_stats.get("n",0) or 0)
+        rmean = (float(rg_stats.get("next_sum_max",0))/rn) if rn else 0.0
+        lines.append(f"🧭 FLOW REGIME ultimo draw: {rg_name} {rg.get('strength','')} | "
+                     f"spread {rg.get('spread','-')} (min {rg.get('min','-')} / max {rg.get('max','-')}) | σ {float(rg.get('sd',0)):.2f}")
+        lines.append(f"↪ H1 dopo {rg_name} nel warmup n={rn}: max medio {rmean:.2f} | "
+                     f"almeno una decina 4+ {safe_pct(rg_stats.get('next_any4',0),rn):.1f}% | "
+                     f"5+ {safe_pct(rg_stats.get('next_any5',0),rn):.1f}% | "
+                     f"6+ {safe_pct(rg_stats.get('next_any6',0),rn):.1f}%")
+        if rn:
+            g5 = rg_stats.get('next_group5') or [0]*9
+            order5 = sorted(range(9), key=lambda j:(-g5[j],j))[:3]
+            lines.append("🎯 Dopo questo regime, decine piu' spesso 5+ alla H1: " +
+                         ", ".join(f"{DECINA_LABELS[j]} {g5[j]}/{rn} ({safe_pct(g5[j],rn):.1f}%)" for j in order5))
+        lines.append("📦 STATO ATTUALE — ultimo/Δ1, media8/40, gap5, e comportamento H1 dopo lo stesso stato:")
         for row in w.get("overview", []):
             cat=str(min(5,int(row['recent'])))
             tr=row.get('state_transitions',{}).get(cat,{})
@@ -1943,8 +2012,10 @@ class DecinaFlowLab:
         lines.append("🧩 ULTIMI 8 DRAW — vettore presenze per 9 decine:")
         keys = w.get("keys_tail", [])[-8:]
         matrix = w.get("matrix_tail", [])[-8:]
-        for key, row in zip(keys, matrix):
-            lines.append(f"• {key}: " + " ".join(str(x) for x in row))
+        regime_tail = w.get("regime_tail", [])[-8:]
+        for pos, (key, row) in enumerate(zip(keys, matrix)):
+            rname = regime_tail[pos] if pos < len(regime_tail) else self._regime(row)["name"]
+            lines.append(f"• {key}: " + " ".join(str(x) for x in row) + f" | {rname}")
         if dom is not None:
             trans = w.get("dominant_transitions", [])
             support = w.get("dominant_support", [])
@@ -1957,9 +2028,9 @@ class DecinaFlowLab:
 
 
 class DecinaBurstLab:
-    """BURST v2: selettivo, con NO SIGNAL e profilo EXTREME-6 separato.
+    """BURST v3: selettivo, FLOW REGIME, NO SIGNAL ed EXTREME-6 separato.
 
-    Migra integralmente i risultati v1. Il gate v2 e' calibrato sulla DISTRIBUZIONE
+    Migra integralmente i risultati v1/v2. Il gate v3 e' calibrato sulla DISTRIBUZIONE
     degli score passati, non sugli esiti futuri: score e margin devono essere
     abbastanza anomali rispetto ai 288 draw di warmup.
     """
@@ -1979,7 +2050,7 @@ class DecinaBurstLab:
                          for label in DECINA_LABELS}
 
     def load(self, obj):
-        if not isinstance(obj, dict) or obj.get("version") not in (1, BURST_VERSION):
+        if not isinstance(obj, dict) or obj.get("version") not in (1, 2, BURST_VERSION):
             return
         old_version = int(obj.get("version", 1) or 1)
         for name in self.totals:
@@ -2041,11 +2112,33 @@ class DecinaBurstLab:
             trans_dom = (row["next_dom_shrink"] - 1/9) / (1/9)
             drought = min(1.5, row["gap5"]/40.0)
             streak = min(3, row["streak_high"])/3.0
+
+            # FLOW REGIME globale: misura cosa e' successo alla STESSA fascia nella H1
+            # successiva quando il sistema era nello stesso regime. Forte shrink per
+            # evitare che pochi casi di warmup creino score eccessivi.
+            rg = snapshot.get("current_regime") or {}
+            rs = (snapshot.get("regime_stats") or {}).get(rg.get("name"), {})
+            rn = int(rs.get("n",0) or 0)
+            g5 = (rs.get("next_group5") or [0]*9)[i] if rn else 0
+            post_rg5 = (g5 + 160*BURST_BASE_5) / (rn + 160)
+            rg_group_lift = (post_rg5-BURST_BASE_5)/BURST_BASE_5
+            # Intensita' globale del regime: puo' alzare/abbassare la propensione a
+            # emettere SIGNAL, ma non sceglie da sola la fascia. Baseline any-5
+            # ricavata empiricamente dal warmup totale per evitare assunzioni indebite.
+            all_rs = snapshot.get("regime_stats") or {}
+            base_num = sum(int(x.get("next_any5",0) or 0) for x in all_rs.values())
+            base_den = sum(int(x.get("n",0) or 0) for x in all_rs.values())
+            base_any5 = (base_num/base_den) if base_den else 0.335
+            rg_any5 = (int(rs.get("next_any5",0) or 0)+40*base_any5)/(rn+40) if rn else base_any5
+            rg_global_lift = (rg_any5-base_any5)/max(0.05,base_any5)
+
             # Punteggio complesso ma regolarizzato. Nessun termine usa la H1 futura.
-            raw = (0.27*cross8 + 0.18*cross40 + 0.22*accel +
-                   0.12*max(-1.5, min(1.5, cond_lift)) +
-                   0.09*max(-1.5, min(1.5, trans_dom)) +
-                   0.06*streak + 0.06*drought)
+            raw = (0.23*cross8 + 0.15*cross40 + 0.19*accel +
+                   0.11*max(-1.5, min(1.5, cond_lift)) +
+                   0.08*max(-1.5, min(1.5, trans_dom)) +
+                   0.06*streak + 0.05*drought +
+                   0.09*max(-1.5, min(1.5, rg_group_lift)) +
+                   0.04*max(-1.5, min(1.5, rg_global_lift)))
             scored.append((max(-3.0, min(3.0, raw)), i))
         return sorted(scored, key=lambda x:(-x[0], x[1]))
 
@@ -2141,6 +2234,7 @@ class DecinaBurstLab:
                      "avg8":feat.get("avg8"), "avg40":feat.get("avg40"),
                      "gap5":feat.get("gap5"), "gap6":feat.get("gap6"),
                      "streak_high":feat.get("streak_high")},
+            "flow_regime": dict(snap.get("current_regime") or {}),
         }
         return self.pending
 
@@ -2196,7 +2290,7 @@ class DecinaBurstLab:
         n = t["evaluated"]
         abst = t.get("abstained", 0)
         decisions = n + abst
-        lines = ["🔟 DECINA BURST EVENT DETECTOR v2 — H1 SHADOW",
+        lines = ["🔟 DECINA BURST EVENT DETECTOR v3 + FLOW REGIME — H1 SHADOW",
                  "Obiettivo: segnalare SOLO configurazioni selettive per 5+; EXTREME-6 separato.",
                  f"📚 WARMUP/FLOW: {w.get('available',0)}/{BURST_WARMUP} | " +
                  ("READY" if w.get("ready") else "NON PRONTO: "+w.get("reason","storico assente"))]
@@ -2216,6 +2310,10 @@ class DecinaBurstLab:
             lines.append(f"🌊 FLOW candidato: ultimo {f.get('recent','-')} | Δ1 {f.get('delta','-')} | "
                          f"media8 {float(f.get('avg8',0)):.2f} | media40 {float(f.get('avg40',0)):.2f} | "
                          f"gap5 {f.get('gap5','-')} | streak≥3 {f.get('streak_high','-')}")
+            rg = p.get("flow_regime") or {}
+            lines.append(f"🧭 FLOW REGIME congelato: {rg.get('name','-')} {rg.get('strength','')} | "
+                         f"spread {rg.get('spread','-')} | min/max {rg.get('min','-')}/{rg.get('max','-')} | "
+                         f"σ {float(rg.get('sd',0)):.2f}")
         elif w.get("ready"):
             lines.append("⏸ Nessuna decisione H1 congelata: attendo il prossimo draw live.")
 
@@ -5654,8 +5752,8 @@ async def startup(engine, app, retry_state=None):
         "🎯 AMBO 2xHOT5 H1-H3 NO-LOCK: conferma TOP1 -> DUE accompagnatori caldi -> notifiche prima dei colpi\n"
         "🎮 PLAY SHADOW: conferma H1-H3 -> seconda uscita entro H5\n"
         "🧠 SOSIA ADATTIVO: 20 numeri /sosia; SNIPER /sosiasniper; PATTERN LAB /sosiapattern; casuale /sosiarandom\n"
-        "🌊 DECINA FLOW LAB: warmup 288, transizioni/streak /flow\n"
-        "🔟 BURST EVENT DETECTOR v2: SIGNAL/NO SIGNAL + EXTREME-6 /burst\n"
+        "🌊 DECINA FLOW LAB v2: warmup 288 + FLOW REGIME /flow\n"
+        "🔟 BURST EVENT DETECTOR v3: FLOW REGIME + SIGNAL/NO SIGNAL + EXTREME-6 /burst\n"
         "✅ state persistente + autorotation\n\n"
         f"ENGINE: {'READY' if engine.engine_bootstrap_done else 'BUILD'} | "
         f"filtro target top {ENGINE_SELECT_RATE*100:.0f}%\n"
@@ -5929,13 +6027,19 @@ async def run_self_test():
     assert len(flow.warmup["overview"]) == 9 and len(flow.warmup["matrix_tail"]) == 12
     assert sum(flow.warmup["matrix_tail"][-1]) == 20
     assert "DECINA FLOW LAB" in flow.text()
+    assert flow._regime([2,3,2,2,2,2,3,2,2])["name"] == "COMPRESSION"
+    assert flow._regime([1,3,2,2,2,2,3,2,3])["name"] == "NORMAL"
+    assert flow._regime([0,5,2,2,2,2,3,2,2])["name"] == "DISPERSION"
+    assert flow.warmup.get("current_regime",{}).get("name") in ("COMPRESSION","NORMAL","DISPERSION")
+    assert set((flow.warmup.get("regime_stats") or {}).keys()) == {"COMPRESSION","NORMAL","DISPERSION"}
 
     burst=DecinaBurstLab()
     assert burst.bootstrap(bhar,flow=flow) and burst.warmup["available"] == 288
     assert burst.totals["evaluated"] == 0 and burst.totals["abstained"] == 0
     frozen=burst.arm(bhar,bhar[-1]["key"],flow=flow)
     assert frozen and len(DECINA_GROUPS[frozen["group_index"]])==10
-    assert isinstance(frozen.get("signal"),bool) and frozen.get("model_version")==2
+    assert isinstance(frozen.get("signal"),bool) and frozen.get("model_version")==3
+    assert frozen.get("flow_regime",{}).get("name") in ("COMPRESSION","NORMAL","DISPERSION")
     assert burst.arm(bhar,bhar[-1]["key"],flow=flow) is frozen
     roundtrip=DecinaBurstLab(); roundtrip.load(burst.dump())
     assert roundtrip.pending == frozen and roundtrip.totals["evaluated"] == 0
@@ -5960,9 +6064,15 @@ async def run_self_test():
     assert migrated.totals["evaluated"]==58 and migrated.totals["pred6"]==2
     assert migrated.pending and migrated.pending["signal"] is True and migrated.pending["model_version"]==1
     assert migrated.by_group["40–49"]["n"]==10
+    legacy2={"version":2,"totals":{"evaluated":4,"abstained":9},"records":[],
+             "pending":{"from_key":"2099-06-01#288","group_index":2,"control_index":7,
+                        "signal":False,"extreme6":False,"model_version":2}}
+    migrated2=DecinaBurstLab(); migrated2.load(legacy2)
+    assert migrated2.totals["evaluated"]==4 and migrated2.totals["abstained"]==9
+    assert migrated2.pending and migrated2.pending["signal"] is False and migrated2.pending["model_version"]==2
     assert "/burst" in e.menu_text() and "/flow" in e.menu_text()
 
-    print("SELF-TEST OK: ENGINE/SOSIA/DUAL invariati + FLOW warmup 288 + BURST v2 gate/NO-SIGNAL + migrazione v1")
+    print("SELF-TEST OK: ENGINE/SOSIA/DUAL invariati + FLOW REGIME 288 + BURST v3 gate/NO-SIGNAL + migrazione v1/v2")
 
 async def main():
     if "--self-test" in sys.argv:
