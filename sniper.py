@@ -2564,6 +2564,159 @@ class DecinaBurstLab:
         return "\n".join(lines)
 
 
+
+# ============================================================
+# VERIFICA v1 — SOLO AUDIT, senza previsioni o backfill di HIT.
+# Marker permanente sulla storia nota al primo avvio: una previsione
+# gia' congelata prima dell'installazione NON e' nel nuovo test.
+# Usa i records originali DECINA/ENGINE H5/BURST, mai i totali aggregati
+# del warmup; confronto sullo stesso draw per tutti i controlli.
+# ============================================================
+VERIFICA_VERSION = 1
+VERIFICA_TEST_TARGET = 300
+
+
+def _verifica_order(key):
+    try:
+        day, seq = str(key).rsplit('#', 1)
+        datetime.fromisoformat(day)
+        return day, int(seq)
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+class VerificationLab:
+    def __init__(self):
+        self.start_from_key = None
+        self.started_at = None
+        self.old_counts = {}
+
+    def load(self, obj):
+        if not isinstance(obj, dict) or obj.get('version') != VERIFICA_VERSION:
+            return False
+        key = obj.get('start_from_key')
+        if _verifica_order(key) is None:
+            return False
+        self.start_from_key = key
+        self.started_at = str(obj.get('started_at') or '')
+        raw = obj.get('old_counts') or {}
+        self.old_counts = dict(raw) if isinstance(raw, dict) else {}
+        return True
+
+    def dump(self):
+        return {'version': VERIFICA_VERSION, 'start_from_key': self.start_from_key,
+                'started_at': self.started_at, 'old_counts': dict(self.old_counts)}
+
+    def ensure_start(self, engine):
+        if self.start_from_key is not None:
+            return False
+        history = engine.engine_history
+        if not history or _verifica_order(history[-1].get('key')) is None:
+            return False
+        self.start_from_key = str(history[-1]['key'])
+        self.started_at = now_txt()
+        self.old_counts = {
+            'decina': int(engine.decina.totals.get('evaluated', 0)),
+            'dual': int(engine.dual.totals.get('evaluated', 0)),
+            'burst_signal': int(engine.burst.totals.get('evaluated', 0)),
+            'burst_nosignal': int(engine.burst.totals.get('abstained', 0)),
+            'engine_h5': len(engine.engine_h5_records_live),
+        }
+        return True
+
+    def _new(self, key):
+        origin = _verifica_order(key)
+        marker = _verifica_order(self.start_from_key)
+        return origin is not None and marker is not None and origin > marker
+
+    @staticmethod
+    def _rate(n, total):
+        return f'{n}/{total} ({safe_pct(n,total):.2f}%)' if total else '0/0 (in attesa)'
+
+    @staticmethod
+    def _pair_summary(records, name):
+        n = len(records)
+        a = sum(int((r.get('counts') or {}).get(name, 0) > 0) for r in records)
+        d = sum(int((r.get('counts') or {}).get('original', 0) > 0) for r in records)
+        c = sum(int((r.get('counts') or {}).get('random', 0) > 0) for r in records)
+        wins = sum(int((r.get('counts') or {}).get(name,0) > 0 and
+                       (r.get('counts') or {}).get('random',0) == 0) for r in records)
+        losses = sum(int((r.get('counts') or {}).get(name,0) == 0 and
+                         (r.get('counts') or {}).get('random',0) > 0) for r in records)
+        return n, a, d, c, wins, losses
+
+    def text(self, engine):
+        if self.start_from_key is None:
+            self.ensure_start(engine)
+        if self.start_from_key is None:
+            return ('🧪 VERIFICA v1 — IN ATTESA DEL PRIMO STORICO\n'
+                    'Il test partira quando il bot avra una H1 di origine valida.\n'
+                    'Nessun risultato precedente viene cancellato.')
+
+        d_rows = [r for r in engine.decina.records if self._new(r.get('from_key')) and
+                  isinstance(r.get('counts'), dict) and
+                  all(k in r['counts'] and type(r['counts'][k]) is int
+                      for k in ('fusion', 'within', 'original', 'random'))]
+        h_rows = [r for r in engine.engine_h5_records_live if
+                  r.get('origin_mode') == 'live' and self._new(r.get('signal_from_key')) and
+                  isinstance(r.get('hits5'), int)]
+        b_rows = [r for r in engine.burst.records if self._new(r.get('from_key')) and
+                  not r.get('skipped') and type(r.get('count')) is int and
+                  type(r.get('control_count')) is int and
+                  type(r.get('signal')) is bool]
+        signal = [r for r in b_rows if r['signal']]
+        no = [r for r in b_rows if not r['signal']]
+
+        lines = ['🧪 VERIFICA v1 — TEST PROSPETTICO, REGOLE INVARIATE',
+                 f'Inizio congelato: dopo {self.start_from_key} | {self.started_at}',
+                 'Solo previsioni ORIGINATE dopo il marker; warmup e vecchi pending esclusi.',
+                 'Nessun reset: /dual /decine /engineh /burst mostrano anche lo storico vecchio.',
+                 '', '🔟 DUAL STESSA DECINA — obiettivo >=1 fra 2 numeri H1']
+        n,a,orig,ctrl,w,l = self._pair_summary(d_rows, 'within')
+        lines += [f'Nuovo test: {n}/{VERIFICA_TEST_TARGET} confronti (completamento {safe_pct(min(n,VERIFICA_TEST_TARGET),VERIFICA_TEST_TARGET):.1f}%)',
+                  f'STESSA DECINA {self._rate(a,n)} | DUAL originale {self._rate(orig,n)}',
+                  f'RANDOM appaiato {self._rate(ctrl,n)} | teorico 39.70%',
+                  f'STESSA DECINA vs RANDOM: +{w}/-{l}/={n-w-l} (esiti >=1).']
+        for width in (50,100,300):
+            recent=d_rows[-width:]
+            rn, ra, ro, rc, rw, rl=self._pair_summary(recent, 'within')
+            label='FINESTRA COMPLETA' if rn == width else 'PARZIALE'
+            lines.append(f'Ultimi {width} ({label}, n={rn}): stessa {ra}/{rn}, original {ro}/{rn}, random {rc}/{rn}')
+        if n:
+            base=self._pair_summary(d_rows,'fusion')
+            lines.append(f'DUAL+DECINE sullo stesso periodo: {base[1]}/{base[0]} (diagnostica).')
+        if len(d_rows) < len([r for r in engine.decina.records if self._new(r.get('from_key'))]):
+            lines.append('Avviso: alcuni record DECINA del nuovo periodo non sono confrontabili e sono esclusi.')
+        lines += ['', '🎯 ENGINE HIGH CONFIDENCE H5 — nuove sessioni CHIUSE',
+                  f'Completate {len(h_rows)} | attive create dopo marker: '+str(sum(
+                   1 for x in engine.engine_h5_sessions if x.get('origin_mode')=='live' and
+                   self._new(x.get('signal_from_key')))),
+                  f'Almeno 1 uscita entro H5: {self._rate(sum(r["hits5"]>=1 for r in h_rows),len(h_rows))} | teorico 71.54%',
+                  f'Almeno 2 uscite entro H5: {self._rate(sum(r["hits5"]>=2 for r in h_rows),len(h_rows))} | teorico 30.88%',
+                  f'Esattamente 2 uscite: {self._rate(sum(r["hits5"]==2 for r in h_rows),len(h_rows))} | teorico 23.23%',
+                  'H5: ogni sessione entra nel test solo se la sua previsione nasce DOPO il marker.']
+        for width in (50,100,300):
+            recent=h_rows[-width:]
+            rn=len(recent)
+            label='FINESTRA COMPLETA' if rn==width else 'PARZIALE'
+            lines.append(f'H5 ultimi {width} ({label}, n={rn}): >=1 {sum(r["hits5"]>=1 for r in recent)}/{rn}, >=2 {sum(r["hits5"]>=2 for r in recent)}/{rn}.')
+        lines += ['', '🌋 BURST — GATE: SIGNAL vs NO SIGNAL nella stessa H1',
+                  f'SIGNAL {len(signal)} | NO SIGNAL {len(no)} | copertura {safe_pct(len(signal),len(b_rows)):.2f}%',
+                  f'SIGNAL candidato 5+ {self._rate(sum(r["count"]>=5 for r in signal),len(signal))} | random {self._rate(sum(r["control_count"]>=5 for r in signal),len(signal))}',
+                  f'NO SIGNAL candidato SHADOW 5+ {self._rate(sum(r["count"]>=5 for r in no),len(no))} | random {self._rate(sum(r["control_count"]>=5 for r in no),len(no))}',
+                  f'SIGNAL candidato 6+ {self._rate(sum(r["count"]>=6 for r in signal),len(signal))} | random {self._rate(sum(r["control_count"]>=6 for r in signal),len(signal))}',
+                  f'NO SIGNAL candidato SHADOW 6+ {self._rate(sum(r["count"]>=6 for r in no),len(no))} | random {self._rate(sum(r["control_count"]>=6 for r in no),len(no))}',
+                  f'Almeno una delle NOVE decine 5+ nei NO SIGNAL: {self._rate(sum(bool(r.get("any5")) for r in no),len(no))} (evento globale, NON successo del candidato).',
+                  'Riferimento per UNA decina preselezionata: 5+ 3.981% | 6+ 0.701%.',
+                  'Versioni BURST pre-v8 conservate nei totali storici; questo periodo parte dal nuovo marker.']
+        lines += ['', '🗂 STORICO PRECEDENTE, NON SOMMATO AL NUOVO TEST',
+                  f'Alla partenza: DUAL STESSA DECINA {self.old_counts.get("decina", "-")} draw; '
+                  f'DUAL originale {self.old_counts.get("dual", "-")} draw; '
+                  f'BURST signal {self.old_counts.get("burst_signal", "-")}, NO SIGNAL {self.old_counts.get("burst_nosignal", "-")}; '
+                  f'ENGINE H5 {self.old_counts.get("engine_h5", "-")} completate.',
+                  '⚠️ Campioni e finestre parziali mostrati esplicitamente. Risultati shadow: nessuna puntata automatica.']
+        return '\n'.join(lines)
+
 class EngineOnly:
     def __init__(self, load=True):
         self.processed = []
@@ -2662,6 +2815,7 @@ class EngineOnly:
         self.flow = DecinaFlowLab()
         self.burst = DecinaBurstLab()
         self.postburst = DecinaPostBurstLab()
+        self.verifica = VerificationLab()  # read-only report, marker persistente isolato
 
         self.state_load_info = {
             "loaded": False,
@@ -2678,6 +2832,7 @@ class EngineOnly:
             self.dual.bootstrap_from_history(self.engine_history)  # warmstart dal vecchio state LIVE
             self.flow.bootstrap(self.engine_history)  # matrice 288x9 descrittiva
             self.burst.bootstrap(self.engine_history, flow=self.flow)  # warmup storico, NON previsione retroattiva
+            self.verifica.ensure_start(self)  # solo se state/storico esistente; nessun backfill
             # Upgrade non distruttivo: se il vecchio state ha gia' una previsione
             # SOSIA adattiva congelata, ricava subito TOP1/TOP2 senza cambiarla.
             self._sosiasniper_migrate_pending()
@@ -4875,6 +5030,7 @@ class EngineOnly:
             self.flow.load(d.get("decina_flow_v1"))
             self.burst.load(d.get("decina_burst_v2") or d.get("decina_burst_v1"))
             self.postburst.load(d.get("decina_postburst_v1"))
+            self.verifica.load(d.get("verification_v1"))
 
             # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
             if self.engine_pending and self.engine_pending.get("accepted"):
@@ -4960,6 +5116,7 @@ class EngineOnly:
             "decina_flow_v1": self.flow.dump(),
             "decina_burst_v2": self.burst.dump(),
             "decina_postburst_v1": self.postburst.dump(),
+            "verification_v1": self.verifica.dump(),
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -5416,6 +5573,7 @@ class EngineOnly:
         pattern_result = None
         patternlab_result = None
         if mode == "live":
+            self.verifica.ensure_start(self)
             # Il campione era stato predisposto ALLA estrazione precedente:
             # nessun dato del draw attuale entra nella simulazione valutata.
             dual_result = self.dual.settle(day, e, clean)
@@ -5753,6 +5911,7 @@ class EngineOnly:
             "/burst — EVENT DETECTOR 5+/6+ H1: warmup 288, NO SIGNAL e EXTREME-6\n"
             "/flow — presenze per decina a ogni draw, transizioni e streak su 288\n"
             "/postburst — dopo 5/6+ nella stessa decina: H1/H2/H3 e passaggio ad altre fasce\n"
+            "/verifica — test nuovo periodo: STESSA DECINA, ENGINE H5, BURST gate\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
             "/menu — questa schermata"
@@ -5808,6 +5967,10 @@ async def cmd_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_postburst(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].postburst.text())
 
+async def cmd_verifica(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.verifica.text(engine))
+
 async def cmd_sosiarandom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].sosia_text())
 
@@ -5832,6 +5995,7 @@ async def setup_commands(app):
         BotCommand("burst", "BURST v2: EVENT DETECTOR 5+/6+ con NO SIGNAL"),
         BotCommand("flow", "FLOW: 9 decine draw-by-draw, transizioni e streak"),
         BotCommand("postburst", "POST-BURST: stessa/altra decina H1-H3"),
+        BotCommand("verifica", "Test nuovo periodo: DECINA, ENGINE H5, BURST"),
         BotCommand("sosiarandom", "Controllo casuale 20/90"),
         BotCommand("status", "Stato rapido ENGINE"),
         BotCommand("menu", "Comandi ENGINE ONLY"),
@@ -6345,6 +6509,43 @@ async def run_self_test():
     assert 'POST-BURST' in round_post.text()
     assert "/burst" in e.menu_text() and "/flow" in e.menu_text() and "/postburst" in e.menu_text()
 
+    # VERIFICA: nuovo confine, nessun HIT retroattivo, pending ante upgrade escluso.
+    lab = VerificationLab()
+    z = EngineOnly(load=False)
+    z.engine_history = [{'key':'2099-07-01#100','nums':list(range(1,21))}]
+    z.decina.totals['evaluated'] = 401
+    z.burst.totals['evaluated'] = 118
+    z.burst.totals['abstained'] = 268
+    z.engine_h5_records_live = [{'signal_from_key':'2099-07-01#099',
+        'origin_mode':'live','hits5':5,'completed_at':'2099-07-01#104'}]
+    assert lab.ensure_start(z) and lab.start_from_key == '2099-07-01#100'
+    assert not lab.ensure_start(z)
+    assert lab.dump()['old_counts']['decina']==401
+    assert VerificationLab().load(lab.dump())
+    z.verifica = lab
+    old_r={'key':'2099-07-01#101','from_key':'2099-07-01#100',
+           'counts':{'within':1,'fusion':1,'original':0,'random':0}}
+    new_r={'key':'2099-07-01#102','from_key':'2099-07-01#101',
+           'counts':{'within':0,'fusion':1,'original':1,'random':1}}
+    z.decina.records=[old_r,new_r]
+    z.engine_h5_records_live.append({'signal_from_key':'2099-07-01#101',
+        'origin_mode':'live','hits5':2,'completed_at':'2099-07-01#106'})
+    z.burst.records=[{'from_key':'2099-07-01#100','key':'2099-07-01#101',
+        'count':6,'control_count':0,'signal':True,'any5':True},
+        {'from_key':'2099-07-01#101','key':'2099-07-01#102',
+        'count':3,'control_count':5,'signal':False,'any5':True},
+        {'from_key':'2099-07-01#102','key':'2099-07-01#103',
+        'count':5,'control_count':2,'signal':True,'any5':True}]
+    ver_txt=z.verifica.text(z)
+    assert 'Nuovo test: 1/300' in ver_txt and 'STESSA DECINA 0/1' in ver_txt
+    assert 'Completate 1' in ver_txt and 'Esattamente 2 uscite: 1/1' in ver_txt
+    assert 'SIGNAL 1 | NO SIGNAL 1' in ver_txt
+    assert 'NO SIGNAL candidato SHADOW 5+ 0/1' in ver_txt
+    assert lab._new('2099-07-02#001') and not lab._new('2099-07-01#100')
+    assert '/verifica' in z.menu_text()
+    assert z.verifica.dump()['start_from_key']=='2099-07-01#100'
+    print('SELF-TEST VERIFICA v1 OK: confine persistente, vecchi pending esclusi, confronto same-H1, H5, BURST SIGNAL/NO SIGNAL.')
+
     print("SELF-TEST OK: ENGINE/SOSIA/DUAL invariati + FLOW REGIME 288 + BURST v3 migrazione + POST-BURST warmup/forward/skip/roundtrip")
 
 async def main():
@@ -6375,6 +6576,7 @@ async def main():
     app.add_handler(CommandHandler("burst",cmd_burst))
     app.add_handler(CommandHandler("flow",cmd_flow))
     app.add_handler(CommandHandler("postburst",cmd_postburst))
+    app.add_handler(CommandHandler("verifica",cmd_verifica))
     app.add_handler(CommandHandler("sosiarandom",cmd_sosiarandom))
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("menu",cmd_menu))
