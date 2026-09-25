@@ -1,5 +1,5 @@
 # ============================================================
-# 🧠 10eLOTTO ENGINE ONLY — MULTI-HIT H5 + PLAY SHADOW + AMBO 2xHOT5 NO-LOCK
+# 🧠 10eLOTTO ENGINE ONLY — v9 VERIFICA + BURST GATE LAB
 # ============================================================
 #
 # UNICO MOTORE ATTIVO:
@@ -1670,6 +1670,7 @@ BURST_GATE_SCORE_Q = min(0.95, max(0.50, float(os.getenv("BURST_GATE_SCORE_Q", "
 BURST_GATE_MARGIN_Q = min(0.95, max(0.25, float(os.getenv("BURST_GATE_MARGIN_Q", "0.55"))))
 BURST_EXTREME_SCORE_Q = min(0.99, max(BURST_GATE_SCORE_Q, float(os.getenv("BURST_EXTREME_SCORE_Q", "0.93"))))
 BURST_MIN_CALIBRATION = max(20, int(os.getenv("BURST_MIN_CALIBRATION", "30")))
+BURST_GATE_AUDIT_VERSION = 1  # v9: salva soglie/delta per ogni nuova decisione
 
 # Per una decina specifica: P(X>=5), P(X>=6) con X ipergeometrica(90,10,20)
 BURST_BASE_5 = sum(math.comb(10,k)*math.comb(80,20-k)/math.comb(90,20)
@@ -2437,14 +2438,29 @@ class DecinaBurstLab:
         extreme_thr = float(gate.get("extreme_threshold", score_thr) or score_thr)
         signal = bool(calibrated and top_score >= score_thr and margin >= margin_thr and top_score > 0)
         extreme6 = bool(signal and top_score >= extreme_thr and margin >= margin_thr)
+        if not calibrated:
+            gate_reason = "UNCALIBRATED"
+        elif top_score <= 0:
+            gate_reason = "NONPOSITIVE"
+        elif top_score < score_thr and margin < margin_thr:
+            gate_reason = "BOTH_FAIL"
+        elif top_score < score_thr:
+            gate_reason = "SCORE_FAIL"
+        elif margin < margin_thr:
+            gate_reason = "MARGIN_FAIL"
+        else:
+            gate_reason = "PASS"
         ctrl = secrets.randbelow(len(DECINA_GROUPS))
         feat = (snap.get("overview") or [{}]*9)[idx]
         self.pending = {
             "from_key":key, "group_index":idx, "control_index":ctrl,
             "signal":signal, "extreme6":extreme6, "model_version":BURST_VERSION,
+            "gate_audit_version":BURST_GATE_AUDIT_VERSION, "gate_reason":gate_reason,
             "index":round(top_score,4), "second_index":round(second_score,4),
             "second_group_index":second_idx, "margin":round(margin,4),
             "score_threshold":round(score_thr,4), "margin_threshold":round(margin_thr,4),
+            "score_delta":round(top_score-score_thr,4),
+            "margin_delta":round(margin-margin_thr,4),
             "extreme_threshold":round(extreme_thr,4), "calibration_n":int(gate.get("n",0) or 0),
             "warmup_draws":self.warmup["available"], "created_at":now_txt(),
             "flow": {"recent":feat.get("recent"), "delta":feat.get("delta"),
@@ -2477,6 +2493,15 @@ class DecinaBurstLab:
              "count":count, "control_count":rc, "hit5":count>=5, "hit6":count>=6,
              "control5":rc>=5, "control6":rc>=6, "signal":signal,
              "extreme6":extreme6, "index":p.get("index"), "margin":p.get("margin"),
+             "second_index":p.get("second_index"),
+             "score_threshold":p.get("score_threshold"),
+             "margin_threshold":p.get("margin_threshold"),
+             "score_delta":p.get("score_delta"), "margin_delta":p.get("margin_delta"),
+             "gate_reason":p.get("gate_reason"),
+             "gate_audit_version":p.get("gate_audit_version"),
+             "calibration_n":p.get("calibration_n"),
+             "flow_regime":dict(p.get("flow_regime") or {}),
+             "flow":dict(p.get("flow") or {}),
              "any5":max(all_counts)>=5, "any6":max(all_counts)>=6, "max_count":max(all_counts)}
         self.records.append(r)
         self.records = self.records[-BURST_RECORD_MAX:]
@@ -2563,6 +2588,111 @@ class DecinaBurstLab:
         lines.append("⚠️ Warmup/FLOW sono descrittivi; risultati v1 conservati, v2 resta shadow e non effettua puntate.")
         return "\n".join(lines)
 
+
+
+# ============================================================
+# BURST GATE LAB v4 — AUDIT PROSPETTICO DEL GATE, NON CAMBIA BURST v3
+# Da v9 ogni NUOVA decisione BURST salva soglia e distanza dalla soglia.
+# I record precedenti restano utilizzabili soltanto per una mappa descrittiva
+# dello score assoluto: non ricostruiamo soglie storiche che non erano salvate.
+# ============================================================
+class BurstGateLab:
+    REASON_ORDER = ("PASS", "SCORE_FAIL", "MARGIN_FAIL", "BOTH_FAIL", "NONPOSITIVE", "UNCALIBRATED")
+
+    @staticmethod
+    def _valid_num(x):
+        return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(float(x))
+
+    @staticmethod
+    def _rate(k, n):
+        return f"{k}/{n} ({safe_pct(k,n):.2f}%)" if n else "0/0"
+
+    @classmethod
+    def _summary(cls, rows):
+        n = len(rows)
+        h5 = sum(int(r.get("count", 0) >= 5) for r in rows)
+        h6 = sum(int(r.get("count", 0) >= 6) for r in rows)
+        c5 = sum(int(r.get("control_count", 0) >= 5) for r in rows)
+        any5 = sum(int(bool(r.get("any5"))) for r in rows)
+        mean = (sum(int(r.get("count", 0)) for r in rows)/n) if n else 0.0
+        return n, h5, h6, c5, any5, mean
+
+    @classmethod
+    def _fmt(cls, rows):
+        n,h5,h6,c5,any5,mean = cls._summary(rows)
+        return (f"n={n} | 5+ {cls._rate(h5,n)} | 6+ {cls._rate(h6,n)} | "
+                f"μ {mean:.2f}/10 | random5 {cls._rate(c5,n)} | any5 {cls._rate(any5,n)}")
+
+    @classmethod
+    def text(cls, engine):
+        all_rows = [r for r in engine.burst.records if isinstance(r, dict) and not r.get("skipped")
+                    and type(r.get("count")) is int and type(r.get("control_count")) is int
+                    and type(r.get("signal")) is bool]
+        exact = [r for r in all_rows if r.get("gate_audit_version") == BURST_GATE_AUDIT_VERSION
+                 and cls._valid_num(r.get("score_delta")) and cls._valid_num(r.get("margin_delta"))]
+
+        lines = [
+            "🔬 BURST GATE LAB v4 — AUDIT PROSPETTICO",
+            "Non modifica BURST v3: misura DOVE il gate sta scartando o accettando i candidati.",
+            "Da v9 soglie e delta sono congelati insieme alla previsione; nessun backfill delle soglie vecchie.",
+            "",
+            f"📊 AUDIT ESATTO v9+: {len(exact)} decisioni valutate",
+            "Riferimento una decina: 5+ 3.981% | 6+ 0.701% | media 2.222/10",
+        ]
+        if exact:
+            lines += ["", "🚦 PER MOTIVO DEL GATE"]
+            for reason in cls.REASON_ORDER:
+                rows = [r for r in exact if str(r.get("gate_reason")) == reason]
+                if rows:
+                    lines.append(f"• {reason}: {cls._fmt(rows)}")
+
+            lines += ["", "📏 DISTANZA SCORE DALLA SOGLIA (score − soglia)"]
+            bands = [
+                ("≤ -0.30", lambda x: x <= -0.30),
+                ("-0.30…-0.15", lambda x: -0.30 < x <= -0.15),
+                ("-0.15…-0.05", lambda x: -0.15 < x <= -0.05),
+                ("-0.05…0", lambda x: -0.05 < x < 0),
+                ("0…+0.10", lambda x: 0 <= x < 0.10),
+                ("≥ +0.10", lambda x: x >= 0.10),
+            ]
+            for label, fn in bands:
+                rows = [r for r in exact if fn(float(r["score_delta"]))]
+                if rows:
+                    lines.append(f"• {label}: {cls._fmt(rows)}")
+
+            no = [r for r in exact if not r.get("signal")]
+            near = [r for r in no if -0.10 <= float(r["score_delta"]) < 0]
+            deep = [r for r in no if float(r["score_delta"]) < -0.10]
+            margin_block = [r for r in no if float(r["score_delta"]) >= 0 and float(r["margin_delta"]) < 0]
+            lines += ["", "🧪 NO SIGNAL — DOVE SONO I 5+?",
+                      f"• quasi soglia score [-0.10,0): {cls._fmt(near)}",
+                      f"• score più lontano (<-0.10): {cls._fmt(deep)}",
+                      f"• score passa ma gap blocca: {cls._fmt(margin_block)}"]
+
+            regimes = Counter(str((r.get("flow_regime") or {}).get("name") or "-") for r in exact if r.get("count",0) >= 5)
+            if regimes:
+                lines.append("• Regimi dei 5+ v9+: " + ", ".join(f"{k}={v}" for k,v in regimes.most_common()))
+        else:
+            lines += ["", "⏳ Nessun esito v9 ancora valutato: il primo dato arriverà dopo la prima H1 nata con questa versione."]
+
+        legacy = [r for r in all_rows if cls._valid_num(r.get("index"))]
+        lines += ["", f"🗺 SCORE ASSOLUTO — descrittivo su {len(legacy)} record conservati"]
+        abs_bands = [
+            ("<0", lambda x: x < 0),
+            ("0…0.25", lambda x: 0 <= x < 0.25),
+            ("0.25…0.50", lambda x: 0.25 <= x < 0.50),
+            ("0.50…0.75", lambda x: 0.50 <= x < 0.75),
+            ("≥0.75", lambda x: x >= 0.75),
+        ]
+        for label, fn in abs_bands:
+            rows = [r for r in legacy if fn(float(r["index"]))]
+            if rows:
+                sig = sum(int(bool(r.get("signal"))) for r in rows)
+                n,h5,h6,c5,any5,mean = cls._summary(rows)
+                lines.append(f"• score {label}: n={n} | SIGNAL {sig} | 5+ {h5}/{n} | 6+ {h6}/{n} | μ {mean:.2f} | random5 {c5}/{n}")
+
+        lines += ["", "⚠️ Il LAB osserva il gate; non inverte soglie e non apre puntate. Prima di cambiare regola servono nuovi risultati prospettici."]
+        return "\n".join(lines)
 
 
 # ============================================================
@@ -2708,7 +2838,8 @@ class VerificationLab:
                   f'NO SIGNAL candidato SHADOW 6+ {self._rate(sum(r["count"]>=6 for r in no),len(no))} | random {self._rate(sum(r["control_count"]>=6 for r in no),len(no))}',
                   f'Almeno una delle NOVE decine 5+ nei NO SIGNAL: {self._rate(sum(bool(r.get("any5")) for r in no),len(no))} (evento globale, NON successo del candidato).',
                   'Riferimento per UNA decina preselezionata: 5+ 3.981% | 6+ 0.701%.',
-                  'Versioni BURST pre-v8 conservate nei totali storici; questo periodo parte dal nuovo marker.']
+                  'Versioni BURST pre-v8 conservate nei totali storici; questo periodo parte dal nuovo marker.',
+                  'Approfondimento score/soglia e motivi del gate: /burstgate']
         lines += ['', '🗂 STORICO PRECEDENTE, NON SOMMATO AL NUOVO TEST',
                   f'Alla partenza: DUAL STESSA DECINA {self.old_counts.get("decina", "-")} draw; '
                   f'DUAL originale {self.old_counts.get("dual", "-")} draw; '
@@ -2816,6 +2947,7 @@ class EngineOnly:
         self.burst = DecinaBurstLab()
         self.postburst = DecinaPostBurstLab()
         self.verifica = VerificationLab()  # read-only report, marker persistente isolato
+        self.burstgate = BurstGateLab()    # audit derivato dai record BURST, nessun nuovo motore
 
         self.state_load_info = {
             "loaded": False,
@@ -5912,6 +6044,7 @@ class EngineOnly:
             "/flow — presenze per decina a ogni draw, transizioni e streak su 288\n"
             "/postburst — dopo 5/6+ nella stessa decina: H1/H2/H3 e passaggio ad altre fasce\n"
             "/verifica — test nuovo periodo: STESSA DECINA, ENGINE H5, BURST gate\n"
+            "/burstgate — audit v4: score/soglia, motivi NO SIGNAL e fasce di distanza\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
             "/menu — questa schermata"
@@ -5971,6 +6104,10 @@ async def cmd_verifica(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine = context.application.bot_data["engine"]
     await reply(update, engine.verifica.text(engine))
 
+async def cmd_burstgate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.burstgate.text(engine))
+
 async def cmd_sosiarandom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].sosia_text())
 
@@ -5992,10 +6129,11 @@ async def setup_commands(app):
         BotCommand("sosiapattern", "Pattern, calibrated, transition e watch"),
         BotCommand("dual", "DUAL TARGET: due numeri H1 e confronto random"),
         BotCommand("decine", "DECINA ENGINE: DUAL+DECINE e coppia stessa decina"),
-        BotCommand("burst", "BURST v2: EVENT DETECTOR 5+/6+ con NO SIGNAL"),
+        BotCommand("burst", "BURST v3: EVENT DETECTOR 5+/6+ con NO SIGNAL"),
         BotCommand("flow", "FLOW: 9 decine draw-by-draw, transizioni e streak"),
         BotCommand("postburst", "POST-BURST: stessa/altra decina H1-H3"),
         BotCommand("verifica", "Test nuovo periodo: DECINA, ENGINE H5, BURST"),
+        BotCommand("burstgate", "Audit gate BURST: score, soglia e NO SIGNAL"),
         BotCommand("sosiarandom", "Controllo casuale 20/90"),
         BotCommand("status", "Stato rapido ENGINE"),
         BotCommand("menu", "Comandi ENGINE ONLY"),
@@ -6147,13 +6285,14 @@ async def startup(engine, app, retry_state=None):
         "🌊 DECINA FLOW LAB v2: warmup 288 + FLOW REGIME /flow\n"
         "🌋 POST-BURST LAB v1: eventi 5/6+ -> H1/H2/H3 /postburst\n"
         "🔟 BURST EVENT DETECTOR v3: FLOW REGIME + SIGNAL/NO SIGNAL + EXTREME-6 /burst\n"
+        "🔬 BURST GATE LAB v4: audit score/soglia e NO SIGNAL /burstgate\n"
         "✅ state persistente + autorotation\n\n"
         f"ENGINE: {'READY' if engine.engine_bootstrap_done else 'BUILD'} | "
         f"filtro target top {ENGINE_SELECT_RATE*100:.0f}%\n"
         f"H5 LIVE gia' disponibili: {len(engine.engine_h5_records_live)}\n"
         f"PLAY storico ricostruito: {len(engine.engine_play_records_live)} record | "
         f"attivi={sum(1 for x in engine.engine_play_sessions if x.get('origin_mode')=='live')}\n\n"
-        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /postburst /sosiarandom /menu"
+        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /postburst /verifica /burstgate /sosiarandom /menu"
     )
     await notify_pending(engine,app)
     await notify_ambo_active(engine,app)
@@ -6432,6 +6571,9 @@ async def run_self_test():
     frozen=burst.arm(bhar,bhar[-1]["key"],flow=flow)
     assert frozen and len(DECINA_GROUPS[frozen["group_index"]])==10
     assert isinstance(frozen.get("signal"),bool) and frozen.get("model_version")==3
+    assert frozen.get("gate_audit_version") == BURST_GATE_AUDIT_VERSION
+    assert frozen.get("gate_reason") in BurstGateLab.REASON_ORDER
+    assert isinstance(frozen.get("score_delta"),(int,float)) and isinstance(frozen.get("margin_delta"),(int,float))
     assert frozen.get("flow_regime",{}).get("name") in ("COMPRESSION","NORMAL","DISPERSION")
     assert burst.arm(bhar,bhar[-1]["key"],flow=flow) is frozen
     roundtrip=DecinaBurstLab(); roundtrip.load(burst.dump())
@@ -6439,6 +6581,12 @@ async def run_self_test():
     nums=sorted(random.Random(7788).sample(range(1,91),20))
     result=roundtrip.settle("2099-06-02",1,nums)
     assert result and 0 <= result["count"] <= 10 and roundtrip.pending is None
+    assert result.get("gate_audit_version") == BURST_GATE_AUDIT_VERSION
+    assert result.get("gate_reason") in BurstGateLab.REASON_ORDER
+    class _GateEngine: pass
+    _ge=_GateEngine(); _ge.burst=roundtrip
+    _gt=BurstGateLab.text(_ge)
+    assert "BURST GATE LAB v4" in _gt and "DISTANZA SCORE" in _gt
     if result["signal"]:
         assert roundtrip.totals["evaluated"]==1 and roundtrip.totals["abstained"]==0
         assert roundtrip.totals["pred5"]==int(result["count"]>=5)
@@ -6546,7 +6694,7 @@ async def run_self_test():
     assert z.verifica.dump()['start_from_key']=='2099-07-01#100'
     print('SELF-TEST VERIFICA v1 OK: confine persistente, vecchi pending esclusi, confronto same-H1, H5, BURST SIGNAL/NO SIGNAL.')
 
-    print("SELF-TEST OK: ENGINE/SOSIA/DUAL invariati + FLOW REGIME 288 + BURST v3 migrazione + POST-BURST warmup/forward/skip/roundtrip")
+    print("SELF-TEST OK: ENGINE/SOSIA/DUAL invariati + FLOW REGIME 288 + BURST v3 invariato + GATE LAB v4 + POST-BURST")
 
 async def main():
     if "--self-test" in sys.argv:
@@ -6577,6 +6725,7 @@ async def main():
     app.add_handler(CommandHandler("flow",cmd_flow))
     app.add_handler(CommandHandler("postburst",cmd_postburst))
     app.add_handler(CommandHandler("verifica",cmd_verifica))
+    app.add_handler(CommandHandler("burstgate",cmd_burstgate))
     app.add_handler(CommandHandler("sosiarandom",cmd_sosiarandom))
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("menu",cmd_menu))
