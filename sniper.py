@@ -1,5 +1,5 @@
 # ============================================================
-# 🧠 10eLOTTO ENGINE ONLY — v10 POST-6 EXTREME SHADOW
+# 🧠 10eLOTTO ENGINE ONLY — v11 VERIFY-ALL + CONVERGENCE LAB
 # ============================================================
 #
 # UNICO MOTORE ATTIVO:
@@ -3038,6 +3038,249 @@ class VerificationLab:
                   '⚠️ Campioni e finestre parziali mostrati esplicitamente. Risultati shadow: nessuna puntata automatica.']
         return '\n'.join(lines)
 
+
+# ============================================================
+# CONVERGENCE LAB v1 — solo SHADOW, prospettico dalla v11.
+# Nasce SOLO quando POST-6 apre un nuovo evento 6+ dopo il marker v11.
+# Fotografa, PRIMA della H1, se la stessa decina contiene/concorda con:
+#   • ENGINE HIGH CONFIDENCE TOP1
+#   • SOSIA rank #1
+#   • BURST candidate (e relativo SIGNAL/NO SIGNAL)
+#   • coppia STESSA DECINA del DECINA ENGINE
+# FLOW viene salvato come contesto, non come "voto" predittivo.
+# La H1 misura poi 5+/6+ della stessa decina e del controllo random POST-6.
+# Nessun modulo esistente viene modificato.
+# ============================================================
+CONVERGENCE_VERSION = 1
+CONVERGENCE_RECORD_MAX = max(200, int(os.getenv("CONVERGENCE_RECORD_MAX", "2000")))
+
+
+class ConvergenceLab:
+    def __init__(self):
+        self.start_from_key = None
+        self.started_at = None
+        self.pending = []
+        self.records = []
+        self.skipped = 0
+        self.last_result = None
+
+    def ensure_start(self, engine):
+        if self.start_from_key:
+            return False
+        if not engine.engine_history:
+            return False
+        key = str(engine.engine_history[-1].get("key") or "")
+        if _verifica_order(key) is None:
+            return False
+        self.start_from_key = key
+        self.started_at = datetime.now(BOT_TZ).isoformat(timespec="seconds")
+        return True
+
+    def load(self, obj):
+        if not isinstance(obj, dict) or int(obj.get("version", 0) or 0) != CONVERGENCE_VERSION:
+            return False
+        key = obj.get("start_from_key")
+        if _verifica_order(key) is None:
+            return False
+        self.start_from_key = key
+        self.started_at = obj.get("started_at") if isinstance(obj.get("started_at"), str) else None
+        self.skipped = max(0, int(obj.get("skipped", 0) or 0))
+        self.last_result = obj.get("last_result") if isinstance(obj.get("last_result"), dict) else None
+        raw = obj.get("pending", [])
+        if isinstance(raw, list):
+            self.pending = [dict(x) for x in raw[-20:] if isinstance(x, dict)
+                            and isinstance(x.get("origin_key"), str)
+                            and isinstance(x.get("group_index"), int)
+                            and 0 <= x["group_index"] < 9
+                            and isinstance(x.get("control_index"), int)
+                            and 0 <= x["control_index"] < 9]
+        rec = obj.get("records", [])
+        if isinstance(rec, list):
+            self.records = [dict(x) for x in rec[-CONVERGENCE_RECORD_MAX:]
+                            if isinstance(x, dict) and isinstance(x.get("origin_key"), str)
+                            and isinstance(x.get("key"), str)]
+        return True
+
+    def dump(self):
+        return {
+            "version": CONVERGENCE_VERSION,
+            "start_from_key": self.start_from_key,
+            "started_at": self.started_at,
+            "pending": self.pending[-20:],
+            "records": self.records[-CONVERGENCE_RECORD_MAX:],
+            "skipped": self.skipped,
+            "last_result": self.last_result,
+        }
+
+    def _is_after_marker(self, key):
+        a = _verifica_order(key)
+        b = _verifica_order(self.start_from_key)
+        return a is not None and b is not None and a > b
+
+    @staticmethod
+    def _same_group(num, gi):
+        try:
+            return int(num) in DECINA_GROUPS[int(gi)]
+        except (TypeError, ValueError, IndexError):
+            return False
+
+    def arm(self, current_key, engine):
+        if not self.start_from_key:
+            self.ensure_start(engine)
+        if not self.start_from_key or not self._is_after_marker(current_key):
+            return []
+        # Solo eventi POST-6 nati ORA: nessun backfill di pending pre-v11.
+        origins = [p for p in engine.post6.pending
+                   if isinstance(p, dict) and str(p.get("origin_key")) == str(current_key)]
+        if not origins:
+            return []
+        already = {(str(p.get("origin_key")), int(p.get("group_index", -1))) for p in self.pending}
+        created = []
+        for src in origins:
+            gi = int(src["group_index"])
+            token = (str(current_key), gi)
+            if token in already:
+                continue
+
+            ep = engine.engine_pending if isinstance(engine.engine_pending, dict) else {}
+            engine_hc = bool(ep.get("accepted") and str(ep.get("signal_from_key")) == str(current_key))
+            engine_top1 = int(ep["top1"]) if engine_hc and ep.get("top1") else None
+            engine_same = bool(engine_top1 is not None and self._same_group(engine_top1, gi))
+
+            sp = engine.sosiasniper_pending if isinstance(engine.sosiasniper_pending, dict) else {}
+            sosia_top1 = int(sp["top1"]) if str(sp.get("from_key")) == str(current_key) and sp.get("top1") else None
+            sosia_same = bool(sosia_top1 is not None and self._same_group(sosia_top1, gi))
+            fusion_top3 = bool(sp.get("engine_hc") and sp.get("engine_rank") is not None and
+                               int(sp.get("engine_rank")) <= 3)
+
+            bp = engine.burst.pending if isinstance(engine.burst.pending, dict) else {}
+            burst_same = bool(str(bp.get("from_key")) == str(current_key) and
+                              int(bp.get("group_index", -1)) == gi)
+            burst_signal_same = bool(burst_same and bp.get("signal"))
+
+            dp = engine.decina.pending if isinstance(engine.decina.pending, dict) else {}
+            within_pair = list(dp.get("within_pair") or []) if str(dp.get("from_key")) == str(current_key) else []
+            decina_same = bool(len(within_pair) == 2 and all(self._same_group(n, gi) for n in within_pair))
+
+            flow_snap = engine.flow.last_snapshot or engine.flow.warmup or {}
+            regime = dict(flow_snap.get("current_regime") or {})
+            feat = engine.flow.group_feature(gi) or {}
+            state = "SCARICA" if int(feat.get("recent", 0) or 0) <= 1 else (
+                    "RICCA" if int(feat.get("recent", 0) or 0) >= 4 else "NORMALE")
+
+            support = int(engine_same) + int(sosia_same) + int(burst_same) + int(decina_same)
+            row = {
+                "origin_key": str(current_key),
+                "group_index": gi,
+                "group": DECINA_LABELS[gi],
+                "origin_count": int(src.get("origin_count", 0) or 0),
+                "control_index": int(src["control_index"]),
+                "control_group": DECINA_LABELS[int(src["control_index"])],
+                "engine_hc": engine_hc,
+                "engine_top1": engine_top1,
+                "engine_same": engine_same,
+                "sosia_top1": sosia_top1,
+                "sosia_same": sosia_same,
+                "fusion_top3": fusion_top3,
+                "burst_same": burst_same,
+                "burst_signal_same": burst_signal_same,
+                "burst_score_delta": bp.get("score_delta") if burst_same else None,
+                "decina_same": decina_same,
+                "within_pair": within_pair if decina_same else None,
+                "flow_regime": regime.get("name"),
+                "flow_strength": regime.get("strength"),
+                "flow_state": state,
+                "support": support,
+            }
+            self.pending.append(row)
+            created.append(row)
+            already.add(token)
+        self.pending = self.pending[-20:]
+        return created
+
+    def settle(self, day, draw_id, nums):
+        if not self.pending:
+            return []
+        key = draw_key(day, draw_id)
+        actual = set(map(int, nums))
+        old = list(self.pending)
+        self.pending = []
+        closed = []
+        for p in old:
+            if not sim_draw_is_consecutive(p["origin_key"], day, draw_id):
+                self.skipped += 1
+                self.last_result = {"origin_key": p["origin_key"], "key": key,
+                                    "group_index": p["group_index"], "skipped": True}
+                continue
+            gi = int(p["group_index"]); ci = int(p["control_index"])
+            same = len(actual.intersection(DECINA_GROUPS[gi]))
+            ctrl = len(actual.intersection(DECINA_GROUPS[ci]))
+            r = dict(p)
+            r.update({
+                "key": key,
+                "same_count": same,
+                "same_5": same >= 5,
+                "same_6": same >= 6,
+                "control_count": ctrl,
+                "control_5": ctrl >= 5,
+                "control_6": ctrl >= 6,
+                "skipped": False,
+            })
+            self.records.append(r)
+            self.last_result = r
+            closed.append(r)
+        self.records = self.records[-CONVERGENCE_RECORD_MAX:]
+        return closed
+
+    @staticmethod
+    def _fmt(rows):
+        n = len(rows)
+        h5 = sum(int(bool(r.get("same_5"))) for r in rows)
+        h6 = sum(int(bool(r.get("same_6"))) for r in rows)
+        c5 = sum(int(bool(r.get("control_5"))) for r in rows)
+        mean = sum(int(r.get("same_count", 0) or 0) for r in rows) / n if n else 0.0
+        return f"n={n} | 5+ {h5}/{n} ({safe_pct(h5,n):.2f}%) | 6+ {h6}/{n} ({safe_pct(h6,n):.2f}%) | μ {mean:.2f} | random5 {c5}/{n} ({safe_pct(c5,n):.2f}%)"
+
+    def text(self):
+        lines = [
+            "🧲 CONVERGENCE LAB v1 — POST-6 + ALTRI MODULI",
+            "Solo eventi POST-6 nati dalla v11; nessun backfill.",
+            f"🧊 Inizio: dopo {self.start_from_key or '-'}" + (f" | {self.started_at}" if self.started_at else ""),
+            f"Valutati {len(self.records)} | pendenti {len(self.pending)} | salti {self.skipped}",
+            "Riferimento una decina: 5+ 3.981% | 6+ 0.701%.",
+        ]
+        if self.records:
+            lines.append("📊 PER NUMERO DI CONVERGENZE sulla stessa decina (ENGINE/SOSIA/BURST/DECINA):")
+            for k in range(5):
+                rows = [r for r in self.records if int(r.get("support", 0) or 0) == k]
+                if rows:
+                    lines.append(f"• support {k}/4: {self._fmt(rows)}")
+            for label, pred in (
+                ("ENGINE HC nella decina", lambda r: r.get("engine_same")),
+                ("SOSIA #1 nella decina", lambda r: r.get("sosia_same")),
+                ("BURST candidato stessa decina", lambda r: r.get("burst_same")),
+                ("BURST SIGNAL stessa decina", lambda r: r.get("burst_signal_same")),
+                ("DECINA pair stessa fascia", lambda r: r.get("decina_same")),
+                ("FUSION TOP3 + ENGINE", lambda r: r.get("fusion_top3") and r.get("engine_same")),
+            ):
+                rows = [r for r in self.records if pred(r)]
+                if rows:
+                    lines.append(f"• {label}: {self._fmt(rows)}")
+        else:
+            lines.append("⏳ Nessun evento POST-6 v11 ancora valutato.")
+        if self.pending:
+            lines.append("⏳ PENDENTI:")
+            for r in self.pending[-5:]:
+                flags=[]
+                if r.get("engine_same"): flags.append("ENGINE")
+                if r.get("sosia_same"): flags.append("SOSIA")
+                if r.get("burst_same"): flags.append("BURST" + ("+SIGNAL" if r.get("burst_signal_same") else "+NO"))
+                if r.get("decina_same"): flags.append("DECINA")
+                lines.append(f"• {r['origin_key']} {r['group']} {r['origin_count']}/10 | support {r['support']}/4 | " + (", ".join(flags) or "nessuna convergenza"))
+        lines.append("⚠️ Shadow: misura convergenze, non cambia POST-6, ENGINE, SOSIA, BURST o DECINA.")
+        return "\n".join(lines)
+
+
 class EngineOnly:
     def __init__(self, load=True):
         self.processed = []
@@ -3139,6 +3382,7 @@ class EngineOnly:
         self.post6 = Post6ExtremeShadow()  # v10: dopo 6+ segue stessa decina solo H1
         self.verifica = VerificationLab()  # read-only report, marker persistente isolato
         self.burstgate = BurstGateLab()    # audit derivato dai record BURST, nessun nuovo motore
+        self.convergence = ConvergenceLab()  # v11: audit prospettico delle convergenze POST-6
 
         self.state_load_info = {
             "loaded": False,
@@ -5355,6 +5599,7 @@ class EngineOnly:
             self.postburst.load(d.get("decina_postburst_v1"))
             self.post6.load(d.get("decina_post6_v1"))
             self.verifica.load(d.get("verification_v1"))
+            self.convergence.load(d.get("convergence_v1"))
 
             # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
             if self.engine_pending and self.engine_pending.get("accepted"):
@@ -5442,6 +5687,7 @@ class EngineOnly:
             "decina_postburst_v1": self.postburst.dump(),
             "decina_post6_v1": self.post6.dump(),
             "verification_v1": self.verifica.dump(),
+            "convergence_v1": self.convergence.dump(),
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -5899,6 +6145,7 @@ class EngineOnly:
         patternlab_result = None
         if mode == "live":
             self.verifica.ensure_start(self)
+            self.convergence.ensure_start(self)
             # Il campione era stato predisposto ALLA estrazione precedente:
             # nessun dato del draw attuale entra nella simulazione valutata.
             dual_result = self.dual.settle(day, e, clean)
@@ -5906,6 +6153,7 @@ class EngineOnly:
             burst_result = self.burst.settle(day, e, clean)
             self.postburst.observe_live(day, e, clean, open_new=notify)
             self.post6.observe_live(day, e, clean, open_new=notify)
+            self.convergence.settle(day, e, clean)
             self._sosia_settle(day, e, clean)
             # Valuta TOP1/TOP2 PRIMA che _sosiap_settle cancelli il pending adattivo.
             sniper_result = self._sosiasniper_settle(day, e, clean)
@@ -5952,6 +6200,7 @@ class EngineOnly:
             if notify:
                 self.decina.arm(self, current_key)
                 self.burst.arm(self.engine_history, current_key, flow=self.flow)
+                self.convergence.arm(current_key, self)
             if BURST_NOTIFY and notify and (burst_result or self.burst.pending):
                 await self.tg(app, self.burst.text())
             if DECINA_NOTIFY and notify and (decina_result or self.decina.pending):
@@ -6219,6 +6468,117 @@ class EngineOnly:
             "⚠️ Nessuna puntata automatica."
         )
 
+    def verify_all_text(self):
+        """Report compatto di TUTTI i moduli: un solo comando, nessun reset/mutazione."""
+        lines = [
+            "🧾 VERIFICA TUTTO v11 — SNAPSHOT COMPLETO",
+            "Un solo report dei moduli; legge lo state corrente e NON cambia previsioni, soglie o contatori.",
+        ]
+
+        # ENGINE + HORIZON + MULTI-HIT
+        h5 = list(self.engine_h5_records_live)
+        n = len(h5)
+        h1 = sum(1 in set(r.get("hit_ages", [])) for r in h5)
+        h3cum = sum(any(int(a) <= 3 for a in r.get("hit_ages", [])) for r in h5)
+        h5cum = sum(int(r.get("hits5", len(r.get("hit_ages", []))) or 0) >= 1 for r in h5)
+        mh = self._summarize_h5(h5)
+        lines += ["", "🧠 ENGINE / ENGINEH / MULTIH5",
+                  f"HC H1 {h1}/{n} ({safe_pct(h1,n):.2f}%) vs 22.22% | entro H3 {h3cum}/{n} ({safe_pct(h3cum,n):.2f}%) vs 52.95% | entro H5 {h5cum}/{n} ({safe_pct(h5cum,n):.2f}%) vs 71.54%",
+                  f"MULTI >=2/5 {mh['ge2']}/{n} ({safe_pct(mh['ge2'],n):.2f}%) vs {self._baseline_ge2_5():.2f}% | >=3/5 {mh['ge3']}/{n} ({safe_pct(mh['ge3'],n):.2f}%) vs {self._baseline_ge3_5():.2f}%"]
+
+        # PLAY
+        ps = self._summarize_play(list(self.engine_play_records_live))
+        lines += ["", "🎮 PLAY",
+                  f"attivate {ps['activated']} | HIT {ps['hits']}/{ps['activated']} ({ps['success']:.2f}%) | HIT/puntata {ps['hits']}/{ps['bets']} ({ps['hit_per_bet']:.2f}%) vs 22.22%"]
+
+        # AMBO
+        aa = self.ambo_sim_account or {}
+        bets = int(aa.get("bets", 0) or 0); wins = int(aa.get("wins", 0) or 0)
+        cost = int(aa.get("cost_cents", 0) or 0) / 100.0
+        gross = int(aa.get("gross_cents", 0) or 0) / 100.0
+        net = gross - cost
+        roi = 100.0 * net / cost if cost else 0.0
+        lines += ["", "💶 AMBO 2xHOT5",
+                  f"ambi HIT {wins}/{bets} ({safe_pct(wins,bets):.2f}%) | pareggio 7.14% | costo €{cost:.2f} lordo €{gross:.2f} netto €{net:.2f} ROI {roi:+.2f}%"]
+
+        # SOSIA adattivo + random
+        st = self.sosiap_totals or {}
+        se = int(st.get("evaluated", 0) or 0); sh = int(st.get("hits", 0) or 0)
+        mean = sh / se if se else 0.0
+        rt = self.sosia_totals or {}
+        re = int(rt.get("evaluated", 0) or 0); ro = int(rt.get("overlap_sum", 0) or 0)
+        rmean = ro / re if re else 0.0
+        lines += ["", "🧠 SOSIA / SOSIARANDOM",
+                  f"SOSIA adattivo {se} draw | media {mean:.3f}/20 vs 4.444 | casuale separato {rmean:.3f}/20 su {re} draw"]
+
+        # SOSIA SNIPER
+        sn = self.sosiasniper_totals or {}
+        sne = int(sn.get("evaluated", 0) or 0)
+        pe = int(sn.get("prob_evaluated", 0) or 0); be = int(sn.get("bestpair_evaluated", 0) or 0)
+        fe = int(sn.get("fusion_evaluated", 0) or 0)
+        lines += ["", "🎯 SOSIA SNIPER",
+                  f"rank#1 {sn.get('top1_hits',0)}/{sne} ({safe_pct(sn.get('top1_hits',0),sne):.2f}%) vs 22.22% | PROB {sn.get('prob_hits',0)}/{pe} ({safe_pct(sn.get('prob_hits',0),pe):.2f}%)",
+                  f"coppia190 {sn.get('bestpair_hits',0)}/{be} ({safe_pct(sn.get('bestpair_hits',0),be):.2f}%) vs 4.74% | FUSION {sn.get('fusion_hits',0)}/{fe} ({safe_pct(sn.get('fusion_hits',0),fe):.2f}%)"]
+
+        # PATTERN
+        pr = list(self.sosiapattern_records)
+        pn = len(pr)
+        ph = sum(len(r.get("hit_ranks", [])) for r in pr)
+        b16 = sum(sum(16 <= int(x) <= 20 for x in r.get("hit_ranks", [])) for r in pr)
+        plt = self.sosiapatternlab_totals or {}
+        pce = int(plt.get("pos_evaluated", 0) or 0)
+        lines += ["", "🔎 SOSIA PATTERN",
+                  f"ranking completi {pn} | media {ph/pn if pn else 0:.3f}/20 vs 4.444 | fascia #16-20 {b16}/{pn*5 if pn else 0} ({safe_pct(b16,pn*5):.2f}%)",
+                  f"POSITION CAL {plt.get('pos_hits',0)}/{pce} ({safe_pct(plt.get('pos_hits',0),pce):.2f}%) | WATCH {plt.get('watch_hits',0)}/{plt.get('watch_picks',0)} ({safe_pct(plt.get('watch_hits',0),plt.get('watch_picks',0)):.2f}%)"]
+
+        # DUAL + DECINE
+        du = self.dual.totals or {}; dn = int(du.get("evaluated", 0) or 0)
+        de = self.decina.totals or {}; den = int(de.get("evaluated", 0) or 0)
+        lines += ["", "🔟 DUAL / DECINE",
+                  f"DUAL >=1 {du.get('any',0)}/{dn} ({safe_pct(du.get('any',0),dn):.2f}%) | random {du.get('random_any',0)}/{dn} ({safe_pct(du.get('random_any',0),dn):.2f}%) | teorico 39.70%",
+                  f"DUAL+DECINE {de.get('fusion_any',0)}/{den} ({safe_pct(de.get('fusion_any',0),den):.2f}%) | stessa decina {de.get('within_any',0)}/{den} ({safe_pct(de.get('within_any',0),den):.2f}%) | random {de.get('random_any',0)}/{den} ({safe_pct(de.get('random_any',0),den):.2f}%)"]
+
+        # BURST + gate
+        bt = self.burst.totals or {}
+        sig = int(bt.get("evaluated", 0) or 0); no = int(bt.get("abstained", 0) or 0)
+        exact = [r for r in self.burst.records if isinstance(r, dict)
+                 and r.get("gate_audit_version") == BURST_GATE_AUDIT_VERSION
+                 and not r.get("skipped") and type(r.get("count")) is int]
+        epass = [r for r in exact if r.get("gate_reason") == "PASS"]
+        lines += ["", "🌋 BURST / BURSTGATE",
+                  f"SIGNAL 5+ {bt.get('pred5',0)}/{sig} ({safe_pct(bt.get('pred5',0),sig):.2f}%) | 6+ {bt.get('pred6',0)}/{sig} ({safe_pct(bt.get('pred6',0),sig):.2f}%) | NO SIGNAL {no}",
+                  f"GATE v9+ n={len(exact)} | PASS 5+ {sum(int(r.get('count',0)>=5) for r in epass)}/{len(epass)} ({safe_pct(sum(int(r.get('count',0)>=5) for r in epass),len(epass)):.2f}%)"]
+
+        # FLOW
+        fw = self.flow.last_snapshot or self.flow.warmup or {}
+        rg = fw.get("current_regime") or {}
+        dr = int(fw.get("dominant_repeat", 0) or 0); dd = int(fw.get("dominant_repeat_den", 0) or 0)
+        lines += ["", "🌊 FLOW",
+                  f"regime {rg.get('name','-')} {rg.get('strength','')} | dominante {fw.get('current_dominant_label') or 'PARI'} | ripetizione dominante {dr}/{dd} ({safe_pct(dr,dd):.2f}%)"]
+
+        # POST-BURST
+        pb6 = [r for r in self.postburst.live_records if r.get("horizon") == 1 and int(r.get("origin_count",0) or 0) >= 6]
+        pb5 = [r for r in self.postburst.live_records if r.get("horizon") == 1 and int(r.get("origin_count",0) or 0) == 5]
+        lines += ["", "🌋 POST-BURST",
+                  f"dopo 6+ stessa decina H1 5+ {sum(int(bool(r.get('same_5'))) for r in pb6)}/{len(pb6)} ({safe_pct(sum(int(bool(r.get('same_5'))) for r in pb6),len(pb6)):.2f}%) | dopo 5 esatti {sum(int(bool(r.get('same_5'))) for r in pb5)}/{len(pb5)} ({safe_pct(sum(int(bool(r.get('same_5'))) for r in pb5),len(pb5)):.2f}%)"]
+
+        # POST-6 v10
+        p6 = self.post6.records
+        p6n = len(p6); p65 = sum(int(bool(r.get("same_5"))) for r in p6); p66 = sum(int(bool(r.get("same_6"))) for r in p6)
+        p6c = sum(int(bool(r.get("control_5"))) for r in p6)
+        lines += ["", "🔥 POST-6 v10",
+                  f"forward {p6n} | stessa 5+ {p65}/{p6n} ({safe_pct(p65,p6n):.2f}%) vs 3.981% | 6+ {p66}/{p6n} ({safe_pct(p66,p6n):.2f}%) vs 0.701% | random5 {p6c}/{p6n} ({safe_pct(p6c,p6n):.2f}%) | pending {len(self.post6.pending)}"]
+
+        # VERIFICA marker + CONVERGENZA
+        cv = self.convergence.records; cn = len(cv); c5 = sum(int(bool(r.get("same_5"))) for r in cv)
+        high = [r for r in cv if int(r.get("support",0) or 0) >= 2]
+        lines += ["", "🧪 VERIFICA / CONVERGENZA",
+                  f"marker /verifica: dopo {self.verifica.start_from_key or '-'} | marker convergenza: dopo {self.convergence.start_from_key or '-'}",
+                  f"CONVERGENZA POST-6 n={cn} | 5+ {c5}/{cn} ({safe_pct(c5,cn):.2f}%) | support>=2: {sum(int(bool(r.get('same_5'))) for r in high)}/{len(high)} ({safe_pct(sum(int(bool(r.get('same_5'))) for r in high),len(high)):.2f}%) | pending {len(self.convergence.pending)}"]
+
+        lines += ["", "⚠️ Report audit/shadow. Per dettagli: /verifica /burstgate /post6 /convergenza oppure il comando singolo del modulo."]
+        return "\n".join(lines)
+
     def menu_text(self):
         return (
             "🧠 10eLOTTO ENGINE ONLY\n\n"
@@ -6238,7 +6598,9 @@ class EngineOnly:
             "/flow — presenze per decina a ogni draw, transizioni e streak su 288\n"
             "/postburst — dopo 5/6+ nella stessa decina: H1/H2/H3 e passaggio ad altre fasce\n"
             "/post6 — test v10: dopo 6+ segue la STESSA decina esclusivamente in H1\n"
+            "/convergenza — POST-6 + ENGINE/SOSIA/BURST/DECINA sulla stessa fascia\n"
             "/verifica — test nuovo periodo: STESSA DECINA, ENGINE H5, BURST gate\n"
+            "/verificatutto — report compatto di TUTTI i moduli in un solo comando\n"
             "/burstgate — audit v4: score/soglia, motivi NO SIGNAL e fasce di distanza\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
@@ -6298,6 +6660,12 @@ async def cmd_postburst(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_post6(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].post6.text())
 
+async def cmd_convergenza(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].convergence.text())
+
+async def cmd_verificatutto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].verify_all_text())
+
 async def cmd_verifica(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine = context.application.bot_data["engine"]
     await reply(update, engine.verifica.text(engine))
@@ -6331,7 +6699,9 @@ async def setup_commands(app):
         BotCommand("flow", "FLOW: 9 decine draw-by-draw, transizioni e streak"),
         BotCommand("postburst", "POST-BURST: stessa/altra decina H1-H3"),
         BotCommand("post6", "POST-6: dopo 6+ stessa decina solo H1"),
+        BotCommand("convergenza", "POST-6 + convergenze degli altri moduli"),
         BotCommand("verifica", "Test nuovo periodo: DECINA, ENGINE H5, BURST"),
+        BotCommand("verificatutto", "Report unico di tutti i moduli"),
         BotCommand("burstgate", "Audit gate BURST: score, soglia e NO SIGNAL"),
         BotCommand("sosiarandom", "Controllo casuale 20/90"),
         BotCommand("status", "Stato rapido ENGINE"),
@@ -6461,6 +6831,7 @@ async def startup(engine, app, retry_state=None):
     engine.flow.bootstrap(engine.engine_history)
     engine.postburst.bootstrap(engine.engine_history)
     engine.post6.ensure_start(engine.engine_history, engine.postburst)
+    engine.convergence.ensure_start(engine)
     engine.burst.bootstrap(engine.engine_history, flow=engine.flow)
     if rows and engine.engine_history:
         latest=max(rows,key=lambda r:(r[0],r[1]))
@@ -6485,6 +6856,8 @@ async def startup(engine, app, retry_state=None):
         "🌊 DECINA FLOW LAB v2: warmup 288 + FLOW REGIME /flow\n"
         "🌋 POST-BURST LAB v1: eventi 5/6+ -> H1/H2/H3 /postburst\n"
         "🔥 POST-6 EXTREME SHADOW v1: dopo 6+ stessa decina solo H1 /post6\n"
+        "🧲 CONVERGENCE LAB v1: POST-6 + ENGINE/SOSIA/BURST/DECINA /convergenza\n"
+        "🧾 VERIFICA TUTTO v11: report compatto di tutti i moduli /verificatutto\n"
         "🔟 BURST EVENT DETECTOR v3: FLOW REGIME + SIGNAL/NO SIGNAL + EXTREME-6 /burst\n"
         "🔬 BURST GATE LAB v4: audit score/soglia e NO SIGNAL /burstgate\n"
         "✅ state persistente + autorotation\n\n"
@@ -6493,7 +6866,7 @@ async def startup(engine, app, retry_state=None):
         f"H5 LIVE gia' disponibili: {len(engine.engine_h5_records_live)}\n"
         f"PLAY storico ricostruito: {len(engine.engine_play_records_live)} record | "
         f"attivi={sum(1 for x in engine.engine_play_sessions if x.get('origin_mode')=='live')}\n\n"
-        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /postburst /post6 /verifica /burstgate /sosiarandom /menu"
+        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /postburst /post6 /convergenza /verifica /verificatutto /burstgate /sosiarandom /menu"
     )
     await notify_pending(engine,app)
     await notify_ambo_active(engine,app)
@@ -6916,7 +7289,46 @@ async def run_self_test():
     assert z.verifica.dump()['start_from_key']=='2099-07-01#100'
     print('SELF-TEST VERIFICA v1 OK: confine persistente, vecchi pending esclusi, confronto same-H1, H5, BURST SIGNAL/NO SIGNAL.')
 
-    print("SELF-TEST OK: ENGINE/SOSIA/DUAL invariati + FLOW REGIME 288 + BURST v3 invariato + GATE LAB v4 + POST-BURST + POST-6 v10")
+    # CONVERGENCE v11: parte dopo marker, usa solo POST-6 nuovi e congela gli altri moduli PRIMA della H1.
+    cv_engine = EngineOnly(load=False)
+    cv_engine.engine_history = [{'key':'2099-08-01#100','nums':list(range(1,21))}]
+    assert cv_engine.convergence.ensure_start(cv_engine)
+    # Un pending POST-6 pre-v11 sul marker NON deve essere importato nel nuovo test.
+    cv_engine.post6.pending = [{'origin_key':'2099-08-01#100','group_index':4,'group':DECINA_LABELS[4],
+                                'origin_count':6,'control_index':7,'control_group':DECINA_LABELS[7]}]
+    assert cv_engine.convergence.arm('2099-08-01#100', cv_engine) == []
+    # Nuovo evento #101 con convergenza ENGINE + SOSIA + BURST + DECINA sulla 40-49.
+    cv_engine.engine_history.append({'key':'2099-08-01#101','nums':six_nums})
+    cv_engine.post6.pending = [{'origin_key':'2099-08-01#101','group_index':4,'group':DECINA_LABELS[4],
+                                'origin_count':6,'control_index':7,'control_group':DECINA_LABELS[7]}]
+    cv_engine.engine_pending = {'signal_from_key':'2099-08-01#101','accepted':True,'top1':42}
+    cv_engine.sosiasniper_pending = {'from_key':'2099-08-01#101','top1':43,'engine_hc':True,'engine_rank':2}
+    cv_engine.burst.pending = {'from_key':'2099-08-01#101','group_index':4,'signal':True,'score_delta':0.05}
+    cv_engine.decina.pending = {'from_key':'2099-08-01#101','within_pair':[41,48]}
+    cv_engine.flow.last_snapshot = {'current_regime':{'name':'DISPERSION','strength':'FORTE'},
+                                    'overview':[{'recent':2} for _ in range(9)]}
+    cv_engine.flow.last_snapshot['overview'][4]={'recent':6}
+    made = cv_engine.convergence.arm('2099-08-01#101', cv_engine)
+    assert len(made)==1 and made[0]['support']==4 and made[0]['burst_signal_same']
+    cvrt=ConvergenceLab(); assert cvrt.load(cv_engine.convergence.dump()) and len(cvrt.pending)==1
+    cv_h1=sorted(set(range(40,45)) | {1,2,3,11,12,13,21,22,23,31,32,51,52,53,54})
+    assert len(cv_h1)==20
+    closed=cvrt.settle('2099-08-01',102,cv_h1)
+    assert len(closed)==1 and closed[0]['same_5'] and closed[0]['support']==4
+    assert 'CONVERGENCE LAB v1' in cvrt.text()
+
+    # VERIFICA TUTTO: deve includere tutti i gruppi in un report Telegram compatto.
+    cv_engine.convergence = cvrt
+    all_txt=cv_engine.verify_all_text()
+    for token in ('ENGINE / ENGINEH / MULTIH5','PLAY','AMBO 2xHOT5','SOSIA / SOSIARANDOM',
+                  'SOSIA SNIPER','SOSIA PATTERN','DUAL / DECINE','BURST / BURSTGATE',
+                  'FLOW','POST-BURST','POST-6 v10','VERIFICA / CONVERGENZA'):
+        assert token in all_txt
+    assert len(all_txt) < 4096, len(all_txt)
+    assert '/verificatutto' in cv_engine.menu_text() and '/convergenza' in cv_engine.menu_text()
+    print(f'SELF-TEST v11 OK: CONVERGENCE forward/roundtrip + VERIFICA TUTTO compatto ({len(all_txt)} chars).')
+
+    print("SELF-TEST OK: v11 conserva ENGINE/SOSIA/DUAL/FLOW/BURST/POST-BURST/POST-6 + CONVERGENCE + VERIFY-ALL")
 
 async def main():
     if "--self-test" in sys.argv:
@@ -6947,7 +7359,9 @@ async def main():
     app.add_handler(CommandHandler("flow",cmd_flow))
     app.add_handler(CommandHandler("postburst",cmd_postburst))
     app.add_handler(CommandHandler("post6",cmd_post6))
+    app.add_handler(CommandHandler("convergenza",cmd_convergenza))
     app.add_handler(CommandHandler("verifica",cmd_verifica))
+    app.add_handler(CommandHandler("verificatutto",cmd_verificatutto))
     app.add_handler(CommandHandler("burstgate",cmd_burstgate))
     app.add_handler(CommandHandler("sosiarandom",cmd_sosiarandom))
     app.add_handler(CommandHandler("status",cmd_status))
