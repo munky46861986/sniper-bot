@@ -1,5 +1,5 @@
 # ============================================================
-# 🧠 10eLOTTO ENGINE ONLY — v9 VERIFICA + BURST GATE LAB
+# 🧠 10eLOTTO ENGINE ONLY — v10 POST-6 EXTREME SHADOW
 # ============================================================
 #
 # UNICO MOTORE ATTIVO:
@@ -2245,6 +2245,196 @@ class DecinaPostBurstLab:
         return '\n'.join(lines)
 
 
+# ============================================================
+# POST-6 EXTREME SHADOW v1 — test prospettico pulito
+# Regola congelata dalla v10: quando una decina CHIUDE con 6+ numeri,
+# segue LA STESSA DECINA esclusivamente nella H1 successiva.
+# Ogni evento ha un controllo casuale congelato nello stesso momento.
+# I casi POST-BURST pre-v10 sono solo riferimento descrittivo, mai risultati v10.
+# ============================================================
+POST6_VERSION = 1
+POST6_RECORD_MAX = max(200, int(os.getenv("POST6_RECORD_MAX", "2000")))
+
+
+class Post6ExtremeShadow:
+    def __init__(self):
+        self.start_from_key = None
+        self.started_at = None
+        self.pre_reference = None
+        self.pending = []
+        self.records = []
+        self.skipped = 0
+        self.last_result = None
+        self.last_seen_key = None
+
+    @staticmethod
+    def _counts(nums):
+        values = set(int(x) for x in nums)
+        if len(values) != 20 or min(values) < 1 or max(values) > 90:
+            raise ValueError("estrazione non valida per POST-6")
+        return [len(values.intersection(g)) for g in DECINA_GROUPS]
+
+    def ensure_start(self, history, postburst=None):
+        if self.start_from_key:
+            return False
+        if not history:
+            return False
+        self.start_from_key = str(history[-1].get("key") or "")
+        if not self.start_from_key:
+            return False
+        self.started_at = datetime.now(BOT_TZ).isoformat(timespec="seconds")
+        # Snapshot immutabile del riferimento gia' osservato PRIMA della v10.
+        vals=[]
+        if postburst is not None:
+            vals=[r for r in getattr(postburst, "live_records", [])
+                  if isinstance(r,dict) and r.get("horizon")==1
+                  and int(r.get("origin_count",0) or 0)>=6]
+        n=len(vals)
+        self.pre_reference={
+            "n":n,
+            "same5":sum(int(bool(r.get("same_5"))) for r in vals),
+            "same6":sum(int(bool(r.get("same_6"))) for r in vals),
+            "same_sum":sum(int(r.get("same_count",0) or 0) for r in vals),
+        }
+        return True
+
+    def load(self, obj):
+        if not isinstance(obj,dict) or int(obj.get("version",0) or 0) != POST6_VERSION:
+            return False
+        self.start_from_key = obj.get("start_from_key") if isinstance(obj.get("start_from_key"),str) else None
+        self.started_at = obj.get("started_at") if isinstance(obj.get("started_at"),str) else None
+        self.pre_reference = obj.get("pre_reference") if isinstance(obj.get("pre_reference"),dict) else None
+        self.skipped=max(0,int(obj.get("skipped",0) or 0))
+        self.last_result=obj.get("last_result") if isinstance(obj.get("last_result"),dict) else None
+        self.last_seen_key=obj.get("last_seen_key") if isinstance(obj.get("last_seen_key"),str) else None
+        raw=obj.get("pending",[])
+        if isinstance(raw,list):
+            self.pending=[dict(x) for x in raw[-10:] if isinstance(x,dict)
+                          and isinstance(x.get("origin_key"),str)
+                          and isinstance(x.get("group_index"),int) and 0<=x["group_index"]<9
+                          and isinstance(x.get("control_index"),int) and 0<=x["control_index"]<9
+                          and x.get("group_index") != x.get("control_index")
+                          and int(x.get("origin_count",0) or 0)>=6]
+        rec=obj.get("records",[])
+        if isinstance(rec,list):
+            self.records=[dict(r) for r in rec[-POST6_RECORD_MAX:] if isinstance(r,dict)
+                          and isinstance(r.get("origin_key"),str) and isinstance(r.get("key"),str)]
+        return True
+
+    def dump(self):
+        return {
+            "version":POST6_VERSION,
+            "start_from_key":self.start_from_key,
+            "started_at":self.started_at,
+            "pre_reference":self.pre_reference,
+            "pending":self.pending[-10:],
+            "records":self.records[-POST6_RECORD_MAX:],
+            "skipped":self.skipped,
+            "last_result":self.last_result,
+            "last_seen_key":self.last_seen_key,
+        }
+
+    def observe_live(self, day, draw_id, nums, open_new=True):
+        key=draw_key(day,draw_id)
+        if key == self.last_seen_key:
+            return None
+        counts=self._counts(nums)
+        closed=[]
+        # POST-6 dura ESATTAMENTE una H1.
+        old=list(self.pending)
+        self.pending=[]
+        for p in old:
+            if not sim_draw_is_consecutive(p["origin_key"],day,draw_id):
+                self.skipped += 1
+                self.last_result={"origin_key":p["origin_key"],"key":key,
+                                  "group_index":p["group_index"],"skipped":True}
+                continue
+            gi=p["group_index"]; ci=p["control_index"]
+            same=counts[gi]; control=counts[ci]
+            r={
+                "origin_key":p["origin_key"],"key":key,
+                "group_index":gi,"group":DECINA_LABELS[gi],
+                "origin_count":p["origin_count"],
+                "control_index":ci,"control_group":DECINA_LABELS[ci],
+                "same_count":same,"control_count":control,
+                "same_5":same>=5,"same_6":same>=6,
+                "control_5":control>=5,"control_6":control>=6,
+                "skipped":False,
+            }
+            self.records.append(r); self.last_result=r; closed.append(r)
+        if open_new and self.start_from_key:
+            for gi,v in enumerate(counts):
+                if v < 6:
+                    continue
+                choices=[j for j in range(9) if j != gi]
+                ci=choices[secrets.randbelow(len(choices))]
+                self.pending.append({
+                    "origin_key":key,"group_index":gi,"group":DECINA_LABELS[gi],
+                    "origin_count":v,"control_index":ci,"control_group":DECINA_LABELS[ci]
+                })
+        self.records=self.records[-POST6_RECORD_MAX:]
+        self.last_seen_key=key
+        return closed
+
+    def text(self):
+        n=len(self.records)
+        s5=sum(int(bool(r.get("same_5"))) for r in self.records)
+        s6=sum(int(bool(r.get("same_6"))) for r in self.records)
+        c5=sum(int(bool(r.get("control_5"))) for r in self.records)
+        c6=sum(int(bool(r.get("control_6"))) for r in self.records)
+        sm=sum(int(r.get("same_count",0) or 0) for r in self.records)
+        cm=sum(int(r.get("control_count",0) or 0) for r in self.records)
+        wins=sum(int(bool(r.get("same_5")) and not bool(r.get("control_5"))) for r in self.records)
+        losses=sum(int(bool(r.get("control_5")) and not bool(r.get("same_5"))) for r in self.records)
+        ties=n-wins-losses
+        lines=[
+            "🔥 POST-6 EXTREME SHADOW v1 — STESSA DECINA ALLA H1",
+            "Regola congelata: dopo un 6+ segue LA STESSA decina soltanto nella prossima estrazione.",
+            f"🧊 Inizio test v10: dopo {self.start_from_key or '-'}" +
+            (f" | {self.started_at}" if self.started_at else ""),
+            "Vecchi casi POST-BURST non vengono sommati al nuovo test.",
+        ]
+        pr=self.pre_reference or {}
+        pn=int(pr.get("n",0) or 0)
+        if pn:
+            lines.append(f"📚 RIFERIMENTO PRE-v10 congelato: stessa decina 5+ {pr.get('same5',0)}/{pn} "
+                         f"({safe_pct(pr.get('same5',0),pn):.2f}%) | 6+ {pr.get('same6',0)}/{pn} "
+                         f"({safe_pct(pr.get('same6',0),pn):.2f}%) | μ {pr.get('same_sum',0)/pn:.2f}/10")
+        lines += [
+            f"🧪 FORWARD v10+: {n} H1 valutate | pendenti {len(self.pending)} | salti {self.skipped}",
+            f"• STESSA DECINA 5+: {s5}/{n} ({safe_pct(s5,n):.2f}%) | teorico 3.981%",
+            f"• STESSA DECINA 6+: {s6}/{n} ({safe_pct(s6,n):.2f}%) | teorico 0.701%",
+            f"• Media stessa decina: {(sm/n if n else 0):.3f}/10 | teorico 2.222/10",
+            f"• CONTROLLO RANDOM 5+: {c5}/{n} ({safe_pct(c5,n):.2f}%) | 6+: {c6}/{n} ({safe_pct(c6,n):.2f}%) | μ {(cm/n if n else 0):.3f}/10",
+            f"• Appaiato 5+ POST-6 vs random: +{wins}/-{losses}/={ties}",
+        ]
+        if n:
+            dist=[0]*7
+            for r in self.records:
+                x=int(r.get("same_count",0) or 0); dist[min(6,max(0,x))]+=1
+            lines.append("• Distribuzione stessa H1: " + " | ".join(f"{i}={dist[i]}" for i in range(6)) + f" | 6+={dist[6]}")
+            by=[]
+            for gi,label in enumerate(DECINA_LABELS):
+                vals=[r for r in self.records if r.get("group_index")==gi]
+                if vals:
+                    by.append(f"{label} {sum(int(bool(r.get('same_5'))) for r in vals)}/{len(vals)}")
+            if by:
+                lines.append("📍 Per fascia 5+: " + " | ".join(by))
+        if self.pending:
+            lines.append("⏳ PENDENTI H1:")
+            for p in self.pending:
+                lines.append(f"• {p['origin_key']} {p['group']}={p['origin_count']}/10 → stessa decina H1 | random {p['control_group']}")
+        if self.last_result:
+            r=self.last_result
+            if r.get("skipped"):
+                lines.append(f"🧾 Ultimo: {r['origin_key']} → SALTO, H1 non consecutiva")
+            else:
+                lines.append(f"🧾 Ultimo: {r['origin_key']} {r['group']} {r['origin_count']}/10 → {r['key']}: "
+                             f"stessa {r['same_count']}/10 | random {r['control_count']}/10")
+        lines.append("⚠️ Shadow prospettico: non modifica POST-BURST, BURST v3, DUAL, ENGINE o altre previsioni.")
+        return "\n".join(lines)
+
+
 class DecinaBurstLab:
     """BURST v3: selettivo, FLOW REGIME, NO SIGNAL ed EXTREME-6 separato.
 
@@ -2946,6 +3136,7 @@ class EngineOnly:
         self.flow = DecinaFlowLab()
         self.burst = DecinaBurstLab()
         self.postburst = DecinaPostBurstLab()
+        self.post6 = Post6ExtremeShadow()  # v10: dopo 6+ segue stessa decina solo H1
         self.verifica = VerificationLab()  # read-only report, marker persistente isolato
         self.burstgate = BurstGateLab()    # audit derivato dai record BURST, nessun nuovo motore
 
@@ -5162,6 +5353,7 @@ class EngineOnly:
             self.flow.load(d.get("decina_flow_v1"))
             self.burst.load(d.get("decina_burst_v2") or d.get("decina_burst_v1"))
             self.postburst.load(d.get("decina_postburst_v1"))
+            self.post6.load(d.get("decina_post6_v1"))
             self.verifica.load(d.get("verification_v1"))
 
             # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
@@ -5248,6 +5440,7 @@ class EngineOnly:
             "decina_flow_v1": self.flow.dump(),
             "decina_burst_v2": self.burst.dump(),
             "decina_postburst_v1": self.postburst.dump(),
+            "decina_post6_v1": self.post6.dump(),
             "verification_v1": self.verifica.dump(),
         }
         atomic_write_json(STATE_FILE, data)
@@ -5712,6 +5905,7 @@ class EngineOnly:
             decina_result = self.decina.settle(day, e, clean)
             burst_result = self.burst.settle(day, e, clean)
             self.postburst.observe_live(day, e, clean, open_new=notify)
+            self.post6.observe_live(day, e, clean, open_new=notify)
             self._sosia_settle(day, e, clean)
             # Valuta TOP1/TOP2 PRIMA che _sosiap_settle cancelli il pending adattivo.
             sniper_result = self._sosiasniper_settle(day, e, clean)
@@ -6043,6 +6237,7 @@ class EngineOnly:
             "/burst — EVENT DETECTOR 5+/6+ H1: warmup 288, NO SIGNAL e EXTREME-6\n"
             "/flow — presenze per decina a ogni draw, transizioni e streak su 288\n"
             "/postburst — dopo 5/6+ nella stessa decina: H1/H2/H3 e passaggio ad altre fasce\n"
+            "/post6 — test v10: dopo 6+ segue la STESSA decina esclusivamente in H1\n"
             "/verifica — test nuovo periodo: STESSA DECINA, ENGINE H5, BURST gate\n"
             "/burstgate — audit v4: score/soglia, motivi NO SIGNAL e fasce di distanza\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
@@ -6100,6 +6295,9 @@ async def cmd_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_postburst(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].postburst.text())
 
+async def cmd_post6(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].post6.text())
+
 async def cmd_verifica(update: Update, context: ContextTypes.DEFAULT_TYPE):
     engine = context.application.bot_data["engine"]
     await reply(update, engine.verifica.text(engine))
@@ -6132,6 +6330,7 @@ async def setup_commands(app):
         BotCommand("burst", "BURST v3: EVENT DETECTOR 5+/6+ con NO SIGNAL"),
         BotCommand("flow", "FLOW: 9 decine draw-by-draw, transizioni e streak"),
         BotCommand("postburst", "POST-BURST: stessa/altra decina H1-H3"),
+        BotCommand("post6", "POST-6: dopo 6+ stessa decina solo H1"),
         BotCommand("verifica", "Test nuovo periodo: DECINA, ENGINE H5, BURST"),
         BotCommand("burstgate", "Audit gate BURST: score, soglia e NO SIGNAL"),
         BotCommand("sosiarandom", "Controllo casuale 20/90"),
@@ -6261,6 +6460,7 @@ async def startup(engine, app, retry_state=None):
     # nessuna previsione retrodatata viene inventata.
     engine.flow.bootstrap(engine.engine_history)
     engine.postburst.bootstrap(engine.engine_history)
+    engine.post6.ensure_start(engine.engine_history, engine.postburst)
     engine.burst.bootstrap(engine.engine_history, flow=engine.flow)
     if rows and engine.engine_history:
         latest=max(rows,key=lambda r:(r[0],r[1]))
@@ -6284,6 +6484,7 @@ async def startup(engine, app, retry_state=None):
         "🧠 SOSIA ADATTIVO: 20 numeri /sosia; SNIPER /sosiasniper; PATTERN LAB /sosiapattern; casuale /sosiarandom\n"
         "🌊 DECINA FLOW LAB v2: warmup 288 + FLOW REGIME /flow\n"
         "🌋 POST-BURST LAB v1: eventi 5/6+ -> H1/H2/H3 /postburst\n"
+        "🔥 POST-6 EXTREME SHADOW v1: dopo 6+ stessa decina solo H1 /post6\n"
         "🔟 BURST EVENT DETECTOR v3: FLOW REGIME + SIGNAL/NO SIGNAL + EXTREME-6 /burst\n"
         "🔬 BURST GATE LAB v4: audit score/soglia e NO SIGNAL /burstgate\n"
         "✅ state persistente + autorotation\n\n"
@@ -6292,7 +6493,7 @@ async def startup(engine, app, retry_state=None):
         f"H5 LIVE gia' disponibili: {len(engine.engine_h5_records_live)}\n"
         f"PLAY storico ricostruito: {len(engine.engine_play_records_live)} record | "
         f"attivi={sum(1 for x in engine.engine_play_sessions if x.get('origin_mode')=='live')}\n\n"
-        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /postburst /verifica /burstgate /sosiarandom /menu"
+        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /postburst /post6 /verifica /burstgate /sosiarandom /menu"
     )
     await notify_pending(engine,app)
     await notify_ambo_active(engine,app)
@@ -6655,7 +6856,28 @@ async def run_self_test():
     assert len(from_six.live_records)==1 and from_six.live_records[0]['same_count']==5
     assert from_six.live_records[0]['origin_count']==6
     assert 'POST-BURST' in round_post.text()
-    assert "/burst" in e.menu_text() and "/flow" in e.menu_text() and "/postburst" in e.menu_text()
+    assert "/burst" in e.menu_text() and "/flow" in e.menu_text() and "/postburst" in e.menu_text() and "/post6" in e.menu_text()
+
+    # POST-6 v10: parte da zero, snapshot PRE-v10, segue solo H1 e random appaiato.
+    p6=Post6ExtremeShadow()
+    fake_hist=[{'key':'2099-06-01#288','nums':list(range(1,21))}]
+    pb=DecinaPostBurstLab()
+    pb.live_records=[{'origin_key':'x','key':'y','origin_count':6,'horizon':1,'same_5':True,'same_6':False,'same_count':5},
+                     {'origin_key':'x2','key':'y2','origin_count':6,'horizon':1,'same_5':False,'same_6':False,'same_count':2}]
+    assert p6.ensure_start(fake_hist,pb) and p6.pre_reference['n']==2 and p6.pre_reference['same5']==1
+    assert len(p6.records)==0 and not p6.pending
+    p6.observe_live('2099-06-02',1,six_nums,open_new=True)
+    assert len(p6.pending)==1 and p6.pending[0]['group_index']==4 and p6.pending[0]['origin_count']==6
+    # Controllo congelato diverso dalla decina evento.
+    assert p6.pending[0]['control_index'] != 4
+    p6_rt=Post6ExtremeShadow(); assert p6_rt.load(p6.dump()) and len(p6_rt.pending)==1
+    p6_rt.observe_live('2099-06-02',2,h1,open_new=False)
+    assert len(p6_rt.records)==1 and p6_rt.records[0]['same_count']==5 and p6_rt.records[0]['same_5']
+    assert not p6_rt.pending and 'POST-6 EXTREME' in p6_rt.text()
+    p6_skip=Post6ExtremeShadow(); p6_skip.ensure_start(fake_hist,pb)
+    p6_skip.observe_live('2099-06-02',1,six_nums,open_new=True)
+    p6_skip.observe_live('2099-06-02',3,nums,open_new=False)
+    assert p6_skip.skipped==1 and not p6_skip.records and not p6_skip.pending
 
     # VERIFICA: nuovo confine, nessun HIT retroattivo, pending ante upgrade escluso.
     lab = VerificationLab()
@@ -6694,7 +6916,7 @@ async def run_self_test():
     assert z.verifica.dump()['start_from_key']=='2099-07-01#100'
     print('SELF-TEST VERIFICA v1 OK: confine persistente, vecchi pending esclusi, confronto same-H1, H5, BURST SIGNAL/NO SIGNAL.')
 
-    print("SELF-TEST OK: ENGINE/SOSIA/DUAL invariati + FLOW REGIME 288 + BURST v3 invariato + GATE LAB v4 + POST-BURST")
+    print("SELF-TEST OK: ENGINE/SOSIA/DUAL invariati + FLOW REGIME 288 + BURST v3 invariato + GATE LAB v4 + POST-BURST + POST-6 v10")
 
 async def main():
     if "--self-test" in sys.argv:
@@ -6724,6 +6946,7 @@ async def main():
     app.add_handler(CommandHandler("burst",cmd_burst))
     app.add_handler(CommandHandler("flow",cmd_flow))
     app.add_handler(CommandHandler("postburst",cmd_postburst))
+    app.add_handler(CommandHandler("post6",cmd_post6))
     app.add_handler(CommandHandler("verifica",cmd_verifica))
     app.add_handler(CommandHandler("burstgate",cmd_burstgate))
     app.add_handler(CommandHandler("sosiarandom",cmd_sosiarandom))
