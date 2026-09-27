@@ -1,5 +1,5 @@
 # ============================================================
-# 🧠 10eLOTTO ENGINE ONLY — v11 VERIFY-ALL + CONVERGENCE LAB
+# 🧠 10eLOTTO ENGINE ONLY — v12 VERIFY-ALL+ + CONVERGENCE + RUNNER WATCHDOG
 # ============================================================
 #
 # UNICO MOTORE ATTIVO:
@@ -6546,7 +6546,8 @@ class EngineOnly:
                  and not r.get("skipped") and type(r.get("count")) is int]
         epass = [r for r in exact if r.get("gate_reason") == "PASS"]
         lines += ["", "🌋 BURST / BURSTGATE",
-                  f"SIGNAL 5+ {bt.get('pred5',0)}/{sig} ({safe_pct(bt.get('pred5',0),sig):.2f}%) | 6+ {bt.get('pred6',0)}/{sig} ({safe_pct(bt.get('pred6',0),sig):.2f}%) | NO SIGNAL {no}",
+                  f"SIGNAL 5+ {bt.get('pred5',0)}/{sig} ({safe_pct(bt.get('pred5',0),sig):.2f}%) | random5 {bt.get('random5',0)}/{sig} ({safe_pct(bt.get('random5',0),sig):.2f}%)",
+                  f"SIGNAL 6+ {bt.get('pred6',0)}/{sig} ({safe_pct(bt.get('pred6',0),sig):.2f}%) | random6 {bt.get('random6',0)}/{sig} ({safe_pct(bt.get('random6',0),sig):.2f}%) | NO SIGNAL {no}",
                   f"GATE v9+ n={len(exact)} | PASS 5+ {sum(int(r.get('count',0)>=5) for r in epass)}/{len(epass)} ({safe_pct(sum(int(r.get('count',0)>=5) for r in epass),len(epass)):.2f}%)"]
 
         # FLOW
@@ -6566,15 +6567,24 @@ class EngineOnly:
         p6 = self.post6.records
         p6n = len(p6); p65 = sum(int(bool(r.get("same_5"))) for r in p6); p66 = sum(int(bool(r.get("same_6"))) for r in p6)
         p6c = sum(int(bool(r.get("control_5"))) for r in p6)
+        p6c6 = sum(int(bool(r.get("control_6"))) for r in p6)
         lines += ["", "🔥 POST-6 v10",
-                  f"forward {p6n} | stessa 5+ {p65}/{p6n} ({safe_pct(p65,p6n):.2f}%) vs 3.981% | 6+ {p66}/{p6n} ({safe_pct(p66,p6n):.2f}%) vs 0.701% | random5 {p6c}/{p6n} ({safe_pct(p6c,p6n):.2f}%) | pending {len(self.post6.pending)}"]
+                  f"forward {p6n} | avanzamento {min(p6n,100)}/100 | {min(p6n,200)}/200 | {min(p6n,300)}/300 | pending {len(self.post6.pending)}",
+                  f"stessa 5+ {p65}/{p6n} ({safe_pct(p65,p6n):.2f}%) vs 3.981% | random5 {p6c}/{p6n} ({safe_pct(p6c,p6n):.2f}%)",
+                  f"stessa 6+ {p66}/{p6n} ({safe_pct(p66,p6n):.2f}%) vs 0.701% | random6 {p6c6}/{p6n} ({safe_pct(p6c6,p6n):.2f}%)"]
 
         # VERIFICA marker + CONVERGENZA
         cv = self.convergence.records; cn = len(cv); c5 = sum(int(bool(r.get("same_5"))) for r in cv)
         high = [r for r in cv if int(r.get("support",0) or 0) >= 2]
+        c6 = sum(int(bool(r.get("same_6"))) for r in cv)
+        cc5 = sum(int(bool(r.get("control_5"))) for r in cv)
+        cc6 = sum(int(bool(r.get("control_6"))) for r in cv)
+        high5 = sum(int(bool(r.get('same_5'))) for r in high)
         lines += ["", "🧪 VERIFICA / CONVERGENZA",
                   f"marker /verifica: dopo {self.verifica.start_from_key or '-'} | marker convergenza: dopo {self.convergence.start_from_key or '-'}",
-                  f"CONVERGENZA POST-6 n={cn} | 5+ {c5}/{cn} ({safe_pct(c5,cn):.2f}%) | support>=2: {sum(int(bool(r.get('same_5'))) for r in high)}/{len(high)} ({safe_pct(sum(int(bool(r.get('same_5'))) for r in high),len(high)):.2f}%) | pending {len(self.convergence.pending)}"]
+                  f"CONVERGENZA POST-6 n={cn} | avanzamento {min(cn,100)}/100 | {min(cn,200)}/200 | {min(cn,300)}/300 | pending {len(self.convergence.pending)}",
+                  f"5+ {c5}/{cn} ({safe_pct(c5,cn):.2f}%) | random5 {cc5}/{cn} ({safe_pct(cc5,cn):.2f}%) | 6+ {c6}/{cn} ({safe_pct(c6,cn):.2f}%) | random6 {cc6}/{cn} ({safe_pct(cc6,cn):.2f}%)",
+                  f"support>=2: {high5}/{len(high)} ({safe_pct(high5,len(high)):.2f}%)"]
 
         lines += ["", "⚠️ Report audit/shadow. Per dettagli: /verifica /burstgate /post6 /convergenza oppure il comando singolo del modulo."]
         return "\n".join(lines)
@@ -6600,7 +6610,7 @@ class EngineOnly:
             "/post6 — test v10: dopo 6+ segue la STESSA decina esclusivamente in H1\n"
             "/convergenza — POST-6 + ENGINE/SOSIA/BURST/DECINA sulla stessa fascia\n"
             "/verifica — test nuovo periodo: STESSA DECINA, ENGINE H5, BURST gate\n"
-            "/verificatutto — report compatto di TUTTI i moduli in un solo comando\n"
+            "/verificatutto — report unico v12: tutti i moduli + random6 + avanzamento test\n"
             "/burstgate — audit v4: score/soglia, motivi NO SIGNAL e fasce di distanza\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
@@ -6857,7 +6867,7 @@ async def startup(engine, app, retry_state=None):
         "🌋 POST-BURST LAB v1: eventi 5/6+ -> H1/H2/H3 /postburst\n"
         "🔥 POST-6 EXTREME SHADOW v1: dopo 6+ stessa decina solo H1 /post6\n"
         "🧲 CONVERGENCE LAB v1: POST-6 + ENGINE/SOSIA/BURST/DECINA /convergenza\n"
-        "🧾 VERIFICA TUTTO v11: report compatto di tutti i moduli /verificatutto\n"
+        "🧾 VERIFICA TUTTO v12: report compatto + controlli random/progress /verificatutto\n"
         "🔟 BURST EVENT DETECTOR v3: FLOW REGIME + SIGNAL/NO SIGNAL + EXTREME-6 /burst\n"
         "🔬 BURST GATE LAB v4: audit score/soglia e NO SIGNAL /burstgate\n"
         "✅ state persistente + autorotation\n\n"
@@ -7325,10 +7335,11 @@ async def run_self_test():
                   'FLOW','POST-BURST','POST-6 v10','VERIFICA / CONVERGENZA'):
         assert token in all_txt
     assert len(all_txt) < 4096, len(all_txt)
+    assert 'random6' in all_txt and 'avanzamento' in all_txt
     assert '/verificatutto' in cv_engine.menu_text() and '/convergenza' in cv_engine.menu_text()
-    print(f'SELF-TEST v11 OK: CONVERGENCE forward/roundtrip + VERIFICA TUTTO compatto ({len(all_txt)} chars).')
+    print(f'SELF-TEST v12 OK: CONVERGENCE forward/roundtrip + VERIFICA TUTTO+ compatto ({len(all_txt)} chars).')
 
-    print("SELF-TEST OK: v11 conserva ENGINE/SOSIA/DUAL/FLOW/BURST/POST-BURST/POST-6 + CONVERGENCE + VERIFY-ALL")
+    print("SELF-TEST OK: v12 conserva ENGINE/SOSIA/DUAL/FLOW/BURST/POST-BURST/POST-6 + CONVERGENCE + VERIFY-ALL+")
 
 async def main():
     if "--self-test" in sys.argv:
