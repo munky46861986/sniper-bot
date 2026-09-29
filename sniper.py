@@ -1,5 +1,5 @@
 # ============================================================
-# 🧠 10eLOTTO ENGINE ONLY — v13 METODO CONVERGENZA HC + VERIFY-ALL + RUNNER WATCHDOG
+# 🧠 10eLOTTO ENGINE ONLY — v15 TRIPLETTE CO-OCC + FORCED ONE + VERIFY-ALL
 # ============================================================
 #
 # UNICO MOTORE ATTIVO:
@@ -3826,6 +3826,305 @@ class ForcedOneMethod:
         return "\n".join(lines)
 
 
+# ============================================================
+# TRIPLETTE CO-OCCORRENZA v1 — SHADOW PROSPETTICO dalla v15.
+# Obiettivo: 4 ticket x 9 numeri per la H1 successiva.
+# Ogni ticket contiene 3 triplette, su 3 decine diverse.
+# Ogni tripletta ha ESATTAMENTE: 2 numeri consecutivi + 1 staccato.
+# Ranking delle triplette calcolato SOLO sugli ultimi 320 draw gia' conclusi:
+#   score = somma co-uscite delle 3 coppie + 2 * co-uscite di tutti e 3.
+# Costruzione: massima diversificazione, 36 numeri distinti quando possibile,
+# massimo 2 triplette per la stessa decina nell'intero portafoglio.
+# Controllo: 4 ticket casuali con IDENTICA struttura e 36 numeri distinti.
+# Un solo H1; nessun recupero; nessun backfill dei draw pre-v15.
+# ============================================================
+TRIPLETTE_VERSION = 1
+TRIPLETTE_WINDOW = max(80, int(os.getenv("TRIPLETTE_WINDOW", "320")))
+TRIPLETTE_TICKETS = 4
+TRIPLETTE_TRIPLETS_PER_TICKET = 3
+TRIPLETTE_RECORD_MAX = max(300, int(os.getenv("TRIPLETTE_RECORD_MAX", "5000")))
+TRIPLETTE_NOTIFY = os.getenv("TRIPLETTE_NOTIFY", "1").strip().lower() not in {"0","false","no","off"}
+TRIPLETTE_NOTIFY_RESULT = os.getenv("TRIPLETTE_NOTIFY_RESULT", "1").strip().lower() not in {"0","false","no","off"}
+
+
+class TripletteCooccLab:
+    def __init__(self):
+        self.start_from_key = None
+        self.started_at = None
+        self.pending = []
+        self.records = []
+        self.skipped = 0
+        self.missing_history = 0
+        self.last_result = None
+        self._candidate_cache = None
+
+    def ensure_start(self, engine):
+        if self.start_from_key:
+            return False
+        if not engine.engine_history:
+            return False
+        key = str(engine.engine_history[-1].get("key") or "")
+        if _verifica_order(key) is None:
+            return False
+        self.start_from_key = key
+        self.started_at = datetime.now(BOT_TZ).isoformat(timespec="seconds")
+        return True
+
+    def load(self, obj):
+        if not isinstance(obj, dict) or int(obj.get("version",0) or 0) != TRIPLETTE_VERSION:
+            return False
+        key = obj.get("start_from_key")
+        if _verifica_order(key) is None:
+            return False
+        self.start_from_key = key
+        self.started_at = obj.get("started_at") if isinstance(obj.get("started_at"),str) else None
+        self.skipped = max(0, int(obj.get("skipped",0) or 0))
+        self.missing_history = max(0, int(obj.get("missing_history",0) or 0))
+        self.last_result = obj.get("last_result") if isinstance(obj.get("last_result"),dict) else None
+        raw = obj.get("pending",[])
+        if isinstance(raw,list):
+            self.pending = [dict(x) for x in raw[-3:] if self._valid_pending(x)]
+        rec = obj.get("records",[])
+        if isinstance(rec,list):
+            self.records = [dict(x) for x in rec[-TRIPLETTE_RECORD_MAX:] if self._valid_record(x)]
+        return True
+
+    def dump(self):
+        return {
+            "version": TRIPLETTE_VERSION,
+            "start_from_key": self.start_from_key,
+            "started_at": self.started_at,
+            "pending": self.pending[-3:],
+            "records": self.records[-TRIPLETTE_RECORD_MAX:],
+            "skipped": self.skipped,
+            "missing_history": self.missing_history,
+            "last_result": self.last_result,
+        }
+
+    @staticmethod
+    def _valid_portfolio(v):
+        if not isinstance(v,list) or len(v) != TRIPLETTE_TICKETS:
+            return False
+        flat=[]
+        for ticket in v:
+            if not isinstance(ticket,list) or len(ticket) != 9:
+                return False
+            try: vals=[int(x) for x in ticket]
+            except Exception: return False
+            if len(set(vals)) != 9 or any(x<1 or x>90 for x in vals):
+                return False
+            flat.extend(vals)
+        return len(flat)==36 and len(set(flat))==36
+
+    @classmethod
+    def _valid_pending(cls, x):
+        return isinstance(x,dict) and isinstance(x.get("origin_key"),str) and cls._valid_portfolio(x.get("tickets")) and cls._valid_portfolio(x.get("control_tickets"))
+
+    @classmethod
+    def _valid_record(cls, x):
+        return cls._valid_pending(x) and isinstance(x.get("key"),str) and isinstance(x.get("ticket_hits"),list)
+
+    def _is_after_marker(self,key):
+        a=_verifica_order(key); b=_verifica_order(self.start_from_key)
+        return a is not None and b is not None and a>b
+
+    @staticmethod
+    def _all_candidates():
+        out=[]
+        for gi, group in enumerate(DECINA_GROUPS):
+            vals=sorted(int(x) for x in group)
+            # La fascia 90-09 mantiene 90 nella decina ma la coppia consecutiva
+            # e' numericamente reale: 01-02 ... 08-09. 90-01 NON e' trattata come consecutiva.
+            pairs=[(a,b) for a,b in zip(vals, vals[1:]) if b-a==1]
+            for a,b in pairs:
+                for c in vals:
+                    if c in (a,b):
+                        continue
+                    # terzo numero realmente staccato dalla coppia
+                    if abs(c-a)<=1 or abs(c-b)<=1:
+                        continue
+                    tri=tuple(sorted((a,b,c)))
+                    out.append((gi,tri,(a,b)))
+        # dedup deterministico
+        seen=set(); clean=[]
+        for row in out:
+            k=(row[0],row[1])
+            if k not in seen:
+                seen.add(k); clean.append(row)
+        return tuple(clean)
+
+    @classmethod
+    def _score_candidates(cls, history):
+        rows=list(history)[-TRIPLETTE_WINDOW:]
+        pair=Counter(); triple=Counter()
+        for row in rows:
+            s=set(map(int,row.get("nums",[]) or []))
+            if len(s)!=20:
+                continue
+            for gi, group in enumerate(DECINA_GROUPS):
+                hit=sorted(s.intersection(group))
+                for a,b in combinations(hit,2):
+                    pair[(gi,a,b)] += 1
+                for a,b,c in combinations(hit,3):
+                    triple[(gi,a,b,c)] += 1
+        scored=[]
+        for gi,tri,conspair in cls._all_candidates():
+            a,b,c=tri
+            pair_sum = pair[(gi,a,b)] + pair[(gi,a,c)] + pair[(gi,b,c)]
+            tri_n = triple[(gi,a,b,c)]
+            cp=tuple(sorted(conspair))
+            cons_n=pair[(gi,cp[0],cp[1])]
+            score=float(pair_sum + 2.0*tri_n)
+            scored.append({"group_index":gi,"triple":list(tri),"score":score,
+                           "pair_sum":int(pair_sum),"triple_n":int(tri_n),"cons_pair_n":int(cons_n)})
+        scored.sort(key=lambda r:(r["score"],r["triple_n"],r["cons_pair_n"],-r["group_index"],tuple(-x for x in r["triple"])), reverse=True)
+        return scored
+
+    @staticmethod
+    def _build_from_ranked(ranked):
+        tickets=[[] for _ in range(TRIPLETTE_TICKETS)]
+        ticket_groups=[set() for _ in range(TRIPLETTE_TICKETS)]
+        used=set(); group_uses=Counter(); chosen=[]
+        # 3 giri x 4 ticket. Prima prova max2 triplette/decina, poi max3 solo come fallback.
+        for round_i in range(TRIPLETTE_TRIPLETS_PER_TICKET):
+            for ti in range(TRIPLETTE_TICKETS):
+                pick=None
+                for max_group in (2,3):
+                    for r in ranked:
+                        gi=int(r["group_index"]); tri=tuple(map(int,r["triple"]))
+                        if gi in ticket_groups[ti] or group_uses[gi] >= max_group:
+                            continue
+                        if any(n in used for n in tri):
+                            continue
+                        pick=r; break
+                    if pick is not None:
+                        break
+                if pick is None:
+                    return None
+                gi=int(pick["group_index"]); tri=tuple(map(int,pick["triple"]))
+                tickets[ti].extend(tri); ticket_groups[ti].add(gi); group_uses[gi]+=1; used.update(tri)
+                chosen.append(dict(pick, ticket_index=ti))
+        tickets=[sorted(x) for x in tickets]
+        if len(used)!=36 or any(len(x)!=9 for x in tickets):
+            return None
+        return {"tickets":tickets,"chosen":chosen,"coverage":len(used)}
+
+    @classmethod
+    def _random_portfolio(cls):
+        base=[{"group_index":gi,"triple":list(tri)} for gi,tri,_ in cls._all_candidates()]
+        for _ in range(60):
+            ranked=list(base); SOSIA_RANDOM.shuffle(ranked)
+            built=cls._build_from_ranked(ranked)
+            if built:
+                return built["tickets"]
+        return None
+
+    def arm(self,current_key,engine):
+        if not self.start_from_key:
+            self.ensure_start(engine)
+        if not self.start_from_key or not self._is_after_marker(current_key):
+            return None
+        if any(str(x.get("origin_key"))==str(current_key) for x in self.pending):
+            return None
+        if any(str(x.get("origin_key"))==str(current_key) for x in self.records[-5:]):
+            return None
+        hist=list(engine.engine_history)
+        if len(hist) < TRIPLETTE_WINDOW:
+            self.missing_history += 1
+            return None
+        ranked=self._score_candidates(hist)
+        built=self._build_from_ranked(ranked)
+        controls=self._random_portfolio()
+        if not built or not controls:
+            self.missing_history += 1
+            return None
+        row={
+            "origin_key":str(current_key),"created_at":now_txt(),"window":TRIPLETTE_WINDOW,
+            "tickets":built["tickets"],"coverage":built["coverage"],"control_tickets":controls,
+            "chosen":[{"ticket_index":int(x["ticket_index"]),"group_index":int(x["group_index"]),
+                       "group":DECINA_LABELS[int(x["group_index"])],"triple":list(map(int,x["triple"])),
+                       "score":float(x["score"]),"pair_sum":int(x["pair_sum"]),"triple_n":int(x["triple_n"])}
+                      for x in built["chosen"]],
+        }
+        self.pending.append(row); self.pending=self.pending[-3:]
+        return row
+
+    def settle(self,day,draw_id,nums):
+        if not self.pending:
+            return []
+        key=draw_key(day,draw_id); actual=set(map(int,nums)); old=list(self.pending); self.pending=[]; closed=[]
+        for p in old:
+            if not sim_draw_is_consecutive(p["origin_key"],day,draw_id):
+                self.skipped += 1
+                self.last_result={"origin_key":p["origin_key"],"key":key,"skipped":True}
+                continue
+            th=[len(actual.intersection(t)) for t in p["tickets"]]
+            ch=[len(actual.intersection(t)) for t in p["control_tickets"]]
+            r=dict(p); r.update({"key":key,"ticket_hits":th,"control_ticket_hits":ch,
+                "any5":any(v>=5 for v in th),"any6":any(v>=6 for v in th),"best":max(th),
+                "ticket5_count":sum(v>=5 for v in th),"ticket6_count":sum(v>=6 for v in th),
+                "control_any5":any(v>=5 for v in ch),"control_any6":any(v>=6 for v in ch),"control_best":max(ch),
+                "control_ticket5_count":sum(v>=5 for v in ch),"control_ticket6_count":sum(v>=6 for v in ch),
+                "skipped":False})
+            self.records.append(r); self.last_result=r; closed.append(r)
+        self.records=self.records[-TRIPLETTE_RECORD_MAX:]
+        return closed
+
+    @staticmethod
+    def _stats(rows):
+        n=len(rows); h5=sum(bool(r.get("any5")) for r in rows); h6=sum(bool(r.get("any6")) for r in rows)
+        c5=sum(bool(r.get("control_any5")) for r in rows); c6=sum(bool(r.get("control_any6")) for r in rows)
+        w=sum(bool(r.get("any5")) and not bool(r.get("control_any5")) for r in rows)
+        l=sum(bool(r.get("control_any5")) and not bool(r.get("any5")) for r in rows)
+        return n,h5,c5,h6,c6,w,l,n-w-l
+
+    @staticmethod
+    def _fmt_ticket(t):
+        return " ".join(f"{int(x):02d}" for x in sorted(t))
+
+    def signal_text(self,row):
+        if not row: return None
+        lines=["🎟 TRIPLETTE CO-OCC v1 — 4 GIOCATE H1 SHADOW",f"Origine: {row['origin_key']} | finestra {row['window']} draw",
+               "Struttura: 3 decine × (2 consecutivi + 1 staccato), 36 numeri distinti."]
+        for i,t in enumerate(row["tickets"],1): lines.append(f"G{i}: {self._fmt_ticket(t)}")
+        lines += ["", "Valide SOLO per la prossima H1. Nessun recupero.", "Controllo casuale equivalente congelato ma non mostrato prima dell'esito."]
+        return "\n".join(lines)
+
+    def result_text(self,row):
+        if not row or row.get("skipped"): return None
+        lines=["🧾 TRIPLETTE CO-OCC v1 — ESITO H1",f"{row.get('origin_key')} → {row.get('key')}"]
+        for i,(t,h) in enumerate(zip(row["tickets"],row["ticket_hits"]),1):
+            flag="✅ 5+" if h>=5 else "❌"
+            lines.append(f"G{i}: {h}/9 {flag}")
+        lines.append(f"PORTAFOGLIO: {'✅ almeno un 5+' if row.get('any5') else '❌ nessun 5+'} | best {row.get('best')}/9")
+        lines.append(f"Random equivalente: {'✅ 5+' if row.get('control_any5') else '❌'} | best {row.get('control_best')}/9")
+        return "\n".join(lines)
+
+    def text(self):
+        n,h5,c5,h6,c6,w,l,t=self._stats(self.records)
+        lines=["🎟 TRIPLETTE CO-OCCORRENZA v1 — 4×9 H1 SHADOW",
+               "4 giocate; ciascuna = 3 decine × (2 consecutivi + 1 staccato).",
+               f"Score triplette: co-uscite coppie + 2×co-uscite triple su ultimi {TRIPLETTE_WINDOW} draw.",
+               "Massima diversificazione: 36 numeri distinti; controllo casuale con stessa struttura.",
+               f"🧊 Inizio prospettico: dopo {self.start_from_key or '-'}" + (f" | {self.started_at}" if self.started_at else ""),
+               f"Valutati {n} | pendenti {len(self.pending)} | salti {self.skipped} | history insufficiente {self.missing_history}",
+               f"🎯 almeno una G 5+: {h5}/{n} ({safe_pct(h5,n):.2f}%) | random {c5}/{n} ({safe_pct(c5,n):.2f}%)",
+               f"🔥 almeno una G 6+: {h6}/{n} ({safe_pct(h6,n):.2f}%) | random {c6}/{n} ({safe_pct(c6,n):.2f}%)",
+               f"Appaiato 5+ vs random: +{w}/-{l}/={t} | progress {min(n,100)}/100 {min(n,200)}/200 {min(n,300)}/300"]
+        for k in (50,100,200,300):
+            rows=self.records[-k:] if len(self.records)>=k else self.records
+            if rows:
+                rn,rh,rc,*_=self._stats(rows); tag="COMPLETA" if len(self.records)>=k else "PARZIALE"
+                lines.append(f"• ultimi {k} ({tag}, n={rn}): 5+ {rh}/{rn} ({safe_pct(rh,rn):.2f}%) | random {rc}/{rn} ({safe_pct(rc,rn):.2f}%)")
+        if self.pending:
+            p=self.pending[-1]; lines += ["",f"⏳ PENDENTE da {p['origin_key']}:"]
+            for i,ticket in enumerate(p["tickets"],1): lines.append(f"G{i}: {self._fmt_ticket(ticket)}")
+        if self.last_result and not self.last_result.get("skipped"):
+            r=self.last_result; lines += ["",f"🧾 Ultimo {r.get('key')}: best {r.get('best')}/9 | {'5+ ✅' if r.get('any5') else '5+ ❌'} | random best {r.get('control_best')}/9"]
+        lines.append("⚠️ Shadow prospettico: non modifica ENGINE/SOSIA/BURST/FORCED ONE e non effettua puntate automatiche.")
+        return "\n".join(lines)
+
+
 class EngineOnly:
     def __init__(self, load=True):
         self.processed = []
@@ -3930,6 +4229,7 @@ class EngineOnly:
         self.convergence = ConvergenceLab()  # v11: audit prospettico delle convergenze POST-6
         self.hc_method = HCConvergenceMethod()  # v13: ENGINE HC + SOSIA rank1, BURST solo promozione SUPER
         self.forced_one = ForcedOneMethod()  # v14: un numero H1 sempre, classi A+/A/B/C/D
+        self.triplette = TripletteCooccLab()  # v15: 4x9, triplette co-occorrenza, H1 shadow
 
         self.state_load_info = {
             "loaded": False,
@@ -3949,6 +4249,7 @@ class EngineOnly:
             self.verifica.ensure_start(self)  # solo se state/storico esistente; nessun backfill
             self.hc_method.ensure_start(self)  # v13: marker al draw corrente, nessun backfill
             self.forced_one.ensure_start(self)  # v14: marker nuovo al draw corrente, nessun backfill
+            self.triplette.ensure_start(self)  # v15: marker nuovo, nessun backfill
             # Upgrade non distruttivo: se il vecchio state ha gia' una previsione
             # SOSIA adattiva congelata, ricava subito TOP1/TOP2 senza cambiarla.
             self._sosiasniper_migrate_pending()
@@ -6151,6 +6452,7 @@ class EngineOnly:
             self.convergence.load(d.get("convergence_v1"))
             self.hc_method.load(d.get("hc_convergence_v1"))
             self.forced_one.load(d.get("forced_one_v1"))
+            self.triplette.load(d.get("triplette_coocc_v1"))
 
             # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
             if self.engine_pending and self.engine_pending.get("accepted"):
@@ -6241,6 +6543,7 @@ class EngineOnly:
             "convergence_v1": self.convergence.dump(),
             "hc_convergence_v1": self.hc_method.dump(),
             "forced_one_v1": self.forced_one.dump(),
+            "triplette_coocc_v1": self.triplette.dump(),
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -6701,6 +7004,7 @@ class EngineOnly:
             self.convergence.ensure_start(self)
             self.hc_method.ensure_start(self)
             self.forced_one.ensure_start(self)
+            self.triplette.ensure_start(self)
             # Il campione era stato predisposto ALLA estrazione precedente:
             # nessun dato del draw attuale entra nella simulazione valutata.
             dual_result = self.dual.settle(day, e, clean)
@@ -6711,6 +7015,12 @@ class EngineOnly:
             self.convergence.settle(day, e, clean)
             hc_closed = self.hc_method.settle(day, e, clean)
             forced_closed = self.forced_one.settle(day, e, clean)
+            triplette_closed = self.triplette.settle(day, e, clean)
+            if TRIPLETTE_NOTIFY_RESULT and notify:
+                for _tr in triplette_closed:
+                    _tm = self.triplette.result_text(_tr)
+                    if _tm:
+                        await self.tg(app, _tm)
             if FORCED_ONE_NOTIFY_RESULT and notify:
                 for _fr in forced_closed:
                     _msg = self.forced_one.result_text(_fr)
@@ -6773,6 +7083,11 @@ class EngineOnly:
                     _fmsg = self.forced_one.signal_text(forced_row)
                     if _fmsg:
                         await self.tg(app, _fmsg)
+                triplette_row = self.triplette.arm(current_key, self)
+                if TRIPLETTE_NOTIFY and triplette_row:
+                    _tmsg = self.triplette.signal_text(triplette_row)
+                    if _tmsg:
+                        await self.tg(app, _tmsg)
             if BURST_NOTIFY and notify and (burst_result or self.burst.pending):
                 await self.tg(app, self.burst.text())
             if DECINA_NOTIFY and notify and (decina_result or self.decina.pending):
@@ -7043,7 +7358,7 @@ class EngineOnly:
     def verify_all_text(self):
         """Report compatto di TUTTI i moduli: un solo comando, nessun reset/mutazione."""
         lines = [
-            "🧾 VERIFICA TUTTO v14 — SNAPSHOT COMPLETO",
+            "🧾 VERIFICA TUTTO v15 — SNAPSHOT COMPLETO",
             "Un solo report dei moduli; legge lo state corrente e NON cambia previsioni, soglie o contatori.",
         ]
 
@@ -7180,7 +7495,15 @@ class EngineOnly:
                   "classi " + " ".join(f"{k}:{cls_counts[k]}" for k in ("A+","A","B","C","D")) +
                   (f" | PENDING {fp.get('class')} #{fp.get('pick')}" if fp else " | pending 0")]
 
-        lines += ["", "⚠️ Report audit/shadow. Per dettagli: /forcedone /metodohc /verifica /burstgate /post6 /convergenza oppure il comando singolo del modulo."]
+        # TRIPLETTE CO-OCC v1
+        tr = self.triplette.records
+        tn,t5,tc5,t6,tc6,*_ = self.triplette._stats(tr)
+        tp = self.triplette.pending[-1] if self.triplette.pending else None
+        lines += ["", "🎟 TRIPLETTE CO-OCC v1",
+                  f"4x9 H1: 5+ {t5}/{tn} ({safe_pct(t5,tn):.2f}%) | random {tc5}/{tn} ({safe_pct(tc5,tn):.2f}%) | 6+ {t6}/{tn} vs random {tc6}/{tn}",
+                  f"progress {min(tn,100)}/100 {min(tn,200)}/200 {min(tn,300)}/300" + (f" | PENDING 4 giocate da {tp.get('origin_key')}" if tp else " | pending 0")]
+
+        lines += ["", "⚠️ Report audit/shadow. Per dettagli: /triplette /forcedone /metodohc /verifica /burstgate /post6 /convergenza oppure il comando singolo del modulo."]
         return "\n".join(lines)
 
     def menu_text(self):
@@ -7205,8 +7528,9 @@ class EngineOnly:
             "/convergenza — POST-6 + ENGINE/SOSIA/BURST/DECINA sulla stessa fascia\n"
             "/metodohc — MAIN: ENGINE HC=SOSIA #1; SUPER se BURST SIGNAL contiene il numero\n"
             "/forcedone — FORCED ONE v1: un numero a ogni H1, classi A+/A/B/C/D\n"
+            "/triplette — 4 giocate x9: triplette co-occorrenza H1 shadow\n"
             "/verifica — test nuovo periodo: STESSA DECINA, ENGINE H5, BURST gate\n"
-            "/verificatutto — report unico v14: tutti i moduli + FORCED ONE\n"
+            "/verificatutto — report unico v15: tutti i moduli + TRIPLETTE\n"
             "/burstgate — audit v4: score/soglia, motivi NO SIGNAL e fasce di distanza\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
@@ -7275,6 +7599,9 @@ async def cmd_metodohc(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_forcedone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].forced_one.text())
 
+async def cmd_triplette(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].triplette.text())
+
 async def cmd_verificatutto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].verify_all_text())
 
@@ -7314,6 +7641,7 @@ async def setup_commands(app):
         BotCommand("convergenza", "POST-6 + convergenze degli altri moduli"),
         BotCommand("metodohc", "Metodo HC: ENGINE=SOSIA, BURST promuove SUPER"),
         BotCommand("forcedone", "FORCED ONE: un numero H1 sempre, classi A+/A/B/C/D"),
+        BotCommand("triplette", "4x9 triplette co-occorrenza: H1 shadow"),
         BotCommand("verifica", "Test nuovo periodo: DECINA, ENGINE H5, BURST"),
         BotCommand("verificatutto", "Report unico di tutti i moduli"),
         BotCommand("burstgate", "Audit gate BURST: score, soglia e NO SIGNAL"),
@@ -7475,6 +7803,7 @@ async def startup(engine, app, retry_state=None):
         "🧲 CONVERGENCE LAB v1: POST-6 + ENGINE/SOSIA/BURST/DECINA /convergenza\n"
         "🎯 METODO CONVERGENZA HC v1: ENGINE HC=SOSIA #1; BURST puo promuovere SUPER /metodohc\n"
         "🎯 FORCED ONE v1: un numero per ogni H1, classi A+/A/B/C/D /forcedone\n"
+        "🎟 TRIPLETTE CO-OCC v1: 4 giocate x9 per la prossima H1 /triplette\n"
         "🧾 VERIFICA TUTTO v14: report compatto + FORCED ONE /verificatutto\n"
         "🔟 BURST EVENT DETECTOR v3: FLOW REGIME + SIGNAL/NO SIGNAL + EXTREME-6 /burst\n"
         "🔬 BURST GATE LAB v4: audit score/soglia e NO SIGNAL /burstgate\n"
@@ -7484,7 +7813,7 @@ async def startup(engine, app, retry_state=None):
         f"H5 LIVE gia' disponibili: {len(engine.engine_h5_records_live)}\n"
         f"PLAY storico ricostruito: {len(engine.engine_play_records_live)} record | "
         f"attivi={sum(1 for x in engine.engine_play_sessions if x.get('origin_mode')=='live')}\n\n"
-        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /postburst /post6 /convergenza /metodohc /forcedone /verifica /verificatutto /burstgate /sosiarandom /menu"
+        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /postburst /post6 /convergenza /metodohc /forcedone /triplette /verifica /verificatutto /burstgate /sosiarandom /menu"
     )
     await notify_pending(engine,app)
     await notify_ambo_active(engine,app)
@@ -7996,9 +8325,33 @@ async def run_self_test():
     assert 'FORCED ONE v1' in fo_engine.forced_one.text()
     all_txt=fo_engine.verify_all_text(); assert 'FORCED ONE v1' in all_txt and len(all_txt)<4096
     assert '/forcedone' in fo_engine.menu_text()
+    # TRIPLETTE v15: 320 draw di storia, 36 numeri distinti, H1 + roundtrip.
+    tri_engine=EngineOnly(load=False)
+    tri_engine.triplette.start_from_key='2099-11-01#320'
+    tri_engine.triplette.started_at='2099-11-01T12:00:00+01:00'
+    tri_engine.engine_history=[]
+    # storia deterministica valida, 20 numeri distinti per draw
+    for i in range(1,322):
+        nums=sorted({((i*7+j*11)%90)+1 for j in range(20)})
+        # garantisci 20 distinti anche nel rarissimo caso di collisioni
+        n=1
+        while len(nums)<20:
+            if n not in nums: nums.append(n)
+            n+=1
+        nums=sorted(nums[:20])
+        tri_engine.engine_history.append({'key':f'2099-11-01#{i:03d}','nums':nums})
+    trrow=tri_engine.triplette.arm('2099-11-01#321',tri_engine)
+    assert trrow and len(trrow['tickets'])==4 and len(set(sum(trrow['tickets'],[])))==36
+    trclosed=tri_engine.triplette.settle('2099-11-01',322,list(range(1,21)))
+    assert trclosed and len(trclosed[0]['ticket_hits'])==4
+    tr2=TripletteCooccLab(); assert tr2.load(tri_engine.triplette.dump())
+    assert 'TRIPLETTE CO-OCCORRENZA v1' in tri_engine.triplette.text()
+    vt=tri_engine.verify_all_text(); assert 'TRIPLETTE CO-OCC v1' in vt and len(vt)<4096
+    assert '/triplette' in tri_engine.menu_text()
+    print(f'SELF-TEST v15 OK: TRIPLETTE 4x9 + 36 unique + settle + roundtrip + VERIFICA TUTTO ({len(vt)} chars).')
     print(f'SELF-TEST v14 OK: FORCED ONE A+/A/B/C/D + result + roundtrip + VERIFICA TUTTO ({len(all_txt)} chars).')
 
-    print("SELF-TEST OK: v14 conserva tutti i moduli v13 e aggiunge FORCED ONE prospettico")
+    print("SELF-TEST OK: v15 conserva v14 e aggiunge TRIPLETTE CO-OCC 4x9 prospettico")
 
 async def main():
     if "--self-test" in sys.argv:
@@ -8032,6 +8385,7 @@ async def main():
     app.add_handler(CommandHandler("convergenza",cmd_convergenza))
     app.add_handler(CommandHandler("metodohc",cmd_metodohc))
     app.add_handler(CommandHandler("forcedone",cmd_forcedone))
+    app.add_handler(CommandHandler("triplette",cmd_triplette))
     app.add_handler(CommandHandler("verifica",cmd_verifica))
     app.add_handler(CommandHandler("verificatutto",cmd_verificatutto))
     app.add_handler(CommandHandler("burstgate",cmd_burstgate))
