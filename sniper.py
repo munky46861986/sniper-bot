@@ -3543,6 +3543,289 @@ class HCConvergenceMethod:
         return "\n".join(lines)
 
 
+# ============================================================
+# FORCED ONE v1 — SHADOW PROSPETTICO dalla v14.
+# Produce SEMPRE un solo numero per la H1 quando il contesto ENGINE+SOSIA
+# e' disponibile. Gerarchia congelata:
+#   A+ = ENGINE HC + ENGINE TOP1 = SOSIA #1 + BURST SIGNAL contiene il numero
+#   A  = ENGINE HC + ENGINE TOP1 = SOSIA #1
+#   B  = ENGINE HC, SOSIA diverso -> ENGINE TOP1
+#   C  = ENGINE non HC ma ENGINE TOP1 = SOSIA #1
+#   D  = ENGINE non HC e diverso -> SOSIA rank #1
+# BURST non sceglie il numero: puo' solo promuovere A -> A+.
+# Ogni previsione vale SOLO H1 ed e' confrontata con random congelato.
+# Nessun backfill dei draw pre-v14.
+# ============================================================
+FORCED_ONE_VERSION = 1
+FORCED_ONE_RECORD_MAX = max(300, int(os.getenv("FORCED_ONE_RECORD_MAX", "5000")))
+FORCED_ONE_NOTIFY = os.getenv("FORCED_ONE_NOTIFY", "1").strip().lower() not in {"0", "false", "no", "off"}
+FORCED_ONE_NOTIFY_RESULT = os.getenv("FORCED_ONE_NOTIFY_RESULT", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+class ForcedOneMethod:
+    def __init__(self):
+        self.start_from_key = None
+        self.started_at = None
+        self.pending = []
+        self.records = []
+        self.skipped = 0
+        self.missing_context = 0
+        self.last_result = None
+
+    def ensure_start(self, engine):
+        if self.start_from_key:
+            return False
+        if not engine.engine_history:
+            return False
+        key = str(engine.engine_history[-1].get("key") or "")
+        if _verifica_order(key) is None:
+            return False
+        self.start_from_key = key
+        self.started_at = datetime.now(BOT_TZ).isoformat(timespec="seconds")
+        return True
+
+    def load(self, obj):
+        if not isinstance(obj, dict) or int(obj.get("version", 0) or 0) != FORCED_ONE_VERSION:
+            return False
+        key = obj.get("start_from_key")
+        if _verifica_order(key) is None:
+            return False
+        self.start_from_key = key
+        self.started_at = obj.get("started_at") if isinstance(obj.get("started_at"), str) else None
+        self.skipped = max(0, int(obj.get("skipped", 0) or 0))
+        self.missing_context = max(0, int(obj.get("missing_context", 0) or 0))
+        self.last_result = obj.get("last_result") if isinstance(obj.get("last_result"), dict) else None
+        raw = obj.get("pending", [])
+        if isinstance(raw, list):
+            self.pending = [dict(x) for x in raw[-5:] if isinstance(x, dict)
+                            and isinstance(x.get("origin_key"), str)
+                            and x.get("pick") and x.get("control_num")]
+        rec = obj.get("records", [])
+        if isinstance(rec, list):
+            self.records = [dict(x) for x in rec[-FORCED_ONE_RECORD_MAX:]
+                            if isinstance(x, dict) and isinstance(x.get("origin_key"), str)
+                            and isinstance(x.get("key"), str) and x.get("pick")]
+        return True
+
+    def dump(self):
+        return {
+            "version": FORCED_ONE_VERSION,
+            "start_from_key": self.start_from_key,
+            "started_at": self.started_at,
+            "pending": self.pending[-5:],
+            "records": self.records[-FORCED_ONE_RECORD_MAX:],
+            "skipped": self.skipped,
+            "missing_context": self.missing_context,
+            "last_result": self.last_result,
+        }
+
+    def _is_after_marker(self, key):
+        a = _verifica_order(key)
+        b = _verifica_order(self.start_from_key)
+        return a is not None and b is not None and a > b
+
+    @staticmethod
+    def _burst_contains(bp, num):
+        if not isinstance(bp, dict):
+            return False
+        try:
+            gi = int(bp.get("group_index", -1))
+            return 0 <= gi < len(DECINA_GROUPS) and int(num) in DECINA_GROUPS[gi]
+        except (TypeError, ValueError, IndexError):
+            return False
+
+    def arm(self, current_key, engine):
+        if not self.start_from_key:
+            self.ensure_start(engine)
+        if not self.start_from_key or not self._is_after_marker(current_key):
+            return None
+        # Una sola previsione per origine, anche dopo restart.
+        if any(str(x.get("origin_key")) == str(current_key) for x in self.pending):
+            return None
+        if any(str(x.get("origin_key")) == str(current_key) for x in self.records[-10:]):
+            return None
+
+        ep = engine.engine_pending if isinstance(engine.engine_pending, dict) else {}
+        sp = engine.sosiasniper_pending if isinstance(engine.sosiasniper_pending, dict) else {}
+        if str(ep.get("signal_from_key")) != str(current_key) or not ep.get("top1"):
+            self.missing_context += 1
+            return None
+        if str(sp.get("from_key")) != str(current_key) or not sp.get("top1"):
+            self.missing_context += 1
+            return None
+        try:
+            engine_top1 = int(ep.get("top1"))
+            sosia_top1 = int(sp.get("top1"))
+        except (TypeError, ValueError):
+            self.missing_context += 1
+            return None
+        if not (1 <= engine_top1 <= 90 and 1 <= sosia_top1 <= 90):
+            self.missing_context += 1
+            return None
+
+        hc = bool(ep.get("accepted"))
+        agree = engine_top1 == sosia_top1
+        if hc and agree:
+            pick = engine_top1
+            cls = "A"
+            reason = "ENGINE HC + SOSIA #1 concordi"
+        elif hc:
+            pick = engine_top1
+            cls = "B"
+            reason = "ENGINE HC; SOSIA #1 diverso -> priorita ENGINE"
+        elif agree:
+            pick = engine_top1
+            cls = "C"
+            reason = "ENGINE non HC ma TOP1 = SOSIA #1"
+        else:
+            pick = sosia_top1
+            cls = "D"
+            reason = "fallback SOSIA rank #1"
+
+        bp = engine.burst.pending if isinstance(engine.burst.pending, dict) else {}
+        burst_same_origin = str(bp.get("from_key")) == str(current_key)
+        burst_signal = bool(burst_same_origin and bp.get("signal"))
+        burst_contains = bool(burst_same_origin and self._burst_contains(bp, pick))
+        if cls == "A" and burst_signal and burst_contains:
+            cls = "A+"
+            reason = "ENGINE HC + SOSIA concordi + BURST SIGNAL sulla stessa decina"
+
+        gi = None
+        if burst_same_origin:
+            try:
+                v = int(bp.get("group_index", -1))
+                if 0 <= v < len(DECINA_GROUPS):
+                    gi = v
+            except (TypeError, ValueError):
+                gi = None
+
+        pool = [n for n in range(1, 91) if n != pick]
+        control_num = int(SOSIA_RANDOM.choice(pool))
+        row = {
+            "origin_key": str(current_key),
+            "created_at": now_txt(),
+            "class": cls,
+            "pick": int(pick),
+            "reason": reason,
+            "engine_hc": hc,
+            "engine_top1": engine_top1,
+            "engine_confidence": ep.get("confidence"),
+            "engine_threshold": ep.get("threshold"),
+            "engine_support": ep.get("support"),
+            "sosia_top1": sosia_top1,
+            "sosia_score": sp.get("score"),
+            "sosia_consensus": sp.get("consensus"),
+            "agreement": agree,
+            "burst_signal": burst_signal,
+            "burst_contains": burst_contains,
+            "burst_group_index": gi,
+            "burst_group": DECINA_LABELS[gi] if gi is not None else None,
+            "burst_score": bp.get("score") if burst_same_origin else None,
+            "burst_gap": bp.get("gap") if burst_same_origin else None,
+            "control_num": control_num,
+        }
+        self.pending.append(row)
+        self.pending = self.pending[-5:]
+        return row
+
+    def settle(self, day, draw_id, nums):
+        if not self.pending:
+            return []
+        key = draw_key(day, draw_id)
+        actual = set(map(int, nums))
+        old = list(self.pending)
+        self.pending = []
+        closed = []
+        for p in old:
+            if not sim_draw_is_consecutive(p["origin_key"], day, draw_id):
+                self.skipped += 1
+                self.last_result = {"origin_key": p["origin_key"], "key": key,
+                                    "class": p.get("class"), "skipped": True}
+                continue
+            r = dict(p)
+            r.update({
+                "key": key,
+                "hit": int(p["pick"]) in actual,
+                "control_hit": int(p["control_num"]) in actual,
+                "skipped": False,
+            })
+            self.records.append(r)
+            self.last_result = r
+            closed.append(r)
+        self.records = self.records[-FORCED_ONE_RECORD_MAX:]
+        return closed
+
+    @staticmethod
+    def _stats(rows):
+        n = len(rows)
+        h = sum(int(bool(r.get("hit"))) for r in rows)
+        c = sum(int(bool(r.get("control_hit"))) for r in rows)
+        w = sum(int(bool(r.get("hit")) and not bool(r.get("control_hit"))) for r in rows)
+        l = sum(int(bool(r.get("control_hit")) and not bool(r.get("hit"))) for r in rows)
+        return n, h, c, w, l, n-w-l
+
+    def signal_text(self, row):
+        if not row:
+            return None
+        boost = "\n🔥 BURST BOOST: " + str(row.get("burst_group")) if row.get("class") == "A+" else ""
+        return (
+            "🎯 FORCED ONE v1 — NUMERO H1\n\n"
+            f"Origine: {row['origin_key']}\n"
+            f"CLASSE {row['class']}\n"
+            f"➡️ NUMERO: #{row['pick']} — SOLO PROSSIMA H1\n\n"
+            f"ENGINE: #{row['engine_top1']} | {'HC' if row.get('engine_hc') else 'NO HC'}\n"
+            f"SOSIA #1: #{row['sosia_top1']}\n"
+            f"Motivo: {row.get('reason','-')}"
+            f"{boost}\n"
+            f"Controllo random: #{row['control_num']}\n\n"
+            "Tracker prospettico: nessuna garanzia di vincita."
+        )
+
+    def result_text(self, row):
+        if not row or row.get("skipped"):
+            return None
+        return (
+            "🧾 FORCED ONE v1 — ESITO H1\n\n"
+            f"Origine: {row.get('origin_key','-')} → {row.get('key','-')}\n"
+            f"CLASSE {row.get('class','-')} | #{row.get('pick')} "
+            + ("✅ HIT" if row.get("hit") else "❌ MISS") + "\n"
+            f"Random #{row.get('control_num')} " + ("✅ HIT" if row.get("control_hit") else "❌ MISS")
+        )
+
+    def text(self):
+        n,h,c,w,l,t = self._stats(self.records)
+        lines = [
+            "🎯 FORCED ONE v1 — UN NUMERO A OGNI H1",
+            "A+ = HC + ENGINE=SOSIA + BURST SIGNAL stessa decina",
+            "A = HC + ENGINE=SOSIA | B = HC -> ENGINE | C = non-HC ma ENGINE=SOSIA | D = fallback SOSIA #1",
+            f"🧊 Inizio prospettico: dopo {self.start_from_key or '-'}" + (f" | {self.started_at}" if self.started_at else ""),
+            f"Valutati {n} | pendenti {len(self.pending)} | salti {self.skipped} | contesto mancante {self.missing_context}",
+            f"🎯 TOTALE: {h}/{n} ({safe_pct(h,n):.2f}%) | random {c}/{n} ({safe_pct(c,n):.2f}%) | baseline 22.22%",
+            f"Appaiato vs random: +{w}/-{l}/={t} | avanzamento {min(n,100)}/100 | {min(n,200)}/200 | {min(n,300)}/300",
+        ]
+        for cls in ("A+","A","B","C","D"):
+            rows = [r for r in self.records if r.get("class") == cls]
+            rn,rh,rc,*_ = self._stats(rows)
+            lines.append(f"• {cls}: {rh}/{rn} ({safe_pct(rh,rn):.2f}%) | random {rc}/{rn} ({safe_pct(rc,rn):.2f}%)")
+        for k in (50,100,200,300):
+            rows = self.records[-k:] if len(self.records) >= k else self.records
+            if rows:
+                rn,rh,rc,*_ = self._stats(rows)
+                tag = "COMPLETA" if len(self.records) >= k else "PARZIALE"
+                lines.append(f"• ultimi {k} ({tag}, n={rn}): {rh}/{rn} ({safe_pct(rh,rn):.2f}%) | random {rc}/{rn} ({safe_pct(rc,rn):.2f}%)")
+        if self.pending:
+            lines += ["", "⏳ PENDENTE:"]
+            for r in self.pending[-3:]:
+                lines.append(f"• {r['origin_key']} | classe {r['class']} | #{r['pick']} | random #{r['control_num']}")
+        if self.last_result and not self.last_result.get("skipped"):
+            r = self.last_result
+            lines += ["", f"🧾 Ultimo {r.get('key','-')}: {r.get('class','-')} #{r.get('pick')} "
+                      + ("✅ HIT" if r.get("hit") else "❌ MISS")
+                      + f" | random #{r.get('control_num')} " + ("✅" if r.get("control_hit") else "❌")]
+        lines.append("⚠️ Test prospettico v14: un solo numero per H1, nessun recupero e nessun backfill.")
+        return "\n".join(lines)
+
+
 class EngineOnly:
     def __init__(self, load=True):
         self.processed = []
@@ -3646,6 +3929,7 @@ class EngineOnly:
         self.burstgate = BurstGateLab()    # audit derivato dai record BURST, nessun nuovo motore
         self.convergence = ConvergenceLab()  # v11: audit prospettico delle convergenze POST-6
         self.hc_method = HCConvergenceMethod()  # v13: ENGINE HC + SOSIA rank1, BURST solo promozione SUPER
+        self.forced_one = ForcedOneMethod()  # v14: un numero H1 sempre, classi A+/A/B/C/D
 
         self.state_load_info = {
             "loaded": False,
@@ -3664,6 +3948,7 @@ class EngineOnly:
             self.burst.bootstrap(self.engine_history, flow=self.flow)  # warmup storico, NON previsione retroattiva
             self.verifica.ensure_start(self)  # solo se state/storico esistente; nessun backfill
             self.hc_method.ensure_start(self)  # v13: marker al draw corrente, nessun backfill
+            self.forced_one.ensure_start(self)  # v14: marker nuovo al draw corrente, nessun backfill
             # Upgrade non distruttivo: se il vecchio state ha gia' una previsione
             # SOSIA adattiva congelata, ricava subito TOP1/TOP2 senza cambiarla.
             self._sosiasniper_migrate_pending()
@@ -5865,6 +6150,7 @@ class EngineOnly:
             self.verifica.load(d.get("verification_v1"))
             self.convergence.load(d.get("convergence_v1"))
             self.hc_method.load(d.get("hc_convergence_v1"))
+            self.forced_one.load(d.get("forced_one_v1"))
 
             # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
             if self.engine_pending and self.engine_pending.get("accepted"):
@@ -5954,6 +6240,7 @@ class EngineOnly:
             "verification_v1": self.verifica.dump(),
             "convergence_v1": self.convergence.dump(),
             "hc_convergence_v1": self.hc_method.dump(),
+            "forced_one_v1": self.forced_one.dump(),
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -6413,6 +6700,7 @@ class EngineOnly:
             self.verifica.ensure_start(self)
             self.convergence.ensure_start(self)
             self.hc_method.ensure_start(self)
+            self.forced_one.ensure_start(self)
             # Il campione era stato predisposto ALLA estrazione precedente:
             # nessun dato del draw attuale entra nella simulazione valutata.
             dual_result = self.dual.settle(day, e, clean)
@@ -6421,7 +6709,13 @@ class EngineOnly:
             self.postburst.observe_live(day, e, clean, open_new=notify)
             self.post6.observe_live(day, e, clean, open_new=notify)
             self.convergence.settle(day, e, clean)
-            self.hc_method.settle(day, e, clean)
+            hc_closed = self.hc_method.settle(day, e, clean)
+            forced_closed = self.forced_one.settle(day, e, clean)
+            if FORCED_ONE_NOTIFY_RESULT and notify:
+                for _fr in forced_closed:
+                    _msg = self.forced_one.result_text(_fr)
+                    if _msg:
+                        await self.tg(app, _msg)
             self._sosia_settle(day, e, clean)
             # Valuta TOP1/TOP2 PRIMA che _sosiap_settle cancelli il pending adattivo.
             sniper_result = self._sosiasniper_settle(day, e, clean)
@@ -6474,6 +6768,11 @@ class EngineOnly:
                     msg = self.hc_method.signal_text(hc_row)
                     if msg:
                         await self.tg(app, msg)
+                forced_row = self.forced_one.arm(current_key, self)
+                if FORCED_ONE_NOTIFY and forced_row:
+                    _fmsg = self.forced_one.signal_text(forced_row)
+                    if _fmsg:
+                        await self.tg(app, _fmsg)
             if BURST_NOTIFY and notify and (burst_result or self.burst.pending):
                 await self.tg(app, self.burst.text())
             if DECINA_NOTIFY and notify and (decina_result or self.decina.pending):
@@ -6744,7 +7043,7 @@ class EngineOnly:
     def verify_all_text(self):
         """Report compatto di TUTTI i moduli: un solo comando, nessun reset/mutazione."""
         lines = [
-            "🧾 VERIFICA TUTTO v13 — SNAPSHOT COMPLETO",
+            "🧾 VERIFICA TUTTO v14 — SNAPSHOT COMPLETO",
             "Un solo report dei moduli; legge lo state corrente e NON cambia previsioni, soglie o contatori.",
         ]
 
@@ -6871,7 +7170,17 @@ class EngineOnly:
                   f"MAIN {mh}/{mn} ({safe_pct(mh,mn):.2f}%) | random {mc}/{mn} ({safe_pct(mc,mn):.2f}%) | progress {min(mn,100)}/100 {min(mn,200)}/200 {min(mn,300)}/300",
                   f"SUPER {sh}/{sn} ({safe_pct(sh,sn):.2f}%) | random {sc}/{sn} ({safe_pct(sc,sn):.2f}%) | HC_DISAGREE {dh}/{dn} ({safe_pct(dh,dn):.2f}%) | pending {len(self.hc_method.pending)}"]
 
-        lines += ["", "⚠️ Report audit/shadow. Per dettagli: /metodohc /verifica /burstgate /post6 /convergenza oppure il comando singolo del modulo."]
+        # FORCED ONE v1
+        fo = self.forced_one.records
+        fn,fh,fc,*_ = self.forced_one._stats(fo)
+        fp = self.forced_one.pending[-1] if self.forced_one.pending else None
+        cls_counts = {k: sum(1 for r in fo if r.get("class")==k) for k in ("A+","A","B","C","D")}
+        lines += ["", "🎯 FORCED ONE v1",
+                  f"totale {fh}/{fn} ({safe_pct(fh,fn):.2f}%) | random {fc}/{fn} ({safe_pct(fc,fn):.2f}%) | progress {min(fn,100)}/100 {min(fn,200)}/200 {min(fn,300)}/300",
+                  "classi " + " ".join(f"{k}:{cls_counts[k]}" for k in ("A+","A","B","C","D")) +
+                  (f" | PENDING {fp.get('class')} #{fp.get('pick')}" if fp else " | pending 0")]
+
+        lines += ["", "⚠️ Report audit/shadow. Per dettagli: /forcedone /metodohc /verifica /burstgate /post6 /convergenza oppure il comando singolo del modulo."]
         return "\n".join(lines)
 
     def menu_text(self):
@@ -6895,8 +7204,9 @@ class EngineOnly:
             "/post6 — test v10: dopo 6+ segue la STESSA decina esclusivamente in H1\n"
             "/convergenza — POST-6 + ENGINE/SOSIA/BURST/DECINA sulla stessa fascia\n"
             "/metodohc — MAIN: ENGINE HC=SOSIA #1; SUPER se BURST SIGNAL contiene il numero\n"
+            "/forcedone — FORCED ONE v1: un numero a ogni H1, classi A+/A/B/C/D\n"
             "/verifica — test nuovo periodo: STESSA DECINA, ENGINE H5, BURST gate\n"
-            "/verificatutto — report unico v13: tutti i moduli + METODO HC\n"
+            "/verificatutto — report unico v14: tutti i moduli + FORCED ONE\n"
             "/burstgate — audit v4: score/soglia, motivi NO SIGNAL e fasce di distanza\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
@@ -6962,6 +7272,9 @@ async def cmd_convergenza(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_metodohc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].hc_method.text())
 
+async def cmd_forcedone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].forced_one.text())
+
 async def cmd_verificatutto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].verify_all_text())
 
@@ -7000,6 +7313,7 @@ async def setup_commands(app):
         BotCommand("post6", "POST-6: dopo 6+ stessa decina solo H1"),
         BotCommand("convergenza", "POST-6 + convergenze degli altri moduli"),
         BotCommand("metodohc", "Metodo HC: ENGINE=SOSIA, BURST promuove SUPER"),
+        BotCommand("forcedone", "FORCED ONE: un numero H1 sempre, classi A+/A/B/C/D"),
         BotCommand("verifica", "Test nuovo periodo: DECINA, ENGINE H5, BURST"),
         BotCommand("verificatutto", "Report unico di tutti i moduli"),
         BotCommand("burstgate", "Audit gate BURST: score, soglia e NO SIGNAL"),
@@ -7132,6 +7446,8 @@ async def startup(engine, app, retry_state=None):
     engine.postburst.bootstrap(engine.engine_history)
     engine.post6.ensure_start(engine.engine_history, engine.postburst)
     engine.convergence.ensure_start(engine)
+    engine.hc_method.ensure_start(engine)
+    engine.forced_one.ensure_start(engine)
     engine.burst.bootstrap(engine.engine_history, flow=engine.flow)
     if rows and engine.engine_history:
         latest=max(rows,key=lambda r:(r[0],r[1]))
@@ -7158,7 +7474,8 @@ async def startup(engine, app, retry_state=None):
         "🔥 POST-6 EXTREME SHADOW v1: dopo 6+ stessa decina solo H1 /post6\n"
         "🧲 CONVERGENCE LAB v1: POST-6 + ENGINE/SOSIA/BURST/DECINA /convergenza\n"
         "🎯 METODO CONVERGENZA HC v1: ENGINE HC=SOSIA #1; BURST puo promuovere SUPER /metodohc\n"
-        "🧾 VERIFICA TUTTO v13: report compatto + METODO HC /verificatutto\n"
+        "🎯 FORCED ONE v1: un numero per ogni H1, classi A+/A/B/C/D /forcedone\n"
+        "🧾 VERIFICA TUTTO v14: report compatto + FORCED ONE /verificatutto\n"
         "🔟 BURST EVENT DETECTOR v3: FLOW REGIME + SIGNAL/NO SIGNAL + EXTREME-6 /burst\n"
         "🔬 BURST GATE LAB v4: audit score/soglia e NO SIGNAL /burstgate\n"
         "✅ state persistente + autorotation\n\n"
@@ -7167,7 +7484,7 @@ async def startup(engine, app, retry_state=None):
         f"H5 LIVE gia' disponibili: {len(engine.engine_h5_records_live)}\n"
         f"PLAY storico ricostruito: {len(engine.engine_play_records_live)} record | "
         f"attivi={sum(1 for x in engine.engine_play_sessions if x.get('origin_mode')=='live')}\n\n"
-        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /postburst /post6 /convergenza /metodohc /verifica /verificatutto /burstgate /sosiarandom /menu"
+        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /postburst /post6 /convergenza /metodohc /forcedone /verifica /verificatutto /burstgate /sosiarandom /menu"
     )
     await notify_pending(engine,app)
     await notify_ambo_active(engine,app)
@@ -7654,9 +7971,34 @@ async def run_self_test():
     all_txt=cv_engine.verify_all_text()
     assert len(all_txt) < 4096, len(all_txt)
     assert 'METODO CONVERGENZA HC v1' in all_txt
-    print(f'SELF-TEST v13 OK: METODO HC MAIN/SUPER/DISAGREE + CONVERGENCE + VERIFICA TUTTO ({len(all_txt)} chars).')
 
-    print("SELF-TEST OK: v13 conserva tutti i moduli v12 e aggiunge METODO CONVERGENZA HC prospettico")
+    # FORCED ONE v14: tutte le classi + roundtrip + H1.
+    fo_engine = EngineOnly(load=False)
+    fo_engine.engine_history = [{'key':'2099-10-01#100','nums':list(range(1,21))}]
+    assert fo_engine.forced_one.ensure_start(fo_engine)
+    def _arm_forced(key, hc, etop, stop, burst_signal=False, burst_gi=0):
+        fo_engine.engine_history.append({'key':key,'nums':list(range(1,21))})
+        fo_engine.engine_pending={'signal_from_key':key,'accepted':hc,'top1':etop,'confidence':0.9 if hc else 0.2,'threshold':0.5,'support':3}
+        fo_engine.sosiasniper_pending={'from_key':key,'top1':stop,'score':0.9,'consensus':6}
+        fo_engine.burst.pending={'from_key':key,'group_index':burst_gi,'signal':burst_signal,'score':0.9,'gap':0.4}
+        return fo_engine.forced_one.arm(key,fo_engine)
+    fa=_arm_forced('2099-10-01#101',True,12,12,False,1); assert fa and fa['class']=='A' and fa['pick']==12
+    # evita pending multipli nel test manuale: chiudi la H1.
+    fclosed=fo_engine.forced_one.settle('2099-10-01',102,[12]+list(range(21,40))); assert fclosed[0]['hit']
+    fap=_arm_forced('2099-10-01#102',True,12,12,True,1); assert fap and fap['class']=='A+'
+    fo_engine.forced_one.pending=[]
+    fb=_arm_forced('2099-10-01#103',True,30,31,False,2); assert fb and fb['class']=='B' and fb['pick']==30
+    fo_engine.forced_one.pending=[]
+    fc=_arm_forced('2099-10-01#104',False,40,40,False,3); assert fc and fc['class']=='C' and fc['pick']==40
+    fo_engine.forced_one.pending=[]
+    fd=_arm_forced('2099-10-01#105',False,50,51,False,4); assert fd and fd['class']=='D' and fd['pick']==51
+    fort=ForcedOneMethod(); assert fort.load(fo_engine.forced_one.dump())
+    assert 'FORCED ONE v1' in fo_engine.forced_one.text()
+    all_txt=fo_engine.verify_all_text(); assert 'FORCED ONE v1' in all_txt and len(all_txt)<4096
+    assert '/forcedone' in fo_engine.menu_text()
+    print(f'SELF-TEST v14 OK: FORCED ONE A+/A/B/C/D + result + roundtrip + VERIFICA TUTTO ({len(all_txt)} chars).')
+
+    print("SELF-TEST OK: v14 conserva tutti i moduli v13 e aggiunge FORCED ONE prospettico")
 
 async def main():
     if "--self-test" in sys.argv:
@@ -7689,6 +8031,7 @@ async def main():
     app.add_handler(CommandHandler("post6",cmd_post6))
     app.add_handler(CommandHandler("convergenza",cmd_convergenza))
     app.add_handler(CommandHandler("metodohc",cmd_metodohc))
+    app.add_handler(CommandHandler("forcedone",cmd_forcedone))
     app.add_handler(CommandHandler("verifica",cmd_verifica))
     app.add_handler(CommandHandler("verificatutto",cmd_verificatutto))
     app.add_handler(CommandHandler("burstgate",cmd_burstgate))
