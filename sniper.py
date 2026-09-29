@@ -1,5 +1,5 @@
 # ============================================================
-# 🧠 10eLOTTO ENGINE ONLY — v12 VERIFY-ALL+ + CONVERGENCE + RUNNER WATCHDOG
+# 🧠 10eLOTTO ENGINE ONLY — v13 METODO CONVERGENZA HC + VERIFY-ALL + RUNNER WATCHDOG
 # ============================================================
 #
 # UNICO MOTORE ATTIVO:
@@ -3281,6 +3281,268 @@ class ConvergenceLab:
         return "\n".join(lines)
 
 
+# ============================================================
+# METODO CONVERGENZA HC v1 — SHADOW PROSPETTICO dalla v13.
+# MAIN nasce SOLO quando ENGINE e' HIGH CONFIDENCE e il suo TOP1
+# coincide esattamente con SOSIA rank #1 per la medesima H1.
+# SUPER e' un MAIN in cui anche BURST e' SIGNAL e la decina BURST
+# contiene il numero MAIN. BURST non crea e non blocca MAIN.
+# HC_DISAGREE registra il controllo: ENGINE HC ma SOSIA #1 diverso.
+# Ogni record congela anche un numero random appaiato PRIMA della H1.
+# Nessun backfill: i vecchi segnali restano fuori dal nuovo test.
+# ============================================================
+HC_METHOD_VERSION = 1
+HC_METHOD_RECORD_MAX = max(300, int(os.getenv("HC_METHOD_RECORD_MAX", "3000")))
+HC_METHOD_NOTIFY = os.getenv("HC_METHOD_NOTIFY", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+class HCConvergenceMethod:
+    def __init__(self):
+        self.start_from_key = None
+        self.started_at = None
+        self.pending = []
+        self.records = []
+        self.skipped = 0
+        self.missing_context = 0
+        self.last_result = None
+
+    def ensure_start(self, engine):
+        if self.start_from_key:
+            return False
+        if not engine.engine_history:
+            return False
+        key = str(engine.engine_history[-1].get("key") or "")
+        if _verifica_order(key) is None:
+            return False
+        self.start_from_key = key
+        self.started_at = datetime.now(BOT_TZ).isoformat(timespec="seconds")
+        return True
+
+    def load(self, obj):
+        if not isinstance(obj, dict) or int(obj.get("version", 0) or 0) != HC_METHOD_VERSION:
+            return False
+        key = obj.get("start_from_key")
+        if _verifica_order(key) is None:
+            return False
+        self.start_from_key = key
+        self.started_at = obj.get("started_at") if isinstance(obj.get("started_at"), str) else None
+        self.skipped = max(0, int(obj.get("skipped", 0) or 0))
+        self.missing_context = max(0, int(obj.get("missing_context", 0) or 0))
+        self.last_result = obj.get("last_result") if isinstance(obj.get("last_result"), dict) else None
+        raw = obj.get("pending", [])
+        if isinstance(raw, list):
+            self.pending = [dict(x) for x in raw[-20:] if isinstance(x, dict)
+                            and isinstance(x.get("origin_key"), str)
+                            and x.get("engine_top1") and x.get("sosia_top1")
+                            and x.get("control_num")]
+        rec = obj.get("records", [])
+        if isinstance(rec, list):
+            self.records = [dict(x) for x in rec[-HC_METHOD_RECORD_MAX:]
+                            if isinstance(x, dict) and isinstance(x.get("origin_key"), str)
+                            and isinstance(x.get("key"), str)]
+        return True
+
+    def dump(self):
+        return {
+            "version": HC_METHOD_VERSION,
+            "start_from_key": self.start_from_key,
+            "started_at": self.started_at,
+            "pending": self.pending[-20:],
+            "records": self.records[-HC_METHOD_RECORD_MAX:],
+            "skipped": self.skipped,
+            "missing_context": self.missing_context,
+            "last_result": self.last_result,
+        }
+
+    def _is_after_marker(self, key):
+        a = _verifica_order(key)
+        b = _verifica_order(self.start_from_key)
+        return a is not None and b is not None and a > b
+
+    @staticmethod
+    def _burst_group_contains(bp, num):
+        if not isinstance(bp, dict):
+            return False
+        try:
+            gi = int(bp.get("group_index", -1))
+            return 0 <= gi < len(DECINA_GROUPS) and int(num) in DECINA_GROUPS[gi]
+        except (TypeError, ValueError, IndexError):
+            return False
+
+    def arm(self, current_key, engine):
+        if not self.start_from_key:
+            self.ensure_start(engine)
+        if not self.start_from_key or not self._is_after_marker(current_key):
+            return None
+
+        # Un record per origine al massimo, anche dopo restart.
+        if any(str(x.get("origin_key")) == str(current_key) for x in self.pending):
+            return None
+        if any(str(x.get("origin_key")) == str(current_key) for x in self.records[-20:]):
+            return None
+
+        ep = engine.engine_pending if isinstance(engine.engine_pending, dict) else {}
+        if not (ep.get("accepted") and str(ep.get("signal_from_key")) == str(current_key)):
+            return None
+        try:
+            engine_top1 = int(ep.get("top1"))
+        except (TypeError, ValueError):
+            self.missing_context += 1
+            return None
+
+        sp = engine.sosiasniper_pending if isinstance(engine.sosiasniper_pending, dict) else {}
+        if str(sp.get("from_key")) != str(current_key) or not sp.get("top1"):
+            self.missing_context += 1
+            return None
+        try:
+            sosia_top1 = int(sp.get("top1"))
+        except (TypeError, ValueError):
+            self.missing_context += 1
+            return None
+
+        agreement = engine_top1 == sosia_top1
+        bp = engine.burst.pending if isinstance(engine.burst.pending, dict) else {}
+        burst_same_origin = str(bp.get("from_key")) == str(current_key)
+        burst_signal = bool(burst_same_origin and bp.get("signal"))
+        burst_contains = bool(burst_same_origin and self._burst_group_contains(bp, engine_top1))
+        super_signal = bool(agreement and burst_signal and burst_contains)
+        signal_type = "SUPER" if super_signal else ("MAIN" if agreement else "HC_DISAGREE")
+
+        pool = [n for n in range(1, 91) if n != engine_top1]
+        control_num = int(SOSIA_RANDOM.choice(pool))
+        gi = None
+        if burst_same_origin:
+            try:
+                v = int(bp.get("group_index", -1))
+                if 0 <= v < len(DECINA_GROUPS):
+                    gi = v
+            except (TypeError, ValueError):
+                gi = None
+
+        row = {
+            "origin_key": str(current_key),
+            "created_at": now_txt(),
+            "engine_top1": engine_top1,
+            "engine_confidence": ep.get("confidence"),
+            "engine_threshold": ep.get("threshold"),
+            "engine_support": ep.get("support"),
+            "sosia_top1": sosia_top1,
+            "sosia_score": sp.get("score"),
+            "sosia_consensus": sp.get("consensus"),
+            "agreement": agreement,
+            "signal_type": signal_type,
+            "is_main": agreement,
+            "is_super": super_signal,
+            "burst_signal": burst_signal,
+            "burst_contains": burst_contains,
+            "burst_group_index": gi,
+            "burst_group": DECINA_LABELS[gi] if gi is not None else None,
+            "burst_score": bp.get("score") if burst_same_origin else None,
+            "burst_gap": bp.get("gap") if burst_same_origin else None,
+            "control_num": control_num,
+        }
+        self.pending.append(row)
+        self.pending = self.pending[-20:]
+        return row
+
+    def settle(self, day, draw_id, nums):
+        if not self.pending:
+            return []
+        key = draw_key(day, draw_id)
+        actual = set(map(int, nums))
+        old = list(self.pending)
+        self.pending = []
+        closed = []
+        for p in old:
+            if not sim_draw_is_consecutive(p["origin_key"], day, draw_id):
+                self.skipped += 1
+                self.last_result = {"origin_key": p["origin_key"], "key": key,
+                                    "signal_type": p.get("signal_type"), "skipped": True}
+                continue
+            r = dict(p)
+            r.update({
+                "key": key,
+                "engine_hit": int(p["engine_top1"]) in actual,
+                "control_hit": int(p["control_num"]) in actual,
+                "skipped": False,
+            })
+            self.records.append(r)
+            self.last_result = r
+            closed.append(r)
+        self.records = self.records[-HC_METHOD_RECORD_MAX:]
+        return closed
+
+    @staticmethod
+    def _stats(rows):
+        n = len(rows)
+        h = sum(int(bool(r.get("engine_hit"))) for r in rows)
+        c = sum(int(bool(r.get("control_hit"))) for r in rows)
+        wins = sum(int(bool(r.get("engine_hit")) and not bool(r.get("control_hit"))) for r in rows)
+        losses = sum(int(bool(r.get("control_hit")) and not bool(r.get("engine_hit"))) for r in rows)
+        ties = n - wins - losses
+        return n, h, c, wins, losses, ties
+
+    def signal_text(self, row):
+        if not row or not row.get("is_main"):
+            return None
+        label = "🔥 SUPER" if row.get("is_super") else "🎯 MAIN"
+        extra = ""
+        if row.get("is_super"):
+            extra = f"\nBURST SIGNAL: {row.get('burst_group','-')} contiene #{row['engine_top1']}"
+        return (
+            f"{label} — METODO CONVERGENZA HC v1\n\n"
+            f"Origine: {row['origin_key']}\n"
+            f"ENGINE HC TOP1: #{row['engine_top1']}\n"
+            f"SOSIA rank#1: #{row['sosia_top1']}\n"
+            f"Segnale congelato: #{row['engine_top1']} SOLO H1"
+            f"{extra}\n"
+            f"Controllo random congelato: #{row['control_num']}\n\n"
+            "Shadow prospettico: nessuna puntata automatica."
+        )
+
+    def text(self):
+        main = [r for r in self.records if r.get("is_main")]
+        sup = [r for r in self.records if r.get("is_super")]
+        disagree = [r for r in self.records if not r.get("agreement")]
+        n, h, c, w, l, t = self._stats(main)
+        sn, sh, sc, sw, sl, st = self._stats(sup)
+        dn, dh, dc, dw, dl, dt = self._stats(disagree)
+        lines = [
+            "🎯 METODO CONVERGENZA HC v1 — H1 SHADOW",
+            "MAIN: ENGINE HIGH CONFIDENCE TOP1 = SOSIA rank#1.",
+            "SUPER: MAIN + BURST SIGNAL sulla decina che contiene il numero MAIN.",
+            "BURST non crea e non blocca MAIN. Un solo H1; nessun recupero.",
+            f"🧊 Inizio prospettico: dopo {self.start_from_key or '-'}" + (f" | {self.started_at}" if self.started_at else ""),
+            f"HC valutati {len(self.records)} | pendenti {len(self.pending)} | salti {self.skipped} | contesto mancante {self.missing_context}",
+            "",
+            f"🎯 MAIN (include SUPER): {h}/{n} ({safe_pct(h,n):.2f}%) | random {c}/{n} ({safe_pct(c,n):.2f}%) | baseline 22.22%",
+            f"   appaiato MAIN vs random: +{w}/-{l}/={t} | avanzamento {min(n,100)}/100 | {min(n,200)}/200 | {min(n,300)}/300",
+            f"🔥 SUPER: {sh}/{sn} ({safe_pct(sh,sn):.2f}%) | random {sc}/{sn} ({safe_pct(sc,sn):.2f}%) | baseline 22.22%",
+            f"🧪 HC ma SOSIA diverso: {dh}/{dn} ({safe_pct(dh,dn):.2f}%) | random {dc}/{dn} ({safe_pct(dc,dn):.2f}%)",
+        ]
+        for k in (50, 100, 200, 300):
+            rows = main[-k:] if len(main) >= k else main
+            if rows:
+                rn, rh, rc, *_ = self._stats(rows)
+                tag = "COMPLETA" if len(main) >= k else "PARZIALE"
+                lines.append(f"• MAIN ultimi {k} ({tag}, n={rn}): {rh}/{rn} ({safe_pct(rh,rn):.2f}%) | random {rc}/{rn} ({safe_pct(rc,rn):.2f}%)")
+        if self.pending:
+            lines += ["", "⏳ PENDENTI:"]
+            for r in self.pending[-5:]:
+                if r.get("is_main"):
+                    label = "SUPER" if r.get("is_super") else "MAIN"
+                    lines.append(f"• {r['origin_key']} {label} #{r['engine_top1']} | random #{r['control_num']}")
+                else:
+                    lines.append(f"• {r['origin_key']} HC_DISAGREE ENGINE #{r['engine_top1']} vs SOSIA #{r['sosia_top1']}")
+        if self.last_result and not self.last_result.get("skipped"):
+            r = self.last_result
+            lines += ["", f"🧾 Ultimo {r.get('key','-')}: {r.get('signal_type','-')} ENGINE #{r.get('engine_top1')} "
+                      + ("✅ HIT" if r.get("engine_hit") else "❌ MISS")
+                      + f" | random #{r.get('control_num')} " + ("✅" if r.get("control_hit") else "❌")]
+        lines.append("⚠️ Nuovo test prospettico v13: nessun backfill e nessuna puntata automatica.")
+        return "\n".join(lines)
+
+
 class EngineOnly:
     def __init__(self, load=True):
         self.processed = []
@@ -3383,6 +3645,7 @@ class EngineOnly:
         self.verifica = VerificationLab()  # read-only report, marker persistente isolato
         self.burstgate = BurstGateLab()    # audit derivato dai record BURST, nessun nuovo motore
         self.convergence = ConvergenceLab()  # v11: audit prospettico delle convergenze POST-6
+        self.hc_method = HCConvergenceMethod()  # v13: ENGINE HC + SOSIA rank1, BURST solo promozione SUPER
 
         self.state_load_info = {
             "loaded": False,
@@ -3400,6 +3663,7 @@ class EngineOnly:
             self.flow.bootstrap(self.engine_history)  # matrice 288x9 descrittiva
             self.burst.bootstrap(self.engine_history, flow=self.flow)  # warmup storico, NON previsione retroattiva
             self.verifica.ensure_start(self)  # solo se state/storico esistente; nessun backfill
+            self.hc_method.ensure_start(self)  # v13: marker al draw corrente, nessun backfill
             # Upgrade non distruttivo: se il vecchio state ha gia' una previsione
             # SOSIA adattiva congelata, ricava subito TOP1/TOP2 senza cambiarla.
             self._sosiasniper_migrate_pending()
@@ -5600,6 +5864,7 @@ class EngineOnly:
             self.post6.load(d.get("decina_post6_v1"))
             self.verifica.load(d.get("verification_v1"))
             self.convergence.load(d.get("convergence_v1"))
+            self.hc_method.load(d.get("hc_convergence_v1"))
 
             # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
             if self.engine_pending and self.engine_pending.get("accepted"):
@@ -5688,6 +5953,7 @@ class EngineOnly:
             "decina_post6_v1": self.post6.dump(),
             "verification_v1": self.verifica.dump(),
             "convergence_v1": self.convergence.dump(),
+            "hc_convergence_v1": self.hc_method.dump(),
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -6146,6 +6412,7 @@ class EngineOnly:
         if mode == "live":
             self.verifica.ensure_start(self)
             self.convergence.ensure_start(self)
+            self.hc_method.ensure_start(self)
             # Il campione era stato predisposto ALLA estrazione precedente:
             # nessun dato del draw attuale entra nella simulazione valutata.
             dual_result = self.dual.settle(day, e, clean)
@@ -6154,6 +6421,7 @@ class EngineOnly:
             self.postburst.observe_live(day, e, clean, open_new=notify)
             self.post6.observe_live(day, e, clean, open_new=notify)
             self.convergence.settle(day, e, clean)
+            self.hc_method.settle(day, e, clean)
             self._sosia_settle(day, e, clean)
             # Valuta TOP1/TOP2 PRIMA che _sosiap_settle cancelli il pending adattivo.
             sniper_result = self._sosiasniper_settle(day, e, clean)
@@ -6201,6 +6469,11 @@ class EngineOnly:
                 self.decina.arm(self, current_key)
                 self.burst.arm(self.engine_history, current_key, flow=self.flow)
                 self.convergence.arm(current_key, self)
+                hc_row = self.hc_method.arm(current_key, self)
+                if HC_METHOD_NOTIFY and hc_row and hc_row.get("is_main"):
+                    msg = self.hc_method.signal_text(hc_row)
+                    if msg:
+                        await self.tg(app, msg)
             if BURST_NOTIFY and notify and (burst_result or self.burst.pending):
                 await self.tg(app, self.burst.text())
             if DECINA_NOTIFY and notify and (decina_result or self.decina.pending):
@@ -6471,7 +6744,7 @@ class EngineOnly:
     def verify_all_text(self):
         """Report compatto di TUTTI i moduli: un solo comando, nessun reset/mutazione."""
         lines = [
-            "🧾 VERIFICA TUTTO v11 — SNAPSHOT COMPLETO",
+            "🧾 VERIFICA TUTTO v13 — SNAPSHOT COMPLETO",
             "Un solo report dei moduli; legge lo state corrente e NON cambia previsioni, soglie o contatori.",
         ]
 
@@ -6586,7 +6859,19 @@ class EngineOnly:
                   f"5+ {c5}/{cn} ({safe_pct(c5,cn):.2f}%) | random5 {cc5}/{cn} ({safe_pct(cc5,cn):.2f}%) | 6+ {c6}/{cn} ({safe_pct(c6,cn):.2f}%) | random6 {cc6}/{cn} ({safe_pct(cc6,cn):.2f}%)",
                   f"support>=2: {high5}/{len(high)} ({safe_pct(high5,len(high)):.2f}%)"]
 
-        lines += ["", "⚠️ Report audit/shadow. Per dettagli: /verifica /burstgate /post6 /convergenza oppure il comando singolo del modulo."]
+        # METODO CONVERGENZA HC v1
+        hm = self.hc_method.records
+        hm_main = [r for r in hm if r.get("is_main")]
+        hm_super = [r for r in hm if r.get("is_super")]
+        hm_dis = [r for r in hm if not r.get("agreement")]
+        mn,mh,mc,*_ = self.hc_method._stats(hm_main)
+        sn,sh,sc,*_ = self.hc_method._stats(hm_super)
+        dn,dh,dc,*_ = self.hc_method._stats(hm_dis)
+        lines += ["", "🎯 METODO CONVERGENZA HC v1",
+                  f"MAIN {mh}/{mn} ({safe_pct(mh,mn):.2f}%) | random {mc}/{mn} ({safe_pct(mc,mn):.2f}%) | progress {min(mn,100)}/100 {min(mn,200)}/200 {min(mn,300)}/300",
+                  f"SUPER {sh}/{sn} ({safe_pct(sh,sn):.2f}%) | random {sc}/{sn} ({safe_pct(sc,sn):.2f}%) | HC_DISAGREE {dh}/{dn} ({safe_pct(dh,dn):.2f}%) | pending {len(self.hc_method.pending)}"]
+
+        lines += ["", "⚠️ Report audit/shadow. Per dettagli: /metodohc /verifica /burstgate /post6 /convergenza oppure il comando singolo del modulo."]
         return "\n".join(lines)
 
     def menu_text(self):
@@ -6609,8 +6894,9 @@ class EngineOnly:
             "/postburst — dopo 5/6+ nella stessa decina: H1/H2/H3 e passaggio ad altre fasce\n"
             "/post6 — test v10: dopo 6+ segue la STESSA decina esclusivamente in H1\n"
             "/convergenza — POST-6 + ENGINE/SOSIA/BURST/DECINA sulla stessa fascia\n"
+            "/metodohc — MAIN: ENGINE HC=SOSIA #1; SUPER se BURST SIGNAL contiene il numero\n"
             "/verifica — test nuovo periodo: STESSA DECINA, ENGINE H5, BURST gate\n"
-            "/verificatutto — report unico v12: tutti i moduli + random6 + avanzamento test\n"
+            "/verificatutto — report unico v13: tutti i moduli + METODO HC\n"
             "/burstgate — audit v4: score/soglia, motivi NO SIGNAL e fasce di distanza\n"
             "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
             "/status — stato rapido ENGINE\n"
@@ -6673,6 +6959,9 @@ async def cmd_post6(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_convergenza(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].convergence.text())
 
+async def cmd_metodohc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].hc_method.text())
+
 async def cmd_verificatutto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].verify_all_text())
 
@@ -6710,6 +6999,7 @@ async def setup_commands(app):
         BotCommand("postburst", "POST-BURST: stessa/altra decina H1-H3"),
         BotCommand("post6", "POST-6: dopo 6+ stessa decina solo H1"),
         BotCommand("convergenza", "POST-6 + convergenze degli altri moduli"),
+        BotCommand("metodohc", "Metodo HC: ENGINE=SOSIA, BURST promuove SUPER"),
         BotCommand("verifica", "Test nuovo periodo: DECINA, ENGINE H5, BURST"),
         BotCommand("verificatutto", "Report unico di tutti i moduli"),
         BotCommand("burstgate", "Audit gate BURST: score, soglia e NO SIGNAL"),
@@ -6867,7 +7157,8 @@ async def startup(engine, app, retry_state=None):
         "🌋 POST-BURST LAB v1: eventi 5/6+ -> H1/H2/H3 /postburst\n"
         "🔥 POST-6 EXTREME SHADOW v1: dopo 6+ stessa decina solo H1 /post6\n"
         "🧲 CONVERGENCE LAB v1: POST-6 + ENGINE/SOSIA/BURST/DECINA /convergenza\n"
-        "🧾 VERIFICA TUTTO v12: report compatto + controlli random/progress /verificatutto\n"
+        "🎯 METODO CONVERGENZA HC v1: ENGINE HC=SOSIA #1; BURST puo promuovere SUPER /metodohc\n"
+        "🧾 VERIFICA TUTTO v13: report compatto + METODO HC /verificatutto\n"
         "🔟 BURST EVENT DETECTOR v3: FLOW REGIME + SIGNAL/NO SIGNAL + EXTREME-6 /burst\n"
         "🔬 BURST GATE LAB v4: audit score/soglia e NO SIGNAL /burstgate\n"
         "✅ state persistente + autorotation\n\n"
@@ -6876,7 +7167,7 @@ async def startup(engine, app, retry_state=None):
         f"H5 LIVE gia' disponibili: {len(engine.engine_h5_records_live)}\n"
         f"PLAY storico ricostruito: {len(engine.engine_play_records_live)} record | "
         f"attivi={sum(1 for x in engine.engine_play_sessions if x.get('origin_mode')=='live')}\n\n"
-        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /postburst /post6 /convergenza /verifica /verificatutto /burstgate /sosiarandom /menu"
+        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /postburst /post6 /convergenza /metodohc /verifica /verificatutto /burstgate /sosiarandom /menu"
     )
     await notify_pending(engine,app)
     await notify_ambo_active(engine,app)
@@ -7332,14 +7623,40 @@ async def run_self_test():
     all_txt=cv_engine.verify_all_text()
     for token in ('ENGINE / ENGINEH / MULTIH5','PLAY','AMBO 2xHOT5','SOSIA / SOSIARANDOM',
                   'SOSIA SNIPER','SOSIA PATTERN','DUAL / DECINE','BURST / BURSTGATE',
-                  'FLOW','POST-BURST','POST-6 v10','VERIFICA / CONVERGENZA'):
+                  'FLOW','POST-BURST','POST-6 v10','VERIFICA / CONVERGENZA','METODO CONVERGENZA HC v1'):
         assert token in all_txt
     assert len(all_txt) < 4096, len(all_txt)
     assert 'random6' in all_txt and 'avanzamento' in all_txt
-    assert '/verificatutto' in cv_engine.menu_text() and '/convergenza' in cv_engine.menu_text()
-    print(f'SELF-TEST v12 OK: CONVERGENCE forward/roundtrip + VERIFICA TUTTO+ compatto ({len(all_txt)} chars).')
+    assert '/verificatutto' in cv_engine.menu_text() and '/convergenza' in cv_engine.menu_text() and '/metodohc' in cv_engine.menu_text()
+    # METODO HC v13: marker nuovo, MAIN/SUPER/HC_DISAGREE e roundtrip.
+    mh_engine = EngineOnly(load=False)
+    mh_engine.engine_history = [{'key':'2099-09-01#100','nums':list(range(1,21))}]
+    assert mh_engine.hc_method.ensure_start(mh_engine)
+    mh_engine.engine_history.append({'key':'2099-09-01#101','nums':list(range(1,21))})
+    mh_engine.engine_pending = {'signal_from_key':'2099-09-01#101','accepted':True,'top1':52,'confidence':0.9,'threshold':0.5,'support':3}
+    mh_engine.sosiasniper_pending = {'from_key':'2099-09-01#101','top1':52,'score':0.95,'consensus':6}
+    mh_engine.burst.pending = {'from_key':'2099-09-01#101','group_index':5,'signal':True,'score':0.9,'gap':0.4}
+    mr = mh_engine.hc_method.arm('2099-09-01#101', mh_engine)
+    assert mr and mr['is_main'] and mr['is_super'] and mr['signal_type']=='SUPER'
+    h1 = [52] + [n for n in range(1,91) if n not in {52,mr['control_num']}][:19]
+    closed = mh_engine.hc_method.settle('2099-09-01',102,h1)
+    assert len(closed)==1 and closed[0]['engine_hit'] and not closed[0]['control_hit']
+    # controllo HC_DISAGREE
+    mh_engine.engine_history.append({'key':'2099-09-01#102','nums':h1})
+    mh_engine.engine_pending = {'signal_from_key':'2099-09-01#102','accepted':True,'top1':40,'confidence':0.8,'threshold':0.5,'support':2}
+    mh_engine.sosiasniper_pending = {'from_key':'2099-09-01#102','top1':41,'score':0.8,'consensus':5}
+    mh_engine.burst.pending = {'from_key':'2099-09-01#102','group_index':4,'signal':False}
+    dr = mh_engine.hc_method.arm('2099-09-01#102', mh_engine)
+    assert dr and not dr['agreement'] and dr['signal_type']=='HC_DISAGREE'
+    mhrt=HCConvergenceMethod(); assert mhrt.load(mh_engine.hc_method.dump()) and len(mhrt.pending)==1
+    assert 'METODO CONVERGENZA HC v1' in mh_engine.hc_method.text()
 
-    print("SELF-TEST OK: v12 conserva ENGINE/SOSIA/DUAL/FLOW/BURST/POST-BURST/POST-6 + CONVERGENCE + VERIFY-ALL+")
+    all_txt=cv_engine.verify_all_text()
+    assert len(all_txt) < 4096, len(all_txt)
+    assert 'METODO CONVERGENZA HC v1' in all_txt
+    print(f'SELF-TEST v13 OK: METODO HC MAIN/SUPER/DISAGREE + CONVERGENCE + VERIFICA TUTTO ({len(all_txt)} chars).')
+
+    print("SELF-TEST OK: v13 conserva tutti i moduli v12 e aggiunge METODO CONVERGENZA HC prospettico")
 
 async def main():
     if "--self-test" in sys.argv:
@@ -7371,6 +7688,7 @@ async def main():
     app.add_handler(CommandHandler("postburst",cmd_postburst))
     app.add_handler(CommandHandler("post6",cmd_post6))
     app.add_handler(CommandHandler("convergenza",cmd_convergenza))
+    app.add_handler(CommandHandler("metodohc",cmd_metodohc))
     app.add_handler(CommandHandler("verifica",cmd_verifica))
     app.add_handler(CommandHandler("verificatutto",cmd_verificatutto))
     app.add_handler(CommandHandler("burstgate",cmd_burstgate))
