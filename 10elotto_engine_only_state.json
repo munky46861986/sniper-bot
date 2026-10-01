@@ -1,6 +1,6 @@
 {
   "state_version": 1,
-  "saved_at": "2026-10-01 16:11:55",
+  "saved_at": "2026-10-01 16:17:06",
   "processed": [
     "2026-09-08#001",
     "2026-09-08#002",
@@ -6524,37 +6524,13 @@
     "2026-10-01#191",
     "2026-10-01#192",
     "2026-10-01#193",
-    "2026-10-01#194"
+    "2026-10-01#194",
+    "2026-10-01#195"
   ],
-  "last_draw_key": "2026-10-01#194",
+  "last_draw_key": "2026-10-01#195",
   "engine_model_version": 1,
   "engine_bootstrap_done": true,
   "engine_history": [
-    {
-      "key": "2026-09-28#160",
-      "nums": [
-        2,
-        5,
-        7,
-        13,
-        18,
-        19,
-        26,
-        40,
-        42,
-        44,
-        45,
-        48,
-        59,
-        68,
-        72,
-        73,
-        80,
-        82,
-        83,
-        85
-      ]
-    },
     {
       "key": "2026-09-28#161",
       "nums": [
@@ -26527,6 +26503,31 @@
         83,
         84,
         86,
+        88
+      ]
+    },
+    {
+      "key": "2026-10-01#195",
+      "nums": [
+        5,
+        6,
+        8,
+        10,
+        17,
+        24,
+        32,
+        41,
+        42,
+        48,
+        50,
+        52,
+        57,
+        58,
+        61,
+        65,
+        67,
+        77,
+        79,
         88
       ]
     }
@@ -894982,7 +894983,51 @@
     "version": 2,
     "start_from_key": "2026-10-01#183",
     "started_at": "2026-10-01T15:24:39+02:00",
-    "pending": [],
+    "pending": [
+      {
+        "origin_key": "2026-10-01#195",
+        "created_at": "2026-10-01 16:17:06",
+        "pick": 36,
+        "ranked_candidates": [
+          {
+            "num": 36,
+            "gap": 13,
+            "trans": 0.20517351120098798,
+            "support": 367,
+            "transition_hits": 70
+          },
+          {
+            "num": 51,
+            "gap": 13,
+            "trans": 0.18905302049458397,
+            "support": 367,
+            "transition_hits": 62
+          },
+          {
+            "num": 62,
+            "gap": 15,
+            "trans": 0.1286019541031151,
+            "support": 367,
+            "transition_hits": 41
+          }
+        ],
+        "candidate_count": 3,
+        "pick_gap": 13,
+        "pick_trans": 0.20517351,
+        "runner_up": 51,
+        "runner_gap": 13,
+        "runner_trans": 0.18905302,
+        "third_candidate": 62,
+        "third_gap": 15,
+        "third_trans": 0.12860195,
+        "fourth_candidate": null,
+        "fourth_gap": null,
+        "fourth_trans": null,
+        "margin": 0.01612049,
+        "control_num": 70,
+        "rule": "gap 13-18; 3-4 candidates; max TRANS80"
+      }
+    ],
     "records": [
       {
         "origin_key": "2026-10-01#185",
@@ -895201,7 +895246,7 @@
         "fourth_hit": false
       }
     ],
-    "scans": 11,
+    "scans": 12,
     "no_signal": 7,
     "skipped": 0,
     "history_insufficient": 0,
@@ -895260,13 +895305,48 @@
       "fourth_hit": false
     },
     "last_scan": {
-      "origin_key": "2026-10-01#194",
-      "signal": false,
-      "candidate_count": 2,
-      "candidates": [
-        41,
-        62
-      ]
+      "origin_key": "2026-10-01#195",
+      "created_at": "2026-10-01 16:17:06",
+      "pick": 36,
+      "ranked_candidates": [
+        {
+          "num": 36,
+          "gap": 13,
+          "trans": 0.20517351120098798,
+          "support": 367,
+          "transition_hits": 70
+        },
+        {
+          "num": 51,
+          "gap": 13,
+          "trans": 0.18905302049458397,
+          "support": 367,
+          "transition_hits": 62
+        },
+        {
+          "num": 62,
+          "gap": 15,
+          "trans": 0.1286019541031151,
+          "support": 367,
+          "transition_hits": 41
+        }
+      ],
+      "candidate_count": 3,
+      "pick_gap": 13,
+      "pick_trans": 0.20517351,
+      "runner_up": 51,
+      "runner_gap": 13,
+      "runner_trans": 0.18905302,
+      "third_candidate": 62,
+      "third_gap": 15,
+      "third_trans": 0.12860195,
+      "fourth_candidate": null,
+      "fourth_gap": null,
+      "fourth_trans": null,
+      "margin": 0.01612049,
+      "control_num": 70,
+      "rule": "gap 13-18; 3-4 candidates; max TRANS80",
+      "signal": true
     }
   }
 }
