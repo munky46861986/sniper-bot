@@ -1,53 +1,21 @@
 # ============================================================
-# 🧠 10eLOTTO ENGINE ONLY — v16 FOCUS R14-18 TRANS40 + TRIPLETTE + VERIFY-ALL
+# 🎯 10eLOTTO FOCUS FAST ONLY — v17
 # ============================================================
 #
-# UNICO MOTORE ATTIVO:
-#   • surrogate multi-engine PRE-FUTURO:
-#       frequenza/accelerazione + transizioni + vicini di stato + hazard gap
-#   • HIGH CONFIDENCE = coda superiore dinamica dei margini recenti (default top 15%)
-#   • UNICO NUMERO OSSERVATO = TOP1
+# UNICO METODO ATTIVO:
+#   • ritardo 13..18
+#   • segnale solo con 3 o 4 candidati
+#   • ranking candidati con TRANS80 H1 calcolato solo sul passato
+#   • sceglie il TRANS80 piu' alto
+#   • UN SOLO NUMERO, SOLO prossima H1
+#   • nessun recupero / nessun backfill
 #
-# DIAGNOSTICA PRINCIPALE:
-#   • H1/H2/H3/H5 sul TOP1 congelato alla nascita del segnale
-#   • MULTI-HIT H5:
-#       0/5, 1/5, ESATTO 2/5, 3+/5
-#       >=2/5 e >=3/5
-#   • rolling ultimi 50 / 100 HIGH CONFIDENCE completati
-#   • split per consensus 1/4..4/4
-#   • controllo H1 MISS -> >=2 hit tra H2-H5
-#   • controllo H1 HIT -> almeno un secondo hit tra H2-H5
-#
-# RIMOSSI:
-#   • CORE
-#   • FAST
-#   • FREQ
-#   • TOP5/TOP10 ranking depth
-#   • qualsiasi puntata automatica / progressione
-#
-# PLAY SHADOW AGGIUNTO:
-#   • HC -> congela TOP1
-#   • prima uscita valida solo H1-H3 = conferma (non giocata)
-#   • dalla successiva si cerca la seconda uscita entro H5
-#   • seconda uscita = HIT + STOP; se manca entro H5 = STOP
-#   • se nessuna conferma entro H3 = NO PLAY
-#
-# AMBO 2xHOT5 H1-H3 NO-LOCK (modulo separato, simulazione con notifiche):
-#   • ogni HIGH CONFIDENCE prospettico apre una sessione indipendente: NESSUN lock 5;
-#   • attende la PRIMA uscita del TOP1 entro H1/H2/H3 = conferma;
-#   • nel draw di conferma considera i 19 numeri usciti insieme al TOP1;
-#   • sceglie i DUE numeri piu' frequenti nelle ultime 5 estrazioni
-#     (finestra inclusiva del draw di conferma; tie-break recency, poi numero);
-#   • dalla successiva simula DUE ambi: TOP1-HOT5#1 e TOP1-HOT5#2 fino a H5;
-#   • alla seconda uscita TOP1: 0/1/2 ambi centrati e STOP; comunque STOP a H5;
-#   • contabilizza ogni ambo separatamente (1 euro ciascuno, premio lordo 14x default);
-#   • SOLO SIMULAZIONE: NON si collega a bookmaker/concessionari.
-#
-# MIGRAZIONE:
-#   • se esiste il vecchio state combinato, importa SOLO i campi ENGINE;
-#   • ignora completamente CORE/FAST/FREQ;
-#   • converte i vecchi record ENGINE H5 nella nuova diagnostica MULTI-HIT,
-#     quindi non riparte da zero quando i dati sono disponibili.
+# PAUSA v17:
+#   • ENGINE predittivo, SOSIA, FORCED ONE, TRIPLETTE, HC, BURST,
+#     POST-6, PLAY, AMBO, DUAL e gli altri tracker non vengono
+#     aggiornati nel loop live e non inviano notifiche.
+#   • il loro state storico viene comunque caricato e risalvato
+#     senza cancellarlo, per poterli riattivare in futuro.
 #
 # INFRASTRUTTURA:
 #   • polling sito ogni LOOP_SEC
@@ -4127,28 +4095,32 @@ class TripletteCooccLab:
 
 
 # ============================================================
-# FOCUS R14-18 TRANS40 v1 — UN SOLO NUMERO H1, SELETTIVO
+# FOCUS FAST v2 — UN SOLO NUMERO H1, UNICO METODO ATTIVO
 # ============================================================
 # Regola congelata:
 #   1) calcola il ritardo di ogni numero 1..90 DOPO il draw corrente;
-#   2) candidati = numeri con ritardo 14..18 inclusi;
-#   3) segnale SOLO se i candidati sono esattamente 3;
-#   4) per ciascun candidato calcola TRANS40: probabilita' media empirica
+#   2) candidati = numeri con ritardo 13..18 inclusi;
+#   3) segnale SOLO se i candidati sono 3 oppure 4;
+#   4) per ciascun candidato calcola TRANS80: probabilita' media empirica
 #      di comparire al draw successivo condizionata ai 20 numeri appena usciti,
-#      usando al massimo le ultime 40 transizioni gia' concluse;
-#   5) sceglie il candidato con TRANS40 piu' alto.
+#      usando al massimo le ultime 80 transizioni gia' concluse;
+#   5) sceglie il candidato con TRANS80 piu' alto.
 # Un solo H1, nessun recupero. Random appaiato congelato prima della H1.
+# Tutti gli altri metodi sono PAUSATI: il loro state viene conservato ma non aggiornato.
 # ============================================================
-FOCUS_VERSION = 1
-FOCUS_GAP_MIN = max(1, int(os.getenv("FOCUS_GAP_MIN", "14")))
+FOCUS_VERSION = 2
+FOCUS_GAP_MIN = max(1, int(os.getenv("FOCUS_GAP_MIN", "13")))
 FOCUS_GAP_MAX = max(FOCUS_GAP_MIN, int(os.getenv("FOCUS_GAP_MAX", "18")))
-FOCUS_TRANS_WINDOW = max(20, int(os.getenv("FOCUS_TRANS_WINDOW", "40")))
+FOCUS_MIN_CANDIDATES = max(2, int(os.getenv("FOCUS_MIN_CANDIDATES", "3")))
+FOCUS_MAX_CANDIDATES = max(FOCUS_MIN_CANDIDATES, int(os.getenv("FOCUS_MAX_CANDIDATES", "4")))
+FOCUS_TRANS_WINDOW = max(20, int(os.getenv("FOCUS_TRANS_WINDOW", "80")))
 FOCUS_RECORD_MAX = max(300, int(os.getenv("FOCUS_RECORD_MAX", "5000")))
 FOCUS_NOTIFY = os.getenv("FOCUS_NOTIFY", "1").strip().lower() not in {"0","false","no","off"}
 FOCUS_NOTIFY_RESULT = os.getenv("FOCUS_NOTIFY_RESULT", "1").strip().lower() not in {"0","false","no","off"}
+LEGACY_METHODS_PAUSED = True
 
 
-class FocusR14Trans40:
+class FocusFastV2:
     def __init__(self):
         self.start_from_key = None
         self.started_at = None
@@ -4215,231 +4187,196 @@ class FocusR14Trans40:
         }
 
     def _is_after_marker(self, key):
-        a = _verifica_order(key)
-        b = _verifica_order(self.start_from_key)
+        a = _verifica_order(key); b = _verifica_order(self.start_from_key)
         return a is not None and b is not None and a > b
 
     @staticmethod
     def _nums(row):
-        if not isinstance(row, dict):
-            return []
-        try:
-            vals = [int(x) for x in row.get("nums", [])]
-        except Exception:
-            return []
+        if not isinstance(row, dict): return []
+        try: vals = [int(x) for x in row.get("nums", [])]
+        except Exception: return []
         return vals if len(vals) == 20 and len(set(vals)) == 20 else []
 
     @classmethod
     def _gaps(cls, history):
-        # Ritardo 0 = presente nel draw corrente; 1 = assente corrente ma presente nel precedente.
-        gaps = {}
-        rows = list(history)
+        # Ritardo 0 = presente nel draw corrente.
+        rows = list(history); gaps = {}
         for n in range(1, 91):
             g = None
             for back, row in enumerate(reversed(rows)):
                 vals = cls._nums(row)
                 if vals and n in vals:
-                    g = back
-                    break
-            if g is None:
-                g = len(rows) + 1
+                    g = back; break
+            if g is None: g = len(rows) + 1
             gaps[n] = int(g)
         return gaps
 
     @classmethod
     def _transition_score(cls, history, current_nums, candidate):
         rows = [r for r in list(history) if cls._nums(r)]
-        if len(rows) < 2:
-            return None, 0, 0
-        pairs = []
+        if len(rows) < 2: return None, 0, 0
         start = max(0, len(rows) - 1 - FOCUS_TRANS_WINDOW)
+        pairs = []
         for i in range(start, len(rows) - 1):
             a = cls._nums(rows[i]); b = cls._nums(rows[i+1])
-            if a and b:
-                pairs.append((set(a), set(b)))
-        if not pairs:
-            return None, 0, 0
-        cond = []
-        supports = 0
-        hits = 0
-        cand = int(candidate)
+            if a and b: pairs.append((set(a), set(b)))
+        if not pairs: return None, 0, 0
+        cond=[]; supports=0; hits=0; cand=int(candidate)
         for src in map(int, current_nums):
-            den = 0; num = 0
+            den=num=0
             for a,b in pairs:
                 if src in a:
                     den += 1
-                    if cand in b:
-                        num += 1
+                    if cand in b: num += 1
             if den:
-                # Jeffreys-style shrinkage evita estremi dovuti a supporti piccoli.
+                # Shrinkage leggero: evita estremi da supporti piccoli.
                 cond.append((num + 0.5) / (den + 1.0))
-                supports += den
-                hits += num
-        if not cond:
-            return None, supports, hits
-        return float(sum(cond) / len(cond)), supports, hits
+                supports += den; hits += num
+        if not cond: return None, supports, hits
+        return float(sum(cond)/len(cond)), supports, hits
 
     def arm(self, current_key, engine):
-        if not self.start_from_key:
-            self.ensure_start(engine)
-        if not self.start_from_key or not self._is_after_marker(current_key):
-            return None
-        if any(str(x.get("origin_key")) == str(current_key) for x in self.pending):
-            return None
-        if any(str(x.get("origin_key")) == str(current_key) for x in self.records[-10:]):
-            return None
-
+        if not self.start_from_key: self.ensure_start(engine)
+        if not self.start_from_key or not self._is_after_marker(current_key): return None
+        if any(str(x.get("origin_key")) == str(current_key) for x in self.pending): return None
+        if any(str(x.get("origin_key")) == str(current_key) for x in self.records[-10:]): return None
         self.scans += 1
         hist = list(engine.engine_history)
         if len(hist) < max(FOCUS_GAP_MAX + 2, FOCUS_TRANS_WINDOW + 1):
             self.history_insufficient += 1
-            self.last_scan = {"origin_key": str(current_key), "signal": False, "reason": "history_insufficient"}
+            self.last_scan={"origin_key":str(current_key),"signal":False,"reason":"history_insufficient"}
             return None
-        current_nums = self._nums(hist[-1])
+        current_nums=self._nums(hist[-1])
         if not current_nums or str(hist[-1].get("key")) != str(current_key):
             self.history_insufficient += 1
-            self.last_scan = {"origin_key": str(current_key), "signal": False, "reason": "current_history_missing"}
+            self.last_scan={"origin_key":str(current_key),"signal":False,"reason":"current_history_missing"}
             return None
-
-        gaps = self._gaps(hist)
-        candidates = [n for n in range(1, 91) if FOCUS_GAP_MIN <= gaps[n] <= FOCUS_GAP_MAX]
-        if len(candidates) != 3:
+        gaps=self._gaps(hist)
+        candidates=[n for n in range(1,91) if FOCUS_GAP_MIN <= gaps[n] <= FOCUS_GAP_MAX]
+        if not (FOCUS_MIN_CANDIDATES <= len(candidates) <= FOCUS_MAX_CANDIDATES):
             self.no_signal += 1
-            self.last_scan = {
-                "origin_key": str(current_key), "signal": False,
-                "candidate_count": len(candidates), "candidates": candidates[:12],
-            }
+            self.last_scan={"origin_key":str(current_key),"signal":False,
+                            "candidate_count":len(candidates),"candidates":candidates[:12]}
             return None
-
-        details = []
+        details=[]
         for n in candidates:
-            score, support, trans_hits = self._transition_score(hist, current_nums, n)
+            score,support,trans_hits=self._transition_score(hist,current_nums,n)
             if score is None:
                 self.history_insufficient += 1
-                self.last_scan = {"origin_key": str(current_key), "signal": False, "reason": "transition_missing"}
+                self.last_scan={"origin_key":str(current_key),"signal":False,"reason":"transition_missing"}
                 return None
-            details.append({"num": int(n), "gap": int(gaps[n]), "trans": float(score),
-                            "support": int(support), "transition_hits": int(trans_hits)})
-        details.sort(key=lambda x: (-x["trans"], -x["gap"], x["num"]))
-        pick = int(details[0]["num"])
-        runner = int(details[1]["num"])
-        third = int(details[2]["num"])
-        pool = [n for n in range(1,91) if n != pick]
-        control_num = int(SOSIA_RANDOM.choice(pool))
-        row = {
-            "origin_key": str(current_key),
-            "created_at": now_txt(),
-            "pick": pick,
-            "runner_up": runner,
-            "third_candidate": third,
-            "candidates": details,
-            "pick_gap": int(details[0]["gap"]),
-            "runner_gap": int(details[1]["gap"]),
-            "pick_trans": round(float(details[0]["trans"]), 8),
-            "runner_trans": round(float(details[1]["trans"]), 8),
-            "third_trans": round(float(details[2]["trans"]), 8),
-            "margin": round(float(details[0]["trans"] - details[1]["trans"]), 8),
-            "control_num": control_num,
-            "rule": f"gap {FOCUS_GAP_MIN}-{FOCUS_GAP_MAX}; exactly3; max TRANS{FOCUS_TRANS_WINDOW}",
+            details.append({"num":int(n),"gap":int(gaps[n]),"trans":float(score),
+                            "support":int(support),"transition_hits":int(trans_hits)})
+        details.sort(key=lambda x:(-x["trans"],-x["gap"],x["num"]))
+        pick=int(details[0]["num"])
+        control_num=int(SOSIA_RANDOM.choice([n for n in range(1,91) if n != pick]))
+        row={
+            "origin_key":str(current_key),"created_at":now_txt(),"pick":pick,
+            "ranked_candidates":details,"candidate_count":len(details),
+            "pick_gap":int(details[0]["gap"]),"pick_trans":round(float(details[0]["trans"]),8),
+            "runner_up":int(details[1]["num"]),"runner_gap":int(details[1]["gap"]),
+            "runner_trans":round(float(details[1]["trans"]),8),
+            "third_candidate":int(details[2]["num"]),"third_gap":int(details[2]["gap"]),
+            "third_trans":round(float(details[2]["trans"]),8),
+            "fourth_candidate":int(details[3]["num"]) if len(details)>3 else None,
+            "fourth_gap":int(details[3]["gap"]) if len(details)>3 else None,
+            "fourth_trans":round(float(details[3]["trans"]),8) if len(details)>3 else None,
+            "margin":round(float(details[0]["trans"]-details[1]["trans"]),8),
+            "control_num":control_num,
+            "rule":f"gap {FOCUS_GAP_MIN}-{FOCUS_GAP_MAX}; {FOCUS_MIN_CANDIDATES}-{FOCUS_MAX_CANDIDATES} candidates; max TRANS{FOCUS_TRANS_WINDOW}",
         }
-        self.pending.append(row)
-        self.pending = self.pending[-5:]
-        self.last_scan = dict(row, signal=True)
+        self.pending.append(row); self.pending=self.pending[-5:]
+        self.last_scan=dict(row,signal=True)
         return row
 
     def settle(self, day, draw_id, nums):
-        if not self.pending:
-            return []
-        key = draw_key(day, draw_id)
-        actual = set(map(int, nums))
-        old = list(self.pending)
-        self.pending = []
-        closed = []
+        if not self.pending: return []
+        key=draw_key(day,draw_id); actual=set(map(int,nums)); old=list(self.pending); self.pending=[]; closed=[]
         for p in old:
-            if not sim_draw_is_consecutive(p.get("origin_key"), day, draw_id):
+            if not sim_draw_is_consecutive(p.get("origin_key"),day,draw_id):
                 self.skipped += 1
-                self.last_result = {"origin_key": p.get("origin_key"), "key": key, "pick": p.get("pick"), "skipped": True}
+                self.last_result={"origin_key":p.get("origin_key"),"key":key,"pick":p.get("pick"),"skipped":True}
                 continue
-            r = dict(p)
-            r.update({
-                "key": key,
-                "hit": int(p["pick"]) in actual,
-                "runner_hit": int(p.get("runner_up", -1)) in actual,
-                "third_hit": int(p.get("third_candidate", -1)) in actual,
-                "control_hit": int(p["control_num"]) in actual,
-                "skipped": False,
-            })
-            self.records.append(r)
-            self.last_result = r
-            closed.append(r)
-        self.records = self.records[-FOCUS_RECORD_MAX:]
+            r=dict(p)
+            ranked=list(p.get("ranked_candidates") or [])
+            rank_hits=[bool(int(x.get("num")) in actual) for x in ranked]
+            r.update({"key":key,"hit":bool(int(p["pick"]) in actual),
+                      "control_hit":bool(int(p["control_num"]) in actual),
+                      "rank_hits":rank_hits,
+                      "runner_hit":rank_hits[1] if len(rank_hits)>1 else False,
+                      "third_hit":rank_hits[2] if len(rank_hits)>2 else False,
+                      "fourth_hit":rank_hits[3] if len(rank_hits)>3 else False})
+            self.records.append(r); self.records=self.records[-FOCUS_RECORD_MAX:]
+            self.last_result=r; closed.append(r)
         return closed
 
     @staticmethod
     def _stats(rows):
-        n = len(rows)
-        h = sum(int(bool(r.get("hit"))) for r in rows)
-        c = sum(int(bool(r.get("control_hit"))) for r in rows)
-        rh = sum(int(bool(r.get("runner_hit"))) for r in rows)
-        th = sum(int(bool(r.get("third_hit"))) for r in rows)
-        w = sum(int(bool(r.get("hit")) and not bool(r.get("control_hit"))) for r in rows)
-        l = sum(int(bool(r.get("control_hit")) and not bool(r.get("hit"))) for r in rows)
-        return n,h,c,rh,th,w,l,n-w-l
+        rows=[r for r in rows if isinstance(r,dict) and not r.get("skipped")]
+        n=len(rows); h=sum(bool(r.get("hit")) for r in rows); c=sum(bool(r.get("control_hit")) for r in rows)
+        r2=sum(bool(r.get("runner_hit")) for r in rows); r3=sum(bool(r.get("third_hit")) for r in rows)
+        r4=sum(bool(r.get("fourth_hit")) for r in rows if r.get("candidate_count")==4)
+        n4=sum(int(r.get("candidate_count",0) or 0)==4 for r in rows)
+        w=sum(bool(r.get("hit")) and not bool(r.get("control_hit")) for r in rows)
+        l=sum(bool(r.get("control_hit")) and not bool(r.get("hit")) for r in rows)
+        return n,h,c,r2,r3,r4,n4,w,l,n-w-l
 
-    def signal_text(self, row):
-        if not row:
-            return None
-        a,b,c = row.get("candidates", [{},{},{}])[:3]
-        return (
-            "🎯 FOCUS R14-18 TRANS40 v1 — NUMERO H1\n\n"
-            f"Origine: {row.get('origin_key','-')}\n"
-            f"Candidati: #{a.get('num')} (R{a.get('gap')}) / #{b.get('num')} (R{b.get('gap')}) / #{c.get('num')} (R{c.get('gap')})\n"
-            f"TRANS{FOCUS_TRANS_WINDOW}: {float(a.get('trans',0)):.4f} / {float(b.get('trans',0)):.4f} / {float(c.get('trans',0)):.4f}\n"
-            f"Margine 1°-2°: {float(row.get('margin',0)):.4f}\n\n"
-            f"➡️ NUMERO FOCUS: #{row.get('pick')} — SOLO PROSSIMA H1\n"
-            f"Controllo random: #{row.get('control_num')}\n\n"
-            "Regola congelata: esattamente 3 numeri con ritardo 14-18; scelgo il TRANS40 piu' alto."
-        )
+    def signal_text(self,row):
+        if not row: return None
+        parts=[]
+        for x in row.get("ranked_candidates",[]):
+            parts.append(f"#{x.get('num')} R{x.get('gap')} T{x.get('trans',0):.4f}")
+        return ("⚡ FOCUS FAST v2 — NUMERO H1\n\n"
+                f"Origine: {row.get('origin_key','-')}\n"
+                f"Candidati ({row.get('candidate_count')}): " + " | ".join(parts) + "\n"
+                f"Margine 1°-2°: {float(row.get('margin',0)):.4f}\n\n"
+                f"➡️ NUMERO FOCUS: #{row.get('pick')} — SOLO PROSSIMA H1\n"
+                f"Controllo random: #{row.get('control_num')}\n\n"
+                f"Regola: ritardo {FOCUS_GAP_MIN}-{FOCUS_GAP_MAX}, 3-4 candidati, TRANS{FOCUS_TRANS_WINDOW} massimo.")
 
-    def result_text(self, row):
-        if not row or row.get("skipped"):
-            return None
-        return (
-            "🧾 FOCUS R14-18 TRANS40 v1 — ESITO H1\n\n"
-            f"Origine: {row.get('origin_key','-')} → {row.get('key','-')}\n"
-            f"FOCUS #{row.get('pick')}: " + ("✅ HIT" if row.get("hit") else "❌ MISS") + "\n"
-            f"2° candidato #{row.get('runner_up')}: " + ("✅" if row.get("runner_hit") else "❌") + "\n"
-            f"3° candidato #{row.get('third_candidate')}: " + ("✅" if row.get("third_hit") else "❌") + "\n"
-            f"Random #{row.get('control_num')}: " + ("✅ HIT" if row.get("control_hit") else "❌ MISS")
-        )
+    def result_text(self,row):
+        if not row or row.get("skipped"): return None
+        ranks=list(row.get("ranked_candidates") or [])
+        hits=list(row.get("rank_hits") or [])
+        details=[]
+        for i,x in enumerate(ranks):
+            details.append(f"{i+1}° #{x.get('num')}: " + ("✅" if i < len(hits) and hits[i] else "❌"))
+        return ("🧾 FOCUS FAST v2 — ESITO H1\n\n"
+                f"Origine: {row.get('origin_key','-')} → {row.get('key','-')}\n"
+                f"FOCUS #{row.get('pick')}: " + ("✅ HIT" if row.get("hit") else "❌ MISS") + "\n" +
+                "\n".join(details[1:]) + "\n" +
+                f"Random #{row.get('control_num')}: " + ("✅ HIT" if row.get("control_hit") else "❌ MISS"))
 
     def text(self):
-        n,h,c,rh,th,w,l,t = self._stats(self.records)
-        lines = [
-            "🎯 FOCUS R14-18 TRANS40 v1 — UN SOLO NUMERO H1",
-            f"Regola: esattamente 3 candidati con ritardo {FOCUS_GAP_MIN}-{FOCUS_GAP_MAX}; scelgo il TRANS{FOCUS_TRANS_WINDOW} piu' alto.",
-            f"🧊 Inizio prospettico: dopo {self.start_from_key or '-'}" + (f" | {self.started_at}" if self.started_at else ""),
-            f"Scan {self.scans} | segnali valutati {n} | pendenti {len(self.pending)} | NO SIGNAL {self.no_signal} | salti {self.skipped} | history insufficiente {self.history_insufficient}",
-            f"🎯 FOCUS H1: {h}/{n} ({safe_pct(h,n):.2f}%) | random {c}/{n} ({safe_pct(c,n):.2f}%) | baseline 22.22%",
-            f"2° candidato: {rh}/{n} ({safe_pct(rh,n):.2f}%) | 3° candidato: {th}/{n} ({safe_pct(th,n):.2f}%) | appaiato FOCUS vs random +{w}/-{l}/={t}",
+        n,h,c,r2,r3,r4,n4,w,l,t=self._stats(self.records)
+        rate=100.0*(n+len(self.pending))/self.scans if self.scans else 0.0
+        lines=[
+            "⚡ FOCUS FAST v2 — UNICO METODO ATTIVO",
+            f"Regola: ritardo {FOCUS_GAP_MIN}-{FOCUS_GAP_MAX}; segnale con {FOCUS_MIN_CANDIDATES}-{FOCUS_MAX_CANDIDATES} candidati; scelgo TRANS{FOCUS_TRANS_WINDOW} massimo.",
+            f"🧊 Inizio prospettico v2: dopo {self.start_from_key or '-'}" + (f" | {self.started_at}" if self.started_at else ""),
+            f"Scan {self.scans} | valutati {n} | pendenti {len(self.pending)} | NO SIGNAL {self.no_signal} | frequenza segnali {rate:.1f}% | salti {self.skipped}",
+            f"🎯 H1: {h}/{n} ({safe_pct(h,n):.2f}%) | random {c}/{n} ({safe_pct(c,n):.2f}%) | baseline 22.22%",
+            f"2° candidato {r2}/{n} ({safe_pct(r2,n):.2f}%) | 3° {r3}/{n} ({safe_pct(r3,n):.2f}%)" + (f" | 4° {r4}/{n4} ({safe_pct(r4,n4):.2f}%)" if n4 else ""),
+            f"Appaiato FOCUS vs random: +{w}/-{l}/={t}",
             f"Avanzamento {min(n,50)}/50 | {min(n,100)}/100 | {min(n,200)}/200 | {min(n,300)}/300",
         ]
         for size in (50,100,200,300):
-            rows = self.records[-size:]
-            if not rows:
-                continue
-            nn,hh,cc,rr,tt,*_ = self._stats(rows)
-            tag = "COMPLETA" if nn >= size else "PARZIALE"
-            lines.append(f"• ultimi {size} ({tag}, n={nn}): FOCUS {hh}/{nn} ({safe_pct(hh,nn):.2f}%) | random {cc}/{nn} ({safe_pct(cc,nn):.2f}%) | 2° {rr}/{nn} ({safe_pct(rr,nn):.2f}%) | 3° {tt}/{nn} ({safe_pct(tt,nn):.2f}%)")
+            rows=self.records[-size:]
+            if not rows: continue
+            nn,hh,cc,*_=self._stats(rows); tag="COMPLETA" if nn>=size else "PARZIALE"
+            lines.append(f"• ultimi {size} ({tag}, n={nn}): FOCUS {hh}/{nn} ({safe_pct(hh,nn):.2f}%) | random {cc}/{nn} ({safe_pct(cc,nn):.2f}%)")
         if self.pending:
-            p = self.pending[-1]
-            lines += ["", "⏳ PENDENTE:",
-                      f"• {p.get('origin_key')} | #{p.get('pick')} > #{p.get('runner_up')} > #{p.get('third_candidate')} | TRANS{FOCUS_TRANS_WINDOW} {float(p.get('pick_trans',0)):.4f}/{float(p.get('runner_trans',0)):.4f}/{float(p.get('third_trans',0)):.4f} | random #{p.get('control_num')}"]
-        if self.last_result:
-            r = self.last_result
-            lines += ["", f"🧾 Ultimo {r.get('origin_key','-')}: FOCUS #{r.get('pick','-')} " + ("✅ HIT" if r.get('hit') else "❌ MISS") + f" | random #{r.get('control_num','-')} " + ("✅" if r.get('control_hit') else "❌")]
-        lines += ["⚠️ Test prospettico v16: un solo H1, nessun recupero e nessun backfill."]
+            p=self.pending[-1]
+            lines += ["", "⏳ PENDENTE:", f"• {p.get('origin_key')} | NUMERO #{p.get('pick')} | candidati {p.get('candidate_count')} | TRANS{FOCUS_TRANS_WINDOW} {float(p.get('pick_trans',0)):.4f} | random #{p.get('control_num')}"]
+        if self.last_result and not self.last_result.get("skipped"):
+            r=self.last_result
+            lines += ["", f"🧾 Ultimo {r.get('origin_key','-')}: FOCUS #{r.get('pick','-')} " + ("✅ HIT" if r.get("hit") else "❌ MISS") + f" | random #{r.get('control_num','-')} " + ("✅" if r.get("control_hit") else "❌")]
+        lines += ["⏸️ Tutti gli altri metodi sono PAUSATI e il loro state storico resta conservato.",
+                  "⚠️ Test prospettico v17: un solo H1, nessun recupero e nessun backfill."]
         return "\n".join(lines)
+
+# Alias interno per compatibilita' con eventuali riferimenti di test/vecchie importazioni.
+FocusR14Trans40 = FocusFastV2
 
 
 class EngineOnly:
@@ -4547,7 +4484,8 @@ class EngineOnly:
         self.hc_method = HCConvergenceMethod()  # v13: ENGINE HC + SOSIA rank1, BURST solo promozione SUPER
         self.forced_one = ForcedOneMethod()  # v14: un numero H1 sempre, classi A+/A/B/C/D
         self.triplette = TripletteCooccLab()  # v15: 4x9, triplette co-occorrenza, H1 shadow
-        self.focus = FocusR14Trans40()  # v16: 1 numero H1 selettivo, ritardo 14-18 + anti-TRANS80
+        self.focus_legacy_state = None  # archivio raw v16, NON aggiornato
+        self.focus = FocusFastV2()  # v17: unico metodo attivo, R13-18 / 3-4 candidati / TRANS80
 
         self.state_load_info = {
             "loaded": False,
@@ -4559,28 +4497,9 @@ class EngineOnly:
         self.last_git_status = _git_status(True, "not-run", "nessun push ancora eseguito")
         if load:
             self.load_state()
-            self._sosiap_load_pretrain()
-            self.dual.load_pretrain()  # file esterno SOLO se esplicitamente presente nella root
-            self.dual.bootstrap_from_history(self.engine_history)  # warmstart dal vecchio state LIVE
-            self.flow.bootstrap(self.engine_history)  # matrice 288x9 descrittiva
-            self.burst.bootstrap(self.engine_history, flow=self.flow)  # warmup storico, NON previsione retroattiva
-            self.verifica.ensure_start(self)  # solo se state/storico esistente; nessun backfill
-            self.hc_method.ensure_start(self)  # v13: marker al draw corrente, nessun backfill
-            self.forced_one.ensure_start(self)  # v14: marker nuovo al draw corrente, nessun backfill
-            self.triplette.ensure_start(self)  # v15: marker nuovo, nessun backfill
-            self.focus.ensure_start(self)  # v16: marker nuovo, nessun backfill
-            # Upgrade non distruttivo: se il vecchio state ha gia' una previsione
-            # SOSIA adattiva congelata, ricava subito TOP1/TOP2 senza cambiarla.
-            self._sosiasniper_migrate_pending()
-            self._sosiasniper_upgrade_pending()
-            # Se lo state ha gia' un SOSIA congelato, agganciamo la medesima
-            # previsione: NON creiamo una previsione alternativa per quel draw.
-            _pending_key = str((self.sosiap_pending or {}).get("from_key") or "")
-            self._sosiapattern_arm(_pending_key)
-            self._sosiapatternlab_arm(_pending_key)
-            # Al riavvio, congela soltanto se il prossimo draw NON e' ancora noto.
-            # Il nuovo motore non ricostruisce risultati retroattivi.
-            self.dual.arm(self, _pending_key) if _pending_key else None
+            # v17: tutti i vecchi metodi restano caricati nello state ma PAUSATI.
+            # Nessun bootstrap/arm/settle live viene eseguito per loro.
+            self.focus.ensure_start(self)  # marker v2 nuovo, nessun backfill
 
     @staticmethod
     def _new_engine_stats():
@@ -6772,12 +6691,10 @@ class EngineOnly:
             self.hc_method.load(d.get("hc_convergence_v1"))
             self.forced_one.load(d.get("forced_one_v1"))
             self.triplette.load(d.get("triplette_coocc_v1"))
-            self.focus.load(d.get("focus_r14_trans40_v1"))
+            self.focus_legacy_state = d.get("focus_r14_trans40_v1") if isinstance(d.get("focus_r14_trans40_v1"), dict) else None
+            self.focus.load(d.get("focus_fast_v2"))
 
-            # Se c'e' un pending HC ma manca la sessione H5/PLAY, aggancialo senza duplicare.
-            if self.engine_pending and self.engine_pending.get("accepted"):
-                self._start_h5_session(self.engine_pending)
-                self._start_play_session(self.engine_pending)
+            # v17: pending e sessioni legacy restano congelati esattamente come salvati.
 
             migrated = os.path.abspath(path) == os.path.abspath(LEGACY_STATE_FILE)
             self.state_load_info = {
@@ -6864,7 +6781,8 @@ class EngineOnly:
             "hc_convergence_v1": self.hc_method.dump(),
             "forced_one_v1": self.forced_one.dump(),
             "triplette_coocc_v1": self.triplette.dump(),
-            "focus_r14_trans40_v1": self.focus.dump(),
+            "focus_r14_trans40_v1": self.focus_legacy_state,
+            "focus_fast_v2": self.focus.dump(),
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -7311,131 +7229,35 @@ class EngineOnly:
         return self.engine_bootstrap_done
 
     async def process_draw(self, app, day, e, nums, mode="live", notify=True, persist=True, sniper_notify=None):
-        clean = list(map(int, nums))
-        if len(clean) != 20 or len(set(clean)) != 20:
-            return None
-        if self.already_processed(day, e):
-            return None
+        """v17 live loop: aggiorna SOLO history + FOCUS FAST v2.
 
-        sniper_result = None
-        pattern_result = None
-        patternlab_result = None
+        Tutti gli altri motori/tracker vengono lasciati nello state esattamente come caricati.
+        """
+        clean=list(map(int,nums))
+        if len(clean)!=20 or len(set(clean))!=20: return None
+        if self.already_processed(day,e): return None
+
         if mode == "live":
-            self.verifica.ensure_start(self)
-            self.convergence.ensure_start(self)
-            self.hc_method.ensure_start(self)
-            self.forced_one.ensure_start(self)
-            self.triplette.ensure_start(self)
             self.focus.ensure_start(self)
-            # Il campione era stato predisposto ALLA estrazione precedente:
-            # nessun dato del draw attuale entra nella simulazione valutata.
-            dual_result = self.dual.settle(day, e, clean)
-            decina_result = self.decina.settle(day, e, clean)
-            burst_result = self.burst.settle(day, e, clean)
-            self.postburst.observe_live(day, e, clean, open_new=notify)
-            self.post6.observe_live(day, e, clean, open_new=notify)
-            self.convergence.settle(day, e, clean)
-            hc_closed = self.hc_method.settle(day, e, clean)
-            forced_closed = self.forced_one.settle(day, e, clean)
-            triplette_closed = self.triplette.settle(day, e, clean)
-            focus_closed = self.focus.settle(day, e, clean)
+            closed=self.focus.settle(day,e,clean)
             if FOCUS_NOTIFY_RESULT and notify:
-                for _xr in focus_closed:
-                    _xm = self.focus.result_text(_xr)
-                    if _xm:
-                        await self.tg(app, _xm)
-            if TRIPLETTE_NOTIFY_RESULT and notify:
-                for _tr in triplette_closed:
-                    _tm = self.triplette.result_text(_tr)
-                    if _tm:
-                        await self.tg(app, _tm)
-            if FORCED_ONE_NOTIFY_RESULT and notify:
-                for _fr in forced_closed:
-                    _msg = self.forced_one.result_text(_fr)
-                    if _msg:
-                        await self.tg(app, _msg)
-            self._sosia_settle(day, e, clean)
-            # Valuta TOP1/TOP2 PRIMA che _sosiap_settle cancelli il pending adattivo.
-            sniper_result = self._sosiasniper_settle(day, e, clean)
-            pattern_result = self._sosiapattern_settle(day, e, clean)
-            patternlab_result = self._sosiapatternlab_settle(day, e, clean, pattern_result=pattern_result)
-            self._sosiap_settle(day, e, clean)
-            if self.ambo_sim_sessions and not sim_draw_is_consecutive(self.last_draw_key, day, e):
-                interrupted = list(self.ambo_sim_sessions)
-                for old in interrupted:
-                    self._ambo_close(old, "interrupted", draw_key(day, e), "estrazioni_mancanti")
-                await self._ambo_notice(
-                    app,
-                    "⚠️ AMBO 2xHOT5 NO-LOCK — SESSIONI INTERROTTE\n"
-                    f"Mancano estrazioni consecutive: annullo {len(interrupted)} sessioni attive "
-                    "per non inventare puntate. Nuovi segnali ripartiranno dai draw successivi.",
-                    notify=notify,
-                )
-            self.ambo_sim_draw_index += 1
-            await self._ambo_settle_current(app, draw_key(day, e), clean, notify=notify)
+                for row in closed:
+                    msg=self.focus.result_text(row)
+                    if msg: await self.tg(app,msg)
 
-        await self.settle_play_sessions(app, day, e, clean, mode=mode, notify=notify)
-        await self.settle_h5_sessions(app, day, e, clean, mode=mode, notify=notify)
-        await self.settle_engine_pending(app, day, e, clean, mode=mode, notify=notify)
+        current_key=self.remember_processed(day,e)
+        self.engine_append_history(current_key,clean)
 
-        current_key = self.remember_processed(day, e)
-        self.engine_append_history(current_key, clean)
-        if mode == "live":
-            # Due partner HOT5 determinati DOPO il draw di conferma H1/H2/H3, senza futuro.
-            await self._ambo_finalize_confirmation(app, current_key, clean, notify=notify)
-        p = await self.arm_engine_shadow(app, current_key, mode=mode, notify=notify)
-        if mode == "live":
-            self._sosia_arm(current_key, clean)
-            self._sosiap_arm(current_key)
-            self._sosiasniper_arm(current_key)
-            self._sosiapattern_arm(current_key)
-            self._sosiapatternlab_arm(current_key)
-            self.dual.bootstrap_from_history(self.engine_history)
-            self.dual.arm(self, current_key)
-            # FLOW registra il draw appena concluso e ricostruisce il contesto 288.
-            self.flow.observe_live(current_key, clean)
-            self.flow.bootstrap(self.engine_history)
-            self.postburst.bootstrap(self.engine_history)
-            # Non ricostruisce segnali a posteriori nel catch-up silenzioso.
-            if notify:
-                self.decina.arm(self, current_key)
-                self.burst.arm(self.engine_history, current_key, flow=self.flow)
-                self.convergence.arm(current_key, self)
-                hc_row = self.hc_method.arm(current_key, self)
-                if HC_METHOD_NOTIFY and hc_row and hc_row.get("is_main"):
-                    msg = self.hc_method.signal_text(hc_row)
-                    if msg:
-                        await self.tg(app, msg)
-                forced_row = self.forced_one.arm(current_key, self)
-                if FORCED_ONE_NOTIFY and forced_row:
-                    _fmsg = self.forced_one.signal_text(forced_row)
-                    if _fmsg:
-                        await self.tg(app, _fmsg)
-                triplette_row = self.triplette.arm(current_key, self)
-                if TRIPLETTE_NOTIFY and triplette_row:
-                    _tmsg = self.triplette.signal_text(triplette_row)
-                    if _tmsg:
-                        await self.tg(app, _tmsg)
-                focus_row = self.focus.arm(current_key, self)
-                if FOCUS_NOTIFY and focus_row:
-                    _xmsg = self.focus.signal_text(focus_row)
-                    if _xmsg:
-                        await self.tg(app, _xmsg)
-            if BURST_NOTIFY and notify and (burst_result or self.burst.pending):
-                await self.tg(app, self.burst.text())
-            if DECINA_NOTIFY and notify and (decina_result or self.decina.pending):
-                await self.tg(app, self.decina.short_text())
-            if DUAL_NOTIFY and notify and (dual_result or self.dual.pending):
-                await self.tg(app, self.dual.text())
-            sniper_notice_flag = notify if sniper_notify is None else bool(sniper_notify)
-            await self._sosiasniper_notice(app, sniper_result, notify=sniper_notice_flag,
-                                           pattern_result=pattern_result, lab_result=patternlab_result)
+        if mode == "live" and notify:
+            row=self.focus.arm(current_key,self)
+            if FOCUS_NOTIFY and row:
+                msg=self.focus.signal_text(row)
+                if msg: await self.tg(app,msg)
 
         if persist:
             self.save_state(git=True)
-        return p
+        return current_key
 
-    @staticmethod
     def _stats_line(label, st):
         ev = int(st.get("evaluated", 0) or 0)
         sig_ev = int(st.get("signals_evaluated", 0) or 0)
@@ -7689,196 +7511,34 @@ class EngineOnly:
         )
 
     def verify_all_text(self):
-        """Report compatto di TUTTI i moduli: un solo comando, nessun reset/mutazione."""
-        lines = [
-            "🧾 VERIFICA TUTTO v16 — SNAPSHOT COMPLETO",
-            "Un solo report dei moduli; legge lo state corrente e NON cambia previsioni, soglie o contatori.",
+        fx=self.focus.records
+        n,h,c,r2,r3,r4,n4,w,l,t=self.focus._stats(fx)
+        p=self.focus.pending[-1] if self.focus.pending else None
+        rate=100.0*(n+len(self.focus.pending))/self.focus.scans if self.focus.scans else 0.0
+        lines=[
+            "🧾 VERIFICA TUTTO v17 — SOLO FOCUS FAST",
+            "⏸️ Tutti gli altri metodi sono PAUSATI: state e statistiche storiche conservati, nessun nuovo aggiornamento live.",
+            "",
+            "⚡ FOCUS FAST v2 — R13-18 / 3-4 candidati / TRANS80",
+            f"Scan {self.focus.scans} | valutati {n} | NO SIGNAL {self.focus.no_signal} | frequenza segnali {rate:.1f}% | salti {self.focus.skipped}",
+            f"H1 {h}/{n} ({safe_pct(h,n):.2f}%) | random {c}/{n} ({safe_pct(c,n):.2f}%) | baseline 22.22%",
+            f"2° {r2}/{n} ({safe_pct(r2,n):.2f}%) | 3° {r3}/{n} ({safe_pct(r3,n):.2f}%)" + (f" | 4° {r4}/{n4} ({safe_pct(r4,n4):.2f}%)" if n4 else ""),
+            f"Appaiato vs random +{w}/-{l}/={t}",
+            f"progress {min(n,50)}/50 {min(n,100)}/100 {min(n,200)}/200 {min(n,300)}/300" + (f" | PENDING #{p.get('pick')}" if p else " | pending 0"),
         ]
-
-        # ENGINE + HORIZON + MULTI-HIT
-        h5 = list(self.engine_h5_records_live)
-        n = len(h5)
-        h1 = sum(1 in set(r.get("hit_ages", [])) for r in h5)
-        h3cum = sum(any(int(a) <= 3 for a in r.get("hit_ages", [])) for r in h5)
-        h5cum = sum(int(r.get("hits5", len(r.get("hit_ages", []))) or 0) >= 1 for r in h5)
-        mh = self._summarize_h5(h5)
-        lines += ["", "🧠 ENGINE / ENGINEH / MULTIH5",
-                  f"HC H1 {h1}/{n} ({safe_pct(h1,n):.2f}%) vs 22.22% | entro H3 {h3cum}/{n} ({safe_pct(h3cum,n):.2f}%) vs 52.95% | entro H5 {h5cum}/{n} ({safe_pct(h5cum,n):.2f}%) vs 71.54%",
-                  f"MULTI >=2/5 {mh['ge2']}/{n} ({safe_pct(mh['ge2'],n):.2f}%) vs {self._baseline_ge2_5():.2f}% | >=3/5 {mh['ge3']}/{n} ({safe_pct(mh['ge3'],n):.2f}%) vs {self._baseline_ge3_5():.2f}%"]
-
-        # PLAY
-        ps = self._summarize_play(list(self.engine_play_records_live))
-        lines += ["", "🎮 PLAY",
-                  f"attivate {ps['activated']} | HIT {ps['hits']}/{ps['activated']} ({ps['success']:.2f}%) | HIT/puntata {ps['hits']}/{ps['bets']} ({ps['hit_per_bet']:.2f}%) vs 22.22%"]
-
-        # AMBO
-        aa = self.ambo_sim_account or {}
-        bets = int(aa.get("bets", 0) or 0); wins = int(aa.get("wins", 0) or 0)
-        cost = int(aa.get("cost_cents", 0) or 0) / 100.0
-        gross = int(aa.get("gross_cents", 0) or 0) / 100.0
-        net = gross - cost
-        roi = 100.0 * net / cost if cost else 0.0
-        lines += ["", "💶 AMBO 2xHOT5",
-                  f"ambi HIT {wins}/{bets} ({safe_pct(wins,bets):.2f}%) | pareggio 7.14% | costo €{cost:.2f} lordo €{gross:.2f} netto €{net:.2f} ROI {roi:+.2f}%"]
-
-        # SOSIA adattivo + random
-        st = self.sosiap_totals or {}
-        se = int(st.get("evaluated", 0) or 0); sh = int(st.get("hits", 0) or 0)
-        mean = sh / se if se else 0.0
-        rt = self.sosia_totals or {}
-        re = int(rt.get("evaluated", 0) or 0); ro = int(rt.get("overlap_sum", 0) or 0)
-        rmean = ro / re if re else 0.0
-        lines += ["", "🧠 SOSIA / SOSIARANDOM",
-                  f"SOSIA adattivo {se} draw | media {mean:.3f}/20 vs 4.444 | casuale separato {rmean:.3f}/20 su {re} draw"]
-
-        # SOSIA SNIPER
-        sn = self.sosiasniper_totals or {}
-        sne = int(sn.get("evaluated", 0) or 0)
-        pe = int(sn.get("prob_evaluated", 0) or 0); be = int(sn.get("bestpair_evaluated", 0) or 0)
-        fe = int(sn.get("fusion_evaluated", 0) or 0)
-        lines += ["", "🎯 SOSIA SNIPER",
-                  f"rank#1 {sn.get('top1_hits',0)}/{sne} ({safe_pct(sn.get('top1_hits',0),sne):.2f}%) vs 22.22% | PROB {sn.get('prob_hits',0)}/{pe} ({safe_pct(sn.get('prob_hits',0),pe):.2f}%)",
-                  f"coppia190 {sn.get('bestpair_hits',0)}/{be} ({safe_pct(sn.get('bestpair_hits',0),be):.2f}%) vs 4.74% | FUSION {sn.get('fusion_hits',0)}/{fe} ({safe_pct(sn.get('fusion_hits',0),fe):.2f}%)"]
-
-        # PATTERN
-        pr = list(self.sosiapattern_records)
-        pn = len(pr)
-        ph = sum(len(r.get("hit_ranks", [])) for r in pr)
-        b16 = sum(sum(16 <= int(x) <= 20 for x in r.get("hit_ranks", [])) for r in pr)
-        plt = self.sosiapatternlab_totals or {}
-        pce = int(plt.get("pos_evaluated", 0) or 0)
-        lines += ["", "🔎 SOSIA PATTERN",
-                  f"ranking completi {pn} | media {ph/pn if pn else 0:.3f}/20 vs 4.444 | fascia #16-20 {b16}/{pn*5 if pn else 0} ({safe_pct(b16,pn*5):.2f}%)",
-                  f"POSITION CAL {plt.get('pos_hits',0)}/{pce} ({safe_pct(plt.get('pos_hits',0),pce):.2f}%) | WATCH {plt.get('watch_hits',0)}/{plt.get('watch_picks',0)} ({safe_pct(plt.get('watch_hits',0),plt.get('watch_picks',0)):.2f}%)"]
-
-        # DUAL + DECINE
-        du = self.dual.totals or {}; dn = int(du.get("evaluated", 0) or 0)
-        de = self.decina.totals or {}; den = int(de.get("evaluated", 0) or 0)
-        lines += ["", "🔟 DUAL / DECINE",
-                  f"DUAL >=1 {du.get('any',0)}/{dn} ({safe_pct(du.get('any',0),dn):.2f}%) | random {du.get('random_any',0)}/{dn} ({safe_pct(du.get('random_any',0),dn):.2f}%) | teorico 39.70%",
-                  f"DUAL+DECINE {de.get('fusion_any',0)}/{den} ({safe_pct(de.get('fusion_any',0),den):.2f}%) | stessa decina {de.get('within_any',0)}/{den} ({safe_pct(de.get('within_any',0),den):.2f}%) | random {de.get('random_any',0)}/{den} ({safe_pct(de.get('random_any',0),den):.2f}%)"]
-
-        # BURST + gate
-        bt = self.burst.totals or {}
-        sig = int(bt.get("evaluated", 0) or 0); no = int(bt.get("abstained", 0) or 0)
-        exact = [r for r in self.burst.records if isinstance(r, dict)
-                 and r.get("gate_audit_version") == BURST_GATE_AUDIT_VERSION
-                 and not r.get("skipped") and type(r.get("count")) is int]
-        epass = [r for r in exact if r.get("gate_reason") == "PASS"]
-        lines += ["", "🌋 BURST / BURSTGATE",
-                  f"SIGNAL 5+ {bt.get('pred5',0)}/{sig} ({safe_pct(bt.get('pred5',0),sig):.2f}%) | random5 {bt.get('random5',0)}/{sig} ({safe_pct(bt.get('random5',0),sig):.2f}%)",
-                  f"SIGNAL 6+ {bt.get('pred6',0)}/{sig} ({safe_pct(bt.get('pred6',0),sig):.2f}%) | random6 {bt.get('random6',0)}/{sig} ({safe_pct(bt.get('random6',0),sig):.2f}%) | NO SIGNAL {no}",
-                  f"GATE v9+ n={len(exact)} | PASS 5+ {sum(int(r.get('count',0)>=5) for r in epass)}/{len(epass)} ({safe_pct(sum(int(r.get('count',0)>=5) for r in epass),len(epass)):.2f}%)"]
-
-        # FLOW
-        fw = self.flow.last_snapshot or self.flow.warmup or {}
-        rg = fw.get("current_regime") or {}
-        dr = int(fw.get("dominant_repeat", 0) or 0); dd = int(fw.get("dominant_repeat_den", 0) or 0)
-        lines += ["", "🌊 FLOW",
-                  f"regime {rg.get('name','-')} {rg.get('strength','')} | dominante {fw.get('current_dominant_label') or 'PARI'} | ripetizione dominante {dr}/{dd} ({safe_pct(dr,dd):.2f}%)"]
-
-        # POST-BURST
-        pb6 = [r for r in self.postburst.live_records if r.get("horizon") == 1 and int(r.get("origin_count",0) or 0) >= 6]
-        pb5 = [r for r in self.postburst.live_records if r.get("horizon") == 1 and int(r.get("origin_count",0) or 0) == 5]
-        lines += ["", "🌋 POST-BURST",
-                  f"dopo 6+ stessa decina H1 5+ {sum(int(bool(r.get('same_5'))) for r in pb6)}/{len(pb6)} ({safe_pct(sum(int(bool(r.get('same_5'))) for r in pb6),len(pb6)):.2f}%) | dopo 5 esatti {sum(int(bool(r.get('same_5'))) for r in pb5)}/{len(pb5)} ({safe_pct(sum(int(bool(r.get('same_5'))) for r in pb5),len(pb5)):.2f}%)"]
-
-        # POST-6 v10
-        p6 = self.post6.records
-        p6n = len(p6); p65 = sum(int(bool(r.get("same_5"))) for r in p6); p66 = sum(int(bool(r.get("same_6"))) for r in p6)
-        p6c = sum(int(bool(r.get("control_5"))) for r in p6)
-        p6c6 = sum(int(bool(r.get("control_6"))) for r in p6)
-        lines += ["", "🔥 POST-6 v10",
-                  f"forward {p6n} | avanzamento {min(p6n,100)}/100 | {min(p6n,200)}/200 | {min(p6n,300)}/300 | pending {len(self.post6.pending)}",
-                  f"stessa 5+ {p65}/{p6n} ({safe_pct(p65,p6n):.2f}%) vs 3.981% | random5 {p6c}/{p6n} ({safe_pct(p6c,p6n):.2f}%)",
-                  f"stessa 6+ {p66}/{p6n} ({safe_pct(p66,p6n):.2f}%) vs 0.701% | random6 {p6c6}/{p6n} ({safe_pct(p6c6,p6n):.2f}%)"]
-
-        # VERIFICA marker + CONVERGENZA
-        cv = self.convergence.records; cn = len(cv); c5 = sum(int(bool(r.get("same_5"))) for r in cv)
-        high = [r for r in cv if int(r.get("support",0) or 0) >= 2]
-        c6 = sum(int(bool(r.get("same_6"))) for r in cv)
-        cc5 = sum(int(bool(r.get("control_5"))) for r in cv)
-        cc6 = sum(int(bool(r.get("control_6"))) for r in cv)
-        high5 = sum(int(bool(r.get('same_5'))) for r in high)
-        lines += ["", "🧪 VERIFICA / CONVERGENZA",
-                  f"marker /verifica: dopo {self.verifica.start_from_key or '-'} | marker convergenza: dopo {self.convergence.start_from_key or '-'}",
-                  f"CONVERGENZA POST-6 n={cn} | avanzamento {min(cn,100)}/100 | {min(cn,200)}/200 | {min(cn,300)}/300 | pending {len(self.convergence.pending)}",
-                  f"5+ {c5}/{cn} ({safe_pct(c5,cn):.2f}%) | random5 {cc5}/{cn} ({safe_pct(cc5,cn):.2f}%) | 6+ {c6}/{cn} ({safe_pct(c6,cn):.2f}%) | random6 {cc6}/{cn} ({safe_pct(cc6,cn):.2f}%)",
-                  f"support>=2: {high5}/{len(high)} ({safe_pct(high5,len(high)):.2f}%)"]
-
-        # METODO CONVERGENZA HC v1
-        hm = self.hc_method.records
-        hm_main = [r for r in hm if r.get("is_main")]
-        hm_super = [r for r in hm if r.get("is_super")]
-        hm_dis = [r for r in hm if not r.get("agreement")]
-        mn,mh,mc,*_ = self.hc_method._stats(hm_main)
-        sn,sh,sc,*_ = self.hc_method._stats(hm_super)
-        dn,dh,dc,*_ = self.hc_method._stats(hm_dis)
-        lines += ["", "🎯 METODO CONVERGENZA HC v1",
-                  f"MAIN {mh}/{mn} ({safe_pct(mh,mn):.2f}%) | random {mc}/{mn} ({safe_pct(mc,mn):.2f}%) | progress {min(mn,100)}/100 {min(mn,200)}/200 {min(mn,300)}/300",
-                  f"SUPER {sh}/{sn} ({safe_pct(sh,sn):.2f}%) | random {sc}/{sn} ({safe_pct(sc,sn):.2f}%) | HC_DISAGREE {dh}/{dn} ({safe_pct(dh,dn):.2f}%) | pending {len(self.hc_method.pending)}"]
-
-        # FORCED ONE v1
-        fo = self.forced_one.records
-        fn,fh,fc,*_ = self.forced_one._stats(fo)
-        fp = self.forced_one.pending[-1] if self.forced_one.pending else None
-        cls_counts = {k: sum(1 for r in fo if r.get("class")==k) for k in ("A+","A","B","C","D")}
-        lines += ["", "🎯 FORCED ONE v1",
-                  f"totale {fh}/{fn} ({safe_pct(fh,fn):.2f}%) | random {fc}/{fn} ({safe_pct(fc,fn):.2f}%) | progress {min(fn,100)}/100 {min(fn,200)}/200 {min(fn,300)}/300",
-                  "classi " + " ".join(f"{k}:{cls_counts[k]}" for k in ("A+","A","B","C","D")) +
-                  (f" | PENDING {fp.get('class')} #{fp.get('pick')}" if fp else " | pending 0")]
-
-        # TRIPLETTE CO-OCC v1
-        tr = self.triplette.records
-        tn,t5,tc5,t6,tc6,*_ = self.triplette._stats(tr)
-        tp = self.triplette.pending[-1] if self.triplette.pending else None
-        lines += ["", "🎟 TRIPLETTE CO-OCC v1",
-                  f"4x9 H1: 5+ {t5}/{tn} ({safe_pct(t5,tn):.2f}%) | random {tc5}/{tn} ({safe_pct(tc5,tn):.2f}%) | 6+ {t6}/{tn} vs random {tc6}/{tn}",
-                  f"progress {min(tn,100)}/100 {min(tn,200)}/200 {min(tn,300)}/300" + (f" | PENDING 4 giocate da {tp.get('origin_key')}" if tp else " | pending 0")]
-
-        # FOCUS R14-18 TRANS40 v1
-        fx = self.focus.records
-        xn,xh,xc,xr,xt,*_ = self.focus._stats(fx)
-        xp = self.focus.pending[-1] if self.focus.pending else None
-        lines += ["", "🎯 FOCUS R14-18 TRANS40 v1",
-                  f"H1 {xh}/{xn} ({safe_pct(xh,xn):.2f}%) | random {xc}/{xn} ({safe_pct(xc,xn):.2f}%) | 2° {xr}/{xn} ({safe_pct(xr,xn):.2f}%) | 3° {xt}/{xn} ({safe_pct(xt,xn):.2f}%)",
-                  f"progress {min(xn,50)}/50 {min(xn,100)}/100 {min(xn,200)}/200 {min(xn,300)}/300" + (f" | PENDING #{xp.get('pick')}" if xp else " | pending 0")]
-
-        lines += ["", "⚠️ Report audit/shadow. Per dettagli: /focus /triplette /forcedone /metodohc /verifica /burstgate /post6 /convergenza oppure il comando singolo del modulo."]
         return "\n".join(lines)
 
     def menu_text(self):
         return (
-            "🧠 10eLOTTO ENGINE ONLY\n\n"
-            "Unico motore: HIGH CONFIDENCE TOP1.\n"
-            "Il TOP1 viene seguito per 5 estrazioni per misurare ESATTO 2/5 e >=2/5.\n\n"
-            "/engine — stato, TOP1 e statistiche HIGH CONFIDENCE\n"
-            "/engineh — H1/H2/H3/H5 del TOP1\n"
-            "/multih5 — 0/5, 1/5, esatto 2/5, >=2/5, >=3/5\n"
-            "/play — strategia conferma H1-H3 -> seconda uscita entro H5\n"
-            "/ambo — AMBO 2xHOT5 H1-H3 NO-LOCK: notifiche, costo, premi e saldo\n"
-            "/sosia — SOSIA adattivo: 20 previsti e confronto con la prossima reale\n"
-            "/sosiasniper — TOP5 + SNIPER PROB + coppia 190 + FUSION ENGINE\n"
-            "/sosiapattern — posizioni + calibrated + transition + number watch\n"
-            "/dual — DUAL TARGET v1: due numeri H1, controllo casuale e forward\n"
-            "/decine — coppie nella stessa decina, DUAL+DECINE e confronto forward\n"
-            "/burst — EVENT DETECTOR 5+/6+ H1: warmup 288, NO SIGNAL e EXTREME-6\n"
-            "/flow — presenze per decina a ogni draw, transizioni e streak su 288\n"
-            "/postburst — dopo 5/6+ nella stessa decina: H1/H2/H3 e passaggio ad altre fasce\n"
-            "/post6 — test v10: dopo 6+ segue la STESSA decina esclusivamente in H1\n"
-            "/convergenza — POST-6 + ENGINE/SOSIA/BURST/DECINA sulla stessa fascia\n"
-            "/metodohc — MAIN: ENGINE HC=SOSIA #1; SUPER se BURST SIGNAL contiene il numero\n"
-            "/forcedone — FORCED ONE v1: un numero a ogni H1, classi A+/A/B/C/D\n"
-            "/triplette — 4 giocate x9: triplette co-occorrenza H1 shadow\n"
-            "/focus — FOCUS R14-18 TRANS40: un numero selettivo SOLO H1\n"
-            "/verifica — test nuovo periodo: STESSA DECINA, ENGINE H5, BURST gate\n"
-            "/verificatutto — report unico v16: tutti i moduli + FOCUS\n"
-            "/burstgate — audit v4: score/soglia, motivi NO SIGNAL e fasce di distanza\n"
-            "/sosiarandom — simulatore uniforme precedente, controllo indipendente\n"
-            "/status — stato rapido ENGINE\n"
-            "/menu — questa schermata"
+            "⚡ FOCUS FAST ONLY — v17\n\n"
+            "UNICO metodo attivo:\n"
+            "ritardo 13-18 → segnale se ci sono 3 o 4 candidati → scelgo TRANS80 massimo → un solo numero H1.\n\n"
+            "/focus — stato completo FOCUS FAST v2\n"
+            "/status — stato rapido FOCUS FAST\n"
+            "/verificatutto — audit compatto SOLO FOCUS\n"
+            "/menu — questa schermata\n\n"
+            "⏸️ Tutti gli altri metodi sono in pausa; il loro state storico non viene cancellato."
         )
-
 
 
 # ============================================================
@@ -7962,74 +7622,56 @@ async def cmd_sosiarandom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].sosia_text())
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await reply(update, context.application.bot_data["engine"].engine_text())
+    await reply(update, context.application.bot_data["engine"].focus.text())
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].menu_text())
 
 async def setup_commands(app):
     await app.bot.set_my_commands([
-        BotCommand("engine", "ENGINE ONLY: TOP1 + HIGH CONFIDENCE"),
-        BotCommand("engineh", "TOP1 H1/H2/H3/H5"),
-        BotCommand("multih5", "TOP1 multi-hit nelle 5 successive"),
-        BotCommand("play", "PLAY SHADOW: seconda uscita dopo conferma"),
-        BotCommand("ambo", "AMBO 2xHOT5 NO-LOCK: notifiche e saldo"),
-        BotCommand("sosia", "20 numeri appresi: previsione H1 e hit"),
-        BotCommand("sosiasniper", "TOP5, PROB, coppia 190 e FUSION"),
-        BotCommand("sosiapattern", "Pattern, calibrated, transition e watch"),
-        BotCommand("dual", "DUAL TARGET: due numeri H1 e confronto random"),
-        BotCommand("decine", "DECINA ENGINE: DUAL+DECINE e coppia stessa decina"),
-        BotCommand("burst", "BURST v3: EVENT DETECTOR 5+/6+ con NO SIGNAL"),
-        BotCommand("flow", "FLOW: 9 decine draw-by-draw, transizioni e streak"),
-        BotCommand("postburst", "POST-BURST: stessa/altra decina H1-H3"),
-        BotCommand("post6", "POST-6: dopo 6+ stessa decina solo H1"),
-        BotCommand("convergenza", "POST-6 + convergenze degli altri moduli"),
-        BotCommand("metodohc", "Metodo HC: ENGINE=SOSIA, BURST promuove SUPER"),
-        BotCommand("forcedone", "FORCED ONE: un numero H1 sempre, classi A+/A/B/C/D"),
-        BotCommand("triplette", "4x9 triplette co-occorrenza: H1 shadow"),
-        BotCommand("focus", "FOCUS R14-18 TRANS40: un numero H1"),
-        BotCommand("verifica", "Test nuovo periodo: DECINA, ENGINE H5, BURST"),
-        BotCommand("verificatutto", "Report unico di tutti i moduli"),
-        BotCommand("burstgate", "Audit gate BURST: score, soglia e NO SIGNAL"),
-        BotCommand("sosiarandom", "Controllo casuale 20/90"),
-        BotCommand("status", "Stato rapido ENGINE"),
-        BotCommand("menu", "Comandi ENGINE ONLY"),
+        BotCommand("focus", "FOCUS FAST v2: un numero H1"),
+        BotCommand("status", "Stato rapido FOCUS FAST"),
+        BotCommand("verificatutto", "Audit SOLO FOCUS FAST"),
+        BotCommand("menu", "Comandi attivi"),
     ])
 
 async def ensure_engine_ready(engine):
-    if engine.engine_bootstrap_done and len(engine.engine_history) >= ENGINE_MIN_HISTORY:
-        return {"ok": True, "already_done": True, "draws": len(engine.engine_history)}
-    try:
-        all_records, sources = fetch_warmup_records(WARMUP_DAYS)
-        records, sources2, continuity = _select_latest_contiguous_warmup(all_records, sources)
-        if continuity.get("problems"):
-            return {
-                "ok": False, "draws": len(records), "sources": sources2,
-                "reason": "; ".join(continuity["problems"][:5]),
-                "continuity_note": continuity.get("note"),
-            }
-        records = sorted(records, key=lambda x:(x[0],x[1]))
-        if len(records) < ENGINE_MIN_HISTORY:
-            return {
-                "ok": False, "draws": len(records), "sources": sources2,
-                "reason": f"storico insufficiente: {len(records)}<{ENGINE_MIN_HISTORY}",
-                "continuity_note": continuity.get("note"),
-            }
+    """v17: serve solo uno storico consecutivo per gap + TRANS80.
 
-        ok = await engine.rebuild_engine_from_records(records[-ENGINE_HISTORY_MAX:])
-        if ok:
-            # Tutto il segmento letto e' gia' incorporato nel replay.
-            engine.processed = [draw_key(d,e) for d,e,_ in records][-PROCESSED_MAX:]
-            engine.processed_set = set(engine.processed)
-            if records:
-                engine.last_draw_key = draw_key(records[-1][0], records[-1][1])
-        return {
-            "ok": bool(ok), "already_done": False, "draws": len(records),
-            "sources": sources2, "continuity_note": continuity.get("note"),
-            "reason": None if ok else "rebuild ENGINE fallito",
-        }
+    Se lo state e' gia' pronto non tocca nulla. Su installazione nuova carica
+    esclusivamente engine_history/processed, senza costruire segnali dei vecchi motori.
+    """
+    if len(engine.engine_history) >= ENGINE_MIN_HISTORY:
+        engine.engine_bootstrap_done=True
+        return {"ok":True,"already_done":True,"draws":len(engine.engine_history)}
+    try:
+        all_records,sources=fetch_warmup_records(WARMUP_DAYS)
+        records,sources2,continuity=_select_latest_contiguous_warmup(all_records,sources)
+        if continuity.get("problems"):
+            return {"ok":False,"draws":len(records),"sources":sources2,
+                    "reason":"; ".join(continuity["problems"][:5]),
+                    "continuity_note":continuity.get("note")}
+        records=sorted(records,key=lambda x:(x[0],x[1]))
+        if len(records)<ENGINE_MIN_HISTORY:
+            return {"ok":False,"draws":len(records),"sources":sources2,
+                    "reason":f"storico insufficiente: {len(records)}<{ENGINE_MIN_HISTORY}",
+                    "continuity_note":continuity.get("note")}
+        usable=records[-ENGINE_HISTORY_MAX:]
+        engine.engine_history=[]
+        for d,e,nums in usable:
+            clean=sorted(set(map(int,nums)))
+            if len(clean)==20:
+                engine.engine_history.append({"key":draw_key(d,e),"nums":clean})
+        engine.engine_bootstrap_done=len(engine.engine_history)>=ENGINE_MIN_HISTORY
+        engine.processed=[draw_key(d,e) for d,e,_ in records][-PROCESSED_MAX:]
+        engine.processed_set=set(engine.processed)
+        if records: engine.last_draw_key=draw_key(records[-1][0],records[-1][1])
+        return {"ok":bool(engine.engine_bootstrap_done),"already_done":False,
+                "draws":len(engine.engine_history),"sources":sources2,
+                "continuity_note":continuity.get("note"),
+                "reason":None if engine.engine_bootstrap_done else "warmup FOCUS fallito"}
     except Exception as exc:
-        return {"ok": False, "draws": 0, "reason": f"{type(exc).__name__}: {exc}"}
+        return {"ok":False,"draws":0,"reason":f"{type(exc).__name__}: {exc}"}
 
 async def notify_pending(engine, app):
     p=engine.engine_pending
@@ -8078,91 +7720,47 @@ async def startup(engine, app, retry_state=None):
     ready = await ensure_engine_ready(engine)
     if not ready.get("ok"):
         reason=ready.get("reason","warmup non pronto")
-        console_log(f"ENGINE WARMUP FAIL | {reason}")
+        console_log(f"FOCUS WARMUP FAIL | {reason}")
         now_ts=time.time()
-        if (reason != retry_state.get("last_reason") or
-            now_ts - float(retry_state.get("last_tg_ts",0) or 0) >= WARMUP_FAIL_TG_MIN_SECONDS):
-            await engine.tg(
-                app,
-                "⚠️ ENGINE ONLY — WARMUP NON PRONTO\n\n"
-                f"Motivo: {reason}\n"
-                f"Draw raccolti: {ready.get('draws',0)}\n"
-                f"Riprovo tra {WARMUP_RETRY_SEC}s."
-            )
-            retry_state["last_reason"]=reason
-            retry_state["last_tg_ts"]=now_ts
+        if (reason != retry_state.get("last_reason") or now_ts-float(retry_state.get("last_tg_ts",0) or 0) >= WARMUP_FAIL_TG_MIN_SECONDS):
+            await engine.tg(app,"⚠️ FOCUS FAST — WARMUP NON PRONTO\n\n"+f"Motivo: {reason}\nDraw raccolti: {ready.get('draws',0)}\nRiprovo tra {WARMUP_RETRY_SEC}s.")
+            retry_state["last_reason"]=reason; retry_state["last_tg_ts"]=now_ts
         return False
 
-    # Catch-up dei draw arrivati dopo lo state/replay.
-    try:
-        rows=parse_site_today()
+    try: rows=parse_site_today()
     except Exception as exc:
-        console_log(f"CATCH-UP parser fail | {exc}")
-        rows=[]
-    # Se lo state e' ancora all'ULTIMO draw pubblicato, possiamo congelare
-    # una previsione nuova. Se il sito ne mostra gia' altri, non ricostruiamo
-    # retroattivamente previsioni per draw dei quali conosciamo l'esito.
-    if (rows and engine.engine_history and not engine.sosiap_pending and
-        engine.last_draw_key == engine.engine_history[-1]["key"] and
-        draw_key(max(rows, key=lambda r: (r[0], r[1]))[0], max(rows, key=lambda r: (r[0], r[1]))[1]) == engine.last_draw_key):
-        engine._sosiap_arm(engine.last_draw_key)
-        engine._sosiasniper_arm(engine.last_draw_key)
-        engine._sosiapattern_arm(engine.last_draw_key)
+        console_log(f"CATCH-UP parser fail | {exc}"); rows=[]
     unseen=[x for x in rows if not engine.already_processed(x[0],x[1])]
     unseen.sort(key=lambda x:(x[0],x[1]))
     for d,e,nums in unseen:
         await engine.process_draw(None,d,e,nums,mode="live",notify=False,persist=False)
 
-    # Warmup FLOW + BURST su STATE prima del primo H1 realmente futuro.
-    # Se il sito non conferma che l'ultimo draw e' il nostro ultimo draw,
-    # nessuna previsione retrodatata viene inventata.
-    engine.flow.bootstrap(engine.engine_history)
-    engine.postburst.bootstrap(engine.engine_history)
-    engine.post6.ensure_start(engine.engine_history, engine.postburst)
-    engine.convergence.ensure_start(engine)
-    engine.hc_method.ensure_start(engine)
-    engine.forced_one.ensure_start(engine)
-    engine.burst.bootstrap(engine.engine_history, flow=engine.flow)
+    engine.focus.ensure_start(engine)
+    # Dopo il catch-up, l'ultimo draw e' noto ma la sua H1 non lo e' ancora:
+    # possiamo congelare legittimamente il segnale v2 senza backfill.
+    armed=None
     if rows and engine.engine_history:
         latest=max(rows,key=lambda r:(r[0],r[1]))
-        if draw_key(latest[0],latest[1]) == engine.engine_history[-1]["key"]:
-            engine.burst.arm(engine.engine_history,engine.engine_history[-1]["key"],flow=engine.flow)
+        latest_key=draw_key(latest[0],latest[1])
+        if latest_key == engine.engine_history[-1]["key"]:
+            armed=engine.focus.arm(latest_key,engine)
+    engine.save_state(git=True,force_git=True)
 
-    engine.save_state(git=True, force_git=True)
-
-    await engine.tg(
-        app,
-        "🚀 10eLOTTO ENGINE ONLY AVVIATO\n\n"
-        "✅ CORE rimosso\n"
-        "✅ FAST rimosso\n"
-        "✅ FREQ rimosso\n"
-        "✅ TOP5/TOP10 diagnostica rimossa\n"
-        "🧠 unico motore: ENGINE HIGH CONFIDENCE TOP1\n"
-        "🧪 tracker: H1-H5 + MULTI-HIT H5\n"
-        "🎯 focus: ESATTO 2/5 e >=2/5\n"
-        "🎯 AMBO 2xHOT5 H1-H3 NO-LOCK: conferma TOP1 -> DUE accompagnatori caldi -> notifiche prima dei colpi\n"
-        "🎮 PLAY SHADOW: conferma H1-H3 -> seconda uscita entro H5\n"
-        "🧠 SOSIA ADATTIVO: 20 numeri /sosia; SNIPER /sosiasniper; PATTERN LAB /sosiapattern; casuale /sosiarandom\n"
-        "🌊 DECINA FLOW LAB v2: warmup 288 + FLOW REGIME /flow\n"
-        "🌋 POST-BURST LAB v1: eventi 5/6+ -> H1/H2/H3 /postburst\n"
-        "🔥 POST-6 EXTREME SHADOW v1: dopo 6+ stessa decina solo H1 /post6\n"
-        "🧲 CONVERGENCE LAB v1: POST-6 + ENGINE/SOSIA/BURST/DECINA /convergenza\n"
-        "🎯 METODO CONVERGENZA HC v1: ENGINE HC=SOSIA #1; BURST puo promuovere SUPER /metodohc\n"
-        "🎯 FORCED ONE v1: un numero per ogni H1, classi A+/A/B/C/D /forcedone\n"
-        "🎟 TRIPLETTE CO-OCC v1: 4 giocate x9 per la prossima H1 /triplette\n🎯 FOCUS R14-18 TRANS40 v1: un numero selettivo per H1 /focus\n"
-        "🧾 VERIFICA TUTTO v16: report compatto + FOCUS /verificatutto\n"
-        "🔟 BURST EVENT DETECTOR v3: FLOW REGIME + SIGNAL/NO SIGNAL + EXTREME-6 /burst\n"
-        "🔬 BURST GATE LAB v4: audit score/soglia e NO SIGNAL /burstgate\n"
-        "✅ state persistente + autorotation\n\n"
-        f"ENGINE: {'READY' if engine.engine_bootstrap_done else 'BUILD'} | "
-        f"filtro target top {ENGINE_SELECT_RATE*100:.0f}%\n"
-        f"H5 LIVE gia' disponibili: {len(engine.engine_h5_records_live)}\n"
-        f"PLAY storico ricostruito: {len(engine.engine_play_records_live)} record | "
-        f"attivi={sum(1 for x in engine.engine_play_sessions if x.get('origin_mode')=='live')}\n\n"
-        "Comandi: /engine /engineh /multih5 /play /ambo /sosia /sosiasniper /sosiapattern /dual /decine /burst /flow /postburst /post6 /convergenza /metodohc /forcedone /triplette /focus /verifica /verificatutto /burstgate /sosiarandom /menu"
+    await engine.tg(app,
+        "🚀 FOCUS FAST ONLY v17 AVVIATO\n\n"
+        "⚡ UNICO METODO ATTIVO: FOCUS FAST v2\n"
+        "• ritardo 13-18\n"
+        "• segnale con 3 o 4 candidati\n"
+        "• scelta = TRANS80 massimo\n"
+        "• un solo numero, solo prossima H1\n"
+        "• nessun recupero\n\n"
+        "⏸️ ENGINE predittivo, SOSIA, FORCED ONE, TRIPLETTE, HC, BURST, POST-6, PLAY, AMBO, DUAL e altri tracker: PAUSATI.\n"
+        "✅ Il loro state storico resta conservato e non viene aggiornato.\n\n"
+        "Comandi: /focus /status /verificatutto /menu"
     )
-    await notify_pending(engine,app)
-    await notify_ambo_active(engine,app)
+    if armed and FOCUS_NOTIFY:
+        msg=engine.focus.signal_text(armed)
+        if msg: await engine.tg(app,msg)
     return True
 
 async def startup_until_ready(engine, app):
@@ -8173,7 +7771,7 @@ async def startup_until_ready(engine, app):
         await asyncio.sleep(max(30,WARMUP_RETRY_SEC))
 
 async def live_loop(engine, app):
-    console_log(f"ENGINE ONLY LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s")
+    console_log(f"FOCUS FAST ONLY LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s")
     started=time.monotonic()
     last_error=""
     last_error_ts=0.0
@@ -8185,7 +7783,7 @@ async def live_loop(engine, app):
             except Exception as exc:
                 console_log(f"ROTATION save fail | {exc}")
             if BOT_ROTATION_NOTIFY:
-                await engine.tg(app,"♻️ ENGINE ONLY — ROTAZIONE RUNNER\nState salvato; avvio successivo automatico.")
+                await engine.tg(app,"♻️ FOCUS FAST — ROTAZIONE RUNNER\nState salvato; avvio successivo automatico.")
             return "rotation"
 
         try:
@@ -8197,537 +7795,88 @@ async def live_loop(engine, app):
                     d,e,nums=unseen[0]
                     await engine.process_draw(app,d,e,nums,mode="live",notify=True,persist=True)
                 else:
+                    # Catch-up: nessun backfill di segnali ormai conoscibili.
+                    # Dopo aver incorporato tutti i draw, armiamo SOLO l'ultimo,
+                    # la cui H1 e' ancora realmente futura.
                     for d,e,nums in unseen:
-                        # Recupero multi-draw: gli altri moduli restano silenziosi,
-                        # ma SOSIA SNIPER notifica OGNI estrazione come richiesto.
-                        await engine.process_draw(app,d,e,nums,mode="live",notify=False,persist=False,sniper_notify=True)
+                        await engine.process_draw(app,d,e,nums,mode="live",notify=False,persist=False)
+                    row=None
+                    if engine.engine_history:
+                        row=engine.focus.arm(engine.engine_history[-1]["key"],engine)
                     engine.save_state(git=True,force_git=True)
-                    await notify_pending(engine,app)
-                    await notify_ambo_active(engine,app)
+                    if row and FOCUS_NOTIFY:
+                        msg=engine.focus.signal_text(row)
+                        if msg: await engine.tg(app,msg)
             await asyncio.sleep(LOOP_SEC)
         except Exception as exc:
             txt=f"{type(exc).__name__}: {exc}"
             console_log(f"LOOP ERROR | {txt}")
             now=time.time()
             if txt!=last_error or now-last_error_ts>=900:
-                await engine.tg(app,f"⚠️ ENGINE ONLY — ERRORE\n{txt}\nRiprovo automaticamente.")
+                await engine.tg(app,f"⚠️ FOCUS FAST — ERRORE\n{txt}\nRiprovo automaticamente.")
                 last_error=txt; last_error_ts=now
             await asyncio.sleep(max(30,LOOP_SEC))
 
 async def run_self_test():
-    import random
-    random.seed(5601)
-    e=EngineOnly(load=False)
-    e.save_state=lambda *a,**k:_git_status(True,"test","no-op")
-    recs=[]
-    for i in range(260):
-        recs.append(("2099-01-01",i+1,sorted(random.sample(range(1,91),20))))
-    assert await e.rebuild_engine_from_records(recs)
-    assert len(e.engine_history)>=ENGINE_MIN_HISTORY
-    assert len(e.engine_margin_history)>=ENGINE_MIN_MARGIN_SAMPLES
-    assert e.engine_pending is not None
-
-    # Test H5 = esattamente 2 hit.
-    x=EngineOnly(load=False)
-    x.save_state=lambda *a,**k:_git_status(True,"test","no-op")
-    p={"signal_from_key":"T#001","created_at":now_txt(),"origin_mode":"live","top1":42,
-       "confidence":0.6,"threshold":0.4,"support":2,"accepted":True}
-    assert x._start_h5_session(p)
-    for age in range(1,6):
-        nums=[n for n in range(1,91) if n != 42][:20]
-        if age in (2,5):
-            nums[-1]=42
-        await x.settle_h5_sessions(None,"2099-02-01",age,nums,mode="live",notify=False)
-    assert len(x.engine_h5_records_live)==1
-    r=x.engine_h5_records_live[0]
-    assert r["hits5"]==2 and r["hit_ages"]==[2,5]
-    s=x._summarize_h5(x.engine_h5_records_live)
-    assert s["exact2"]==1 and s["ge2"]==1 and s["ge3"]==0
-
-    # Test PLAY SHADOW: conferma H2, PLAY H3/H4, seconda uscita a H4 -> HIT + STOP.
-    y=EngineOnly(load=False)
-    y.save_state=lambda *a,**k:_git_status(True,"test","no-op")
-    p2={"signal_from_key":"P#001","created_at":now_txt(),"origin_mode":"live","top1":33,
-        "confidence":0.7,"threshold":0.5,"support":2,"accepted":True}
-    assert y._start_play_session(p2)
-    for age in range(1,5):
-        nums=[n for n in range(1,91) if n != 33][:20]
-        if age in (2,4): nums[-1]=33
-        await y.settle_play_sessions(None,"2099-03-01",age,nums,mode="live",notify=False)
-    assert len(y.engine_play_records_live)==1
-    pr=y.engine_play_records_live[0]
-    assert pr["result"]=="hit" and pr["activation_age"]==2 and pr["hit_age"]==4
-    assert pr["play_ages"]==[3,4] and pr["bets"]==2
-
-    # Test NO PLAY: nessuna prima uscita entro H3.
-    z=EngineOnly(load=False)
-    z.save_state=lambda *a,**k:_git_status(True,"test","no-op")
-    assert z._start_play_session({**p2,"signal_from_key":"P#002","top1":34})
-    for age in range(1,4):
-        nums=[n for n in range(1,91) if n != 34][:20]
-        await z.settle_play_sessions(None,"2099-03-02",age,nums,mode="live",notify=False)
-    assert len(z.engine_play_records_live)==1 and z.engine_play_records_live[0]["result"]=="no_play"
-    assert z.engine_play_records_live[0]["bets"]==0
-
-    # Test AMBO 2xHOT5 NO-LOCK: due sessioni possono coesistere.
-    a = EngineOnly(load=False)
-    sent = []
-    async def fake_tg(app, text):
-        sent.append(text)
-    a.tg = fake_tg
-    ambo_p = {"signal_from_key":"2099-04-01#100", "created_at":now_txt(),
-              "origin_mode":"live", "top1":21,"support":2,"accepted":True}
-    assert a._ambo_start_candidate(ambo_p)
-    assert a._ambo_start_candidate({**ambo_p, "signal_from_key":"2099-04-01#101", "top1":22})
-    assert len(a.ambo_sim_sessions) == 2  # NO LOCK
-    # Chiudiamo la seconda solo per isolare il test economico della prima.
-    a._ambo_close(a.ambo_sim_sessions[1], 'interrupted', 'TEST', 'self_test')
-
-    # 72 deve risultare HOT5 #1, 73 HOT5 #2.
-    pre = []
-    for i in range(4):
-        nums = set(range(1, 19))
-        nums.add(72)
-        if i < 3:
-            nums.add(73)
-        else:
-            nums.add(74)
-        pre.append(sorted(nums))
-        assert len(pre[-1]) == 20
-    a.engine_history = [{"key":f"2099-04-01#09{i}", "nums":x} for i,x in enumerate(pre,1)]
-
-    # H1 TOP1 miss.
-    h1 = list(range(40,60))
-    await a._ambo_settle_current(None,"2099-04-01#102",h1,notify=True)
-    a.engine_append_history("2099-04-01#102",h1)
-    await a._ambo_finalize_confirmation(None,"2099-04-01#102",h1,notify=True)
-    assert a.ambo_sim_sessions[0]["phase"] == "await_h2"
-
-    # H2 prima uscita 21; 72 e 73 sono entrambi co-usciti e restano i due piu caldi.
-    h2 = [21,72,73] + list(range(74,91))
-    assert len(h2) == 20
-    await a._ambo_settle_current(None,"2099-04-01#103",h2,notify=True)
-    a.engine_append_history("2099-04-01#103",h2)
-    await a._ambo_finalize_confirmation(None,"2099-04-01#103",h2,notify=True)
-    assert a.ambo_sim_sessions[0]["phase"] == "play"
-    assert a.ambo_sim_sessions[0]["partners"] == [72,73]
-    assert a.ambo_sim_sessions[0]["confirmation_age"] == 2
-    assert any("21-72" in msg and "21-73" in msg for msg in sent)
-
-    # H3 miss: due puntate da 1 euro. H4: TOP1+72+73 => doppio ambo.
-    h3 = list(range(1,21))
-    await a._ambo_settle_current(None,"2099-04-01#104",h3,notify=True)
-    assert a.ambo_sim_account == {"bets":2,"wins":0,"cost_cents":200,"gross_cents":0}
-    h4 = [21,72,73] + list(range(74,91))
-    await a._ambo_settle_current(None,"2099-04-01#105",h4,notify=True)
-    assert a.ambo_sim_account == {"bets":4,"wins":2,"cost_cents":400,"gross_cents":2800}
-    assert a._ambo_balance() == 2400 and not a.ambo_sim_sessions
-    assert any(r.get("result") == "hit" and r.get("wins") == 2 for r in a.ambo_sim_records_live)
-
-    # Test conferma H1: primo PLAY a H2 con due accompagnatori.
-    b = EngineOnly(load=False)
-    b.tg = fake_tg
-    assert b._ambo_start_candidate({**ambo_p, "signal_from_key":"2099-04-02#100"})
-    rows=[]
-    for i in range(4):
-        nums=set(range(1,19)); nums.add(60); nums.add(61 if i<3 else 62)
-        rows.append(sorted(nums))
-    b.engine_history = [{"key":f"X{i}", "nums":x} for i,x in enumerate(rows)]
-    c1 = [21,60,61] + list(range(62,79))
-    assert len(c1) == 20
-    await b._ambo_settle_current(None,"2099-04-02#101",c1,notify=True)
-    b.engine_append_history("2099-04-02#101",c1)
-    await b._ambo_finalize_confirmation(None,"2099-04-02#101",c1,notify=True)
-    assert b.ambo_sim_sessions[0]["phase"] == "play"
-    assert len(b.ambo_sim_sessions[0]["partners"]) == 2
-    assert b.ambo_sim_sessions[0]["confirmation_age"] == 1
-    assert b.ambo_sim_sessions[0]["age"] == 1
-
-    # Migrazione v2: conserva il vecchio HOT5 singolo ma riparte pulito col nuovo modulo.
-    m = EngineOnly(load=False)
-    m._ambo_load_fields({
-        'ambo_sim_diag_version': 2,
-        'ambo_sim_sessions': [{'top1': 37}],
-        'ambo_sim_records_live': [{'result':'hit'}],
-        'ambo_sim_bets_live': [{'hit':True}],
-        'ambo_sim_account': {'bets': 9, 'wins': 2, 'cost_cents': 900, 'gross_cents': 2800},
-    })
-    assert m.ambo_hot5_single_legacy.get('account', {}).get('bets') == 9
-    assert m.ambo_sim_account['bets'] == 0 and not m.ambo_sim_sessions
-
-    # Test prospettico SOSIA: campione pronto prima del draw, stato invariato
-    # e confronto anche fra estrazioni della stessa decina.
-    so = EngineOnly(load=False)
-    assert all(len(x) == 20 and len(set(x)) == 20 and min(x) >= 1 and max(x) <= 90
-               for x in (so._sosia_sample() for _ in range(300)))
-    so._sosia_arm("2099-05-01#100", list(range(1,21)))
-    first = list(so.sosia_pending["simulation_next"])
-    so._sosia_settle("2099-05-01", 101, list(range(1,21)))
-    assert len(so.sosia_records) == 1 and so.sosia_records[0]["simulation"] == first
-    assert so.sosia_totals["evaluated"] == 1 and so.sosia_records[0]["real_repeat"] == 20
-    so._sosia_arm("2099-05-01#101", list(range(1,21)))
-    so._sosia_settle("2099-05-01", 103, list(range(1,21)))
-    assert so.sosia_totals["evaluated"] == 1 and so.sosia_totals["skipped_gaps"] == 1
-    assert so.sosia_pending is None
-    assert "/sosia" in so.menu_text()
-
-    # Due previsioni indipendenti congelate prima del draw; il feedback
-    # aggiorna pesi solo DOPO il confronto, senza riscrivere la previsione.
-    pred = EngineOnly(load=False)
-    hist = []
-    for i in range(120):
-        nums = SOSIA_RANDOM.sample(range(1, 91), 20)
-        hist.append({"key": f"2099-05-02#{i+1:03d}", "nums": nums})
-    pred.engine_history = hist
-    pred._sosiap_arm("2099-05-02#120")
-    frozen = list(pred.sosiap_pending["prediction"])
-    assert pred._sosia_valid20(frozen) and len(pred.sosiap_pending["experts"]) == 6
-    assert all(s["n"] == 0 for s in pred.sosiap_learning.values())
-    pred._sosiap_settle("2099-05-02", 121, frozen)
-    assert pred.sosiap_records[-1]["hits"] == 20 and pred.sosiap_totals["evaluated"] == 1
-    assert all(s["n"] == 1 for s in pred.sosiap_learning.values())
-    pred._sosiap_arm("2099-05-02#121")
-    assert pred._sosia_valid20(pred.sosiap_pending["prediction"])
-    pred._sosiap_settle("2099-05-02", 123, frozen)
-    assert pred.sosiap_totals["skipped"] == 1 and pred.sosiap_totals["evaluated"] == 1
-    assert "/sosiarandom" in pred.menu_text()
-    assert "/sosiasniper" in pred.menu_text()
-    assert "/sosiapattern" in pred.menu_text()
-
-    # PATTERN LAB: usa record conclusi come training ma crea esiti SOLO in avanti.
-    lab = EngineOnly(load=False)
-    lab.engine_history = hist[-120:]
-    lab._sosiap_arm("2099-05-02#120")
-    lab._sosiasniper_arm("2099-05-02#120")
-    lab._sosiapattern_arm("2099-05-02#120")
-    # Inseriamo solo storico pattern gia' concluso; non produce contatori LAB retroattivi.
-    for j in range(30):
-        rank20 = list(range(1, 21))
-        hit_ranks = [((j + z) % 20) + 1 for z in range(4)]
-        lab.sosiapattern_records.append({
-            "key": f"2099-04-30#{j+1:03d}", "from_key": "x", "rank20": rank20,
-            "hits": len(hit_ranks), "hit_ranks": hit_ranks,
-            "hit_nums": [rank20[r-1] for r in hit_ranks],
-            "hit_pred_numeric_positions": hit_ranks, "hit_real_numeric_positions": hit_ranks,
-        })
-    lp = lab._sosiapatternlab_arm("2099-05-02#120")
-    assert lp and lp["position_pick"] in lab.sosiapattern_pending["rank20"]
-    assert len(lp["watch"]) == SOSIA_NUMBER_WATCH_SIZE
-    assert lab.sosiapatternlab_totals["evaluated"] == 0
-
-    # FLOW + BURST v2: warmup 288, NO SIGNAL, settlement H1 e migrazione v1.
-    bhar=[]
-    for i in range(288):
-        r=random.Random(i+99901)
-        bhar.append({"key":f"2099-06-01#{i+1:03d}",
-                     "nums":sorted(r.sample(range(1,91),20))})
-    flow=DecinaFlowLab()
-    assert flow.bootstrap(bhar) and flow.warmup["available"] == 288
-    assert len(flow.warmup["overview"]) == 9 and len(flow.warmup["matrix_tail"]) == 12
-    assert sum(flow.warmup["matrix_tail"][-1]) == 20
-    assert "DECINA FLOW LAB" in flow.text()
-    assert flow._regime([2,3,2,2,2,2,3,2,2])["name"] == "COMPRESSION"
-    assert flow._regime([1,3,2,2,2,2,3,2,3])["name"] == "NORMAL"
-    assert flow._regime([0,5,2,2,2,2,3,2,2])["name"] == "DISPERSION"
-    assert flow.warmup.get("current_regime",{}).get("name") in ("COMPRESSION","NORMAL","DISPERSION")
-    assert set((flow.warmup.get("regime_stats") or {}).keys()) == {"COMPRESSION","NORMAL","DISPERSION"}
-
-    burst=DecinaBurstLab()
-    assert burst.bootstrap(bhar,flow=flow) and burst.warmup["available"] == 288
-    assert burst.totals["evaluated"] == 0 and burst.totals["abstained"] == 0
-    frozen=burst.arm(bhar,bhar[-1]["key"],flow=flow)
-    assert frozen and len(DECINA_GROUPS[frozen["group_index"]])==10
-    assert isinstance(frozen.get("signal"),bool) and frozen.get("model_version")==3
-    assert frozen.get("gate_audit_version") == BURST_GATE_AUDIT_VERSION
-    assert frozen.get("gate_reason") in BurstGateLab.REASON_ORDER
-    assert isinstance(frozen.get("score_delta"),(int,float)) and isinstance(frozen.get("margin_delta"),(int,float))
-    assert frozen.get("flow_regime",{}).get("name") in ("COMPRESSION","NORMAL","DISPERSION")
-    assert burst.arm(bhar,bhar[-1]["key"],flow=flow) is frozen
-    roundtrip=DecinaBurstLab(); roundtrip.load(burst.dump())
-    assert roundtrip.pending == frozen and roundtrip.totals["evaluated"] == 0
-    nums=sorted(random.Random(7788).sample(range(1,91),20))
-    result=roundtrip.settle("2099-06-02",1,nums)
-    assert result and 0 <= result["count"] <= 10 and roundtrip.pending is None
-    assert result.get("gate_audit_version") == BURST_GATE_AUDIT_VERSION
-    assert result.get("gate_reason") in BurstGateLab.REASON_ORDER
-    class _GateEngine: pass
-    _ge=_GateEngine(); _ge.burst=roundtrip
-    _gt=BurstGateLab.text(_ge)
-    assert "BURST GATE LAB v4" in _gt and "DISTANZA SCORE" in _gt
-    if result["signal"]:
-        assert roundtrip.totals["evaluated"]==1 and roundtrip.totals["abstained"]==0
-        assert roundtrip.totals["pred5"]==int(result["count"]>=5)
-    else:
-        assert roundtrip.totals["evaluated"]==0 and roundtrip.totals["abstained"]==1
-    g=DecinaBurstLab(); g.arm(bhar,bhar[-1]["key"],flow=flow)
-    assert g.settle("2099-06-02",2,nums).get("skipped") is True
-    assert g.totals["skipped"]==1 and g.totals["evaluated"]==0
-
-    # Migrazione di uno state BURST v1: contatori e pending non devono sparire.
-    legacy={"version":1,"totals":{"evaluated":58,"pred5":2,"pred6":2,"random5":2,"random6":1,
-            "pred_numbers":130,"random_numbers":134,"skipped":0,"paired_wins":2,"paired_losses":2,"paired_ties":54},
-            "by_group":{"40–49":{"n":10,"hit5":1,"hit6":1,"numbers":25}},
-            "records":[],"pending":{"from_key":"2099-06-01#288","group_index":4,"control_index":3,"index":0.5}}
-    migrated=DecinaBurstLab(); migrated.load(legacy)
-    assert migrated.totals["evaluated"]==58 and migrated.totals["pred6"]==2
-    assert migrated.pending and migrated.pending["signal"] is True and migrated.pending["model_version"]==1
-    assert migrated.by_group["40–49"]["n"]==10
-    legacy2={"version":2,"totals":{"evaluated":4,"abstained":9},"records":[],
-             "pending":{"from_key":"2099-06-01#288","group_index":2,"control_index":7,
-                        "signal":False,"extreme6":False,"model_version":2}}
-    migrated2=DecinaBurstLab(); migrated2.load(legacy2)
-    assert migrated2.totals["evaluated"]==4 and migrated2.totals["abstained"]==9
-    assert migrated2.pending and migrated2.pending["signal"] is False and migrated2.pending["model_version"]==2
-    # POST-BURST: warmup 288, due decine simultanee da 5, H1-H3, skip e roundtrip.
-    post=DecinaPostBurstLab()
-    assert post.bootstrap(bhar) and post.warmup['available']==288
-    assert len(post.live_records)==0 and not post.active
-    origin_nums=sorted(set(range(40,45)) | set(range(60,65)) |
-                       {1,2,11,12,21,22,31,32,51,52})
-    assert len(origin_nums)==20
-    post.observe_live('2099-06-01',288,origin_nums)
-    assert len(post.active)==2 and all(p['double'] for p in post.active)
-    assert post.observe_live('2099-06-01',288,origin_nums) is None
-    assert len(post.active)==2
-    round_post=DecinaPostBurstLab(); round_post.load(post.dump())
-    assert len(round_post.active)==2 and round_post.last_seen_key=='2099-06-01#288'
-    h1=sorted(set(range(40,45)) | {60,61,1,2,3,11,12,13,21,22,23,31,32,51,52})
-    assert len(h1)==20
-    round_post.observe_live('2099-06-02',1,h1)
-    oldh1=[r for r in round_post.live_records if r['origin_key']=='2099-06-01#288' and r['horizon']==1]
-    assert len(oldh1)==2 and any(r['same_5'] for r in oldh1)
-    assert any(r['other_5'] for r in oldh1)
-    round_post.observe_live('2099-06-02',2,nums)
-    round_post.observe_live('2099-06-02',3,nums)
-    oldrec=[r for r in round_post.live_records if r['origin_key']=='2099-06-01#288']
-    assert len(oldrec)==6 and all(r['horizon'] in (1,2,3) for r in oldrec)
-    replay=DecinaPostBurstLab()
-    replay.observe_live('2099-06-01',288,origin_nums,open_new=False)
-    assert not replay.active and not replay.live_records
-    replay.observe_live('2099-06-02',1,h1,open_new=True)
-    assert len(replay.active)==1 and replay.active[0]['group_index']==4
-    replay.observe_live('2099-06-02',2,nums,open_new=False)
-    assert any(r['origin_key']=='2099-06-02#001' for r in replay.live_records)
-    assert not any(p['origin_key']=='2099-06-02#002' for p in replay.active)
-    interrupted=DecinaPostBurstLab()
-    interrupted.observe_live('2099-06-01',288,origin_nums)
-    interrupted.observe_live('2099-06-02',2,nums)
-    assert interrupted.skipped==6 and not any(r['origin_key']=='2099-06-01#288' for r in interrupted.live_records)
-    six_nums=sorted(set(range(40,46)) | {1,2,3,11,12,13,21,22,23,31,32,51,52,53})
-    assert len(six_nums)==20
-    from_six=DecinaPostBurstLab()
-    from_six.observe_live('2099-06-01',288,six_nums)
-    assert len(from_six.active)==1 and from_six.active[0]['origin_count']==6
-    from_six.observe_live('2099-06-02',1,h1)
-    assert len(from_six.live_records)==1 and from_six.live_records[0]['same_count']==5
-    assert from_six.live_records[0]['origin_count']==6
-    assert 'POST-BURST' in round_post.text()
-    assert "/burst" in e.menu_text() and "/flow" in e.menu_text() and "/postburst" in e.menu_text() and "/post6" in e.menu_text()
-
-    # POST-6 v10: parte da zero, snapshot PRE-v10, segue solo H1 e random appaiato.
-    p6=Post6ExtremeShadow()
-    fake_hist=[{'key':'2099-06-01#288','nums':list(range(1,21))}]
-    pb=DecinaPostBurstLab()
-    pb.live_records=[{'origin_key':'x','key':'y','origin_count':6,'horizon':1,'same_5':True,'same_6':False,'same_count':5},
-                     {'origin_key':'x2','key':'y2','origin_count':6,'horizon':1,'same_5':False,'same_6':False,'same_count':2}]
-    assert p6.ensure_start(fake_hist,pb) and p6.pre_reference['n']==2 and p6.pre_reference['same5']==1
-    assert len(p6.records)==0 and not p6.pending
-    p6.observe_live('2099-06-02',1,six_nums,open_new=True)
-    assert len(p6.pending)==1 and p6.pending[0]['group_index']==4 and p6.pending[0]['origin_count']==6
-    # Controllo congelato diverso dalla decina evento.
-    assert p6.pending[0]['control_index'] != 4
-    p6_rt=Post6ExtremeShadow(); assert p6_rt.load(p6.dump()) and len(p6_rt.pending)==1
-    p6_rt.observe_live('2099-06-02',2,h1,open_new=False)
-    assert len(p6_rt.records)==1 and p6_rt.records[0]['same_count']==5 and p6_rt.records[0]['same_5']
-    assert not p6_rt.pending and 'POST-6 EXTREME' in p6_rt.text()
-    p6_skip=Post6ExtremeShadow(); p6_skip.ensure_start(fake_hist,pb)
-    p6_skip.observe_live('2099-06-02',1,six_nums,open_new=True)
-    p6_skip.observe_live('2099-06-02',3,nums,open_new=False)
-    assert p6_skip.skipped==1 and not p6_skip.records and not p6_skip.pending
-
-    # VERIFICA: nuovo confine, nessun HIT retroattivo, pending ante upgrade escluso.
-    lab = VerificationLab()
-    z = EngineOnly(load=False)
-    z.engine_history = [{'key':'2099-07-01#100','nums':list(range(1,21))}]
-    z.decina.totals['evaluated'] = 401
-    z.burst.totals['evaluated'] = 118
-    z.burst.totals['abstained'] = 268
-    z.engine_h5_records_live = [{'signal_from_key':'2099-07-01#099',
-        'origin_mode':'live','hits5':5,'completed_at':'2099-07-01#104'}]
-    assert lab.ensure_start(z) and lab.start_from_key == '2099-07-01#100'
-    assert not lab.ensure_start(z)
-    assert lab.dump()['old_counts']['decina']==401
-    assert VerificationLab().load(lab.dump())
-    z.verifica = lab
-    old_r={'key':'2099-07-01#101','from_key':'2099-07-01#100',
-           'counts':{'within':1,'fusion':1,'original':0,'random':0}}
-    new_r={'key':'2099-07-01#102','from_key':'2099-07-01#101',
-           'counts':{'within':0,'fusion':1,'original':1,'random':1}}
-    z.decina.records=[old_r,new_r]
-    z.engine_h5_records_live.append({'signal_from_key':'2099-07-01#101',
-        'origin_mode':'live','hits5':2,'completed_at':'2099-07-01#106'})
-    z.burst.records=[{'from_key':'2099-07-01#100','key':'2099-07-01#101',
-        'count':6,'control_count':0,'signal':True,'any5':True},
-        {'from_key':'2099-07-01#101','key':'2099-07-01#102',
-        'count':3,'control_count':5,'signal':False,'any5':True},
-        {'from_key':'2099-07-01#102','key':'2099-07-01#103',
-        'count':5,'control_count':2,'signal':True,'any5':True}]
-    ver_txt=z.verifica.text(z)
-    assert 'Nuovo test: 1/300' in ver_txt and 'STESSA DECINA 0/1' in ver_txt
-    assert 'Completate 1' in ver_txt and 'Esattamente 2 uscite: 1/1' in ver_txt
-    assert 'SIGNAL 1 | NO SIGNAL 1' in ver_txt
-    assert 'NO SIGNAL candidato SHADOW 5+ 0/1' in ver_txt
-    assert lab._new('2099-07-02#001') and not lab._new('2099-07-01#100')
-    assert '/verifica' in z.menu_text()
-    assert z.verifica.dump()['start_from_key']=='2099-07-01#100'
-    print('SELF-TEST VERIFICA v1 OK: confine persistente, vecchi pending esclusi, confronto same-H1, H5, BURST SIGNAL/NO SIGNAL.')
-
-    # CONVERGENCE v11: parte dopo marker, usa solo POST-6 nuovi e congela gli altri moduli PRIMA della H1.
-    cv_engine = EngineOnly(load=False)
-    cv_engine.engine_history = [{'key':'2099-08-01#100','nums':list(range(1,21))}]
-    assert cv_engine.convergence.ensure_start(cv_engine)
-    # Un pending POST-6 pre-v11 sul marker NON deve essere importato nel nuovo test.
-    cv_engine.post6.pending = [{'origin_key':'2099-08-01#100','group_index':4,'group':DECINA_LABELS[4],
-                                'origin_count':6,'control_index':7,'control_group':DECINA_LABELS[7]}]
-    assert cv_engine.convergence.arm('2099-08-01#100', cv_engine) == []
-    # Nuovo evento #101 con convergenza ENGINE + SOSIA + BURST + DECINA sulla 40-49.
-    cv_engine.engine_history.append({'key':'2099-08-01#101','nums':six_nums})
-    cv_engine.post6.pending = [{'origin_key':'2099-08-01#101','group_index':4,'group':DECINA_LABELS[4],
-                                'origin_count':6,'control_index':7,'control_group':DECINA_LABELS[7]}]
-    cv_engine.engine_pending = {'signal_from_key':'2099-08-01#101','accepted':True,'top1':42}
-    cv_engine.sosiasniper_pending = {'from_key':'2099-08-01#101','top1':43,'engine_hc':True,'engine_rank':2}
-    cv_engine.burst.pending = {'from_key':'2099-08-01#101','group_index':4,'signal':True,'score_delta':0.05}
-    cv_engine.decina.pending = {'from_key':'2099-08-01#101','within_pair':[41,48]}
-    cv_engine.flow.last_snapshot = {'current_regime':{'name':'DISPERSION','strength':'FORTE'},
-                                    'overview':[{'recent':2} for _ in range(9)]}
-    cv_engine.flow.last_snapshot['overview'][4]={'recent':6}
-    made = cv_engine.convergence.arm('2099-08-01#101', cv_engine)
-    assert len(made)==1 and made[0]['support']==4 and made[0]['burst_signal_same']
-    cvrt=ConvergenceLab(); assert cvrt.load(cv_engine.convergence.dump()) and len(cvrt.pending)==1
-    cv_h1=sorted(set(range(40,45)) | {1,2,3,11,12,13,21,22,23,31,32,51,52,53,54})
-    assert len(cv_h1)==20
-    closed=cvrt.settle('2099-08-01',102,cv_h1)
-    assert len(closed)==1 and closed[0]['same_5'] and closed[0]['support']==4
-    assert 'CONVERGENCE LAB v1' in cvrt.text()
-
-    # VERIFICA TUTTO: deve includere tutti i gruppi in un report Telegram compatto.
-    cv_engine.convergence = cvrt
-    all_txt=cv_engine.verify_all_text()
-    for token in ('ENGINE / ENGINEH / MULTIH5','PLAY','AMBO 2xHOT5','SOSIA / SOSIARANDOM',
-                  'SOSIA SNIPER','SOSIA PATTERN','DUAL / DECINE','BURST / BURSTGATE',
-                  'FLOW','POST-BURST','POST-6 v10','VERIFICA / CONVERGENZA','METODO CONVERGENZA HC v1'):
-        assert token in all_txt
-    assert len(all_txt) < 4096, len(all_txt)
-    assert 'random6' in all_txt and 'avanzamento' in all_txt
-    assert '/verificatutto' in cv_engine.menu_text() and '/convergenza' in cv_engine.menu_text() and '/metodohc' in cv_engine.menu_text()
-    # METODO HC v13: marker nuovo, MAIN/SUPER/HC_DISAGREE e roundtrip.
-    mh_engine = EngineOnly(load=False)
-    mh_engine.engine_history = [{'key':'2099-09-01#100','nums':list(range(1,21))}]
-    assert mh_engine.hc_method.ensure_start(mh_engine)
-    mh_engine.engine_history.append({'key':'2099-09-01#101','nums':list(range(1,21))})
-    mh_engine.engine_pending = {'signal_from_key':'2099-09-01#101','accepted':True,'top1':52,'confidence':0.9,'threshold':0.5,'support':3}
-    mh_engine.sosiasniper_pending = {'from_key':'2099-09-01#101','top1':52,'score':0.95,'consensus':6}
-    mh_engine.burst.pending = {'from_key':'2099-09-01#101','group_index':5,'signal':True,'score':0.9,'gap':0.4}
-    mr = mh_engine.hc_method.arm('2099-09-01#101', mh_engine)
-    assert mr and mr['is_main'] and mr['is_super'] and mr['signal_type']=='SUPER'
-    h1 = [52] + [n for n in range(1,91) if n not in {52,mr['control_num']}][:19]
-    closed = mh_engine.hc_method.settle('2099-09-01',102,h1)
-    assert len(closed)==1 and closed[0]['engine_hit'] and not closed[0]['control_hit']
-    # controllo HC_DISAGREE
-    mh_engine.engine_history.append({'key':'2099-09-01#102','nums':h1})
-    mh_engine.engine_pending = {'signal_from_key':'2099-09-01#102','accepted':True,'top1':40,'confidence':0.8,'threshold':0.5,'support':2}
-    mh_engine.sosiasniper_pending = {'from_key':'2099-09-01#102','top1':41,'score':0.8,'consensus':5}
-    mh_engine.burst.pending = {'from_key':'2099-09-01#102','group_index':4,'signal':False}
-    dr = mh_engine.hc_method.arm('2099-09-01#102', mh_engine)
-    assert dr and not dr['agreement'] and dr['signal_type']=='HC_DISAGREE'
-    mhrt=HCConvergenceMethod(); assert mhrt.load(mh_engine.hc_method.dump()) and len(mhrt.pending)==1
-    assert 'METODO CONVERGENZA HC v1' in mh_engine.hc_method.text()
-
-    all_txt=cv_engine.verify_all_text()
-    assert len(all_txt) < 4096, len(all_txt)
-    assert 'METODO CONVERGENZA HC v1' in all_txt
-
-    # FORCED ONE v14: tutte le classi + roundtrip + H1.
-    fo_engine = EngineOnly(load=False)
-    fo_engine.engine_history = [{'key':'2099-10-01#100','nums':list(range(1,21))}]
-    assert fo_engine.forced_one.ensure_start(fo_engine)
-    def _arm_forced(key, hc, etop, stop, burst_signal=False, burst_gi=0):
-        fo_engine.engine_history.append({'key':key,'nums':list(range(1,21))})
-        fo_engine.engine_pending={'signal_from_key':key,'accepted':hc,'top1':etop,'confidence':0.9 if hc else 0.2,'threshold':0.5,'support':3}
-        fo_engine.sosiasniper_pending={'from_key':key,'top1':stop,'score':0.9,'consensus':6}
-        fo_engine.burst.pending={'from_key':key,'group_index':burst_gi,'signal':burst_signal,'score':0.9,'gap':0.4}
-        return fo_engine.forced_one.arm(key,fo_engine)
-    fa=_arm_forced('2099-10-01#101',True,12,12,False,1); assert fa and fa['class']=='A' and fa['pick']==12
-    # evita pending multipli nel test manuale: chiudi la H1.
-    fclosed=fo_engine.forced_one.settle('2099-10-01',102,[12]+list(range(21,40))); assert fclosed[0]['hit']
-    fap=_arm_forced('2099-10-01#102',True,12,12,True,1); assert fap and fap['class']=='A+'
-    fo_engine.forced_one.pending=[]
-    fb=_arm_forced('2099-10-01#103',True,30,31,False,2); assert fb and fb['class']=='B' and fb['pick']==30
-    fo_engine.forced_one.pending=[]
-    fc=_arm_forced('2099-10-01#104',False,40,40,False,3); assert fc and fc['class']=='C' and fc['pick']==40
-    fo_engine.forced_one.pending=[]
-    fd=_arm_forced('2099-10-01#105',False,50,51,False,4); assert fd and fd['class']=='D' and fd['pick']==51
-    fort=ForcedOneMethod(); assert fort.load(fo_engine.forced_one.dump())
-    assert 'FORCED ONE v1' in fo_engine.forced_one.text()
-    all_txt=fo_engine.verify_all_text(); assert 'FORCED ONE v1' in all_txt and len(all_txt)<4096
-    assert '/forcedone' in fo_engine.menu_text()
-    # TRIPLETTE v15: 320 draw di storia, 36 numeri distinti, H1 + roundtrip.
-    tri_engine=EngineOnly(load=False)
-    tri_engine.triplette.start_from_key='2099-11-01#320'
-    tri_engine.triplette.started_at='2099-11-01T12:00:00+01:00'
-    tri_engine.engine_history=[]
-    # storia deterministica valida, 20 numeri distinti per draw
-    for i in range(1,322):
-        nums=sorted({((i*7+j*11)%90)+1 for j in range(20)})
-        # garantisci 20 distinti anche nel rarissimo caso di collisioni
-        n=1
-        while len(nums)<20:
-            if n not in nums: nums.append(n)
-            n+=1
-        nums=sorted(nums[:20])
-        tri_engine.engine_history.append({'key':f'2099-11-01#{i:03d}','nums':nums})
-    trrow=tri_engine.triplette.arm('2099-11-01#321',tri_engine)
-    assert trrow and len(trrow['tickets'])==4 and len(set(sum(trrow['tickets'],[])))==36
-    trclosed=tri_engine.triplette.settle('2099-11-01',322,list(range(1,21)))
-    assert trclosed and len(trclosed[0]['ticket_hits'])==4
-    tr2=TripletteCooccLab(); assert tr2.load(tri_engine.triplette.dump())
-    assert 'TRIPLETTE CO-OCCORRENZA v1' in tri_engine.triplette.text()
-    vt=tri_engine.verify_all_text(); assert 'TRIPLETTE CO-OCC v1' in vt and len(vt)<4096
-    assert '/triplette' in tri_engine.menu_text()
-    # FOCUS v16: gap 14-18, exactly 2 candidates, min TRANS80, H1 + roundtrip.
-    fx_engine=EngineOnly(load=False)
-    fx_engine.focus.start_from_key='2099-12-01#100'
-    fx_engine.focus.started_at='2099-12-01T12:00:00+01:00'
-    fx_engine.engine_history=[]
-    pool=[n for n in range(1,91) if n not in (88,89,90)]
+    # Test 1: 3 candidati -> sceglie TRANS80 massimo.
+    class DummyEngine:
+        pass
+    de=DummyEngine()
+    de.engine_history=[]
     for i in range(1,102):
-        # 20 distinti, rotazione rapida: tutti i numeri del pool ricompaiono entro 5 draw.
-        st=(i*19) % len(pool)
-        nums=[pool[(st+j)%len(pool)] for j in range(20)]
-        fx_engine.engine_history.append({'key':f'2099-12-01#{i:03d}','nums':sorted(nums)})
-    # Inserisci l'ultima presenza di 88 a gap 15 e di 89 a gap 17.
-    for n,g in ((88,14),(89,16),(90,18)):
-        idx=len(fx_engine.engine_history)-1-g
-        vals=list(fx_engine.engine_history[idx]['nums'])
-        vals[-1]=n
-        fx_engine.engine_history[idx]['nums']=sorted(vals)
-    fg=FocusR14Trans40._gaps(fx_engine.engine_history)
-    fcands=[n for n in range(1,91) if FOCUS_GAP_MIN <= fg[n] <= FOCUS_GAP_MAX]
-    assert set(fcands)=={88,89,90}, (fcands, {n:fg[n] for n in fcands})
-    fxrow=fx_engine.focus.arm('2099-12-01#101',fx_engine)
-    assert fxrow and len(fxrow['candidates'])==3 and fxrow['pick'] in (88,89,90)
-    fxclosed=fx_engine.focus.settle('2099-12-01',102,[fxrow['pick']]+list(range(1,20)))
-    assert fxclosed and fxclosed[0]['hit']
-    fx2=FocusR14Trans40(); assert fx2.load(fx_engine.focus.dump())
-    assert 'FOCUS R14-18 TRANS40 v1' in fx_engine.focus.text()
-    vfx=fx_engine.verify_all_text(); assert 'FOCUS R14-18 TRANS40 v1' in vfx and len(vfx)<4096
-    assert '/focus' in fx_engine.menu_text()
-    print(f'SELF-TEST v16 OK: FOCUS exactly3 + max TRANS40 + H1 + roundtrip + VERIFICA TUTTO ({len(vfx)} chars).')
+        nums=[((i+j-2)%90)+1 for j in range(1,21)]
+        de.engine_history.append({"key":f"2099-12-01#{i:03d}","nums":nums})
+    fx=FocusFastV2()
+    fx.start_from_key='2099-12-01#100'; fx.started_at='2099-12-01T12:00:00+01:00'
+    fx._gaps=lambda hist: {n:(13 if n==11 else 15 if n==22 else 18 if n==33 else 0) for n in range(1,91)}
+    fx._transition_score=lambda hist,current,n: ({11:0.21,22:0.31,33:0.25}[n],100,20)
+    row=fx.arm('2099-12-01#101',de)
+    assert row and row['pick']==22 and row['candidate_count']==3 and len(row['ranked_candidates'])==3
 
-    print(f'SELF-TEST v15 OK: TRIPLETTE 4x9 + 36 unique + settle + roundtrip + VERIFICA TUTTO ({len(vt)} chars).')
-    print(f'SELF-TEST v14 OK: FORCED ONE A+/A/B/C/D + result + roundtrip + VERIFICA TUTTO ({len(all_txt)} chars).')
+    # Test 2: H1 settle + roundtrip state.
+    hit_draw=[22]+[n for n in range(1,91) if n not in {22,row['control_num']}][:19]
+    closed=fx.settle('2099-12-01',102,hit_draw)
+    assert len(closed)==1 and closed[0]['hit'] is True
+    rt=FocusFastV2(); assert rt.load(fx.dump()) and len(rt.records)==1
+    assert 'FOCUS FAST v2' in rt.text()
 
-    print("SELF-TEST OK: v16 conserva v15 e aggiunge FOCUS R14-18 TRANS40 prospettico")
+    # Test 3: 4 candidati validi.
+    de.engine_history[-1]['key']='2099-12-01#103'
+    fx2=FocusFastV2(); fx2.start_from_key='2099-12-01#102'
+    fx2._gaps=lambda hist: {n:(13 if n==10 else 14 if n==20 else 17 if n==30 else 18 if n==40 else 0) for n in range(1,91)}
+    fx2._transition_score=lambda hist,current,n: ({10:0.20,20:0.22,30:0.29,40:0.24}[n],120,25)
+    row4=fx2.arm('2099-12-01#103',de)
+    assert row4 and row4['pick']==30 and row4['candidate_count']==4 and row4['fourth_candidate'] is not None
+
+    # Test 4: 2 candidati = NO SIGNAL.
+    de.engine_history[-1]['key']='2099-12-01#104'
+    fx3=FocusFastV2(); fx3.start_from_key='2099-12-01#103'
+    fx3._gaps=lambda hist: {n:(13 if n in {5,6} else 0) for n in range(1,91)}
+    assert fx3.arm('2099-12-01#104',de) is None and fx3.no_signal==1
+
+    # Test 5: Engine live v17 non aggiorna i vecchi metodi.
+    eng=EngineOnly(load=False)
+    eng.engine_history=[]
+    for i in range(1,102):
+        nums=[((i+j-2)%90)+1 for j in range(1,21)]
+        eng.engine_history.append({"key":f"2099-12-02#{i:03d}","nums":nums})
+    eng.engine_bootstrap_done=True
+    eng.last_draw_key='2099-12-02#101'
+    eng.processed=[f"2099-12-02#{i:03d}" for i in range(1,102)]; eng.processed_set=set(eng.processed)
+    eng.focus.start_from_key='2099-12-02#101'
+    eng.focus._gaps=lambda hist: {n:(13 if n==12 else 15 if n==24 else 18 if n==36 else 0) for n in range(1,91)}
+    eng.focus._transition_score=lambda hist,current,n: ({12:0.22,24:0.33,36:0.25}[n],100,20)
+    async def _noop(*a,**k): return None
+    eng.tg=_noop
+    old=(len(eng.forced_one.records),len(eng.triplette.records),len(eng.hc_method.records),int(eng.burst.totals.get('evaluated',0)))
+    await eng.process_draw(None,'2099-12-02',102,list(range(1,21)),mode='live',notify=True,persist=False)
+    new=(len(eng.forced_one.records),len(eng.triplette.records),len(eng.hc_method.records),int(eng.burst.totals.get('evaluated',0)))
+    assert old==new and len(eng.focus.pending)==1
+    assert LEGACY_METHODS_PAUSED is True
+    assert '/focus' in eng.menu_text() and '/forcedone' not in eng.menu_text() and '/triplette' not in eng.menu_text()
+    vt=eng.verify_all_text(); assert 'SOLO FOCUS FAST' in vt and 'FORCED ONE' not in vt and len(vt)<4096
+
+    print('SELF-TEST OK: v17 SOLO FOCUS FAST v2; 3-4 candidati, TRANS80, H1, vecchi moduli congelati.')
 
 async def main():
     if "--self-test" in sys.argv:
@@ -8744,30 +7893,9 @@ async def main():
     engine=EngineOnly(load=True)
     app.bot_data["engine"]=engine
 
-    app.add_handler(CommandHandler("engine",cmd_engine))
-    app.add_handler(CommandHandler("engineh",cmd_engineh))
-    app.add_handler(CommandHandler("multih5",cmd_multih5))
-    app.add_handler(CommandHandler("play",cmd_play))
-    app.add_handler(CommandHandler("ambo",cmd_ambo))
-    app.add_handler(CommandHandler("sosia",cmd_sosia))
-    app.add_handler(CommandHandler("sosiasniper",cmd_sosiasniper))
-    app.add_handler(CommandHandler("sosiapattern",cmd_sosiapattern))
-    app.add_handler(CommandHandler("dual",cmd_dual))
-    app.add_handler(CommandHandler("decine",cmd_decine))
-    app.add_handler(CommandHandler("burst",cmd_burst))
-    app.add_handler(CommandHandler("flow",cmd_flow))
-    app.add_handler(CommandHandler("postburst",cmd_postburst))
-    app.add_handler(CommandHandler("post6",cmd_post6))
-    app.add_handler(CommandHandler("convergenza",cmd_convergenza))
-    app.add_handler(CommandHandler("metodohc",cmd_metodohc))
-    app.add_handler(CommandHandler("forcedone",cmd_forcedone))
-    app.add_handler(CommandHandler("triplette",cmd_triplette))
     app.add_handler(CommandHandler("focus",cmd_focus))
-    app.add_handler(CommandHandler("verifica",cmd_verifica))
-    app.add_handler(CommandHandler("verificatutto",cmd_verificatutto))
-    app.add_handler(CommandHandler("burstgate",cmd_burstgate))
-    app.add_handler(CommandHandler("sosiarandom",cmd_sosiarandom))
     app.add_handler(CommandHandler("status",cmd_status))
+    app.add_handler(CommandHandler("verificatutto",cmd_verificatutto))
     app.add_handler(CommandHandler("menu",cmd_menu))
 
     await app.initialize()
