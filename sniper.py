@@ -1,16 +1,17 @@
 # ============================================================
-# 🎯 10eLOTTO FOCUS FAST ONLY — v17
+# 🎯 10eLOTTO FOCUS FAST + INCROCIO — v18
 # ============================================================
 #
-# UNICO METODO ATTIVO:
+# METODI ATTIVI:
 #   • ritardo 13..18
 #   • segnale solo con 3 o 4 candidati
 #   • ranking candidati con TRANS80 H1 calcolato solo sul passato
 #   • sceglie il TRANS80 piu' alto
-#   • UN SOLO NUMERO, SOLO prossima H1
-#   • nessun recupero / nessun backfill
+#   • FOCUS: UN SOLO NUMERO, SOLO prossima H1
+#   • INCROCIO: persistenza candidati, ambata + ambo H1-H5
+#   • nessun backfill dei risultati INCROCIO
 #
-# PAUSA v17:
+# PAUSA v18:
 #   • ENGINE predittivo, SOSIA, FORCED ONE, TRIPLETTE, HC, BURST,
 #     POST-6, PLAY, AMBO, DUAL e gli altri tracker non vengono
 #     aggiornati nel loop live e non inviano notifiche.
@@ -4106,7 +4107,7 @@ class TripletteCooccLab:
 #      usando al massimo le ultime 80 transizioni gia' concluse;
 #   5) sceglie il candidato con TRANS80 piu' alto.
 # Un solo H1, nessun recupero. Random appaiato congelato prima della H1.
-# Tutti gli altri metodi sono PAUSATI: il loro state viene conservato ma non aggiornato.
+# Tutti i metodi LEGACY sono PAUSATI: FOCUS + INCROCIO restano attivi.
 # ============================================================
 FOCUS_VERSION = 2
 FOCUS_GAP_MIN = max(1, int(os.getenv("FOCUS_GAP_MIN", "13")))
@@ -4371,12 +4372,309 @@ class FocusFastV2:
         if self.last_result and not self.last_result.get("skipped"):
             r=self.last_result
             lines += ["", f"🧾 Ultimo {r.get('origin_key','-')}: FOCUS #{r.get('pick','-')} " + ("✅ HIT" if r.get("hit") else "❌ MISS") + f" | random #{r.get('control_num','-')} " + ("✅" if r.get("control_hit") else "❌")]
-        lines += ["⏸️ Tutti gli altri metodi sono PAUSATI e il loro state storico resta conservato.",
-                  "⚠️ Test prospettico v17: un solo H1, nessun recupero e nessun backfill."]
+        lines += ["🔗 INCROCIO v1 e' attivo in parallelo; tutti i metodi LEGACY restano PAUSATI e conservati.",
+                  "⚠️ FOCUS resta prospettico: un solo H1; INCROCIO e' un tracker separato H1-H5."]
         return "\n".join(lines)
 
 # Alias interno per compatibilita' con eventuali riferimenti di test/vecchie importazioni.
 FocusR14Trans40 = FocusFastV2
+
+
+# ============================================================
+# INCROCIO v1 — PERSISTENZA CANDIDATI FOCUS, AMBATA + AMBO H1-H5
+# ============================================================
+# Deriva ESCLUSIVAMENTE dai candidati FOCUS FAST gia' congelati prima della H1.
+# - un numero e' "persistente" se compare in >=2 segnali FOCUS consecutivi;
+# - una coppia e' "persistente" se entrambi i numeri compaiono insieme in >=2
+#   segnali FOCUS consecutivi;
+# - per ogni nuovo segnale FOCUS si sceglie UNA ambata persistente e, se esiste,
+#   UN ambo persistente; entrambi vengono seguiti fino a H5;
+# - priorita': streak piu' lungo, poi TRANS80 corrente (somma per l'ambo).
+# I segnali FOCUS v17 gia' conclusi possono essere usati SOLO come contesto per
+# calcolare lo streak del primo segnale v18; nessun risultato INCROCIO viene
+# ricostruito retroattivamente.
+# ============================================================
+INCROCIO_VERSION = 1
+INCROCIO_HORIZON = max(1, int(os.getenv("INCROCIO_HORIZON", "5")))
+INCROCIO_MIN_STREAK = max(2, int(os.getenv("INCROCIO_MIN_STREAK", "2")))
+INCROCIO_RECORD_MAX = max(300, int(os.getenv("INCROCIO_RECORD_MAX", "5000")))
+INCROCIO_NOTIFY = os.getenv("INCROCIO_NOTIFY", "1").strip().lower() not in {"0","false","no","off"}
+INCROCIO_NOTIFY_RESULT = os.getenv("INCROCIO_NOTIFY_RESULT", "1").strip().lower() not in {"0","false","no","off"}
+
+
+class IncrocioFocusV1:
+    def __init__(self):
+        self.start_from_key=None
+        self.started_at=None
+        self.signal_history=[]
+        self.pending=[]
+        self.records=[]
+        self.focus_signals_seen=0
+        self.incrocio_signals=0
+        self.no_incrocio=0
+        self.skipped=0
+        self.seeded_context=False
+        self.last_signal=None
+        self.last_result=None
+
+    def ensure_start(self, engine):
+        if self.start_from_key:
+            return False
+        if not engine.engine_history:
+            return False
+        key=str(engine.engine_history[-1].get("key") or "")
+        if _verifica_order(key) is None:
+            return False
+        self.start_from_key=key
+        self.started_at=datetime.now(BOT_TZ).isoformat(timespec="seconds")
+        return True
+
+    @staticmethod
+    def _candidate_snapshot(row):
+        if not isinstance(row,dict) or not isinstance(row.get("origin_key"),str):
+            return None
+        ranked=[]
+        for x in list(row.get("ranked_candidates") or []):
+            if not isinstance(x,dict):
+                continue
+            try:
+                n=int(x.get("num")); tr=float(x.get("trans",0) or 0); gap=int(x.get("gap",0) or 0)
+            except Exception:
+                continue
+            if 1 <= n <= 90:
+                ranked.append({"num":n,"trans":tr,"gap":gap})
+        if len(ranked) < 2:
+            return None
+        return {"origin_key":str(row.get("origin_key")),"ranked_candidates":ranked,
+                "candidate_count":len(ranked),"seed":False}
+
+    def seed_from_focus(self, focus):
+        if self.signal_history or self.seeded_context:
+            return False
+        rows=[]
+        for r in list(getattr(focus,"records",[]) or [])[-6:]:
+            s=self._candidate_snapshot(r)
+            if s: rows.append(s)
+        for r in list(getattr(focus,"pending",[]) or [])[-3:]:
+            s=self._candidate_snapshot(r)
+            if s: rows.append(s)
+        ded={}
+        for r in rows:
+            ded[r["origin_key"]]=r
+        rows=sorted(ded.values(), key=lambda r: _verifica_order(r["origin_key"]) or (-1,-1))[-4:]
+        for r in rows:
+            r=dict(r); r["seed"]=True; self.signal_history.append(r)
+        self.seeded_context=True
+        self.signal_history=self.signal_history[-8:]
+        return bool(rows)
+
+    def load(self,obj):
+        if not isinstance(obj,dict) or int(obj.get("version",0) or 0) != INCROCIO_VERSION:
+            return False
+        key=obj.get("start_from_key")
+        if _verifica_order(key) is None:
+            return False
+        self.start_from_key=key
+        self.started_at=obj.get("started_at") if isinstance(obj.get("started_at"),str) else None
+        self.focus_signals_seen=max(0,int(obj.get("focus_signals_seen",0) or 0))
+        self.incrocio_signals=max(0,int(obj.get("incrocio_signals",0) or 0))
+        self.no_incrocio=max(0,int(obj.get("no_incrocio",0) or 0))
+        self.skipped=max(0,int(obj.get("skipped",0) or 0))
+        self.seeded_context=bool(obj.get("seeded_context",False))
+        sh=obj.get("signal_history",[])
+        if isinstance(sh,list):
+            self.signal_history=[dict(x) for x in sh[-8:] if isinstance(x,dict) and isinstance(x.get("origin_key"),str)]
+        pp=obj.get("pending",[])
+        if isinstance(pp,list):
+            self.pending=[dict(x) for x in pp[-40:] if isinstance(x,dict) and isinstance(x.get("origin_key"),str)]
+        rr=obj.get("records",[])
+        if isinstance(rr,list):
+            self.records=[dict(x) for x in rr[-INCROCIO_RECORD_MAX:] if isinstance(x,dict) and isinstance(x.get("origin_key"),str)]
+        self.last_signal=obj.get("last_signal") if isinstance(obj.get("last_signal"),dict) else None
+        self.last_result=obj.get("last_result") if isinstance(obj.get("last_result"),dict) else None
+        return True
+
+    def dump(self):
+        return {"version":INCROCIO_VERSION,"start_from_key":self.start_from_key,"started_at":self.started_at,
+                "signal_history":self.signal_history[-8:],"pending":self.pending[-40:],
+                "records":self.records[-INCROCIO_RECORD_MAX:],"focus_signals_seen":self.focus_signals_seen,
+                "incrocio_signals":self.incrocio_signals,"no_incrocio":self.no_incrocio,
+                "skipped":self.skipped,"seeded_context":self.seeded_context,
+                "last_signal":self.last_signal,"last_result":self.last_result}
+
+    @staticmethod
+    def _set(row):
+        vals=[]
+        for x in list(row.get("ranked_candidates") or []):
+            try: vals.append(int(x.get("num")))
+            except Exception: pass
+        return set(n for n in vals if 1<=n<=90)
+
+    @staticmethod
+    def _trans_map(row):
+        out={}
+        for x in list(row.get("ranked_candidates") or []):
+            try: out[int(x.get("num"))]=float(x.get("trans",0) or 0)
+            except Exception: pass
+        return out
+
+    def _streak_number(self, seq, n):
+        s=0
+        for r in reversed(seq):
+            if n in self._set(r): s+=1
+            else: break
+        return s
+
+    def _streak_pair(self, seq, a, b):
+        s=0
+        for r in reversed(seq):
+            ss=self._set(r)
+            if a in ss and b in ss: s+=1
+            else: break
+        return s
+
+    def observe_focus(self, focus_row):
+        cur=self._candidate_snapshot(focus_row)
+        if not cur:
+            return None
+        if any(str(x.get("origin_key"))==cur["origin_key"] for x in self.signal_history):
+            return None
+        self.focus_signals_seen += 1
+        seq=(self.signal_history+[cur])[-8:]
+        curset=self._set(cur); tr=self._trans_map(cur)
+        nums=[]
+        for n in sorted(curset):
+            st=self._streak_number(seq,n)
+            if st>=INCROCIO_MIN_STREAK:
+                nums.append({"num":n,"streak":st,"trans":round(float(tr.get(n,0.0)),8),
+                             "hit":False,"hit_colpo":None})
+        nums.sort(key=lambda x:(-x["streak"],-x["trans"],x["num"]))
+        pairs=[]
+        cs=sorted(curset)
+        for i,a in enumerate(cs):
+            for b in cs[i+1:]:
+                st=self._streak_pair(seq,a,b)
+                if st>=INCROCIO_MIN_STREAK:
+                    pairs.append({"pair":[a,b],"streak":st,
+                                  "trans_sum":round(float(tr.get(a,0.0)+tr.get(b,0.0)),8),
+                                  "hit":False,"hit_colpo":None})
+        pairs.sort(key=lambda x:(-x["streak"],-x["trans_sum"],x["pair"][0],x["pair"][1]))
+        self.signal_history.append(cur); self.signal_history=self.signal_history[-8:]
+        if not nums and not pairs:
+            self.no_incrocio += 1
+            return None
+        row={"origin_key":cur["origin_key"],"created_at":now_txt(),"age":0,
+             "ambate":nums,"ambi":pairs,
+             "top_ambata":int(nums[0]["num"]) if nums else None,
+             "top_ambo":list(pairs[0]["pair"]) if pairs else None,
+             "source_candidates":sorted(curset),"closed":False}
+        self.pending.append(row); self.pending=self.pending[-40:]
+        self.incrocio_signals += 1
+        self.last_signal=dict(row)
+        return row
+
+    def advance(self, day, draw_id, nums):
+        if not self.pending:
+            return []
+        key=draw_key(day,draw_id); actual=set(map(int,nums)); remain=[]; notices=[]
+        for p in self.pending:
+            r=dict(p)
+            r["ambate"]=[dict(x) for x in list(p.get("ambate") or [])]
+            r["ambi"]=[dict(x) for x in list(p.get("ambi") or [])]
+            age=int(r.get("age",0) or 0)+1
+            r["age"]=age; r["last_key"]=key
+            new_a=[]; new_b=[]
+            for x in r["ambate"]:
+                if not x.get("hit") and int(x.get("num")) in actual:
+                    x["hit"]=True; x["hit_colpo"]=age; new_a.append(int(x["num"]))
+            for x in r["ambi"]:
+                pair=list(x.get("pair") or [])
+                if len(pair)==2 and not x.get("hit") and int(pair[0]) in actual and int(pair[1]) in actual:
+                    x["hit"]=True; x["hit_colpo"]=age; new_b.append([int(pair[0]),int(pair[1])])
+            all_a=all(bool(x.get("hit")) for x in r["ambate"]) if r["ambate"] else True
+            all_b=all(bool(x.get("hit")) for x in r["ambi"]) if r["ambi"] else True
+            close=age>=INCROCIO_HORIZON or (all_a and all_b)
+            if close:
+                r["closed"]=True; r["closed_key"]=key
+                self.records.append(r); self.records=self.records[-INCROCIO_RECORD_MAX:]
+                self.last_result=r
+            else:
+                remain.append(r)
+            if new_a or new_b or close:
+                notices.append({"row":r,"new_ambate":new_a,"new_ambi":new_b,"closed":close})
+        self.pending=remain
+        return notices
+
+    @staticmethod
+    def _stats(rows):
+        rr=[r for r in rows if isinstance(r,dict) and r.get("closed")]
+        n=len(rr)
+        an=sum(len(list(r.get("ambate") or [])) for r in rr)
+        ah=sum(sum(bool(x.get("hit")) for x in list(r.get("ambate") or [])) for r in rr)
+        pn=sum(len(list(r.get("ambi") or [])) for r in rr)
+        ph=sum(sum(bool(x.get("hit")) for x in list(r.get("ambi") or [])) for r in rr)
+        sr=[r for r in rr if r.get("ambi")]
+        anyph=sum(any(bool(x.get("hit")) for x in list(r.get("ambi") or [])) for r in sr)
+        return n,an,ah,pn,ph,len(sr),anyph
+
+    def signal_text(self,row):
+        if not row: return None
+        lines=["🔗 INCROCIO FOCUS v1 — RETE PERSISTENTE H1-H5",f"Origine: {row.get('origin_key')}"]
+        aa=list(row.get("ambate") or [])
+        pp=list(row.get("ambi") or [])
+        if aa:
+            lines.append("🎯 AMBATE PERSISTENTI:")
+            for x in aa:
+                star=" ⭐TOP" if int(x.get("num"))==int(row.get("top_ambata") or -1) else ""
+                lines.append(f"• #{x.get('num')} ×{x.get('streak')} | T80 {float(x.get('trans') or 0):.4f}{star}")
+        if pp:
+            lines.append("💥 AMBI PERSISTENTI:")
+            top=list(row.get("top_ambo") or [])
+            for x in pp:
+                a,b=x["pair"]; lvl=" 🔥" if int(x.get("streak",0) or 0)>=3 else ""
+                star=" ⭐TOP" if [a,b]==top else ""
+                lines.append(f"• {a}-{b} ×{x.get('streak')}{lvl}{star}")
+        lines.append(f"⏳ Tutti gli incroci restano congelati fino a H{INCROCIO_HORIZON}; ambo valido solo se i 2 numeri escono nello STESSO draw.")
+        return "\n".join(lines)
+
+    def result_text(self,event):
+        if not isinstance(event,dict): return None
+        r=event.get("row") or {}
+        lines=["🧾 INCROCIO FOCUS v1 — AGGIORNAMENTO",f"Origine {r.get('origin_key')} | H{r.get('age')} → {r.get('last_key','-')}"]
+        if event.get("new_ambate"):
+            lines.append("🎯 AMBATA HIT: " + ", ".join(f"#{n}" for n in event["new_ambate"]))
+        if event.get("new_ambi"):
+            lines.append("💥 AMBO HIT: " + ", ".join(f"{a}-{b}" for a,b in event["new_ambi"]))
+        if event.get("closed"):
+            miss_a=[x for x in r.get("ambate",[]) if not x.get("hit")]
+            miss_b=[x for x in r.get("ambi",[]) if not x.get("hit")]
+            if miss_a: lines.append("❌ AMBATE non uscite entro H5: " + ", ".join(f"#{x['num']}" for x in miss_a))
+            if miss_b: lines.append("❌ AMBI non usciti entro H5: " + ", ".join(f"{x['pair'][0]}-{x['pair'][1]}" for x in miss_b))
+            if not miss_a and not miss_b: lines.append("✅ Tutti i target INCROCIO di questa origine sono chiusi in HIT.")
+        return "\n".join(lines) if len(lines)>2 else None
+
+    def text(self):
+        n,an,ah,pn,ph,sn,sah=self._stats(self.records)
+        lines=["🔗 INCROCIO FOCUS v1 — TUTTI GLI INCROCI H1-H5",
+               "Regola: ogni numero/coppia presente in almeno 2 segnali FOCUS consecutivi viene congelato e seguito.",
+               f"🧊 Inizio prospettico: dopo {self.start_from_key or '-'}" + (f" | {self.started_at}" if self.started_at else ""),
+               f"FOCUS osservati v18: {self.focus_signals_seen} | origini INCROCIO: {self.incrocio_signals} | senza incrocio: {self.no_incrocio} | pending {len(self.pending)}",
+               f"🎯 AMBATE individuali entro H{INCROCIO_HORIZON}: {ah}/{an} ({safe_pct(ah,an):.2f}%) | baseline teorica H5 ≈71.54%",
+               f"💥 AMBI individuali stesso draw entro H{INCROCIO_HORIZON}: {ph}/{pn} ({safe_pct(ph,pn):.2f}%) | baseline coppia fissa H5 ≈21.57%",
+               f"🕸️ Origini con almeno un AMBO: {sah}/{sn} ({safe_pct(sah,sn):.2f}%)"]
+        if self.pending:
+            lines += ["", "⏳ PENDENTI:"]
+            for p in self.pending[-6:]:
+                aa=" ".join(f"#{x['num']}×{x['streak']}" for x in p.get("ambate",[])) or "-"
+                pp=" ".join(f"{x['pair'][0]}-{x['pair'][1]}×{x['streak']}" for x in p.get("ambi",[])) or "-"
+                lines.append(f"• {p.get('origin_key')} | prossimo H{int(p.get('age',0))+1} | A {aa} | AMBI {pp}")
+        if self.last_result:
+            r=self.last_result
+            hit_a=sum(bool(x.get("hit")) for x in r.get("ambate",[])); tot_a=len(r.get("ambate",[]))
+            hit_b=sum(bool(x.get("hit")) for x in r.get("ambi",[])); tot_b=len(r.get("ambi",[]))
+            lines += ["",f"🧾 Ultimo chiuso {r.get('origin_key')}: ambate {hit_a}/{tot_a} | ambi {hit_b}/{tot_b}"]
+        lines.append("⚠️ Nuovo tracker prospettico v18: nessun backfill dei risultati INCROCIO.")
+        return "\n".join(lines)
 
 
 class EngineOnly:
@@ -4485,7 +4783,8 @@ class EngineOnly:
         self.forced_one = ForcedOneMethod()  # v14: un numero H1 sempre, classi A+/A/B/C/D
         self.triplette = TripletteCooccLab()  # v15: 4x9, triplette co-occorrenza, H1 shadow
         self.focus_legacy_state = None  # archivio raw v16, NON aggiornato
-        self.focus = FocusFastV2()  # v17: unico metodo attivo, R13-18 / 3-4 candidati / TRANS80
+        self.focus = FocusFastV2()  # v18: generatore candidati, R13-18 / 3-4 candidati / TRANS80
+        self.incrocio = IncrocioFocusV1()  # v18: persistenza candidati FOCUS, ambata+ambo H1-H5
 
         self.state_load_info = {
             "loaded": False,
@@ -4497,9 +4796,11 @@ class EngineOnly:
         self.last_git_status = _git_status(True, "not-run", "nessun push ancora eseguito")
         if load:
             self.load_state()
-            # v17: tutti i vecchi metodi restano caricati nello state ma PAUSATI.
+            # v18: tutti i vecchi metodi legacy restano caricati nello state ma PAUSATI.
             # Nessun bootstrap/arm/settle live viene eseguito per loro.
-            self.focus.ensure_start(self)  # marker v2 nuovo, nessun backfill
+            self.focus.ensure_start(self)  # marker v2 esistente, nessun backfill
+            self.incrocio.ensure_start(self)
+            self.incrocio.seed_from_focus(self.focus)  # solo contesto streak, nessun risultato retroattivo
 
     @staticmethod
     def _new_engine_stats():
@@ -6693,8 +6994,9 @@ class EngineOnly:
             self.triplette.load(d.get("triplette_coocc_v1"))
             self.focus_legacy_state = d.get("focus_r14_trans40_v1") if isinstance(d.get("focus_r14_trans40_v1"), dict) else None
             self.focus.load(d.get("focus_fast_v2"))
+            self.incrocio.load(d.get("incrocio_focus_v1"))
 
-            # v17: pending e sessioni legacy restano congelati esattamente come salvati.
+            # v18: pending e sessioni legacy restano congelati esattamente come salvati.
 
             migrated = os.path.abspath(path) == os.path.abspath(LEGACY_STATE_FILE)
             self.state_load_info = {
@@ -6783,6 +7085,7 @@ class EngineOnly:
             "triplette_coocc_v1": self.triplette.dump(),
             "focus_r14_trans40_v1": self.focus_legacy_state,
             "focus_fast_v2": self.focus.dump(),
+            "incrocio_focus_v1": self.incrocio.dump(),
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -7229,9 +7532,9 @@ class EngineOnly:
         return self.engine_bootstrap_done
 
     async def process_draw(self, app, day, e, nums, mode="live", notify=True, persist=True, sniper_notify=None):
-        """v17 live loop: aggiorna SOLO history + FOCUS FAST v2.
+        """v18 live loop: aggiorna SOLO history + FOCUS FAST v2 + INCROCIO v1.
 
-        Tutti gli altri motori/tracker vengono lasciati nello state esattamente come caricati.
+        Tutti gli altri motori/tracker legacy restano congelati nello state.
         """
         clean=list(map(int,nums))
         if len(clean)!=20 or len(set(clean))!=20: return None
@@ -7239,6 +7542,17 @@ class EngineOnly:
 
         if mode == "live":
             self.focus.ensure_start(self)
+            self.incrocio.ensure_start(self)
+            self.incrocio.seed_from_focus(self.focus)
+
+            # Prima aggiorna tutte le sessioni INCROCIO aperte (H1..H5).
+            inc_events=self.incrocio.advance(day,e,clean)
+            if INCROCIO_NOTIFY_RESULT and notify:
+                for ev in inc_events:
+                    msg=self.incrocio.result_text(ev)
+                    if msg: await self.tg(app,msg)
+
+            # Poi chiude l'H1 FOCUS del draw precedente.
             closed=self.focus.settle(day,e,clean)
             if FOCUS_NOTIFY_RESULT and notify:
                 for row in closed:
@@ -7253,6 +7567,11 @@ class EngineOnly:
             if FOCUS_NOTIFY and row:
                 msg=self.focus.signal_text(row)
                 if msg: await self.tg(app,msg)
+            if row:
+                inc=self.incrocio.observe_focus(row)
+                if INCROCIO_NOTIFY and inc:
+                    msg=self.incrocio.signal_text(inc)
+                    if msg: await self.tg(app,msg)
 
         if persist:
             self.save_state(git=True)
@@ -7515,9 +7834,10 @@ class EngineOnly:
         n,h,c,r2,r3,r4,n4,w,l,t=self.focus._stats(fx)
         p=self.focus.pending[-1] if self.focus.pending else None
         rate=100.0*(n+len(self.focus.pending))/self.focus.scans if self.focus.scans else 0.0
+        _,an,ah,pn,ph,sn,sah=self.incrocio._stats(self.incrocio.records)
         lines=[
-            "🧾 VERIFICA TUTTO v17 — SOLO FOCUS FAST",
-            "⏸️ Tutti gli altri metodi sono PAUSATI: state e statistiche storiche conservati, nessun nuovo aggiornamento live.",
+            "🧾 VERIFICA TUTTO v18 — FOCUS + INCROCIO",
+            "⏸️ Tutti gli altri metodi legacy sono PAUSATI e conservati nello state.",
             "",
             "⚡ FOCUS FAST v2 — R13-18 / 3-4 candidati / TRANS80",
             f"Scan {self.focus.scans} | valutati {n} | NO SIGNAL {self.focus.no_signal} | frequenza segnali {rate:.1f}% | salti {self.focus.skipped}",
@@ -7525,19 +7845,25 @@ class EngineOnly:
             f"2° {r2}/{n} ({safe_pct(r2,n):.2f}%) | 3° {r3}/{n} ({safe_pct(r3,n):.2f}%)" + (f" | 4° {r4}/{n4} ({safe_pct(r4,n4):.2f}%)" if n4 else ""),
             f"Appaiato vs random +{w}/-{l}/={t}",
             f"progress {min(n,50)}/50 {min(n,100)}/100 {min(n,200)}/200 {min(n,300)}/300" + (f" | PENDING #{p.get('pick')}" if p else " | pending 0"),
+            "",
+            "🔗 INCROCIO FOCUS v1 — persistenza candidati H1-H5",
+            f"FOCUS v18 osservati {self.incrocio.focus_signals_seen} | segnali incrocio {self.incrocio.incrocio_signals} | pending {len(self.incrocio.pending)}",
+            f"AMBATE H5 {ah}/{an} ({safe_pct(ah,an):.2f}%) | AMBI H5 {ph}/{pn} ({safe_pct(ph,pn):.2f}%) | origini con ambo {sah}/{sn}",
         ]
         return "\n".join(lines)
 
     def menu_text(self):
         return (
-            "⚡ FOCUS FAST ONLY — v17\n\n"
-            "UNICO metodo attivo:\n"
-            "ritardo 13-18 → segnale se ci sono 3 o 4 candidati → scelgo TRANS80 massimo → un solo numero H1.\n\n"
-            "/focus — stato completo FOCUS FAST v2\n"
-            "/status — stato rapido FOCUS FAST\n"
-            "/verificatutto — audit compatto SOLO FOCUS\n"
+            "⚡ FOCUS + INCROCIO — v18\n\n"
+            "METODI ATTIVI:\n"
+            "1) FOCUS FAST v2: R13-18, 3-4 candidati, TRANS80 max, un numero H1.\n"
+            "2) INCROCIO v1: candidati ripetuti in >=2 segnali FOCUS consecutivi; una ambata + un ambo, monitor H1-H5.\n\n"
+            "/focus — stato FOCUS FAST\n"
+            "/incrocio — stato INCROCIO ambata/ambo\n"
+            "/status — riepilogo FOCUS + INCROCIO\n"
+            "/verificatutto — audit compatto dei 2 metodi attivi\n"
             "/menu — questa schermata\n\n"
-            "⏸️ Tutti gli altri metodi sono in pausa; il loro state storico non viene cancellato."
+            "⏸️ Tutti gli altri metodi restano in pausa; lo state storico non viene cancellato."
         )
 
 
@@ -7607,6 +7933,9 @@ async def cmd_triplette(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_focus(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].focus.text())
 
+async def cmd_incrocio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].incrocio.text())
+
 async def cmd_verificatutto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].verify_all_text())
 
@@ -7622,7 +7951,8 @@ async def cmd_sosiarandom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].sosia_text())
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await reply(update, context.application.bot_data["engine"].focus.text())
+    eng=context.application.bot_data["engine"]
+    await reply(update, eng.verify_all_text())
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].menu_text())
@@ -7630,13 +7960,14 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setup_commands(app):
     await app.bot.set_my_commands([
         BotCommand("focus", "FOCUS FAST v2: un numero H1"),
-        BotCommand("status", "Stato rapido FOCUS FAST"),
-        BotCommand("verificatutto", "Audit SOLO FOCUS FAST"),
+        BotCommand("incrocio", "INCROCIO: ambata + ambo H1-H5"),
+        BotCommand("status", "Riepilogo FOCUS + INCROCIO"),
+        BotCommand("verificatutto", "Audit dei 2 metodi attivi"),
         BotCommand("menu", "Comandi attivi"),
     ])
 
 async def ensure_engine_ready(engine):
-    """v17: serve solo uno storico consecutivo per gap + TRANS80.
+    """v18: serve uno storico consecutivo per gap + TRANS80 e INCROCIO.
 
     Se lo state e' gia' pronto non tocca nulla. Su installazione nuova carica
     esclusivamente engine_history/processed, senza costruire segnali dei vecchi motori.
@@ -7736,6 +8067,8 @@ async def startup(engine, app, retry_state=None):
         await engine.process_draw(None,d,e,nums,mode="live",notify=False,persist=False)
 
     engine.focus.ensure_start(engine)
+    engine.incrocio.ensure_start(engine)
+    engine.incrocio.seed_from_focus(engine.focus)
     # Dopo il catch-up, l'ultimo draw e' noto ma la sua H1 non lo e' ancora:
     # possiamo congelare legittimamente il segnale v2 senza backfill.
     armed=None
@@ -7744,22 +8077,29 @@ async def startup(engine, app, retry_state=None):
         latest_key=draw_key(latest[0],latest[1])
         if latest_key == engine.engine_history[-1]["key"]:
             armed=engine.focus.arm(latest_key,engine)
+            if armed:
+                inc_armed=engine.incrocio.observe_focus(armed)
+            else:
+                inc_armed=None
+        else:
+            inc_armed=None
+    else:
+        inc_armed=None
     engine.save_state(git=True,force_git=True)
 
     await engine.tg(app,
-        "🚀 FOCUS FAST ONLY v17 AVVIATO\n\n"
-        "⚡ UNICO METODO ATTIVO: FOCUS FAST v2\n"
-        "• ritardo 13-18\n"
-        "• segnale con 3 o 4 candidati\n"
-        "• scelta = TRANS80 massimo\n"
-        "• un solo numero, solo prossima H1\n"
-        "• nessun recupero\n\n"
+        "🚀 FOCUS + INCROCIO v18 AVVIATO\n\n"
+        "⚡ FOCUS FAST v2: R13-18, 3-4 candidati, TRANS80 max, un numero H1.\n"
+        "🔗 INCROCIO v1: persistenza candidati FOCUS >=2 segnali consecutivi; ambata + ambo H1-H5.\n\n"
         "⏸️ ENGINE predittivo, SOSIA, FORCED ONE, TRIPLETTE, HC, BURST, POST-6, PLAY, AMBO, DUAL e altri tracker: PAUSATI.\n"
         "✅ Il loro state storico resta conservato e non viene aggiornato.\n\n"
-        "Comandi: /focus /status /verificatutto /menu"
+        "Comandi: /focus /incrocio /status /verificatutto /menu"
     )
     if armed and FOCUS_NOTIFY:
         msg=engine.focus.signal_text(armed)
+        if msg: await engine.tg(app,msg)
+    if inc_armed and INCROCIO_NOTIFY:
+        msg=engine.incrocio.signal_text(inc_armed)
         if msg: await engine.tg(app,msg)
     return True
 
@@ -7771,7 +8111,7 @@ async def startup_until_ready(engine, app):
         await asyncio.sleep(max(30,WARMUP_RETRY_SEC))
 
 async def live_loop(engine, app):
-    console_log(f"FOCUS FAST ONLY LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s")
+    console_log(f"FOCUS + INCROCIO LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s")
     started=time.monotonic()
     last_error=""
     last_error_ts=0.0
@@ -7783,7 +8123,7 @@ async def live_loop(engine, app):
             except Exception as exc:
                 console_log(f"ROTATION save fail | {exc}")
             if BOT_ROTATION_NOTIFY:
-                await engine.tg(app,"♻️ FOCUS FAST — ROTAZIONE RUNNER\nState salvato; avvio successivo automatico.")
+                await engine.tg(app,"♻️ FOCUS + INCROCIO — ROTAZIONE RUNNER\nState salvato; avvio successivo automatico.")
             return "rotation"
 
         try:
@@ -7813,59 +8153,46 @@ async def live_loop(engine, app):
             console_log(f"LOOP ERROR | {txt}")
             now=time.time()
             if txt!=last_error or now-last_error_ts>=900:
-                await engine.tg(app,f"⚠️ FOCUS FAST — ERRORE\n{txt}\nRiprovo automaticamente.")
+                await engine.tg(app,f"⚠️ FOCUS + INCROCIO — ERRORE\n{txt}\nRiprovo automaticamente.")
                 last_error=txt; last_error_ts=now
             await asyncio.sleep(max(30,LOOP_SEC))
 
 async def run_self_test():
-    # Test 1: 3 candidati -> sceglie TRANS80 massimo.
-    class DummyEngine:
-        pass
-    de=DummyEngine()
-    de.engine_history=[]
+    # FOCUS: 3 candidati, TRANS80 massimo.
+    class DummyEngine: pass
+    de=DummyEngine(); de.engine_history=[]
     for i in range(1,102):
         nums=[((i+j-2)%90)+1 for j in range(1,21)]
         de.engine_history.append({"key":f"2099-12-01#{i:03d}","nums":nums})
-    fx=FocusFastV2()
-    fx.start_from_key='2099-12-01#100'; fx.started_at='2099-12-01T12:00:00+01:00'
-    fx._gaps=lambda hist: {n:(13 if n==11 else 15 if n==22 else 18 if n==33 else 0) for n in range(1,91)}
-    fx._transition_score=lambda hist,current,n: ({11:0.21,22:0.31,33:0.25}[n],100,20)
-    row=fx.arm('2099-12-01#101',de)
-    assert row and row['pick']==22 and row['candidate_count']==3 and len(row['ranked_candidates'])==3
+    fx=FocusFastV2(); fx.start_from_key='2099-12-01#100'; fx.started_at='2099-12-01T12:00:00+01:00'
+    fx._gaps=lambda hist:{n:(13 if n==11 else 15 if n==22 else 18 if n==33 else 0) for n in range(1,91)}
+    fx._transition_score=lambda hist,current,n:({11:0.21,22:0.31,33:0.25}[n],100,20)
+    row1=fx.arm('2099-12-01#101',de)
+    assert row1 and row1['pick']==22 and row1['candidate_count']==3
 
-    # Test 2: H1 settle + roundtrip state.
-    hit_draw=[22]+[n for n in range(1,91) if n not in {22,row['control_num']}][:19]
-    closed=fx.settle('2099-12-01',102,hit_draw)
-    assert len(closed)==1 and closed[0]['hit'] is True
-    rt=FocusFastV2(); assert rt.load(fx.dump()) and len(rt.records)==1
-    assert 'FOCUS FAST v2' in rt.text()
+    # INCROCIO: primo segnale solo contesto, secondo con 22 e 33 ripetuti -> ambata + ambo.
+    inc=IncrocioFocusV1(); inc.start_from_key='2099-12-01#100'; inc.seeded_context=True
+    assert inc.observe_focus(row1) is None
+    row2=dict(row1); row2['origin_key']='2099-12-01#102'; row2['ranked_candidates']=[
+        {"num":22,"gap":16,"trans":0.34},{"num":33,"gap":18,"trans":0.28},{"num":44,"gap":13,"trans":0.19}]
+    sig=inc.observe_focus(row2)
+    assert sig and sig['top_ambata']==22 and sig['top_ambo']==[22,33]
+    assert {x['num'] for x in sig['ambate']}=={22,33} and any(x['pair']==[22,33] for x in sig['ambi'])
+    ev=inc.advance('2099-12-01',103,[22,33]+list(range(50,68)))
+    assert ev and set(ev[0]['new_ambate'])=={22,33} and [22,33] in ev[0]['new_ambi'] and ev[0]['closed']
+    rt=IncrocioFocusV1(); assert rt.load(inc.dump()) and len(rt.records)==1
+    assert 'AMBO' in rt.text()
 
-    # Test 3: 4 candidati validi.
-    de.engine_history[-1]['key']='2099-12-01#103'
-    fx2=FocusFastV2(); fx2.start_from_key='2099-12-01#102'
-    fx2._gaps=lambda hist: {n:(13 if n==10 else 14 if n==20 else 17 if n==30 else 18 if n==40 else 0) for n in range(1,91)}
-    fx2._transition_score=lambda hist,current,n: ({10:0.20,20:0.22,30:0.29,40:0.24}[n],120,25)
-    row4=fx2.arm('2099-12-01#103',de)
-    assert row4 and row4['pick']==30 and row4['candidate_count']==4 and row4['fourth_candidate'] is not None
-
-    # Test 4: 2 candidati = NO SIGNAL.
-    de.engine_history[-1]['key']='2099-12-01#104'
-    fx3=FocusFastV2(); fx3.start_from_key='2099-12-01#103'
-    fx3._gaps=lambda hist: {n:(13 if n in {5,6} else 0) for n in range(1,91)}
-    assert fx3.arm('2099-12-01#104',de) is None and fx3.no_signal==1
-
-    # Test 5: Engine live v17 non aggiorna i vecchi metodi.
-    eng=EngineOnly(load=False)
-    eng.engine_history=[]
+    # Engine live v18: legacy congelati, FOCUS + INCROCIO possono avanzare.
+    eng=EngineOnly(load=False); eng.engine_history=[]
     for i in range(1,102):
         nums=[((i+j-2)%90)+1 for j in range(1,21)]
         eng.engine_history.append({"key":f"2099-12-02#{i:03d}","nums":nums})
-    eng.engine_bootstrap_done=True
-    eng.last_draw_key='2099-12-02#101'
+    eng.engine_bootstrap_done=True; eng.last_draw_key='2099-12-02#101'
     eng.processed=[f"2099-12-02#{i:03d}" for i in range(1,102)]; eng.processed_set=set(eng.processed)
-    eng.focus.start_from_key='2099-12-02#101'
-    eng.focus._gaps=lambda hist: {n:(13 if n==12 else 15 if n==24 else 18 if n==36 else 0) for n in range(1,91)}
-    eng.focus._transition_score=lambda hist,current,n: ({12:0.22,24:0.33,36:0.25}[n],100,20)
+    eng.focus.start_from_key='2099-12-02#101'; eng.incrocio.start_from_key='2099-12-02#101'; eng.incrocio.seeded_context=True
+    eng.focus._gaps=lambda hist:{n:(13 if n==12 else 15 if n==24 else 18 if n==36 else 0) for n in range(1,91)}
+    eng.focus._transition_score=lambda hist,current,n:({12:0.22,24:0.33,36:0.25}[n],100,20)
     async def _noop(*a,**k): return None
     eng.tg=_noop
     old=(len(eng.forced_one.records),len(eng.triplette.records),len(eng.hc_method.records),int(eng.burst.totals.get('evaluated',0)))
@@ -7873,10 +8200,10 @@ async def run_self_test():
     new=(len(eng.forced_one.records),len(eng.triplette.records),len(eng.hc_method.records),int(eng.burst.totals.get('evaluated',0)))
     assert old==new and len(eng.focus.pending)==1
     assert LEGACY_METHODS_PAUSED is True
-    assert '/focus' in eng.menu_text() and '/forcedone' not in eng.menu_text() and '/triplette' not in eng.menu_text()
-    vt=eng.verify_all_text(); assert 'SOLO FOCUS FAST' in vt and 'FORCED ONE' not in vt and len(vt)<4096
+    assert '/focus' in eng.menu_text() and '/incrocio' in eng.menu_text() and '/forcedone' not in eng.menu_text()
+    vt=eng.verify_all_text(); assert 'FOCUS + INCROCIO' in vt and 'FORCED ONE' not in vt and len(vt)<4096
 
-    print('SELF-TEST OK: v17 SOLO FOCUS FAST v2; 3-4 candidati, TRANS80, H1, vecchi moduli congelati.')
+    print('SELF-TEST OK: v18 FOCUS FAST v2 + INCROCIO v1; ambata/ambo H1-H5; legacy congelati.')
 
 async def main():
     if "--self-test" in sys.argv:
@@ -7894,6 +8221,7 @@ async def main():
     app.bot_data["engine"]=engine
 
     app.add_handler(CommandHandler("focus",cmd_focus))
+    app.add_handler(CommandHandler("incrocio",cmd_incrocio))
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("verificatutto",cmd_verificatutto))
     app.add_handler(CommandHandler("menu",cmd_menu))
