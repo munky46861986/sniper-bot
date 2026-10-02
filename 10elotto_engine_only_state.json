@@ -1,6 +1,6 @@
 {
   "state_version": 1,
-  "saved_at": "2026-10-03 01:15:52",
+  "saved_at": "2026-10-03 01:21:00",
   "processed": [
     "2026-09-08#001",
     "2026-09-08#002",
@@ -6919,37 +6919,13 @@
     "2026-10-03#012",
     "2026-10-03#013",
     "2026-10-03#014",
-    "2026-10-03#015"
+    "2026-10-03#015",
+    "2026-10-03#016"
   ],
-  "last_draw_key": "2026-10-03#015",
+  "last_draw_key": "2026-10-03#016",
   "engine_model_version": 1,
   "engine_bootstrap_done": true,
   "engine_history": [
-    {
-      "key": "2026-09-30#017",
-      "nums": [
-        2,
-        3,
-        10,
-        12,
-        15,
-        20,
-        21,
-        23,
-        31,
-        35,
-        39,
-        41,
-        42,
-        51,
-        52,
-        55,
-        70,
-        79,
-        80,
-        90
-      ]
-    },
     {
       "key": "2026-09-30#018",
       "nums": [
@@ -26923,6 +26899,31 @@
         81,
         82,
         88
+      ]
+    },
+    {
+      "key": "2026-10-03#016",
+      "nums": [
+        8,
+        13,
+        16,
+        18,
+        19,
+        22,
+        29,
+        32,
+        36,
+        43,
+        49,
+        50,
+        51,
+        53,
+        55,
+        65,
+        68,
+        71,
+        73,
+        79
       ]
     }
   ],
@@ -895377,7 +895378,51 @@
     "version": 2,
     "start_from_key": "2026-10-01#183",
     "started_at": "2026-10-01T15:24:39+02:00",
-    "pending": [],
+    "pending": [
+      {
+        "origin_key": "2026-10-03#016",
+        "created_at": "2026-10-03 01:21:00",
+        "pick": 84,
+        "ranked_candidates": [
+          {
+            "num": 84,
+            "gap": 14,
+            "trans": 0.2052152934859221,
+            "support": 368,
+            "transition_hits": 72
+          },
+          {
+            "num": 2,
+            "gap": 14,
+            "trans": 0.1466332421585484,
+            "support": 368,
+            "transition_hits": 47
+          },
+          {
+            "num": 58,
+            "gap": 17,
+            "trans": 0.14579347190701344,
+            "support": 368,
+            "transition_hits": 47
+          }
+        ],
+        "candidate_count": 3,
+        "pick_gap": 14,
+        "pick_trans": 0.20521529,
+        "runner_up": 2,
+        "runner_gap": 14,
+        "runner_trans": 0.14663324,
+        "third_candidate": 58,
+        "third_gap": 17,
+        "third_trans": 0.14579347,
+        "fourth_candidate": null,
+        "fourth_gap": null,
+        "fourth_trans": null,
+        "margin": 0.05858205,
+        "control_num": 75,
+        "rule": "gap 13-18; 3-4 candidates; max TRANS80"
+      }
+    ],
     "records": [
       {
         "origin_key": "2026-10-01#185",
@@ -905608,7 +905653,7 @@
         "fourth_hit": false
       }
     ],
-    "scans": 400,
+    "scans": 401,
     "no_signal": 221,
     "skipped": 1,
     "history_insufficient": 0,
@@ -905675,16 +905720,48 @@
       "fourth_hit": false
     },
     "last_scan": {
-      "origin_key": "2026-10-03#015",
-      "signal": false,
-      "candidate_count": 5,
-      "candidates": [
-        2,
-        13,
-        58,
-        73,
-        84
-      ]
+      "origin_key": "2026-10-03#016",
+      "created_at": "2026-10-03 01:21:00",
+      "pick": 84,
+      "ranked_candidates": [
+        {
+          "num": 84,
+          "gap": 14,
+          "trans": 0.2052152934859221,
+          "support": 368,
+          "transition_hits": 72
+        },
+        {
+          "num": 2,
+          "gap": 14,
+          "trans": 0.1466332421585484,
+          "support": 368,
+          "transition_hits": 47
+        },
+        {
+          "num": 58,
+          "gap": 17,
+          "trans": 0.14579347190701344,
+          "support": 368,
+          "transition_hits": 47
+        }
+      ],
+      "candidate_count": 3,
+      "pick_gap": 14,
+      "pick_trans": 0.20521529,
+      "runner_up": 2,
+      "runner_gap": 14,
+      "runner_trans": 0.14663324,
+      "third_candidate": 58,
+      "third_gap": 17,
+      "third_trans": 0.14579347,
+      "fourth_candidate": null,
+      "fourth_gap": null,
+      "fourth_trans": null,
+      "margin": 0.05858205,
+      "control_num": 75,
+      "rule": "gap 13-18; 3-4 candidates; max TRANS80",
+      "signal": true
     }
   },
   "incrocio_focus_v1": {
@@ -905692,33 +905769,6 @@
     "start_from_key": "2026-10-01#247",
     "started_at": "2026-10-01T20:45:32+02:00",
     "signal_history": [
-      {
-        "origin_key": "2026-10-03#006",
-        "ranked_candidates": [
-          {
-            "num": 20,
-            "trans": 0.2605411278150291,
-            "gap": 14
-          },
-          {
-            "num": 12,
-            "trans": 0.2292800629537152,
-            "gap": 15
-          },
-          {
-            "num": 66,
-            "trans": 0.1770265854464182,
-            "gap": 14
-          },
-          {
-            "num": 22,
-            "trans": 0.16728776891117886,
-            "gap": 15
-          }
-        ],
-        "candidate_count": 4,
-        "seed": false
-      },
       {
         "origin_key": "2026-10-03#008",
         "ranked_candidates": [
@@ -905897,58 +905947,35 @@
         ],
         "candidate_count": 4,
         "seed": false
+      },
+      {
+        "origin_key": "2026-10-03#016",
+        "ranked_candidates": [
+          {
+            "num": 84,
+            "trans": 0.2052152934859221,
+            "gap": 14
+          },
+          {
+            "num": 2,
+            "trans": 0.1466332421585484,
+            "gap": 14
+          },
+          {
+            "num": 58,
+            "trans": 0.14579347190701344,
+            "gap": 17
+          }
+        ],
+        "candidate_count": 3,
+        "seed": false
       }
     ],
     "pending": [
       {
-        "origin_key": "2026-10-03#011",
-        "created_at": "2026-10-03 00:55:23",
-        "age": 4,
-        "ambate": [
-          {
-            "num": 87,
-            "streak": 3,
-            "trans": 0.20418216,
-            "hit": false,
-            "hit_colpo": null
-          },
-          {
-            "num": 45,
-            "streak": 3,
-            "trans": 0.15254913,
-            "hit": true,
-            "hit_colpo": 1
-          }
-        ],
-        "ambi": [
-          {
-            "pair": [
-              45,
-              87
-            ],
-            "streak": 3,
-            "trans_sum": 0.35673129,
-            "hit": false,
-            "hit_colpo": null
-          }
-        ],
-        "top_ambata": 87,
-        "top_ambo": [
-          45,
-          87
-        ],
-        "source_candidates": [
-          13,
-          45,
-          87
-        ],
-        "closed": false,
-        "last_key": "2026-10-03#015"
-      },
-      {
         "origin_key": "2026-10-03#012",
         "created_at": "2026-10-03 01:00:30",
-        "age": 3,
+        "age": 4,
         "ambate": [
           {
             "num": 87,
@@ -905961,8 +905988,8 @@
             "num": 13,
             "streak": 2,
             "trans": 0.23905288,
-            "hit": false,
-            "hit_colpo": null
+            "hit": true,
+            "hit_colpo": 4
           }
         ],
         "ambi": [
@@ -905988,12 +906015,12 @@
           87
         ],
         "closed": false,
-        "last_key": "2026-10-03#015"
+        "last_key": "2026-10-03#016"
       },
       {
         "origin_key": "2026-10-03#013",
         "created_at": "2026-10-03 01:05:38",
-        "age": 2,
+        "age": 3,
         "ambate": [
           {
             "num": 87,
@@ -906006,8 +906033,8 @@
             "num": 13,
             "streak": 3,
             "trans": 0.23802187,
-            "hit": false,
-            "hit_colpo": null
+            "hit": true,
+            "hit_colpo": 3
           },
           {
             "num": 58,
@@ -906061,12 +906088,12 @@
           87
         ],
         "closed": false,
-        "last_key": "2026-10-03#015"
+        "last_key": "2026-10-03#016"
       },
       {
         "origin_key": "2026-10-03#014",
         "created_at": "2026-10-03 01:10:45",
-        "age": 1,
+        "age": 2,
         "ambate": [
           {
             "num": 87,
@@ -906079,8 +906106,8 @@
             "num": 13,
             "streak": 4,
             "trans": 0.22813631,
-            "hit": false,
-            "hit_colpo": null
+            "hit": true,
+            "hit_colpo": 2
           },
           {
             "num": 58,
@@ -906093,8 +906120,8 @@
             "num": 73,
             "streak": 2,
             "trans": 0.2609198,
-            "hit": false,
-            "hit_colpo": null
+            "hit": true,
+            "hit_colpo": 2
           }
         ],
         "ambi": [
@@ -906135,8 +906162,8 @@
             ],
             "streak": 2,
             "trans_sum": 0.48905611,
-            "hit": false,
-            "hit_colpo": null
+            "hit": true,
+            "hit_colpo": 2
           },
           {
             "pair": [
@@ -906171,7 +906198,30 @@
           87
         ],
         "closed": false,
-        "last_key": "2026-10-03#015"
+        "last_key": "2026-10-03#016"
+      },
+      {
+        "origin_key": "2026-10-03#016",
+        "created_at": "2026-10-03 01:21:00",
+        "age": 0,
+        "ambate": [
+          {
+            "num": 58,
+            "streak": 4,
+            "trans": 0.14579347,
+            "hit": false,
+            "hit_colpo": null
+          }
+        ],
+        "ambi": [],
+        "top_ambata": 58,
+        "top_ambo": null,
+        "source_candidates": [
+          2,
+          58,
+          84
+        ],
+        "closed": false
       }
     ],
     "records": [
@@ -913758,195 +913808,127 @@
         "closed": true,
         "last_key": "2026-10-03#015",
         "closed_key": "2026-10-03#015"
+      },
+      {
+        "origin_key": "2026-10-03#011",
+        "created_at": "2026-10-03 00:55:23",
+        "age": 5,
+        "ambate": [
+          {
+            "num": 87,
+            "streak": 3,
+            "trans": 0.20418216,
+            "hit": false,
+            "hit_colpo": null
+          },
+          {
+            "num": 45,
+            "streak": 3,
+            "trans": 0.15254913,
+            "hit": true,
+            "hit_colpo": 1
+          }
+        ],
+        "ambi": [
+          {
+            "pair": [
+              45,
+              87
+            ],
+            "streak": 3,
+            "trans_sum": 0.35673129,
+            "hit": false,
+            "hit_colpo": null
+          }
+        ],
+        "top_ambata": 87,
+        "top_ambo": [
+          45,
+          87
+        ],
+        "source_candidates": [
+          13,
+          45,
+          87
+        ],
+        "closed": true,
+        "last_key": "2026-10-03#016",
+        "closed_key": "2026-10-03#016"
       }
     ],
-    "focus_signals_seen": 158,
-    "incrocio_signals": 127,
+    "focus_signals_seen": 159,
+    "incrocio_signals": 128,
     "no_incrocio": 31,
     "skipped": 0,
     "seeded_context": true,
     "last_signal": {
-      "origin_key": "2026-10-03#014",
-      "created_at": "2026-10-03 01:10:45",
+      "origin_key": "2026-10-03#016",
+      "created_at": "2026-10-03 01:21:00",
       "age": 0,
       "ambate": [
         {
-          "num": 87,
-          "streak": 6,
-          "trans": 0.18842841,
-          "hit": false,
-          "hit_colpo": null
-        },
-        {
-          "num": 13,
-          "streak": 4,
-          "trans": 0.22813631,
-          "hit": false,
-          "hit_colpo": null
-        },
-        {
           "num": 58,
+          "streak": 4,
+          "trans": 0.14579347,
+          "hit": false,
+          "hit_colpo": null
+        }
+      ],
+      "ambi": [],
+      "top_ambata": 58,
+      "top_ambo": null,
+      "source_candidates": [
+        2,
+        58,
+        84
+      ],
+      "closed": false
+    },
+    "last_result": {
+      "origin_key": "2026-10-03#011",
+      "created_at": "2026-10-03 00:55:23",
+      "age": 5,
+      "ambate": [
+        {
+          "num": 87,
           "streak": 3,
-          "trans": 0.16192369,
+          "trans": 0.20418216,
           "hit": false,
           "hit_colpo": null
         },
         {
-          "num": 73,
-          "streak": 2,
-          "trans": 0.2609198,
-          "hit": false,
-          "hit_colpo": null
+          "num": 45,
+          "streak": 3,
+          "trans": 0.15254913,
+          "hit": true,
+          "hit_colpo": 1
         }
       ],
       "ambi": [
         {
           "pair": [
-            13,
-            87
-          ],
-          "streak": 4,
-          "trans_sum": 0.41656472,
-          "hit": false,
-          "hit_colpo": null
-        },
-        {
-          "pair": [
-            13,
-            58
-          ],
-          "streak": 3,
-          "trans_sum": 0.39006,
-          "hit": false,
-          "hit_colpo": null
-        },
-        {
-          "pair": [
-            58,
+            45,
             87
           ],
           "streak": 3,
-          "trans_sum": 0.3503521,
-          "hit": false,
-          "hit_colpo": null
-        },
-        {
-          "pair": [
-            13,
-            73
-          ],
-          "streak": 2,
-          "trans_sum": 0.48905611,
-          "hit": false,
-          "hit_colpo": null
-        },
-        {
-          "pair": [
-            73,
-            87
-          ],
-          "streak": 2,
-          "trans_sum": 0.44934821,
-          "hit": false,
-          "hit_colpo": null
-        },
-        {
-          "pair": [
-            58,
-            73
-          ],
-          "streak": 2,
-          "trans_sum": 0.42284349,
+          "trans_sum": 0.35673129,
           "hit": false,
           "hit_colpo": null
         }
       ],
       "top_ambata": 87,
       "top_ambo": [
-        13,
-        87
-      ],
-      "source_candidates": [
-        13,
-        58,
-        73,
-        87
-      ],
-      "closed": false
-    },
-    "last_result": {
-      "origin_key": "2026-10-03#010",
-      "created_at": "2026-10-03 00:50:15",
-      "age": 5,
-      "ambate": [
-        {
-          "num": 66,
-          "streak": 5,
-          "trans": 0.16501372,
-          "hit": false,
-          "hit_colpo": null
-        },
-        {
-          "num": 87,
-          "streak": 2,
-          "trans": 0.20672651,
-          "hit": false,
-          "hit_colpo": null
-        },
-        {
-          "num": 45,
-          "streak": 2,
-          "trans": 0.13638295,
-          "hit": true,
-          "hit_colpo": 2
-        }
-      ],
-      "ambi": [
-        {
-          "pair": [
-            66,
-            87
-          ],
-          "streak": 2,
-          "trans_sum": 0.37174023,
-          "hit": false,
-          "hit_colpo": null
-        },
-        {
-          "pair": [
-            45,
-            87
-          ],
-          "streak": 2,
-          "trans_sum": 0.34310946,
-          "hit": false,
-          "hit_colpo": null
-        },
-        {
-          "pair": [
-            45,
-            66
-          ],
-          "streak": 2,
-          "trans_sum": 0.30139667,
-          "hit": false,
-          "hit_colpo": null
-        }
-      ],
-      "top_ambata": 66,
-      "top_ambo": [
-        66,
-        87
-      ],
-      "source_candidates": [
         45,
-        64,
-        66,
+        87
+      ],
+      "source_candidates": [
+        13,
+        45,
         87
       ],
       "closed": true,
-      "last_key": "2026-10-03#015",
-      "closed_key": "2026-10-03#015"
+      "last_key": "2026-10-03#016",
+      "closed_key": "2026-10-03#016"
     }
   },
   "focus_core_sync20_v1": {
@@ -913954,33 +913936,6 @@
     "start_from_key": "2026-10-02#185",
     "started_at": "2026-10-02T15:34:11+02:00",
     "signal_history": [
-      {
-        "origin_key": "2026-10-03#013",
-        "ranked_candidates": [
-          {
-            "num": 73,
-            "trans": 0.3079772029842699,
-            "gap": 13
-          },
-          {
-            "num": 13,
-            "trans": 0.23802187029404692,
-            "gap": 15
-          },
-          {
-            "num": 87,
-            "trans": 0.20058574432850915,
-            "gap": 17
-          },
-          {
-            "num": 58,
-            "trans": 0.1895993967295623,
-            "gap": 14
-          }
-        ],
-        "candidate_count": 4,
-        "seed": false
-      },
       {
         "origin_key": "2026-10-03#014",
         "ranked_candidates": [
@@ -914006,6 +913961,28 @@
           }
         ],
         "candidate_count": 4,
+        "seed": false
+      },
+      {
+        "origin_key": "2026-10-03#016",
+        "ranked_candidates": [
+          {
+            "num": 84,
+            "trans": 0.2052152934859221,
+            "gap": 14
+          },
+          {
+            "num": 2,
+            "trans": 0.1466332421585484,
+            "gap": 14
+          },
+          {
+            "num": 58,
+            "trans": 0.14579347190701344,
+            "gap": 17
+          }
+        ],
+        "candidate_count": 3,
         "seed": false
       }
     ],
@@ -914519,12 +914496,12 @@
         "closed_key": "2026-10-02#271"
       }
     ],
-    "focus_signals_seen": 59,
-    "focus3_seen": 31,
+    "focus_signals_seen": 60,
+    "focus3_seen": 32,
     "first_x2_pairs": 33,
     "sync_pass_pairs": 16,
     "core_signals": 11,
-    "no_signal": 48,
+    "no_signal": 49,
     "history_insufficient": 0,
     "skipped": 0,
     "seeded_context": true,
