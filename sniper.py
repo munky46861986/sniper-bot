@@ -1,5 +1,5 @@
 # ============================================================
-# 🎯 10eLOTTO FOCUS FAST + INCROCIO — v18
+# 🎯 10eLOTTO FOCUS FAST + INCROCIO + CORE SYNC20 — v19
 # ============================================================
 #
 # METODI ATTIVI:
@@ -9,9 +9,10 @@
 #   • sceglie il TRANS80 piu' alto
 #   • FOCUS: UN SOLO NUMERO, SOLO prossima H1
 #   • INCROCIO: persistenza candidati, ambata + ambo H1-H5
-#   • nessun backfill dei risultati INCROCIO
+#   • CORE SYNC20: solo FOCUS a 3 candidati, coppia al primo ×2, SYNC20 positivo, ambo H1-H5
+#   • nessun backfill dei risultati INCROCIO/CORE
 #
-# PAUSA v18:
+# PAUSA v19:
 #   • ENGINE predittivo, SOSIA, FORCED ONE, TRIPLETTE, HC, BURST,
 #     POST-6, PLAY, AMBO, DUAL e gli altri tracker non vengono
 #     aggiornati nel loop live e non inviano notifiche.
@@ -4107,7 +4108,7 @@ class TripletteCooccLab:
 #      usando al massimo le ultime 80 transizioni gia' concluse;
 #   5) sceglie il candidato con TRANS80 piu' alto.
 # Un solo H1, nessun recupero. Random appaiato congelato prima della H1.
-# Tutti i metodi LEGACY sono PAUSATI: FOCUS + INCROCIO restano attivi.
+# Tutti i metodi LEGACY sono PAUSATI: FOCUS + INCROCIO + CORE SYNC20 restano attivi.
 # ============================================================
 FOCUS_VERSION = 2
 FOCUS_GAP_MIN = max(1, int(os.getenv("FOCUS_GAP_MIN", "13")))
@@ -4658,7 +4659,7 @@ class IncrocioFocusV1:
         lines=["🔗 INCROCIO FOCUS v1 — TUTTI GLI INCROCI H1-H5",
                "Regola: ogni numero/coppia presente in almeno 2 segnali FOCUS consecutivi viene congelato e seguito.",
                f"🧊 Inizio prospettico: dopo {self.start_from_key or '-'}" + (f" | {self.started_at}" if self.started_at else ""),
-               f"FOCUS osservati v18: {self.focus_signals_seen} | origini INCROCIO: {self.incrocio_signals} | senza incrocio: {self.no_incrocio} | pending {len(self.pending)}",
+               f"FOCUS osservati: {self.focus_signals_seen} | origini INCROCIO: {self.incrocio_signals} | senza incrocio: {self.no_incrocio} | pending {len(self.pending)}",
                f"🎯 AMBATE individuali entro H{INCROCIO_HORIZON}: {ah}/{an} ({safe_pct(ah,an):.2f}%) | baseline teorica H5 ≈71.54%",
                f"💥 AMBI individuali stesso draw entro H{INCROCIO_HORIZON}: {ph}/{pn} ({safe_pct(ph,pn):.2f}%) | baseline coppia fissa H5 ≈21.57%",
                f"🕸️ Origini con almeno un AMBO: {sah}/{sn} ({safe_pct(sah,sn):.2f}%)"]
@@ -4674,6 +4675,348 @@ class IncrocioFocusV1:
             hit_b=sum(bool(x.get("hit")) for x in r.get("ambi",[])); tot_b=len(r.get("ambi",[]))
             lines += ["",f"🧾 Ultimo chiuso {r.get('origin_key')}: ambate {hit_a}/{tot_a} | ambi {hit_b}/{tot_b}"]
         lines.append("⚠️ Nuovo tracker prospettico v18: nessun backfill dei risultati INCROCIO.")
+        return "\n".join(lines)
+
+
+# ============================================================
+# FOCUS CORE + SYNC20 v1 — PRIMO x2, 3 CANDIDATI, AMBO H1-H5
+# ============================================================
+# Tracker prospettico separato. Non modifica FOCUS FAST o INCROCIO v1.
+# Regola congelata:
+# - usa SOLO un nuovo segnale FOCUS con esattamente 3 candidati;
+# - una coppia entra in CORE solo quando raggiunge per la PRIMA volta streak x2
+#   tra segnali FOCUS consecutivi (streak corrente ESATTAMENTE 2);
+# - SYNC20 viene calcolato PRIMA della finestra futura usando esclusivamente i
+#   20 draw conclusi PRECEDENTI al draw origine (il draw origine e' escluso);
+# - observed = quante volte i 2 numeri sono usciti insieme nei 20 draw;
+# - expected = countA * countB / 20, cioe' atteso sotto indipendenza empirica;
+# - il target nasce solo se observed > expected;
+# - ogni coppia ammessa e' congelata fino a H5 e fa HIT solo se i due numeri
+#   escono nello STESSO draw.
+# ============================================================
+CORE_SYNC_VERSION = 1
+CORE_SYNC_WINDOW = max(5, int(os.getenv("CORE_SYNC_WINDOW", "20")))
+CORE_SYNC_HORIZON = max(1, int(os.getenv("CORE_SYNC_HORIZON", "5")))
+CORE_SYNC_RECORD_MAX = max(300, int(os.getenv("CORE_SYNC_RECORD_MAX", "5000")))
+CORE_SYNC_NOTIFY = os.getenv("CORE_SYNC_NOTIFY", "1").strip().lower() not in {"0","false","no","off"}
+CORE_SYNC_NOTIFY_RESULT = os.getenv("CORE_SYNC_NOTIFY_RESULT", "1").strip().lower() not in {"0","false","no","off"}
+
+
+class FocusCoreSync20V1:
+    def __init__(self):
+        self.start_from_key=None
+        self.started_at=None
+        self.signal_history=[]
+        self.pending=[]
+        self.records=[]
+        self.focus_signals_seen=0
+        self.focus3_seen=0
+        self.first_x2_pairs=0
+        self.sync_pass_pairs=0
+        self.core_signals=0
+        self.no_signal=0
+        self.history_insufficient=0
+        self.skipped=0
+        self.seeded_context=False
+        self.last_signal=None
+        self.last_result=None
+
+    def ensure_start(self, engine):
+        if self.start_from_key:
+            return False
+        if not engine.engine_history:
+            return False
+        key=str(engine.engine_history[-1].get("key") or "")
+        if _verifica_order(key) is None:
+            return False
+        self.start_from_key=key
+        self.started_at=datetime.now(BOT_TZ).isoformat(timespec="seconds")
+        return True
+
+    @staticmethod
+    def _candidate_snapshot(row):
+        if not isinstance(row,dict) or not isinstance(row.get("origin_key"),str):
+            return None
+        ranked=[]
+        for x in list(row.get("ranked_candidates") or []):
+            if not isinstance(x,dict):
+                continue
+            try:
+                n=int(x.get("num")); tr=float(x.get("trans",0) or 0); gap=int(x.get("gap",0) or 0)
+            except Exception:
+                continue
+            if 1 <= n <= 90:
+                ranked.append({"num":n,"trans":tr,"gap":gap})
+        if len(ranked) < 2:
+            return None
+        return {"origin_key":str(row.get("origin_key")),"ranked_candidates":ranked,
+                "candidate_count":len(ranked),"seed":False}
+
+    @staticmethod
+    def _set(row):
+        out=set()
+        for x in list((row or {}).get("ranked_candidates") or []):
+            try:
+                n=int(x.get("num"))
+                if 1 <= n <= 90: out.add(n)
+            except Exception:
+                pass
+        return out
+
+    def seed_from_focus(self, focus):
+        if self.signal_history or self.seeded_context:
+            return False
+        rows=[]
+        for r in list(getattr(focus,"records",[]) or [])[-3:]:
+            x=self._candidate_snapshot(r)
+            if x: rows.append(x)
+        for r in list(getattr(focus,"pending",[]) or [])[-2:]:
+            x=self._candidate_snapshot(r)
+            if x: rows.append(x)
+        ded={x["origin_key"]:x for x in rows}
+        rows=sorted(ded.values(),key=lambda r:_verifica_order(r["origin_key"]) or (-1,-1))
+        if rows:
+            x=dict(rows[-1]); x["seed"]=True; self.signal_history=[x]
+        self.seeded_context=True
+        return bool(rows)
+
+    def load(self,obj):
+        if not isinstance(obj,dict) or int(obj.get("version",0) or 0) != CORE_SYNC_VERSION:
+            return False
+        key=obj.get("start_from_key")
+        if _verifica_order(key) is None:
+            return False
+        self.start_from_key=key
+        self.started_at=obj.get("started_at") if isinstance(obj.get("started_at"),str) else None
+        for name in ("focus_signals_seen","focus3_seen","first_x2_pairs","sync_pass_pairs","core_signals","no_signal","history_insufficient","skipped"):
+            setattr(self,name,max(0,int(obj.get(name,0) or 0)))
+        self.seeded_context=bool(obj.get("seeded_context",False))
+        sh=obj.get("signal_history",[])
+        if isinstance(sh,list):
+            self.signal_history=[dict(x) for x in sh[-2:] if isinstance(x,dict) and isinstance(x.get("origin_key"),str)]
+        pp=obj.get("pending",[])
+        if isinstance(pp,list):
+            self.pending=[dict(x) for x in pp[-30:] if isinstance(x,dict) and isinstance(x.get("origin_key"),str)]
+        rr=obj.get("records",[])
+        if isinstance(rr,list):
+            self.records=[dict(x) for x in rr[-CORE_SYNC_RECORD_MAX:] if isinstance(x,dict) and isinstance(x.get("origin_key"),str)]
+        self.last_signal=obj.get("last_signal") if isinstance(obj.get("last_signal"),dict) else None
+        self.last_result=obj.get("last_result") if isinstance(obj.get("last_result"),dict) else None
+        return True
+
+    def dump(self):
+        return {"version":CORE_SYNC_VERSION,"start_from_key":self.start_from_key,"started_at":self.started_at,
+                "signal_history":self.signal_history[-2:],"pending":self.pending[-30:],
+                "records":self.records[-CORE_SYNC_RECORD_MAX:],"focus_signals_seen":self.focus_signals_seen,
+                "focus3_seen":self.focus3_seen,"first_x2_pairs":self.first_x2_pairs,
+                "sync_pass_pairs":self.sync_pass_pairs,"core_signals":self.core_signals,
+                "no_signal":self.no_signal,"history_insufficient":self.history_insufficient,
+                "skipped":self.skipped,"seeded_context":self.seeded_context,
+                "last_signal":self.last_signal,"last_result":self.last_result}
+
+    @staticmethod
+    def _phi(n, ca, cb, both):
+        # 2x2 phi, solo descrittivo; non decide il segnale.
+        a=float(both); b=float(ca-both); c=float(cb-both); d=float(n-ca-cb+both)
+        den=(a+b)*(c+d)*(a+c)*(b+d)
+        if den <= 0: return 0.0
+        return (a*d-b*c)/math.sqrt(den)
+
+    def _sync20(self, engine, origin_key, a, b):
+        hist=list(getattr(engine,"engine_history",[]) or [])
+        idx=None
+        for i in range(len(hist)-1,-1,-1):
+            if str(hist[i].get("key"))==str(origin_key):
+                idx=i; break
+        if idx is None or idx < CORE_SYNC_WINDOW:
+            return None
+        # ESCLUDE il draw origine: ultimi 20 draw completamente precedenti.
+        rows=hist[idx-CORE_SYNC_WINDOW:idx]
+        if len(rows) != CORE_SYNC_WINDOW:
+            return None
+        ca=cb=both=0
+        for r in rows:
+            ss=set(map(int,r.get("nums") or []))
+            ha=a in ss; hb=b in ss
+            ca += int(ha); cb += int(hb); both += int(ha and hb)
+        expected=(ca*cb)/float(CORE_SYNC_WINDOW)
+        lift=(both/expected) if expected>0 else (float("inf") if both>0 else 0.0)
+        delta=both-expected
+        return {"window":CORE_SYNC_WINDOW,"count_a":ca,"count_b":cb,"observed":both,
+                "expected":round(expected,6),"delta":round(delta,6),
+                "lift":round(lift,6) if math.isfinite(lift) else 999.0,
+                "phi":round(self._phi(CORE_SYNC_WINDOW,ca,cb,both),6),
+                "pass":bool(both>expected)}
+
+    def observe_focus(self, focus_row, engine):
+        cur=self._candidate_snapshot(focus_row)
+        if not cur:
+            return None
+        if any(str(x.get("origin_key"))==cur["origin_key"] for x in self.signal_history):
+            return None
+        self.focus_signals_seen += 1
+        prev=self.signal_history[-1] if self.signal_history else None
+        self.signal_history.append(cur); self.signal_history=self.signal_history[-2:]
+
+        # CORE valuta SOLO il segnale corrente con esattamente 3 candidati.
+        if int(cur.get("candidate_count",0) or 0) != 3:
+            self.no_signal += 1
+            return None
+        self.focus3_seen += 1
+        if not prev:
+            self.no_signal += 1
+            return None
+
+        curset=self._set(cur); prevset=self._set(prev)
+        # Prima x2 = presenti ora e nel precedente, ma non possiamo avere streak >2
+        # perché signal_history conserva anche il contesto; per distinguere >2 usiamo
+        # i candidati del penultimo segnale se disponibili dal focus state via seed/list.
+        # Qui il criterio operativo e' semplicemente: coppia comune con il segnale
+        # immediatamente precedente e streak INCROCIO corrente esattamente 2.
+        common=sorted(curset & prevset)
+        if len(common)<2:
+            self.no_signal += 1
+            return None
+
+        # Recupera, quando possibile, il segnale FOCUS precedente al prev per evitare
+        # di riaprire una coppia gia' x3+. Usiamo records+pending gia' congelati.
+        older=None
+        rows=[]
+        for r in list(getattr(engine.focus,"records",[]) or [])[-6:]:
+            x=self._candidate_snapshot(r)
+            if x and x["origin_key"] not in {cur["origin_key"],prev.get("origin_key")}:
+                rows.append(x)
+        for r in list(getattr(engine.focus,"pending",[]) or [])[-4:]:
+            x=self._candidate_snapshot(r)
+            if x and x["origin_key"] not in {cur["origin_key"],prev.get("origin_key")}:
+                rows.append(x)
+        po=_verifica_order(prev.get("origin_key"))
+        candidates=[]
+        for x in rows:
+            xo=_verifica_order(x.get("origin_key"))
+            if xo is not None and po is not None and xo < po:
+                candidates.append(x)
+        if candidates:
+            older=max(candidates,key=lambda x:_verifica_order(x["origin_key"]) or (-1,-1))
+        oldset=self._set(older) if older else set()
+
+        pairs=[]
+        for a,b in combinations(common,2):
+            # Se entrambi erano anche nel segnale ancora precedente, la coppia e' gia' x3+.
+            if a in oldset and b in oldset:
+                continue
+            self.first_x2_pairs += 1
+            sync=self._sync20(engine,cur["origin_key"],a,b)
+            if sync is None:
+                self.history_insufficient += 1
+                continue
+            if not sync.get("pass"):
+                continue
+            self.sync_pass_pairs += 1
+            pairs.append({"pair":[a,b],"streak":2,"sync20":sync,
+                          "hit":False,"hit_colpo":None})
+        if not pairs:
+            self.no_signal += 1
+            return None
+        pairs.sort(key=lambda x:(-float(x["sync20"].get("delta",0)),
+                                 -float(x["sync20"].get("phi",0)),x["pair"][0],x["pair"][1]))
+        row={"origin_key":cur["origin_key"],"created_at":now_txt(),"age":0,
+             "pairs":pairs,"source_candidates":sorted(curset),"candidate_count":3,
+             "closed":False,"rule":"FOCUS3 + first_x2 + SYNC20 observed>expected"}
+        self.pending.append(row); self.pending=self.pending[-30:]
+        self.core_signals += 1
+        self.last_signal=dict(row)
+        return row
+
+    def advance(self,day,draw_id,nums):
+        if not self.pending:
+            return []
+        key=draw_key(day,draw_id); actual=set(map(int,nums)); remain=[]; notices=[]
+        for p in self.pending:
+            r=dict(p); r["pairs"]=[dict(x) for x in list(p.get("pairs") or [])]
+            age=int(r.get("age",0) or 0)+1; r["age"]=age; r["last_key"]=key
+            new=[]
+            for x in r["pairs"]:
+                pair=list(x.get("pair") or [])
+                if len(pair)==2 and not x.get("hit") and int(pair[0]) in actual and int(pair[1]) in actual:
+                    x["hit"]=True; x["hit_colpo"]=age; new.append([int(pair[0]),int(pair[1])])
+            all_hit=all(bool(x.get("hit")) for x in r["pairs"]) if r["pairs"] else True
+            close=age>=CORE_SYNC_HORIZON or all_hit
+            if close:
+                r["closed"]=True; r["closed_key"]=key
+                self.records.append(r); self.records=self.records[-CORE_SYNC_RECORD_MAX:]
+                self.last_result=r
+            else:
+                remain.append(r)
+            if new or close:
+                notices.append({"row":r,"new_pairs":new,"closed":close})
+        self.pending=remain
+        return notices
+
+    @staticmethod
+    def _stats(rows):
+        rr=[r for r in rows if isinstance(r,dict) and r.get("closed")]
+        targets=[x for r in rr for x in list(r.get("pairs") or [])]
+        n=len(targets); h=sum(bool(x.get("hit")) for x in targets)
+        origins=[r for r in rr if r.get("pairs")]
+        oh=sum(any(bool(x.get("hit")) for x in r.get("pairs",[])) for r in origins)
+        by={i:[0,0] for i in range(1,CORE_SYNC_HORIZON+1)}
+        for x in targets:
+            if x.get("hit"):
+                c=int(x.get("hit_colpo",0) or 0)
+                if c in by: by[c][1]+=1
+            # denominator cumulative target count is reported separately, not per-colpo probability
+        return len(rr),n,h,len(origins),oh,by
+
+    def signal_text(self,row):
+        if not row: return None
+        lines=["🧬 FOCUS CORE + SYNC20 v1 — AMBO SHADOW H1-H5",
+               f"Origine: {row.get('origin_key')}",
+               "Regola: SOLO 3 candidati | coppia alla PRIMA ×2 | SYNC20 observed > expected.",
+               "💥 COPPIE CORE:"]
+        for x in row.get("pairs",[]):
+            a,b=x["pair"]; q=x.get("sync20") or {}
+            lines.append(f"• {a}-{b} ×2 | obs {q.get('observed')}/{CORE_SYNC_WINDOW} | att {float(q.get('expected',0)):.2f} | lift {float(q.get('lift',0)):.2f} | φ {float(q.get('phi',0)):.3f}")
+        lines.append(f"⏳ Ogni coppia resta congelata fino a H{CORE_SYNC_HORIZON}; HIT solo nello STESSO draw.")
+        lines.append("⚠️ Tracker prospettico: non modifica FOCUS FAST o INCROCIO v1.")
+        return "\n".join(lines)
+
+    def result_text(self,event):
+        if not isinstance(event,dict): return None
+        r=event.get("row") or {}
+        lines=["🧾 FOCUS CORE + SYNC20 v1 — AGGIORNAMENTO",
+               f"Origine {r.get('origin_key')} | H{r.get('age')} → {r.get('last_key','-')}"]
+        if event.get("new_pairs"):
+            lines.append("💥 AMBO CORE HIT: " + ", ".join(f"{a}-{b}" for a,b in event["new_pairs"]))
+        if event.get("closed"):
+            miss=[x for x in r.get("pairs",[]) if not x.get("hit")]
+            if miss:
+                lines.append(f"❌ CORE non usciti entro H{CORE_SYNC_HORIZON}: " + ", ".join(f"{x['pair'][0]}-{x['pair'][1]}" for x in miss))
+            elif r.get("pairs"):
+                lines.append("✅ Tutte le coppie CORE di questa origine sono chiuse in HIT.")
+        return "\n".join(lines) if len(lines)>2 else None
+
+    def text(self):
+        rn,n,h,on,oh,by=self._stats(self.records)
+        lines=["🧬 FOCUS CORE + SYNC20 v1 — PRIMA ×2 / SOLO 3 CANDIDATI",
+               "Regola congelata: segnale FOCUS a 3 candidati; coppia al primo streak ×2; SYNC20 sui 20 draw PRECEDENTI; passa solo observed > expected.",
+               f"🧊 Inizio prospettico: dopo {self.start_from_key or '-'}" + (f" | {self.started_at}" if self.started_at else ""),
+               f"FOCUS osservati {self.focus_signals_seen} | FOCUS a 3 {self.focus3_seen} | prime ×2 esaminate {self.first_x2_pairs} | SYNC20 PASS {self.sync_pass_pairs}",
+               f"Origini CORE {self.core_signals} | chiuse {rn} | pending {len(self.pending)} | no signal {self.no_signal} | history insufficiente {self.history_insufficient}",
+               f"💥 AMBI CORE H{CORE_SYNC_HORIZON}: {h}/{n} ({safe_pct(h,n):.2f}%) | baseline coppia fissa H5 ≈21.57%",
+               f"🕸️ Origini con almeno un ambo: {oh}/{on} ({safe_pct(oh,on):.2f}%)"]
+        if self.pending:
+            lines += ["","⏳ PENDENTI CORE:"]
+            for p in self.pending[-6:]:
+                vals=[]
+                for x in p.get("pairs",[]):
+                    a,b=x["pair"]; q=x.get("sync20") or {}
+                    vals.append(f"{a}-{b}(obs{q.get('observed')}>att{float(q.get('expected',0)):.1f})")
+                lines.append(f"• {p.get('origin_key')} | prossimo H{int(p.get('age',0))+1} | " + " ".join(vals))
+        if self.last_result:
+            r=self.last_result; hh=sum(bool(x.get("hit")) for x in r.get("pairs",[])); tt=len(r.get("pairs",[]))
+            lines += ["",f"🧾 Ultimo chiuso {r.get('origin_key')}: ambi CORE {hh}/{tt}"]
+        lines.append("⚠️ Nuovo tracker prospettico v19: nessun backfill dei risultati CORE.")
         return "\n".join(lines)
 
 
@@ -4783,8 +5126,9 @@ class EngineOnly:
         self.forced_one = ForcedOneMethod()  # v14: un numero H1 sempre, classi A+/A/B/C/D
         self.triplette = TripletteCooccLab()  # v15: 4x9, triplette co-occorrenza, H1 shadow
         self.focus_legacy_state = None  # archivio raw v16, NON aggiornato
-        self.focus = FocusFastV2()  # v18: generatore candidati, R13-18 / 3-4 candidati / TRANS80
-        self.incrocio = IncrocioFocusV1()  # v18: persistenza candidati FOCUS, ambata+ambo H1-H5
+        self.focus = FocusFastV2()  # v19: generatore candidati, R13-18 / 3-4 candidati / TRANS80
+        self.incrocio = IncrocioFocusV1()  # v19: persistenza candidati FOCUS, ambata+ambo H1-H5
+        self.core_sync = FocusCoreSync20V1()  # v19: FOCUS3 + prima x2 + SYNC20 positivo, ambo H1-H5
 
         self.state_load_info = {
             "loaded": False,
@@ -4796,11 +5140,13 @@ class EngineOnly:
         self.last_git_status = _git_status(True, "not-run", "nessun push ancora eseguito")
         if load:
             self.load_state()
-            # v18: tutti i vecchi metodi legacy restano caricati nello state ma PAUSATI.
+            # v19: tutti i vecchi metodi legacy restano caricati nello state ma PAUSATI.
             # Nessun bootstrap/arm/settle live viene eseguito per loro.
             self.focus.ensure_start(self)  # marker v2 esistente, nessun backfill
             self.incrocio.ensure_start(self)
             self.incrocio.seed_from_focus(self.focus)  # solo contesto streak, nessun risultato retroattivo
+            self.core_sync.ensure_start(self)
+            self.core_sync.seed_from_focus(self.focus)  # solo ultimo segnale come contesto, nessun backfill
 
     @staticmethod
     def _new_engine_stats():
@@ -6995,8 +7341,9 @@ class EngineOnly:
             self.focus_legacy_state = d.get("focus_r14_trans40_v1") if isinstance(d.get("focus_r14_trans40_v1"), dict) else None
             self.focus.load(d.get("focus_fast_v2"))
             self.incrocio.load(d.get("incrocio_focus_v1"))
+            self.core_sync.load(d.get("focus_core_sync20_v1"))
 
-            # v18: pending e sessioni legacy restano congelati esattamente come salvati.
+            # v19: pending e sessioni legacy restano congelati esattamente come salvati.
 
             migrated = os.path.abspath(path) == os.path.abspath(LEGACY_STATE_FILE)
             self.state_load_info = {
@@ -7086,6 +7433,7 @@ class EngineOnly:
             "focus_r14_trans40_v1": self.focus_legacy_state,
             "focus_fast_v2": self.focus.dump(),
             "incrocio_focus_v1": self.incrocio.dump(),
+            "focus_core_sync20_v1": self.core_sync.dump(),
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -7532,7 +7880,7 @@ class EngineOnly:
         return self.engine_bootstrap_done
 
     async def process_draw(self, app, day, e, nums, mode="live", notify=True, persist=True, sniper_notify=None):
-        """v18 live loop: aggiorna SOLO history + FOCUS FAST v2 + INCROCIO v1.
+        """v19 live loop: history + FOCUS FAST v2 + INCROCIO v1 + CORE SYNC20 v1.
 
         Tutti gli altri motori/tracker legacy restano congelati nello state.
         """
@@ -7542,14 +7890,19 @@ class EngineOnly:
 
         if mode == "live":
             self.focus.ensure_start(self)
-            self.incrocio.ensure_start(self)
-            self.incrocio.seed_from_focus(self.focus)
+            self.incrocio.ensure_start(self); self.incrocio.seed_from_focus(self.focus)
+            self.core_sync.ensure_start(self); self.core_sync.seed_from_focus(self.focus)
 
-            # Prima aggiorna tutte le sessioni INCROCIO aperte (H1..H5).
+            # Prima aggiorna tutte le finestre H1..H5 gia' congelate.
             inc_events=self.incrocio.advance(day,e,clean)
             if INCROCIO_NOTIFY_RESULT and notify:
                 for ev in inc_events:
                     msg=self.incrocio.result_text(ev)
+                    if msg: await self.tg(app,msg)
+            core_events=self.core_sync.advance(day,e,clean)
+            if CORE_SYNC_NOTIFY_RESULT and notify:
+                for ev in core_events:
+                    msg=self.core_sync.result_text(ev)
                     if msg: await self.tg(app,msg)
 
             # Poi chiude l'H1 FOCUS del draw precedente.
@@ -7571,6 +7924,10 @@ class EngineOnly:
                 inc=self.incrocio.observe_focus(row)
                 if INCROCIO_NOTIFY and inc:
                     msg=self.incrocio.signal_text(inc)
+                    if msg: await self.tg(app,msg)
+                core=self.core_sync.observe_focus(row,self)
+                if CORE_SYNC_NOTIFY and core:
+                    msg=self.core_sync.signal_text(core)
                     if msg: await self.tg(app,msg)
 
         if persist:
@@ -7835,8 +8192,9 @@ class EngineOnly:
         p=self.focus.pending[-1] if self.focus.pending else None
         rate=100.0*(n+len(self.focus.pending))/self.focus.scans if self.focus.scans else 0.0
         _,an,ah,pn,ph,sn,sah=self.incrocio._stats(self.incrocio.records)
+        cr,cn,ch,con,coh,_=self.core_sync._stats(self.core_sync.records)
         lines=[
-            "🧾 VERIFICA TUTTO v18 — FOCUS + INCROCIO",
+            "🧾 VERIFICA TUTTO v19 — FOCUS + INCROCIO + CORE SYNC20",
             "⏸️ Tutti gli altri metodi legacy sono PAUSATI e conservati nello state.",
             "",
             "⚡ FOCUS FAST v2 — R13-18 / 3-4 candidati / TRANS80",
@@ -7847,21 +8205,27 @@ class EngineOnly:
             f"progress {min(n,50)}/50 {min(n,100)}/100 {min(n,200)}/200 {min(n,300)}/300" + (f" | PENDING #{p.get('pick')}" if p else " | pending 0"),
             "",
             "🔗 INCROCIO FOCUS v1 — persistenza candidati H1-H5",
-            f"FOCUS v18 osservati {self.incrocio.focus_signals_seen} | segnali incrocio {self.incrocio.incrocio_signals} | pending {len(self.incrocio.pending)}",
+            f"FOCUS osservati {self.incrocio.focus_signals_seen} | segnali incrocio {self.incrocio.incrocio_signals} | pending {len(self.incrocio.pending)}",
             f"AMBATE H5 {ah}/{an} ({safe_pct(ah,an):.2f}%) | AMBI H5 {ph}/{pn} ({safe_pct(ph,pn):.2f}%) | origini con ambo {sah}/{sn}",
+            "",
+            "🧬 CORE SYNC20 v1 — SOLO FOCUS3 / PRIMA ×2 / observed>expected",
+            f"FOCUS3 {self.core_sync.focus3_seen} | prime ×2 {self.core_sync.first_x2_pairs} | SYNC20 PASS {self.core_sync.sync_pass_pairs} | origini {self.core_sync.core_signals} | pending {len(self.core_sync.pending)}",
+            f"AMBI CORE H5 {ch}/{cn} ({safe_pct(ch,cn):.2f}%) | origini con ambo {coh}/{con} ({safe_pct(coh,con):.2f}%) | baseline 21.57%",
         ]
         return "\n".join(lines)
 
     def menu_text(self):
         return (
-            "⚡ FOCUS + INCROCIO — v18\n\n"
-            "METODI ATTIVI:\n"
+            "⚡ FOCUS + INCROCIO + CORE SYNC20 — v19\n\n"
+            "METODI/TRACKER ATTIVI:\n"
             "1) FOCUS FAST v2: R13-18, 3-4 candidati, TRANS80 max, un numero H1.\n"
-            "2) INCROCIO v1: candidati ripetuti in >=2 segnali FOCUS consecutivi; una ambata + un ambo, monitor H1-H5.\n\n"
+            "2) INCROCIO v1: tutti i candidati/coppie persistenti >=×2, monitor H1-H5.\n"
+            "3) CORE SYNC20 v1: SOLO FOCUS con 3 candidati; coppia alla prima ×2; passa se nei 20 draw precedenti observed > expected; ambo H1-H5.\n\n"
             "/focus — stato FOCUS FAST\n"
-            "/incrocio — stato INCROCIO ambata/ambo\n"
-            "/status — riepilogo FOCUS + INCROCIO\n"
-            "/verificatutto — audit compatto dei 2 metodi attivi\n"
+            "/incrocio — stato INCROCIO generale\n"
+            "/core — stato FOCUS CORE + SYNC20\n"
+            "/status — riepilogo dei 3 livelli\n"
+            "/verificatutto — audit compatto\n"
             "/menu — questa schermata\n\n"
             "⏸️ Tutti gli altri metodi restano in pausa; lo state storico non viene cancellato."
         )
@@ -7936,6 +8300,9 @@ async def cmd_focus(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_incrocio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].incrocio.text())
 
+async def cmd_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].core_sync.text())
+
 async def cmd_verificatutto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].verify_all_text())
 
@@ -7960,14 +8327,15 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setup_commands(app):
     await app.bot.set_my_commands([
         BotCommand("focus", "FOCUS FAST v2: un numero H1"),
-        BotCommand("incrocio", "INCROCIO: ambata + ambo H1-H5"),
-        BotCommand("status", "Riepilogo FOCUS + INCROCIO"),
-        BotCommand("verificatutto", "Audit dei 2 metodi attivi"),
+        BotCommand("incrocio", "INCROCIO generale H1-H5"),
+        BotCommand("core", "CORE SYNC20: primo x2, ambo H1-H5"),
+        BotCommand("status", "Riepilogo FOCUS + INCROCIO + CORE"),
+        BotCommand("verificatutto", "Audit dei 3 livelli attivi"),
         BotCommand("menu", "Comandi attivi"),
     ])
 
 async def ensure_engine_ready(engine):
-    """v18: serve uno storico consecutivo per gap + TRANS80 e INCROCIO.
+    """v19: serve uno storico consecutivo per gap + TRANS80 + INCROCIO + SYNC20.
 
     Se lo state e' gia' pronto non tocca nulla. Su installazione nuova carica
     esclusivamente engine_history/processed, senza costruire segnali dei vecchi motori.
@@ -8069,6 +8437,8 @@ async def startup(engine, app, retry_state=None):
     engine.focus.ensure_start(engine)
     engine.incrocio.ensure_start(engine)
     engine.incrocio.seed_from_focus(engine.focus)
+    engine.core_sync.ensure_start(engine)
+    engine.core_sync.seed_from_focus(engine.focus)
     # Dopo il catch-up, l'ultimo draw e' noto ma la sua H1 non lo e' ancora:
     # possiamo congelare legittimamente il segnale v2 senza backfill.
     armed=None
@@ -8079,27 +8449,32 @@ async def startup(engine, app, retry_state=None):
             armed=engine.focus.arm(latest_key,engine)
             if armed:
                 inc_armed=engine.incrocio.observe_focus(armed)
+                core_armed=engine.core_sync.observe_focus(armed,engine)
             else:
-                inc_armed=None
+                inc_armed=None; core_armed=None
         else:
-            inc_armed=None
+            inc_armed=None; core_armed=None
     else:
-        inc_armed=None
+        inc_armed=None; core_armed=None
     engine.save_state(git=True,force_git=True)
 
     await engine.tg(app,
-        "🚀 FOCUS + INCROCIO v18 AVVIATO\n\n"
+        "🚀 FOCUS + INCROCIO + CORE SYNC20 v19 AVVIATO\n\n"
         "⚡ FOCUS FAST v2: R13-18, 3-4 candidati, TRANS80 max, un numero H1.\n"
-        "🔗 INCROCIO v1: persistenza candidati FOCUS >=2 segnali consecutivi; ambata + ambo H1-H5.\n\n"
+        "🔗 INCROCIO v1: persistenza generale candidati FOCUS, ambata + ambo H1-H5.\n"
+        "🧬 CORE SYNC20 v1: SOLO FOCUS3, prima ×2, SYNC20 observed>expected, ambo H1-H5.\n\n"
         "⏸️ ENGINE predittivo, SOSIA, FORCED ONE, TRIPLETTE, HC, BURST, POST-6, PLAY, AMBO, DUAL e altri tracker: PAUSATI.\n"
         "✅ Il loro state storico resta conservato e non viene aggiornato.\n\n"
-        "Comandi: /focus /incrocio /status /verificatutto /menu"
+        "Comandi: /focus /incrocio /core /status /verificatutto /menu"
     )
     if armed and FOCUS_NOTIFY:
         msg=engine.focus.signal_text(armed)
         if msg: await engine.tg(app,msg)
     if inc_armed and INCROCIO_NOTIFY:
         msg=engine.incrocio.signal_text(inc_armed)
+        if msg: await engine.tg(app,msg)
+    if core_armed and CORE_SYNC_NOTIFY:
+        msg=engine.core_sync.signal_text(core_armed)
         if msg: await engine.tg(app,msg)
     return True
 
@@ -8111,7 +8486,7 @@ async def startup_until_ready(engine, app):
         await asyncio.sleep(max(30,WARMUP_RETRY_SEC))
 
 async def live_loop(engine, app):
-    console_log(f"FOCUS + INCROCIO LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s")
+    console_log(f"FOCUS + INCROCIO + CORE LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s")
     started=time.monotonic()
     last_error=""
     last_error_ts=0.0
@@ -8123,7 +8498,7 @@ async def live_loop(engine, app):
             except Exception as exc:
                 console_log(f"ROTATION save fail | {exc}")
             if BOT_ROTATION_NOTIFY:
-                await engine.tg(app,"♻️ FOCUS + INCROCIO — ROTAZIONE RUNNER\nState salvato; avvio successivo automatico.")
+                await engine.tg(app,"♻️ FOCUS + INCROCIO + CORE — ROTAZIONE RUNNER\nState salvato; avvio successivo automatico.")
             return "rotation"
 
         try:
@@ -8140,12 +8515,21 @@ async def live_loop(engine, app):
                     # la cui H1 e' ancora realmente futura.
                     for d,e,nums in unseen:
                         await engine.process_draw(app,d,e,nums,mode="live",notify=False,persist=False)
-                    row=None
+                    row=None; inc=None; core=None
                     if engine.engine_history:
                         row=engine.focus.arm(engine.engine_history[-1]["key"],engine)
+                        if row:
+                            inc=engine.incrocio.observe_focus(row)
+                            core=engine.core_sync.observe_focus(row,engine)
                     engine.save_state(git=True,force_git=True)
                     if row and FOCUS_NOTIFY:
                         msg=engine.focus.signal_text(row)
+                        if msg: await engine.tg(app,msg)
+                    if inc and INCROCIO_NOTIFY:
+                        msg=engine.incrocio.signal_text(inc)
+                        if msg: await engine.tg(app,msg)
+                    if core and CORE_SYNC_NOTIFY:
+                        msg=engine.core_sync.signal_text(core)
                         if msg: await engine.tg(app,msg)
             await asyncio.sleep(LOOP_SEC)
         except Exception as exc:
@@ -8153,7 +8537,7 @@ async def live_loop(engine, app):
             console_log(f"LOOP ERROR | {txt}")
             now=time.time()
             if txt!=last_error or now-last_error_ts>=900:
-                await engine.tg(app,f"⚠️ FOCUS + INCROCIO — ERRORE\n{txt}\nRiprovo automaticamente.")
+                await engine.tg(app,f"⚠️ FOCUS + INCROCIO + CORE — ERRORE\n{txt}\nRiprovo automaticamente.")
                 last_error=txt; last_error_ts=now
             await asyncio.sleep(max(30,LOOP_SEC))
 
@@ -8183,14 +8567,30 @@ async def run_self_test():
     rt=IncrocioFocusV1(); assert rt.load(inc.dump()) and len(rt.records)==1
     assert 'AMBO' in rt.text()
 
-    # Engine live v18: legacy congelati, FOCUS + INCROCIO possono avanzare.
+    # CORE SYNC20: FOCUS3, prima x2, relazione positiva nei 20 draw precedenti.
+    ce=DummyEngine(); ce.engine_history=[]; ce.focus=type('F',(),{'records':[],'pending':[]})()
+    for i in range(1,22):
+        nums=list(range(50,68))
+        if i <= 8: nums=[22,33]+list(range(50,68))
+        ce.engine_history.append({'key':f'2099-12-03#{i:03d}','nums':nums[:20]})
+    core=FocusCoreSync20V1(); core.start_from_key='2099-12-03#020'; core.seeded_context=True
+    c1={'origin_key':'2099-12-03#020','ranked_candidates':[{'num':22,'gap':15,'trans':0.3},{'num':33,'gap':16,'trans':0.2},{'num':44,'gap':14,'trans':0.1}], 'candidate_count':3}
+    core.signal_history=[core._candidate_snapshot(c1)]
+    c2={'origin_key':'2099-12-03#021','ranked_candidates':[{'num':22,'gap':16,'trans':0.32},{'num':33,'gap':17,'trans':0.24},{'num':55,'gap':13,'trans':0.12}], 'candidate_count':3}
+    sigc=core.observe_focus(c2,ce)
+    assert sigc and any(x['pair']==[22,33] for x in sigc['pairs'])
+    evc=core.advance('2099-12-03',22,[22,33]+list(range(60,78)))
+    assert evc and [22,33] in evc[0]['new_pairs'] and evc[0]['closed']
+    rtc=FocusCoreSync20V1(); assert rtc.load(core.dump()) and len(rtc.records)==1 and 'SYNC20' in rtc.text()
+
+    # Engine live v19: legacy congelati; FOCUS + INCROCIO + CORE possono avanzare.
     eng=EngineOnly(load=False); eng.engine_history=[]
     for i in range(1,102):
         nums=[((i+j-2)%90)+1 for j in range(1,21)]
         eng.engine_history.append({"key":f"2099-12-02#{i:03d}","nums":nums})
     eng.engine_bootstrap_done=True; eng.last_draw_key='2099-12-02#101'
     eng.processed=[f"2099-12-02#{i:03d}" for i in range(1,102)]; eng.processed_set=set(eng.processed)
-    eng.focus.start_from_key='2099-12-02#101'; eng.incrocio.start_from_key='2099-12-02#101'; eng.incrocio.seeded_context=True
+    eng.focus.start_from_key='2099-12-02#101'; eng.incrocio.start_from_key='2099-12-02#101'; eng.incrocio.seeded_context=True; eng.core_sync.start_from_key='2099-12-02#101'; eng.core_sync.seeded_context=True
     eng.focus._gaps=lambda hist:{n:(13 if n==12 else 15 if n==24 else 18 if n==36 else 0) for n in range(1,91)}
     eng.focus._transition_score=lambda hist,current,n:({12:0.22,24:0.33,36:0.25}[n],100,20)
     async def _noop(*a,**k): return None
@@ -8200,10 +8600,10 @@ async def run_self_test():
     new=(len(eng.forced_one.records),len(eng.triplette.records),len(eng.hc_method.records),int(eng.burst.totals.get('evaluated',0)))
     assert old==new and len(eng.focus.pending)==1
     assert LEGACY_METHODS_PAUSED is True
-    assert '/focus' in eng.menu_text() and '/incrocio' in eng.menu_text() and '/forcedone' not in eng.menu_text()
-    vt=eng.verify_all_text(); assert 'FOCUS + INCROCIO' in vt and 'FORCED ONE' not in vt and len(vt)<4096
+    assert '/focus' in eng.menu_text() and '/incrocio' in eng.menu_text() and '/core' in eng.menu_text() and '/forcedone' not in eng.menu_text()
+    vt=eng.verify_all_text(); assert 'CORE SYNC20' in vt and 'FORCED ONE' not in vt and len(vt)<4096
 
-    print('SELF-TEST OK: v18 FOCUS FAST v2 + INCROCIO v1; ambata/ambo H1-H5; legacy congelati.')
+    print('SELF-TEST OK: v19 FOCUS FAST v2 + INCROCIO v1 + CORE SYNC20 v1; legacy congelati.')
 
 async def main():
     if "--self-test" in sys.argv:
@@ -8222,6 +8622,7 @@ async def main():
 
     app.add_handler(CommandHandler("focus",cmd_focus))
     app.add_handler(CommandHandler("incrocio",cmd_incrocio))
+    app.add_handler(CommandHandler("core",cmd_core))
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("verificatutto",cmd_verificatutto))
     app.add_handler(CommandHandler("menu",cmd_menu))
