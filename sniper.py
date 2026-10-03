@@ -1,5 +1,5 @@
 # ============================================================
-# 🎯 10eLOTTO FOCUS FAST + INCROCIO + CORE SYNC20 + MULTI BF12 — v20 LIVE TEST
+# 🎯 10eLOTTO FOCUS FAST + INCROCIO + CORE SYNC20 + MULTI BF12 — v20.1 FEED FIX
 # ============================================================
 #
 # METODI ATTIVI:
@@ -491,6 +491,78 @@ def fetch_multichannel_recent(days=3):
         for row in rows:
             merged[str(row["key"])] = row
     return sorted(merged.values(), key=lambda r: (r["day"], int(r["draw_id"])))
+
+
+# Live feed health. v20.1 usa Lottologia anche per i metodi Base legacy quando
+# la vecchia fonte 10elotto5minuti.com e' indietro o non disponibile.
+LIVE_FEED_LAST_SOURCE = "-"
+LIVE_FEED_LAST_KEY = "-"
+LIVE_FEED_LAST_PRIMARY_KEY = "-"
+LIVE_FEED_LAST_LOTTOLOGIA_KEY = "-"
+
+def _latest_base_key(rows):
+    good=[]
+    for row in rows or []:
+        try:
+            d,e,nums=row
+            if len(nums)==20 and len(set(map(int,nums)))==20:
+                good.append((str(d),int(e)))
+        except Exception:
+            pass
+    if not good:
+        return None
+    d,e=max(good,key=lambda x:(x[0],x[1]))
+    return draw_key(d,e)
+
+def fetch_live_bundle_today():
+    """Ritorna (base_rows, multi_rows, source).
+
+    Preferisce la sorgente con il draw-id piu' recente. Lottologia e' la fonte
+    completa Base/Oro/Doppio/Extra; la vecchia fonte resta come fallback.
+    """
+    global LIVE_FEED_LAST_SOURCE, LIVE_FEED_LAST_KEY
+    global LIVE_FEED_LAST_PRIMARY_KEY, LIVE_FEED_LAST_LOTTOLOGIA_KEY
+
+    multi_rows=[]
+    try:
+        multi_rows=fetch_multichannel_recent(days=1)
+    except Exception as exc:
+        console_log(f"LIVE Lottologia fail | {type(exc).__name__}: {exc}")
+    lott_base=[(str(r["day"]),int(r["draw_id"]),list(map(int,r["nums"]))) for r in multi_rows]
+
+    primary=[]
+    try:
+        primary=parse_site_today()
+    except Exception as exc:
+        console_log(f"LIVE primary fail | {type(exc).__name__}: {exc}")
+
+    lk=_latest_base_key(lott_base)
+    pk=_latest_base_key(primary)
+    LIVE_FEED_LAST_LOTTOLOGIA_KEY=lk or "-"
+    LIVE_FEED_LAST_PRIMARY_KEY=pk or "-"
+
+    # Controllo di coerenza sulle estrazioni comuni piu' recenti.
+    if lott_base and primary:
+        lm={(d,int(e)):set(map(int,n)) for d,e,n in lott_base}
+        pm={(d,int(e)):set(map(int,n)) for d,e,n in primary}
+        common=sorted(set(lm).intersection(pm))[-5:]
+        conflicts=[k for k in common if lm[k] != pm[k]]
+        if conflicts:
+            console_log(f"LIVE FEED WARNING | conflitti Base su {conflicts}")
+
+    def ord_key(k):
+        return _verifica_order(k) or (-1,-1)
+
+    if lott_base and (not primary or ord_key(lk) >= ord_key(pk)):
+        chosen=lott_base; source="Lottologia"
+    elif primary:
+        chosen=primary; source="10elotto5minuti.com"
+    else:
+        chosen=[]; source="NESSUNA"
+
+    LIVE_FEED_LAST_SOURCE=source
+    LIVE_FEED_LAST_KEY=_latest_base_key(chosen) or "-"
+    return chosen, multi_rows, source
 
 
 def _annual_archive_by_day(target_days):
@@ -8581,8 +8653,9 @@ class EngineOnly:
         _,an,ah,pn,ph,sn,sah=self.incrocio._stats(self.incrocio.records)
         cr,cn,ch,con,coh,_=self.core_sync._stats(self.core_sync.records)
         lines=[
-            "🧾 VERIFICA TUTTO v20 — FOCUS + INCROCIO + CORE + MULTI BF12",
+            "🧾 VERIFICA TUTTO v20.1 — FOCUS + INCROCIO + CORE + MULTI BF12",
             "⏸️ Tutti gli altri metodi legacy sono PAUSATI e conservati nello state.",
+            f"📡 Feed Base: {LIVE_FEED_LAST_SOURCE} | ultimo {LIVE_FEED_LAST_KEY} | Lottologia {LIVE_FEED_LAST_LOTTOLOGIA_KEY} | vecchia fonte {LIVE_FEED_LAST_PRIMARY_KEY}",
             "",
             "⚡ FOCUS FAST v2 — R13-18 / 3-4 candidati / TRANS80",
             f"Scan {self.focus.scans} | valutati {n} | NO SIGNAL {self.focus.no_signal} | frequenza segnali {rate:.1f}% | salti {self.focus.skipped}",
@@ -8606,7 +8679,7 @@ class EngineOnly:
 
     def menu_text(self):
         return (
-            "⚡ FOCUS + INCROCIO + CORE + MULTI BF12 — v20 LIVE TEST\n\n"
+            "⚡ FOCUS + INCROCIO + CORE + MULTI BF12 — v20.1 FEED FIX\n\n"
             "METODI/TRACKER ATTIVI:\n"
             "1) FOCUS FAST v2: R13-18, 3-4 candidati, TRANS80 max, un numero H1.\n"
             "2) INCROCIO v1: tutti i candidati/coppie persistenti >=×2, monitor H1-H5.\n"
@@ -8811,9 +8884,9 @@ async def notify_ambo_active(engine, app):
     await engine._ambo_notice(app, '\n'.join(lines))
 
 
-async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, days=1):
-    """Sincronizza Lottologia MULTI senza poter bloccare il loop Base v19."""
-    rows = fetch_multichannel_recent(days=days)
+async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, days=1, prefetched_rows=None):
+    """Sincronizza Lottologia MULTI senza poter bloccare il loop Base."""
+    rows = list(prefetched_rows) if prefetched_rows is not None else fetch_multichannel_recent(days=days)
     if not rows:
         return {"rows":0,"unseen":0,"signal":None,"events":[]}
     mc = engine.multichannel
@@ -8854,7 +8927,9 @@ async def startup(engine, app, retry_state=None):
             retry_state["last_reason"]=reason; retry_state["last_tg_ts"]=now_ts
         return False
 
-    try: rows=parse_site_today()
+    try:
+        rows, _startup_multi_today, _startup_source = fetch_live_bundle_today()
+        console_log(f"CATCH-UP feed={_startup_source} | latest={LIVE_FEED_LAST_KEY}")
     except Exception as exc:
         console_log(f"CATCH-UP parser fail | {exc}"); rows=[]
     unseen=[x for x in rows if not engine.already_processed(x[0],x[1])]
@@ -8894,11 +8969,12 @@ async def startup(engine, app, retry_state=None):
     engine.save_state(git=True,force_git=True)
 
     await engine.tg(app,
-        "🚀 FOCUS + INCROCIO + CORE + MULTI BF12 v20 AVVIATO\n\n"
+        "🚀 FOCUS + INCROCIO + CORE + MULTI BF12 v20.1 AVVIATO\n\n"
         "⚡ FOCUS FAST v2: R13-18, 3-4 candidati, TRANS80 max, un numero H1.\n"
         "🔗 INCROCIO v1: persistenza generale candidati FOCUS, ambata + ambo H1-H5.\n"
         "🧬 CORE SYNC20 v1: SOLO FOCUS3, prima ×2, SYNC20 observed>expected, ambo H1-H5.\n"
-        "🧪 MULTI BF12 v1 TEST: Base FREQ12 ∩ Extra RIT12 ∩ Oro FREQ12, H1-H5.\n\n"
+        "🧪 MULTI BF12 v1 TEST: Base FREQ12 ∩ Extra RIT12 ∩ Oro FREQ12, H1-H5.\n"
+        "📡 v20.1: feed Base automatico dalla sorgente piu aggiornate (Lottologia con fallback).\n\n"
         "⏸️ ENGINE predittivo, SOSIA, FORCED ONE, TRIPLETTE, HC, BURST, POST-6, PLAY, AMBO, DUAL e altri tracker: PAUSATI.\n"
         "✅ Il loro state storico resta conservato e non viene aggiornato.\n\n"
         "Comandi: /focus /incrocio /core /multi /status /verificatutto /menu"
@@ -8941,7 +9017,7 @@ async def live_loop(engine, app):
             return "rotation"
 
         try:
-            rows=parse_site_today()
+            rows, live_multi_rows, live_source = fetch_live_bundle_today()
             unseen=[x for x in rows if not engine.already_processed(x[0],x[1])]
             unseen.sort(key=lambda x:(x[0],x[1]))
             if unseen:
@@ -8971,7 +9047,7 @@ async def live_loop(engine, app):
                         msg=engine.core_sync.signal_text(core)
                         if msg: await engine.tg(app,msg)
             try:
-                mr = await sync_multichannel(engine, app, notify=True, bootstrap_if_empty=True, days=1)
+                mr = await sync_multichannel(engine, app, notify=True, bootstrap_if_empty=True, days=1, prefetched_rows=live_multi_rows)
                 if mr.get("unseen") or mr.get("signal") or mr.get("events"):
                     engine.save_state(git=True)
             except Exception as mc_exc:
