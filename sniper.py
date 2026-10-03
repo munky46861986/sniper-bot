@@ -1,5 +1,5 @@
 # ============================================================
-# 🎯 10eLOTTO FOCUS FAST + INCROCIO + CORE SYNC20 — v19
+# 🎯 10eLOTTO FOCUS FAST + INCROCIO + CORE SYNC20 + MULTI BF12 — v20 LIVE TEST
 # ============================================================
 #
 # METODI ATTIVI:
@@ -10,7 +10,7 @@
 #   • FOCUS: UN SOLO NUMERO, SOLO prossima H1
 #   • INCROCIO: persistenza candidati, ambata + ambo H1-H5
 #   • CORE SYNC20: solo FOCUS a 3 candidati, coppia al primo ×2, SYNC20 positivo, ambo H1-H5
-#   • nessun backfill dei risultati INCROCIO/CORE
+#   • nessun backfill dei risultati INCROCIO/CORE/MULTI BF12
 #
 # PAUSA v19:
 #   • ENGINE predittivo, SOSIA, FORCED ONE, TRIPLETTE, HC, BURST,
@@ -404,6 +404,93 @@ def parse_lottologia_records(url, expected_day=None):
     for d, e, nums in out:
         dedup[(str(d), int(e))] = (str(d), int(e), list(map(int, nums)))
     return sorted(dedup.values(), key=lambda x: (x[0], x[1]))
+
+
+# ============================================================
+# MULTI-CHANNEL parser — Base + Oro + Doppio Oro + Extra
+# ============================================================
+def parse_lottologia_multichannel_records(url, expected_day=None):
+    """Estrae record completi Lottologia senza modificare i parser Base legacy.
+
+    Output: [{day, draw_id, key, nums[20], oro, doppio_oro, extra[15]}].
+    Nel sito Lottologia la sezione "Doppio Oro" mostra Oro + secondo Oro;
+    qui `doppio_oro` conserva il secondo numero distinto da `oro`.
+    """
+    html = _http_get_text(url)
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True).replace("\xa0", " ")
+    text = re.sub(r"\s+", " ", text)
+    header_re = re.compile(
+        r"#\s*(\d{1,3})\s+(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\.?\s+(\d{4})\s+(\d{1,2}:\d{2})",
+        re.IGNORECASE,
+    )
+    headers = list(header_re.finditer(text))
+    out = []
+    for idx, m in enumerate(headers):
+        draw_id = int(m.group(1))
+        mon = _lottologia_month_number(m.group(3))
+        if not mon:
+            continue
+        try:
+            rec_day = datetime(int(m.group(4)), mon, int(m.group(2))).strftime("%Y-%m-%d")
+        except Exception:
+            continue
+        if expected_day and rec_day != expected_day:
+            continue
+        block_end = headers[idx + 1].start() if idx + 1 < len(headers) else len(text)
+        block = text[m.end():block_end]
+        sec = re.search(
+            r"\bNumeri\b(.*?)\bOro\b(.*?)\bDoppio\s+Oro\b(.*?)\bExtra\b(.*)$",
+            block, re.IGNORECASE | re.DOTALL,
+        )
+        if not sec:
+            continue
+        base_vals = [int(x) for x in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", sec.group(1))]
+        oro_vals = [int(x) for x in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", sec.group(2))]
+        double_vals = [int(x) for x in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", sec.group(3))]
+        extra_vals = [int(x) for x in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", sec.group(4))]
+        nums = [n for n in base_vals if 1 <= n <= 90][:20]
+        oro_list = [n for n in oro_vals if 1 <= n <= 90]
+        dlist = [n for n in double_vals if 1 <= n <= 90]
+        extra = [n for n in extra_vals if 1 <= n <= 90][:15]
+        if len(nums) != 20 or len(set(nums)) != 20 or not oro_list:
+            continue
+        oro = int(oro_list[0])
+        # Lottologia visualizza tipicamente: "Doppio Oro <oro> <secondo>".
+        distinct = [n for n in dlist if n != oro]
+        doppio = int(distinct[0] if distinct else (dlist[-1] if dlist else 0))
+        if not (1 <= doppio <= 90):
+            continue
+        if oro not in nums or doppio not in nums:
+            continue
+        if len(extra) != 15 or len(set(extra)) != 15 or (set(extra) & set(nums)):
+            continue
+        out.append({
+            "day": rec_day, "draw_id": draw_id, "key": draw_key(rec_day, draw_id),
+            "nums": list(map(int, nums)), "oro": oro, "doppio_oro": doppio,
+            "extra": list(map(int, extra)), "time": str(m.group(5)),
+        })
+    dedup = {str(r["key"]): r for r in out}
+    return sorted(dedup.values(), key=lambda r: (r["day"], int(r["draw_id"])))
+
+
+def fetch_multichannel_recent(days=3):
+    """Scarica gli ultimi giorni necessari al warmup/live MULTI-CHANNEL."""
+    days = max(1, min(5, int(days)))
+    merged = {}
+    today = now_dt().date()
+    for offset in range(days):
+        expected = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
+        try:
+            rows = parse_lottologia_multichannel_records(
+                _lottologia_url_for_offset(offset), expected_day=expected
+            )
+        except Exception as exc:
+            console_log(f"MULTI parser offset={offset} fail | {type(exc).__name__}: {exc}")
+            continue
+        for row in rows:
+            merged[str(row["key"])] = row
+    return sorted(merged.values(), key=lambda r: (r["day"], int(r["draw_id"])))
 
 
 def _annual_archive_by_day(target_days):
@@ -5020,6 +5107,303 @@ class FocusCoreSync20V1:
         return "\n".join(lines)
 
 
+# ============================================================
+# MULTI-CHANNEL BF12 v1 — LIVE TEST prospettico
+# ============================================================
+# Metodo congelato dal test gennaio-marzo 2025:
+#   TOP12 Base FREQUENTI (ultimi 80 draw)
+# ∩ TOP12 Extra RITARDATARI
+# ∩ TOP12 Oro FREQUENTI (ultimi 80 draw)
+# Ogni numero dell'intersezione e' un segnale individuale Base H1/H3/H5.
+# Cooldown: 5 draw sullo stesso numero. Nessun backfill dei risultati.
+MULTI_BF12_VERSION = 1
+MULTI_BF12_WINDOW = max(20, int(os.getenv("MULTI_BF12_WINDOW", "80")))
+MULTI_BF12_TOP_N = max(1, min(30, int(os.getenv("MULTI_BF12_TOP_N", "12"))))
+MULTI_BF12_COOLDOWN = max(0, int(os.getenv("MULTI_BF12_COOLDOWN", "5")))
+MULTI_BF12_HORIZON = max(1, int(os.getenv("MULTI_BF12_HORIZON", "5")))
+MULTI_BF12_HISTORY_MAX = max(200, int(os.getenv("MULTI_BF12_HISTORY_MAX", "900")))
+MULTI_BF12_RECORD_MAX = max(500, int(os.getenv("MULTI_BF12_RECORD_MAX", "8000")))
+MULTI_BF12_NOTIFY = os.getenv("MULTI_BF12_NOTIFY", "1").strip().lower() not in {"0","false","no","off"}
+MULTI_BF12_NOTIFY_RESULT = os.getenv("MULTI_BF12_NOTIFY_RESULT", "1").strip().lower() not in {"0","false","no","off"}
+
+
+class MultiChannelBF12V1:
+    def __init__(self):
+        self.start_from_key = None
+        self.started_at = None
+        self.history = []
+        self.history_keys = set()
+        self.pending = []
+        self.records = []
+        self.draw_seq = 0
+        self.last_signal_seq = {}
+        self.last_armed_key = None
+        self.scans = 0
+        self.signals = 0
+        self.no_signal = 0
+        self.cooldown_skips = 0
+        self.last_signal = None
+        self.last_result = None
+
+    @staticmethod
+    def _sanitize_row(row):
+        if not isinstance(row, dict):
+            return None
+        try:
+            key = str(row.get("key") or draw_key(row.get("day"), row.get("draw_id")))
+            day, sid = key.rsplit("#", 1)
+            draw_id = int(sid)
+            nums = [int(x) for x in row.get("nums", [])]
+            extra = [int(x) for x in row.get("extra", [])]
+            oro = int(row.get("oro"))
+            doppio = int(row.get("doppio_oro"))
+        except Exception:
+            return None
+        if len(nums) != 20 or len(set(nums)) != 20 or any(n < 1 or n > 90 for n in nums):
+            return None
+        if len(extra) != 15 or len(set(extra)) != 15 or any(n < 1 or n > 90 for n in extra):
+            return None
+        if set(nums) & set(extra) or oro not in nums or doppio not in nums:
+            return None
+        return {"key": key, "day": day, "draw_id": draw_id,
+                "nums": nums, "oro": oro, "doppio_oro": doppio, "extra": extra}
+
+    def _refresh_keys(self):
+        self.history_keys = {str(r.get("key")) for r in self.history if isinstance(r, dict)}
+
+    def bootstrap(self, rows):
+        clean = []
+        for row in rows or []:
+            r = self._sanitize_row(row)
+            if r:
+                clean.append(r)
+        ded = {r["key"]: r for r in clean}
+        clean = sorted(ded.values(), key=lambda r: _verifica_order(r["key"]) or (-1, -1))
+        if clean:
+            self.history = clean[-MULTI_BF12_HISTORY_MAX:]
+            self.draw_seq = max(self.draw_seq, len(self.history))
+            self._refresh_keys()
+        return len(self.history)
+
+    def ensure_start(self):
+        if self.start_from_key or not self.history:
+            return False
+        self.start_from_key = str(self.history[-1]["key"])
+        self.started_at = datetime.now(BOT_TZ).isoformat(timespec="seconds")
+        return True
+
+    def seen(self, key):
+        return str(key) in self.history_keys
+
+    def load(self, obj):
+        if not isinstance(obj, dict) or int(obj.get("version", 0) or 0) != MULTI_BF12_VERSION:
+            return False
+        hist = []
+        for row in obj.get("history", []) if isinstance(obj.get("history"), list) else []:
+            r = self._sanitize_row(row)
+            if r: hist.append(r)
+        ded = {r["key"]: r for r in hist}
+        self.history = sorted(ded.values(), key=lambda r: _verifica_order(r["key"]) or (-1,-1))[-MULTI_BF12_HISTORY_MAX:]
+        self._refresh_keys()
+        sfk = obj.get("start_from_key")
+        self.start_from_key = str(sfk) if _verifica_order(sfk) is not None else None
+        self.started_at = obj.get("started_at") if isinstance(obj.get("started_at"), str) else None
+        self.pending = [dict(x) for x in obj.get("pending", []) if isinstance(x, dict) and x.get("origin_key")][-200:]
+        self.records = [dict(x) for x in obj.get("records", []) if isinstance(x, dict) and x.get("origin_key")][-MULTI_BF12_RECORD_MAX:]
+        self.draw_seq = max(int(obj.get("draw_seq", 0) or 0), len(self.history))
+        raw_lss = obj.get("last_signal_seq", {})
+        if isinstance(raw_lss, dict):
+            self.last_signal_seq = {int(k): int(v) for k,v in raw_lss.items() if str(k).isdigit() and 1 <= int(k) <= 90}
+        self.last_armed_key = obj.get("last_armed_key") if isinstance(obj.get("last_armed_key"), str) else None
+        self.scans = max(0, int(obj.get("scans", 0) or 0))
+        self.signals = max(0, int(obj.get("signals", 0) or 0))
+        self.no_signal = max(0, int(obj.get("no_signal", 0) or 0))
+        self.cooldown_skips = max(0, int(obj.get("cooldown_skips", 0) or 0))
+        self.last_signal = obj.get("last_signal") if isinstance(obj.get("last_signal"), dict) else None
+        self.last_result = obj.get("last_result") if isinstance(obj.get("last_result"), dict) else None
+        return True
+
+    def dump(self):
+        return {
+            "version": MULTI_BF12_VERSION, "start_from_key": self.start_from_key,
+            "started_at": self.started_at, "history": self.history[-MULTI_BF12_HISTORY_MAX:],
+            "pending": self.pending[-200:], "records": self.records[-MULTI_BF12_RECORD_MAX:],
+            "draw_seq": self.draw_seq,
+            "last_signal_seq": {str(k): int(v) for k,v in self.last_signal_seq.items()},
+            "last_armed_key": self.last_armed_key, "scans": self.scans,
+            "signals": self.signals, "no_signal": self.no_signal,
+            "cooldown_skips": self.cooldown_skips,
+            "last_signal": self.last_signal, "last_result": self.last_result,
+        }
+
+    def _rankings(self):
+        if len(self.history) < MULTI_BF12_WINDOW:
+            return None
+        w = self.history[-MULTI_BF12_WINDOW:]
+        base_freq = {n: 0 for n in range(1, 91)}
+        oro_freq = {n: 0 for n in range(1, 91)}
+        for r in w:
+            for n in r["nums"]:
+                base_freq[int(n)] += 1
+            oro_freq[int(r["oro"])] += 1
+        extra_gap = {}
+        # Ritardo reale sullo storico conservato, non frequenza Extra mascherata.
+        for n in range(1, 91):
+            gap = 0
+            found = False
+            for r in reversed(self.history):
+                if n in set(r["extra"]):
+                    found = True
+                    break
+                gap += 1
+            if not found:
+                gap = len(self.history) + 1
+            extra_gap[n] = gap
+        top_base = sorted(range(1, 91), key=lambda n: (-base_freq[n], n))[:MULTI_BF12_TOP_N]
+        top_extra_delay = sorted(range(1, 91), key=lambda n: (-extra_gap[n], n))[:MULTI_BF12_TOP_N]
+        top_oro = sorted(range(1, 91), key=lambda n: (-oro_freq[n], n))[:MULTI_BF12_TOP_N]
+        return {"base_freq": base_freq, "oro_freq": oro_freq, "extra_gap": extra_gap,
+                "top_base": top_base, "top_extra_delay": top_extra_delay, "top_oro": top_oro}
+
+    def advance(self, row):
+        r = self._sanitize_row(row)
+        if not r or not self.pending:
+            return []
+        actual = set(r["nums"])
+        remain, events = [], []
+        for p in self.pending:
+            q = dict(p)
+            age = int(q.get("age", 0) or 0) + 1
+            q["age"] = age
+            q["last_key"] = r["key"]
+            hit_now = (not q.get("hit")) and int(q.get("num", 0)) in actual
+            if hit_now:
+                q["hit"] = True
+                q["hit_colpo"] = age
+            close = bool(q.get("hit")) or age >= MULTI_BF12_HORIZON
+            # Notifica H1 sempre; poi solo HIT o STOP H5.
+            if age == 1 or hit_now or (close and not q.get("hit")):
+                events.append({"row": dict(q), "hit_now": hit_now, "closed": close})
+            if close:
+                q["closed"] = True
+                q["closed_key"] = r["key"]
+                self.records.append(q)
+                self.records = self.records[-MULTI_BF12_RECORD_MAX:]
+                self.last_result = dict(q)
+            else:
+                remain.append(q)
+        self.pending = remain
+        return events
+
+    def ingest(self, row):
+        r = self._sanitize_row(row)
+        if not r or self.seen(r["key"]):
+            return []
+        events = self.advance(r)
+        self.history.append(r)
+        self.history = self.history[-MULTI_BF12_HISTORY_MAX:]
+        self.draw_seq += 1
+        self._refresh_keys()
+        return events
+
+    def arm(self):
+        if not self.history or len(self.history) < MULTI_BF12_WINDOW:
+            return None
+        origin_key = str(self.history[-1]["key"])
+        if self.last_armed_key == origin_key:
+            return None
+        self.last_armed_key = origin_key
+        self.scans += 1
+        ranks = self._rankings()
+        if not ranks:
+            self.no_signal += 1
+            return None
+        inter = sorted(set(ranks["top_base"]) & set(ranks["top_extra_delay"]) & set(ranks["top_oro"]))
+        selected = []
+        blocked = []
+        for n in inter:
+            last = self.last_signal_seq.get(int(n))
+            if last is not None and self.draw_seq - int(last) < MULTI_BF12_COOLDOWN:
+                self.cooldown_skips += 1
+                blocked.append(int(n))
+                continue
+            selected.append(int(n))
+        if not selected:
+            self.no_signal += 1
+            return None
+        details = []
+        for n in selected:
+            d = {"num": n, "base_freq80": int(ranks["base_freq"][n]),
+                 "extra_gap": int(ranks["extra_gap"][n]), "oro_freq80": int(ranks["oro_freq"][n])}
+            details.append(d)
+            self.pending.append({"origin_key": origin_key, "num": n, "age": 0,
+                                 "hit": False, "hit_colpo": None, "created_at": now_txt(),
+                                 "base_freq80": d["base_freq80"], "extra_gap": d["extra_gap"],
+                                 "oro_freq80": d["oro_freq80"]})
+            self.last_signal_seq[n] = self.draw_seq
+        self.pending = self.pending[-200:]
+        self.signals += len(selected)
+        out = {"origin_key": origin_key, "numbers": selected, "details": details,
+               "top_base": ranks["top_base"], "top_extra_delay": ranks["top_extra_delay"],
+               "top_oro": ranks["top_oro"], "blocked": blocked}
+        self.last_signal = dict(out)
+        return out
+
+    @staticmethod
+    def signal_text(sig):
+        if not sig:
+            return None
+        lines = ["🧪 MULTI BF12 — SEGNALE LIVE TEST",
+                 f"Origine: {sig.get('origin_key')}",
+                 "Metodo congelato: Base FREQ TOP12 ∩ Extra RIT TOP12 ∩ Oro FREQ TOP12",
+                 f"🎯 AMBATA/E Base H1-H5: {' '.join(f'{int(n):02d}' for n in sig.get('numbers',[]))}", ""]
+        for d in sig.get("details", []):
+            lines.append(f"• {int(d['num']):02d}: Base freq80={d['base_freq80']} | Extra ritardo={d['extra_gap']} | Oro freq80={d['oro_freq80']}")
+        lines += ["", "⏱️ Valuto H1 / H3 / H5. Cooldown stesso numero: 5 draw.",
+                  "⚠️ Modulo sperimentale LIVE separato: non modifica FOCUS/INCROCIO/CORE."]
+        return "\n".join(lines)
+
+    @staticmethod
+    def result_text(ev):
+        if not ev or not isinstance(ev.get("row"), dict):
+            return None
+        r = ev["row"]
+        n = int(r.get("num", 0)); age = int(r.get("age", 0) or 0)
+        if ev.get("hit_now"):
+            status = f"✅ HIT al colpo H{age}"
+        elif age == 1:
+            status = "❌ H1 MISS — resta aperto fino a H5"
+        else:
+            status = "🛑 STOP H5"
+        return ("🧾 MULTI BF12 — ESITO\n\n"
+                f"Origine {r.get('origin_key')} | numero {n:02d}\n"
+                f"{status}\n"
+                f"Base freq80={r.get('base_freq80')} | Extra ritardo={r.get('extra_gap')} | Oro freq80={r.get('oro_freq80')}")
+
+    def _stats(self):
+        rows = list(self.records)
+        n = len(rows)
+        h1 = sum(1 for r in rows if int(r.get("hit_colpo") or 99) <= 1)
+        h3 = sum(1 for r in rows if int(r.get("hit_colpo") or 99) <= 3)
+        h5 = sum(1 for r in rows if bool(r.get("hit")))
+        return n, h1, h3, h5
+
+    def text(self):
+        n,h1,h3,h5 = self._stats()
+        lines = ["🧪 MULTI-CHANNEL BF12 v1 — LIVE TEST",
+                 "Regola: Base FREQ TOP12 ∩ Extra RIT TOP12 ∩ Oro FREQ TOP12",
+                 f"Finestra frequenze: {MULTI_BF12_WINDOW} | cooldown stesso numero: {MULTI_BF12_COOLDOWN} | horizon H{MULTI_BF12_HORIZON}",
+                 f"Storico completo: {len(self.history)} | scan live {self.scans} | segnali {self.signals} | pending {len(self.pending)} | cooldown skip {self.cooldown_skips}",
+                 f"H1 {h1}/{n} ({safe_pct(h1,n):.2f}%) | H3 {h3}/{n} ({safe_pct(h3,n):.2f}%) | H5 {h5}/{n} ({safe_pct(h5,n):.2f}%)",
+                 "Baseline teorica: H1 22.22% | H3 52.95% | H5 71.54%."]
+        if self.pending:
+            lines.append("Pending: " + ", ".join(f"{int(x['num']):02d}@H{int(x.get('age',0))+1}" for x in self.pending[-12:]))
+        if self.last_signal:
+            lines.append("Ultimo segnale: " + str(self.last_signal.get("origin_key")) + " → " + " ".join(f"{int(n):02d}" for n in self.last_signal.get("numbers",[])))
+        lines.append("⚠️ Prospettico dal momento dell'installazione: nessun risultato ricostruito a posteriori.")
+        return "\n".join(lines)
+
+
 class EngineOnly:
     def __init__(self, load=True):
         self.processed = []
@@ -5129,6 +5513,7 @@ class EngineOnly:
         self.focus = FocusFastV2()  # v19: generatore candidati, R13-18 / 3-4 candidati / TRANS80
         self.incrocio = IncrocioFocusV1()  # v19: persistenza candidati FOCUS, ambata+ambo H1-H5
         self.core_sync = FocusCoreSync20V1()  # v19: FOCUS3 + prima x2 + SYNC20 positivo, ambo H1-H5
+        self.multichannel = MultiChannelBF12V1()  # v20 test: BF12/ED12/ORO-F12 prospettico
 
         self.state_load_info = {
             "loaded": False,
@@ -7342,6 +7727,7 @@ class EngineOnly:
             self.focus.load(d.get("focus_fast_v2"))
             self.incrocio.load(d.get("incrocio_focus_v1"))
             self.core_sync.load(d.get("focus_core_sync20_v1"))
+            self.multichannel.load(d.get("multichannel_bf12_v1"))
 
             # v19: pending e sessioni legacy restano congelati esattamente come salvati.
 
@@ -7434,6 +7820,7 @@ class EngineOnly:
             "focus_fast_v2": self.focus.dump(),
             "incrocio_focus_v1": self.incrocio.dump(),
             "focus_core_sync20_v1": self.core_sync.dump(),
+            "multichannel_bf12_v1": self.multichannel.dump(),
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -8194,7 +8581,7 @@ class EngineOnly:
         _,an,ah,pn,ph,sn,sah=self.incrocio._stats(self.incrocio.records)
         cr,cn,ch,con,coh,_=self.core_sync._stats(self.core_sync.records)
         lines=[
-            "🧾 VERIFICA TUTTO v19 — FOCUS + INCROCIO + CORE SYNC20",
+            "🧾 VERIFICA TUTTO v20 — FOCUS + INCROCIO + CORE + MULTI BF12",
             "⏸️ Tutti gli altri metodi legacy sono PAUSATI e conservati nello state.",
             "",
             "⚡ FOCUS FAST v2 — R13-18 / 3-4 candidati / TRANS80",
@@ -8211,20 +8598,25 @@ class EngineOnly:
             "🧬 CORE SYNC20 v1 — SOLO FOCUS3 / PRIMA ×2 / observed>expected",
             f"FOCUS3 {self.core_sync.focus3_seen} | prime ×2 {self.core_sync.first_x2_pairs} | SYNC20 PASS {self.core_sync.sync_pass_pairs} | origini {self.core_sync.core_signals} | pending {len(self.core_sync.pending)}",
             f"AMBI CORE H5 {ch}/{cn} ({safe_pct(ch,cn):.2f}%) | origini con ambo {coh}/{con} ({safe_pct(coh,con):.2f}%) | baseline 21.57%",
+            "",
+            "🧪 MULTI BF12 v1 — Base FREQ12 ∩ Extra RIT12 ∩ Oro FREQ12",
+            self.multichannel.text().split("\n", 4)[3] if len(self.multichannel.text().split("\n")) > 3 else self.multichannel.text(),
         ]
         return "\n".join(lines)
 
     def menu_text(self):
         return (
-            "⚡ FOCUS + INCROCIO + CORE SYNC20 — v19\n\n"
+            "⚡ FOCUS + INCROCIO + CORE + MULTI BF12 — v20 LIVE TEST\n\n"
             "METODI/TRACKER ATTIVI:\n"
             "1) FOCUS FAST v2: R13-18, 3-4 candidati, TRANS80 max, un numero H1.\n"
             "2) INCROCIO v1: tutti i candidati/coppie persistenti >=×2, monitor H1-H5.\n"
-            "3) CORE SYNC20 v1: SOLO FOCUS con 3 candidati; coppia alla prima ×2; passa se nei 20 draw precedenti observed > expected; ambo H1-H5.\n\n"
+            "3) CORE SYNC20 v1: SOLO FOCUS con 3 candidati; coppia alla prima ×2; passa se nei 20 draw precedenti observed > expected; ambo H1-H5.\n"
+            "4) MULTI BF12 v1 TEST: Base frequenti TOP12 ∩ Extra ritardatari TOP12 ∩ Oro frequenti TOP12; ambata/e Base H1-H5.\n\n"
             "/focus — stato FOCUS FAST\n"
             "/incrocio — stato INCROCIO generale\n"
             "/core — stato FOCUS CORE + SYNC20\n"
-            "/status — riepilogo dei 3 livelli\n"
+            "/multi — stato MULTI BF12 live test\n"
+            "/status — riepilogo FOCUS/INCROCIO/CORE/MULTI\n"
             "/verificatutto — audit compatto\n"
             "/menu — questa schermata\n\n"
             "⏸️ Tutti gli altri metodi restano in pausa; lo state storico non viene cancellato."
@@ -8303,6 +8695,9 @@ async def cmd_incrocio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_core(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].core_sync.text())
 
+async def cmd_multi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].multichannel.text())
+
 async def cmd_verificatutto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].verify_all_text())
 
@@ -8329,7 +8724,8 @@ async def setup_commands(app):
         BotCommand("focus", "FOCUS FAST v2: un numero H1"),
         BotCommand("incrocio", "INCROCIO generale H1-H5"),
         BotCommand("core", "CORE SYNC20: primo x2, ambo H1-H5"),
-        BotCommand("status", "Riepilogo FOCUS + INCROCIO + CORE"),
+        BotCommand("multi", "MULTI BF12: BaseFreq/ExtraRit/OroFreq"),
+        BotCommand("status", "Riepilogo FOCUS + INCROCIO + CORE + MULTI"),
         BotCommand("verificatutto", "Audit dei 3 livelli attivi"),
         BotCommand("menu", "Comandi attivi"),
     ])
@@ -8414,6 +8810,38 @@ async def notify_ambo_active(engine, app):
     lines.append('Non contabilizzo alcun colpo finché non arriva la relativa estrazione.')
     await engine._ambo_notice(app, '\n'.join(lines))
 
+
+async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, days=1):
+    """Sincronizza Lottologia MULTI senza poter bloccare il loop Base v19."""
+    rows = fetch_multichannel_recent(days=days)
+    if not rows:
+        return {"rows":0,"unseen":0,"signal":None,"events":[]}
+    mc = engine.multichannel
+    events = []
+    if bootstrap_if_empty and not mc.history:
+        mc.bootstrap(rows)
+        mc.ensure_start()
+        sig = mc.arm()
+        if sig and notify and MULTI_BF12_NOTIFY:
+            msg = mc.signal_text(sig)
+            if msg: await engine.tg(app, msg)
+        return {"rows":len(rows),"unseen":0,"signal":sig,"events":events,"bootstrapped":True}
+    unseen = [r for r in rows if not mc.seen(r.get("key"))]
+    unseen.sort(key=lambda r: _verifica_order(r.get("key")) or (-1,-1))
+    for r in unseen:
+        evs = mc.ingest(r)
+        events.extend(evs)
+        if notify and MULTI_BF12_NOTIFY_RESULT:
+            for ev in evs:
+                msg = mc.result_text(ev)
+                if msg: await engine.tg(app, msg)
+    mc.ensure_start()
+    sig = mc.arm() if mc.history else None
+    if sig and notify and MULTI_BF12_NOTIFY:
+        msg = mc.signal_text(sig)
+        if msg: await engine.tg(app, msg)
+    return {"rows":len(rows),"unseen":len(unseen),"signal":sig,"events":events,"bootstrapped":False}
+
 async def startup(engine, app, retry_state=None):
     retry_state = retry_state if isinstance(retry_state, dict) else {}
     ready = await ensure_engine_ready(engine)
@@ -8433,6 +8861,13 @@ async def startup(engine, app, retry_state=None):
     unseen.sort(key=lambda x:(x[0],x[1]))
     for d,e,nums in unseen:
         await engine.process_draw(None,d,e,nums,mode="live",notify=False,persist=False)
+
+    multi_sig=None
+    try:
+        mr = await sync_multichannel(engine, app, notify=False, bootstrap_if_empty=True, days=3)
+        multi_sig = mr.get("signal")
+    except Exception as exc:
+        console_log(f"MULTI startup fail | {type(exc).__name__}: {exc}")
 
     engine.focus.ensure_start(engine)
     engine.incrocio.ensure_start(engine)
@@ -8459,13 +8894,14 @@ async def startup(engine, app, retry_state=None):
     engine.save_state(git=True,force_git=True)
 
     await engine.tg(app,
-        "🚀 FOCUS + INCROCIO + CORE SYNC20 v19 AVVIATO\n\n"
+        "🚀 FOCUS + INCROCIO + CORE + MULTI BF12 v20 AVVIATO\n\n"
         "⚡ FOCUS FAST v2: R13-18, 3-4 candidati, TRANS80 max, un numero H1.\n"
         "🔗 INCROCIO v1: persistenza generale candidati FOCUS, ambata + ambo H1-H5.\n"
-        "🧬 CORE SYNC20 v1: SOLO FOCUS3, prima ×2, SYNC20 observed>expected, ambo H1-H5.\n\n"
+        "🧬 CORE SYNC20 v1: SOLO FOCUS3, prima ×2, SYNC20 observed>expected, ambo H1-H5.\n"
+        "🧪 MULTI BF12 v1 TEST: Base FREQ12 ∩ Extra RIT12 ∩ Oro FREQ12, H1-H5.\n\n"
         "⏸️ ENGINE predittivo, SOSIA, FORCED ONE, TRIPLETTE, HC, BURST, POST-6, PLAY, AMBO, DUAL e altri tracker: PAUSATI.\n"
         "✅ Il loro state storico resta conservato e non viene aggiornato.\n\n"
-        "Comandi: /focus /incrocio /core /status /verificatutto /menu"
+        "Comandi: /focus /incrocio /core /multi /status /verificatutto /menu"
     )
     if armed and FOCUS_NOTIFY:
         msg=engine.focus.signal_text(armed)
@@ -8475,6 +8911,9 @@ async def startup(engine, app, retry_state=None):
         if msg: await engine.tg(app,msg)
     if core_armed and CORE_SYNC_NOTIFY:
         msg=engine.core_sync.signal_text(core_armed)
+        if msg: await engine.tg(app,msg)
+    if multi_sig and MULTI_BF12_NOTIFY:
+        msg=engine.multichannel.signal_text(multi_sig)
         if msg: await engine.tg(app,msg)
     return True
 
@@ -8486,7 +8925,7 @@ async def startup_until_ready(engine, app):
         await asyncio.sleep(max(30,WARMUP_RETRY_SEC))
 
 async def live_loop(engine, app):
-    console_log(f"FOCUS + INCROCIO + CORE LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s")
+    console_log(f"FOCUS + INCROCIO + CORE + MULTI LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s")
     started=time.monotonic()
     last_error=""
     last_error_ts=0.0
@@ -8531,6 +8970,12 @@ async def live_loop(engine, app):
                     if core and CORE_SYNC_NOTIFY:
                         msg=engine.core_sync.signal_text(core)
                         if msg: await engine.tg(app,msg)
+            try:
+                mr = await sync_multichannel(engine, app, notify=True, bootstrap_if_empty=True, days=1)
+                if mr.get("unseen") or mr.get("signal") or mr.get("events"):
+                    engine.save_state(git=True)
+            except Exception as mc_exc:
+                console_log(f"MULTI LIVE ERROR | {type(mc_exc).__name__}: {mc_exc}")
             await asyncio.sleep(LOOP_SEC)
         except Exception as exc:
             txt=f"{type(exc).__name__}: {exc}"
@@ -8583,6 +9028,37 @@ async def run_self_test():
     assert evc and [22,33] in evc[0]['new_pairs'] and evc[0]['closed']
     rtc=FocusCoreSync20V1(); assert rtc.load(core.dump()) and len(rtc.records)==1 and 'SYNC20' in rtc.text()
 
+    # MULTI BF12: intersezione e H1 prospettico, parser/state isolati.
+    mc=MultiChannelBF12V1()
+    rows=[]
+    # Costruisce 90 draw validi: 42 molto frequente Base/Oro e mai Extra negli ultimi draw.
+    for i in range(1,91):
+        base=[42] + [n for n in range(1,91) if n!=42][:19]
+        # variazione sufficiente ma validita' strutturale garantita
+        shift=(i-1)%69
+        pool=[n for n in range(1,91) if n!=42]
+        tail=[pool[(shift+j)%len(pool)] for j in range(19)]
+        base=[42]+tail
+        # Extra disgiunti dalla Base; evita 42 per creare ritardo.
+        extra=[n for n in range(1,91) if n not in set(base) and n!=42][:15]
+        rows.append({'key':f'2099-12-04#{i:03d}','day':'2099-12-04','draw_id':i,
+                     'nums':base,'oro':42,'doppio_oro':base[1],'extra':extra})
+    mc.bootstrap(rows); mc.ensure_start()
+    # Forza rankings per test deterministico dell'intersezione/cooldown.
+    mc._rankings=lambda:{'base_freq':{n:(50 if n==42 else 1) for n in range(1,91)},
+                         'oro_freq':{n:(40 if n==42 else 0) for n in range(1,91)},
+                         'extra_gap':{n:(30 if n==42 else 0) for n in range(1,91)},
+                         'top_base':[42]+list(range(1,12)),
+                         'top_extra_delay':[42]+list(range(12,23)),
+                         'top_oro':[42]+list(range(23,34))}
+    ms=mc.arm(); assert ms and ms['numbers']==[42] and len(mc.pending)==1
+    nxt={'key':'2099-12-04#091','day':'2099-12-04','draw_id':91,
+         'nums':[42]+list(range(50,69)),'oro':42,'doppio_oro':50,
+         'extra':list(range(1,16))}
+    mev=mc.ingest(nxt); assert mev and mev[0]['hit_now'] and len(mc.records)==1
+    n,h1,h3,h5=mc._stats(); assert (n,h1,h3,h5)==(1,1,1,1)
+    mcrt=MultiChannelBF12V1(); assert mcrt.load(mc.dump()) and len(mcrt.records)==1
+
     # Engine live v19: legacy congelati; FOCUS + INCROCIO + CORE possono avanzare.
     eng=EngineOnly(load=False); eng.engine_history=[]
     for i in range(1,102):
@@ -8600,10 +9076,10 @@ async def run_self_test():
     new=(len(eng.forced_one.records),len(eng.triplette.records),len(eng.hc_method.records),int(eng.burst.totals.get('evaluated',0)))
     assert old==new and len(eng.focus.pending)==1
     assert LEGACY_METHODS_PAUSED is True
-    assert '/focus' in eng.menu_text() and '/incrocio' in eng.menu_text() and '/core' in eng.menu_text() and '/forcedone' not in eng.menu_text()
+    assert '/focus' in eng.menu_text() and '/incrocio' in eng.menu_text() and '/core' in eng.menu_text() and '/multi' in eng.menu_text() and '/forcedone' not in eng.menu_text()
     vt=eng.verify_all_text(); assert 'CORE SYNC20' in vt and 'FORCED ONE' not in vt and len(vt)<4096
 
-    print('SELF-TEST OK: v19 FOCUS FAST v2 + INCROCIO v1 + CORE SYNC20 v1; legacy congelati.')
+    print('SELF-TEST OK: v20 = v19 FOCUS/INCROCIO/CORE + MULTI BF12 v1; legacy congelati.')
 
 async def main():
     if "--self-test" in sys.argv:
@@ -8623,6 +9099,7 @@ async def main():
     app.add_handler(CommandHandler("focus",cmd_focus))
     app.add_handler(CommandHandler("incrocio",cmd_incrocio))
     app.add_handler(CommandHandler("core",cmd_core))
+    app.add_handler(CommandHandler("multi",cmd_multi))
     app.add_handler(CommandHandler("status",cmd_status))
     app.add_handler(CommandHandler("verificatutto",cmd_verificatutto))
     app.add_handler(CommandHandler("menu",cmd_menu))
