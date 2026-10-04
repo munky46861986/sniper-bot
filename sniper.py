@@ -1,5 +1,5 @@
 # ============================================================
-# 🎯 10eLOTTO FOCUS FAST + INCROCIO + CORE SYNC20 + MULTI BD12+ED12+O2F12 — v20.2 FEED FIX + BD12/ED12/O2F12
+# 🎯 10eLOTTO FOCUS FAST + INCROCIO + CORE SYNC20 + MULTI BD12+ED12+O2F12 — v20.3 FEED FIX + BD12/ED12/O2F12 + AMBO COOC900
 # ============================================================
 #
 # METODI ATTIVI:
@@ -5181,22 +5181,39 @@ class FocusCoreSync20V1:
 
 # ============================================================
 # MULTI-CHANNEL BD12 + ED12 + O2F12 v1 — LIVE TEST prospettico
+# + AMBO COOC900 v1 (2 ambi base + 3° SUPER selettivo)
 # ============================================================
-# Regola congelata dal test storico gennaio-settembre 2025:
+# AMBATA principale:
 #   TOP12 Base RITARDATARI
 # ∩ TOP12 Extra RITARDATARI
 # ∩ TOP12 Oro2 / Doppio Oro FREQUENTI negli ultimi 80 draw
-# Ogni numero dell'intersezione e' un segnale individuale Base H1/H3/H5.
-# Cooldown: 5 draw sullo stesso numero. Nessun backfill dei risultati.
-MULTI_BD_ED_O2_VERSION = 1
+#
+# AMBO, per ogni ambata M:
+#   • P1 e P2 = i 2 numeri del TOP12 Oro2 (escluso M) con la maggiore
+#     co-occorrenza Base con M nei 900 draw gia' conclusi;
+#   • AMBO BASE1 = M-P1, sempre;
+#   • AMBO BASE2 = M-P2, sempre;
+#   • AMBO SUPER = P1-P2 solo se support_sum >= 4.
+#     support(partner) = 1 per O2F12 +1 se anche BD12 +1 se anche ED12.
+#
+# Tutto e' congelato PRIMA della finestra futura e seguito H1/H3/H5.
+# Nessun backfill: lo stato ambata esistente viene preservato; il tracker AMBO
+# nasce prospetticamente dal primo nuovo segnale dopo l'upgrade.
+# ============================================================
+MULTI_BD_ED_O2_VERSION = 1  # resta 1 per caricare senza reset lo state ambata v20.2
+MULTI_BD_ED_O2_AMBO_VERSION = 1
 MULTI_BD_ED_O2_WINDOW = max(20, int(os.getenv("MULTI_BD_ED_O2_WINDOW", "80")))
-MULTI_BD_ED_O2_TOP_N = max(1, min(30, int(os.getenv("MULTI_BD_ED_O2_TOP_N", "12"))))
+MULTI_BD_ED_O2_TOP_N = max(3, min(30, int(os.getenv("MULTI_BD_ED_O2_TOP_N", "12"))))
 MULTI_BD_ED_O2_COOLDOWN = max(0, int(os.getenv("MULTI_BD_ED_O2_COOLDOWN", "5")))
 MULTI_BD_ED_O2_HORIZON = max(1, int(os.getenv("MULTI_BD_ED_O2_HORIZON", "5")))
-MULTI_BD_ED_O2_HISTORY_MAX = max(200, int(os.getenv("MULTI_BD_ED_O2_HISTORY_MAX", "900")))
+MULTI_BD_ED_O2_AMBO_COOC_WINDOW = max(80, int(os.getenv("MULTI_BD_ED_O2_AMBO_COOC_WINDOW", "900")))
+MULTI_BD_ED_O2_AMBO_SUPER_GATE = max(2, int(os.getenv("MULTI_BD_ED_O2_AMBO_SUPER_GATE", "4")))
+MULTI_BD_ED_O2_HISTORY_MAX = max(MULTI_BD_ED_O2_AMBO_COOC_WINDOW, int(os.getenv("MULTI_BD_ED_O2_HISTORY_MAX", "900")))
 MULTI_BD_ED_O2_RECORD_MAX = max(500, int(os.getenv("MULTI_BD_ED_O2_RECORD_MAX", "8000")))
+MULTI_BD_ED_O2_AMBO_RECORD_MAX = max(1500, int(os.getenv("MULTI_BD_ED_O2_AMBO_RECORD_MAX", "24000")))
 MULTI_BD_ED_O2_NOTIFY = os.getenv("MULTI_BD_ED_O2_NOTIFY", "1").strip().lower() not in {"0","false","no","off"}
 MULTI_BD_ED_O2_NOTIFY_RESULT = os.getenv("MULTI_BD_ED_O2_NOTIFY_RESULT", "1").strip().lower() not in {"0","false","no","off"}
+
 
 class MultiChannelBD12ED12O2F12V1:
     def __init__(self):
@@ -5204,6 +5221,12 @@ class MultiChannelBD12ED12O2F12V1:
         self.pending=[]; self.records=[]; self.draw_seq=0; self.last_signal_seq={}
         self.last_armed_key=None; self.scans=0; self.signals=0; self.no_signal=0
         self.cooldown_skips=0; self.last_signal=None; self.last_result=None
+
+        # Tracker AMBO aggiuntivo e retro-compatibile: non ricostruisce il passato.
+        self.ambo_started_from_key=None; self.ambo_started_at=None
+        self.ambo_pending=[]; self.ambo_records=[]
+        self.ambo_origins=0; self.ambo_super_signals=0
+        self.last_ambo_signal=None; self.last_ambo_result=None
 
     @staticmethod
     def _sanitize_row(row):
@@ -5219,40 +5242,96 @@ class MultiChannelBD12ED12O2F12V1:
         if oro not in nums or doppio not in nums: return None
         return {"key":key,"day":day,"draw_id":draw_id,"nums":nums,"oro":oro,"doppio_oro":doppio,"extra":extra}
 
-    def _refresh_keys(self): self.history_keys={str(r.get("key")) for r in self.history if isinstance(r,dict)}
+    @staticmethod
+    def _sanitize_ambo_row(row):
+        if not isinstance(row,dict) or not row.get("origin_key"): return None
+        try:
+            pair=sorted({int(x) for x in (row.get("pair") or [])})
+            main=int(row.get("main"))
+            age=max(0,int(row.get("age",0) or 0))
+        except Exception: return None
+        if len(pair)!=2 or any(n<1 or n>90 for n in pair) or not 1<=main<=90: return None
+        q=dict(row); q["pair"]=pair; q["main"]=main; q["age"]=age
+        q["slot"]=str(q.get("slot") or "BASE")
+        q["origin_id"]=str(q.get("origin_id") or f"{q['origin_key']}|M{main:02d}")
+        return q
+
+    def _refresh_keys(self):
+        self.history_keys={str(r.get("key")) for r in self.history if isinstance(r,dict)}
+
     def bootstrap(self,rows):
         clean=[r for row in (rows or []) if (r:=self._sanitize_row(row))]
         ded={r["key"]:r for r in clean}
         clean=sorted(ded.values(),key=lambda r:_verifica_order(r["key"]) or (-1,-1))
         if clean:
-            self.history=clean[-MULTI_BD_ED_O2_HISTORY_MAX:]; self.draw_seq=max(self.draw_seq,len(self.history)); self._refresh_keys()
+            self.history=clean[-MULTI_BD_ED_O2_HISTORY_MAX:]
+            self.draw_seq=max(self.draw_seq,len(self.history)); self._refresh_keys()
         return len(self.history)
+
     def ensure_start(self):
-        if self.start_from_key or not self.history: return False
-        self.start_from_key=str(self.history[-1]["key"]); self.started_at=datetime.now(BOT_TZ).isoformat(timespec="seconds"); return True
+        if not self.history: return False
+        changed=False
+        if not self.start_from_key:
+            self.start_from_key=str(self.history[-1]["key"])
+            self.started_at=datetime.now(BOT_TZ).isoformat(timespec="seconds")
+            changed=True
+        if not self.ambo_started_from_key:
+            # Se si aggiorna da v20.2, questo marker impedisce qualunque backfill AMBO.
+            self.ambo_started_from_key=str(self.history[-1]["key"])
+            self.ambo_started_at=datetime.now(BOT_TZ).isoformat(timespec="seconds")
+            changed=True
+        return changed
+
     def seen(self,key): return str(key) in self.history_keys
+
     def load(self,obj):
         if not isinstance(obj,dict) or int(obj.get("version",0) or 0)!=MULTI_BD_ED_O2_VERSION: return False
         hist=[r for row in obj.get("history",[]) if (r:=self._sanitize_row(row))]
         ded={r["key"]:r for r in hist}
-        self.history=sorted(ded.values(),key=lambda r:_verifica_order(r["key"]) or (-1,-1))[-MULTI_BD_ED_O2_HISTORY_MAX:]; self._refresh_keys()
+        self.history=sorted(ded.values(),key=lambda r:_verifica_order(r["key"]) or (-1,-1))[-MULTI_BD_ED_O2_HISTORY_MAX:]
+        self._refresh_keys()
         sfk=obj.get("start_from_key"); self.start_from_key=str(sfk) if _verifica_order(sfk) is not None else None
         self.started_at=obj.get("started_at") if isinstance(obj.get("started_at"),str) else None
         self.pending=[dict(x) for x in obj.get("pending",[]) if isinstance(x,dict) and x.get("origin_key")][-200:]
         self.records=[dict(x) for x in obj.get("records",[]) if isinstance(x,dict) and x.get("origin_key")][-MULTI_BD_ED_O2_RECORD_MAX:]
         self.draw_seq=max(int(obj.get("draw_seq",0) or 0),len(self.history))
-        raw=obj.get("last_signal_seq",{}); self.last_signal_seq={int(k):int(v) for k,v in raw.items() if str(k).isdigit() and 1<=int(k)<=90} if isinstance(raw,dict) else {}
+        raw=obj.get("last_signal_seq",{})
+        self.last_signal_seq={int(k):int(v) for k,v in raw.items() if str(k).isdigit() and 1<=int(k)<=90} if isinstance(raw,dict) else {}
         self.last_armed_key=obj.get("last_armed_key") if isinstance(obj.get("last_armed_key"),str) else None
-        for a in ("scans","signals","no_signal","cooldown_skips"): setattr(self,a,max(0,int(obj.get(a,0) or 0)))
+        for a in ("scans","signals","no_signal","cooldown_skips"):
+            setattr(self,a,max(0,int(obj.get(a,0) or 0)))
         self.last_signal=obj.get("last_signal") if isinstance(obj.get("last_signal"),dict) else None
         self.last_result=obj.get("last_result") if isinstance(obj.get("last_result"),dict) else None
+
+        # Campi nuovi: se mancano, partono da zero SENZA ricostruire risultati passati.
+        ask=obj.get("ambo_started_from_key")
+        self.ambo_started_from_key=str(ask) if _verifica_order(ask) is not None else None
+        self.ambo_started_at=obj.get("ambo_started_at") if isinstance(obj.get("ambo_started_at"),str) else None
+        self.ambo_pending=[q for x in obj.get("ambo_pending",[]) if (q:=self._sanitize_ambo_row(x))][-600:]
+        self.ambo_records=[q for x in obj.get("ambo_records",[]) if (q:=self._sanitize_ambo_row(x))][-MULTI_BD_ED_O2_AMBO_RECORD_MAX:]
+        self.ambo_origins=max(0,int(obj.get("ambo_origins",0) or 0))
+        self.ambo_super_signals=max(0,int(obj.get("ambo_super_signals",0) or 0))
+        self.last_ambo_signal=obj.get("last_ambo_signal") if isinstance(obj.get("last_ambo_signal"),dict) else None
+        self.last_ambo_result=obj.get("last_ambo_result") if isinstance(obj.get("last_ambo_result"),dict) else None
+        if not self.ambo_started_from_key and self.history:
+            self.ambo_started_from_key=str(self.history[-1]["key"])
+            self.ambo_started_at=datetime.now(BOT_TZ).isoformat(timespec="seconds")
         return True
+
     def dump(self):
-        return {"version":MULTI_BD_ED_O2_VERSION,"start_from_key":self.start_from_key,"started_at":self.started_at,
-                "history":self.history[-MULTI_BD_ED_O2_HISTORY_MAX:],"pending":self.pending[-200:],"records":self.records[-MULTI_BD_ED_O2_RECORD_MAX:],
-                "draw_seq":self.draw_seq,"last_signal_seq":{str(k):int(v) for k,v in self.last_signal_seq.items()},"last_armed_key":self.last_armed_key,
-                "scans":self.scans,"signals":self.signals,"no_signal":self.no_signal,"cooldown_skips":self.cooldown_skips,
-                "last_signal":self.last_signal,"last_result":self.last_result}
+        return {
+            "version":MULTI_BD_ED_O2_VERSION,"start_from_key":self.start_from_key,"started_at":self.started_at,
+            "history":self.history[-MULTI_BD_ED_O2_HISTORY_MAX:],"pending":self.pending[-200:],"records":self.records[-MULTI_BD_ED_O2_RECORD_MAX:],
+            "draw_seq":self.draw_seq,"last_signal_seq":{str(k):int(v) for k,v in self.last_signal_seq.items()},"last_armed_key":self.last_armed_key,
+            "scans":self.scans,"signals":self.signals,"no_signal":self.no_signal,"cooldown_skips":self.cooldown_skips,
+            "last_signal":self.last_signal,"last_result":self.last_result,
+            "ambo_version":MULTI_BD_ED_O2_AMBO_VERSION,
+            "ambo_started_from_key":self.ambo_started_from_key,"ambo_started_at":self.ambo_started_at,
+            "ambo_pending":self.ambo_pending[-600:],"ambo_records":self.ambo_records[-MULTI_BD_ED_O2_AMBO_RECORD_MAX:],
+            "ambo_origins":self.ambo_origins,"ambo_super_signals":self.ambo_super_signals,
+            "last_ambo_signal":self.last_ambo_signal,"last_ambo_result":self.last_ambo_result,
+        }
+
     @staticmethod
     def _gap(history,n,field):
         gap=0
@@ -5261,6 +5340,7 @@ class MultiChannelBD12ED12O2F12V1:
             if n in vals: return gap
             gap+=1
         return len(history)+1
+
     def _rankings(self):
         if len(self.history)<MULTI_BD_ED_O2_WINDOW: return None
         w=self.history[-MULTI_BD_ED_O2_WINDOW:]
@@ -5273,27 +5353,100 @@ class MultiChannelBD12ED12O2F12V1:
         top_o2=sorted(range(1,91),key=lambda n:(-o2_freq[n],n))[:MULTI_BD_ED_O2_TOP_N]
         return {"base_gap":base_gap,"extra_gap":extra_gap,"o2_freq":o2_freq,
                 "top_base_delay":top_base_delay,"top_extra_delay":top_extra_delay,"top_o2":top_o2}
+
+    def _partner_plan(self,main,ranks):
+        """P1/P2 causalmente, solo dai draw gia' presenti in history."""
+        candidates=[int(n) for n in ranks["top_o2"] if int(n)!=int(main)]
+        if len(candidates)<2: return None
+        hw=self.history[-MULTI_BD_ED_O2_AMBO_COOC_WINDOW:]
+        bset=set(ranks["top_base_delay"]); eset=set(ranks["top_extra_delay"])
+        scored=[]
+        for p in candidates:
+            cooc=sum(1 for r in hw if int(main) in set(r["nums"]) and int(p) in set(r["nums"]))
+            support=1 + int(p in bset) + int(p in eset)  # O2 e' sempre 1 per costruzione
+            scored.append({"num":p,"cooc":int(cooc),"support":int(support),
+                           "in_bd12":bool(p in bset),"in_ed12":bool(p in eset),
+                           "o2_freq80":int(ranks["o2_freq"].get(p,0))})
+        scored.sort(key=lambda x:(-x["cooc"],x["num"]))
+        p1,p2=scored[0],scored[1]
+        support_sum=int(p1["support"]+p2["support"])
+        return {"main":int(main),"p1":p1,"p2":p2,"support_sum":support_sum,
+                "super_enabled":bool(support_sum>=MULTI_BD_ED_O2_AMBO_SUPER_GATE),
+                "cooc_window":min(len(hw),MULTI_BD_ED_O2_AMBO_COOC_WINDOW)}
+
+    def _arm_ambo(self,origin_key,main,plan):
+        if not plan: return []
+        origin_id=f"{origin_key}|M{int(main):02d}"
+        p1=int(plan["p1"]["num"]); p2=int(plan["p2"]["num"])
+        specs=[("BASE1",sorted([int(main),p1])),("BASE2",sorted([int(main),p2]))]
+        if plan.get("super_enabled"):
+            specs.append(("SUPER",sorted([p1,p2])))
+        created=[]
+        for slot,pair in specs:
+            q={"origin_key":str(origin_key),"origin_id":origin_id,"main":int(main),"slot":slot,
+               "pair":pair,"age":0,"hit":False,"hit_colpo":None,"created_at":now_txt(),
+               "p1":p1,"p2":p2,"p1_cooc":int(plan["p1"]["cooc"]),"p2_cooc":int(plan["p2"]["cooc"]),
+               "p1_support":int(plan["p1"]["support"]),"p2_support":int(plan["p2"]["support"]),
+               "support_sum":int(plan["support_sum"]),"cooc_window":int(plan["cooc_window"])}
+            self.ambo_pending.append(q); created.append(dict(q))
+        self.ambo_pending=self.ambo_pending[-600:]
+        self.ambo_origins+=1
+        if plan.get("super_enabled"): self.ambo_super_signals+=1
+        self.last_ambo_signal={"origin_key":str(origin_key),"origin_id":origin_id,"main":int(main),
+                               "p1":dict(plan["p1"]),"p2":dict(plan["p2"]),
+                               "support_sum":int(plan["support_sum"]),"super_enabled":bool(plan.get("super_enabled")),
+                               "pairs":[{"slot":x["slot"],"pair":list(x["pair"])} for x in created]}
+        return created
+
     def advance(self,row):
         r=self._sanitize_row(row)
-        if not r or not self.pending: return []
-        actual=set(r["nums"]); remain=[]; events=[]
+        if not r: return []
+        actual=set(r["nums"]); events=[]
+
+        # Ambate originali: comportamento v20.2 invariato.
+        remain=[]
         for p in self.pending:
             q=dict(p); age=int(q.get("age",0) or 0)+1; q["age"]=age; q["last_key"]=r["key"]
             hit_now=(not q.get("hit")) and int(q.get("num",0)) in actual
             if hit_now: q["hit"]=True; q["hit_colpo"]=age
             close=bool(q.get("hit")) or age>=MULTI_BD_ED_O2_HORIZON
-            if age==1 or hit_now or (close and not q.get("hit")): events.append({"row":dict(q),"hit_now":hit_now,"closed":close})
+            if age==1 or hit_now or (close and not q.get("hit")):
+                events.append({"kind":"ambata","row":dict(q),"hit_now":hit_now,"closed":close})
             if close:
-                q["closed"]=True; q["closed_key"]=r["key"]; self.records.append(q); self.records=self.records[-MULTI_BD_ED_O2_RECORD_MAX:]; self.last_result=dict(q)
+                q["closed"]=True; q["closed_key"]=r["key"]
+                self.records.append(q); self.records=self.records[-MULTI_BD_ED_O2_RECORD_MAX:]
+                self.last_result=dict(q)
             else: remain.append(q)
-        self.pending=remain; return events
+        self.pending=remain
+
+        # AMBO: stesso draw per entrambi i numeri, H1-H5. Notifica solo HIT o STOP H5.
+        aremain=[]
+        for p in self.ambo_pending:
+            q=dict(p); age=int(q.get("age",0) or 0)+1; q["age"]=age; q["last_key"]=r["key"]
+            pair=[int(x) for x in q.get("pair",[])]
+            hit_now=(not q.get("hit")) and len(pair)==2 and pair[0] in actual and pair[1] in actual
+            if hit_now: q["hit"]=True; q["hit_colpo"]=age
+            close=bool(q.get("hit")) or age>=MULTI_BD_ED_O2_HORIZON
+            if hit_now or (close and not q.get("hit")):
+                events.append({"kind":"ambo","row":dict(q),"hit_now":hit_now,"closed":close})
+            if close:
+                q["closed"]=True; q["closed_key"]=r["key"]
+                self.ambo_records.append(q); self.ambo_records=self.ambo_records[-MULTI_BD_ED_O2_AMBO_RECORD_MAX:]
+                self.last_ambo_result=dict(q)
+            else: aremain.append(q)
+        self.ambo_pending=aremain
+        return events
+
     def ingest(self,row):
         r=self._sanitize_row(row)
         if not r or self.seen(r["key"]): return []
-        events=self.advance(r); self.history.append(r); self.history=self.history[-MULTI_BD_ED_O2_HISTORY_MAX:]
+        events=self.advance(r)
+        self.history.append(r); self.history=self.history[-MULTI_BD_ED_O2_HISTORY_MAX:]
         self.draw_seq+=1; self._refresh_keys(); return events
+
     def arm(self):
         if not self.history or len(self.history)<MULTI_BD_ED_O2_WINDOW: return None
+        self.ensure_start()
         origin_key=str(self.history[-1]["key"])
         if self.last_armed_key==origin_key: return None
         self.last_armed_key=origin_key; self.scans+=1; ranks=self._rankings()
@@ -5306,47 +5459,136 @@ class MultiChannelBD12ED12O2F12V1:
                 self.cooldown_skips+=1; blocked.append(int(n)); continue
             selected.append(int(n))
         if not selected: self.no_signal+=1; return None
-        details=[]
+
+        details=[]; ambo_plans=[]
         for n in selected:
             d={"num":n,"base_gap":int(ranks["base_gap"][n]),"extra_gap":int(ranks["extra_gap"][n]),"o2_freq80":int(ranks["o2_freq"][n])}
+            plan=self._partner_plan(n,ranks)
+            if plan:
+                d["ambo"]={"p1":dict(plan["p1"]),"p2":dict(plan["p2"]),"support_sum":int(plan["support_sum"]),
+                           "super_enabled":bool(plan["super_enabled"]),"cooc_window":int(plan["cooc_window"])}
+                self._arm_ambo(origin_key,n,plan)
+                ambo_plans.append({"main":n,**d["ambo"]})
             details.append(d)
             self.pending.append({"origin_key":origin_key,"num":n,"age":0,"hit":False,"hit_colpo":None,"created_at":now_txt(),
                                  "base_gap":d["base_gap"],"extra_gap":d["extra_gap"],"o2_freq80":d["o2_freq80"]})
             self.last_signal_seq[n]=self.draw_seq
         self.pending=self.pending[-200:]; self.signals+=len(selected)
-        out={"origin_key":origin_key,"numbers":selected,"details":details,"top_base_delay":ranks["top_base_delay"],
-             "top_extra_delay":ranks["top_extra_delay"],"top_o2":ranks["top_o2"],"blocked":blocked}
+        out={"origin_key":origin_key,"numbers":selected,"details":details,"ambo_plans":ambo_plans,
+             "top_base_delay":ranks["top_base_delay"],"top_extra_delay":ranks["top_extra_delay"],"top_o2":ranks["top_o2"],"blocked":blocked}
         self.last_signal=dict(out); return out
+
     @staticmethod
     def signal_text(sig):
         if not sig: return None
         lines=["🧪 MULTI BD12+ED12+O2F12 — SEGNALE LIVE","Origine: "+str(sig.get("origin_key")),
-               "Metodo congelato: Base RIT TOP12 ∩ Extra RIT TOP12 ∩ Oro2 FREQ TOP12 (W80)",
+               "Metodo: Base RIT12 ∩ Extra RIT12 ∩ Oro2 FREQ12 (W80)",
                f"🎯 AMBATA/E Base H1-H5: {' '.join(f'{int(n):02d}' for n in sig.get('numbers',[]))}",""]
-        for d in sig.get("details",[]): lines.append(f"• {int(d['num']):02d}: Base ritardo={d['base_gap']} | Extra ritardo={d['extra_gap']} | Oro2 freq80={d['o2_freq80']}")
-        lines += ["","⏱️ Valuto H1 / H3 / H5. Cooldown stesso numero: 5 draw.","⚠️ Modulo prospettico separato: nessun backfill; FOCUS/INCROCIO/CORE invariati."]
+        for d in sig.get("details",[]):
+            lines.append(f"• {int(d['num']):02d}: Base rit={d['base_gap']} | Extra rit={d['extra_gap']} | Oro2 freq80={d['o2_freq80']}")
+            a=d.get("ambo") or {}
+            if a:
+                p1=a.get("p1") or {}; p2=a.get("p2") or {}
+                m=int(d['num']); n1=int(p1.get('num',0)); n2=int(p2.get('num',0))
+                lines.append(f"  🔗 AMBO1 {m:02d}-{n1:02d} | AMBO2 {m:02d}-{n2:02d} | COOC900 {p1.get('cooc',0)}/{p2.get('cooc',0)}")
+                if a.get("super_enabled"):
+                    lines.append(f"  🔥 SUPER {n1:02d}-{n2:02d} ATTIVO | support_sum={int(a.get('support_sum',0))} ≥ {MULTI_BD_ED_O2_AMBO_SUPER_GATE}")
+                else:
+                    lines.append(f"  💤 SUPER {n1:02d}-{n2:02d} OFF | support_sum={int(a.get('support_sum',0))} < {MULTI_BD_ED_O2_AMBO_SUPER_GATE}")
+        lines += ["","⏱️ Ambata + ambi seguiti H1 / H3 / H5. Cooldown ambata: 5 draw.",
+                  "🧠 Partner congelati con co-occorrenza Base sui 900 draw precedenti; nessun backfill.",
+                  "⚠️ FOCUS/INCROCIO/CORE e relativo state restano invariati."]
         return "\n".join(lines)
+
     @staticmethod
     def result_text(ev):
         if not ev or not isinstance(ev.get("row"),dict): return None
-        r=ev["row"]; n=int(r.get("num",0)); age=int(r.get("age",0) or 0)
+        r=ev["row"]; age=int(r.get("age",0) or 0)
+        if ev.get("kind")=="ambo":
+            pair=[int(x) for x in r.get("pair",[])]; slot=str(r.get("slot") or "AMBO")
+            if len(pair)!=2: return None
+            tag="🔥 SUPER" if slot=="SUPER" else ("🔗 AMBO 1" if slot=="BASE1" else "🔗 AMBO 2")
+            status=f"✅ HIT al colpo H{age}" if ev.get("hit_now") else "🛑 STOP H5"
+            return (f"🧾 MULTI BD/ED/O2 — {tag}\n\n"
+                    f"Origine {r.get('origin_key')} | M {int(r.get('main',0)):02d}\n"
+                    f"Coppia {pair[0]:02d}-{pair[1]:02d} | {status}\n"
+                    f"support_sum={r.get('support_sum')} | COOC900 P1/P2={r.get('p1_cooc')}/{r.get('p2_cooc')}")
+        n=int(r.get("num",0))
         status=f"✅ HIT al colpo H{age}" if ev.get("hit_now") else ("❌ H1 MISS — resta aperto fino a H5" if age==1 else "🛑 STOP H5")
-        return ("🧾 MULTI BD12+ED12+O2F12 — ESITO\n\n"+f"Origine {r.get('origin_key')} | numero {n:02d}\n{status}\n"+
+        return ("🧾 MULTI BD12+ED12+O2F12 — ESITO AMBATA\n\n"+f"Origine {r.get('origin_key')} | numero {n:02d}\n{status}\n"+
                 f"Base ritardo={r.get('base_gap')} | Extra ritardo={r.get('extra_gap')} | Oro2 freq80={r.get('o2_freq80')}")
+
     def _stats(self):
         rows=list(self.records); n=len(rows)
-        h1=sum(1 for r in rows if int(r.get("hit_colpo") or 99)<=1); h3=sum(1 for r in rows if int(r.get("hit_colpo") or 99)<=3); h5=sum(1 for r in rows if bool(r.get("hit")))
+        h1=sum(1 for r in rows if int(r.get("hit_colpo") or 99)<=1)
+        h3=sum(1 for r in rows if int(r.get("hit_colpo") or 99)<=3)
+        h5=sum(1 for r in rows if bool(r.get("hit")))
         return n,h1,h3,h5
+
+    def _ambo_stats(self,slots=None):
+        slots=set(slots) if slots is not None else None
+        rows=[r for r in self.ambo_records if slots is None or str(r.get("slot")) in slots]
+        n=len(rows); h1=sum(1 for r in rows if int(r.get("hit_colpo") or 99)<=1)
+        h3=sum(1 for r in rows if int(r.get("hit_colpo") or 99)<=3)
+        h5=sum(1 for r in rows if bool(r.get("hit")))
+        return n,h1,h3,h5
+
+    def _origin_stats(self,slots=None):
+        slots=set(slots) if slots is not None else None
+        rec={}
+        for r in self.ambo_records:
+            if slots is not None and str(r.get("slot")) not in slots: continue
+            rec.setdefault(str(r.get("origin_id")),[]).append(r)
+        pending_ids={str(r.get("origin_id")) for r in self.ambo_pending if slots is None or str(r.get("slot")) in slots}
+        closed={k:v for k,v in rec.items() if k not in pending_ids}
+        # Per il blocco BASE richiede entrambe le coppie; per ALL richiede almeno le due BASE.
+        valid={}
+        for k,rows in closed.items():
+            ss={str(r.get("slot")) for r in rows}
+            if {"BASE1","BASE2"}.issubset(ss): valid[k]=rows
+        n=len(valid)
+        h1=sum(1 for rows in valid.values() if any(int(r.get("hit_colpo") or 99)<=1 for r in rows))
+        h3=sum(1 for rows in valid.values() if any(int(r.get("hit_colpo") or 99)<=3 for r in rows))
+        h5=sum(1 for rows in valid.values() if any(bool(r.get("hit")) for r in rows))
+        return n,h1,h3,h5
+
+    def compact_ambo_line(self):
+        bn,b1,b3,b5=self._ambo_stats({"BASE1","BASE2"})
+        sn,s1,s3,s5=self._ambo_stats({"SUPER"})
+        return (f"AMBO COOC900 x2 H5 {b5}/{bn} ({safe_pct(b5,bn):.2f}%) | "
+                f"SUPER H5 {s5}/{sn} ({safe_pct(s5,sn):.2f}%) | pending ambi {len(self.ambo_pending)}")
+
     def text(self):
         n,h1,h3,h5=self._stats()
-        lines=["🧪 MULTI BD12+ED12+O2F12 v1 — LIVE TEST","Regola: Base RIT TOP12 ∩ Extra RIT TOP12 ∩ Oro2 FREQ TOP12",
-               f"Finestra Oro2: {MULTI_BD_ED_O2_WINDOW} | cooldown stesso numero: {MULTI_BD_ED_O2_COOLDOWN} | horizon H{MULTI_BD_ED_O2_HORIZON}",
-               f"Storico completo: {len(self.history)} | scan live {self.scans} | segnali {self.signals} | pending {len(self.pending)} | cooldown skip {self.cooldown_skips}",
-               f"H1 {h1}/{n} ({safe_pct(h1,n):.2f}%) | H3 {h3}/{n} ({safe_pct(h3,n):.2f}%) | H5 {h5}/{n} ({safe_pct(h5,n):.2f}%)",
-               "Baseline teorica: H1 22.22% | H3 52.95% | H5 71.54%."]
-        if self.pending: lines.append("Pending: "+", ".join(f"{int(x['num']):02d}@H{int(x.get('age',0))+1}" for x in self.pending[-12:]))
-        if self.last_signal: lines.append("Ultimo segnale: "+str(self.last_signal.get("origin_key"))+" → "+" ".join(f"{int(n):02d}" for n in self.last_signal.get("numbers",[])))
-        lines.append("⚠️ Prospettico dal momento dell'installazione: nessun risultato ricostruito a posteriori.")
+        bn,b1,b3,b5=self._ambo_stats({"BASE1","BASE2"})
+        sn,s1,s3,s5=self._ambo_stats({"SUPER"})
+        cn,c1,c3,c5=self._ambo_stats(None)
+        bon,bo1,bo3,bo5=self._origin_stats({"BASE1","BASE2"})
+        aon,ao1,ao3,ao5=self._origin_stats(None)
+        lines=["🧪 MULTI BD12+ED12+O2F12 + AMBO COOC900 v1 — LIVE TEST",
+               "Ambata: Base RIT12 ∩ Extra RIT12 ∩ Oro2 FREQ12",
+               f"Oro2 W{MULTI_BD_ED_O2_WINDOW} | cooldown {MULTI_BD_ED_O2_COOLDOWN} | horizon H{MULTI_BD_ED_O2_HORIZON} | cooc partner W{MULTI_BD_ED_O2_AMBO_COOC_WINDOW}",
+               f"Storico: {len(self.history)} | scan {self.scans} | ambate {self.signals} | pending ambate {len(self.pending)} | cooldown skip {self.cooldown_skips}",
+               f"AMBATA H1 {h1}/{n} ({safe_pct(h1,n):.2f}%) | H3 {h3}/{n} ({safe_pct(h3,n):.2f}%) | H5 {h5}/{n} ({safe_pct(h5,n):.2f}%)",
+               "Baseline ambata: H1 22.22% | H3 52.95% | H5 71.54%.",
+               "",
+               "🔗 AMBO BASE x2 — M-P1 + M-P2 (sempre)",
+               f"Per bet: H1 {b1}/{bn} ({safe_pct(b1,bn):.2f}%) | H3 {b3}/{bn} ({safe_pct(b3,bn):.2f}%) | H5 {b5}/{bn} ({safe_pct(b5,bn):.2f}%)",
+               f"Origini ≥1 ambo: H1 {bo1}/{bon} ({safe_pct(bo1,bon):.2f}%) | H3 {bo3}/{bon} ({safe_pct(bo3,bon):.2f}%) | H5 {bo5}/{bon} ({safe_pct(bo5,bon):.2f}%)",
+               "",
+               f"🔥 AMBO SUPER P1-P2 — solo support_sum ≥ {MULTI_BD_ED_O2_AMBO_SUPER_GATE}",
+               f"Segnali SUPER {self.ambo_super_signals} | chiusi {sn} | H1 {s1}/{sn} ({safe_pct(s1,sn):.2f}%) | H3 {s3}/{sn} ({safe_pct(s3,sn):.2f}%) | H5 {s5}/{sn} ({safe_pct(s5,sn):.2f}%)",
+               f"COMBINATO per bet: H1 {c1}/{cn} ({safe_pct(c1,cn):.2f}%) | H3 {c3}/{cn} ({safe_pct(c3,cn):.2f}%) | H5 {c5}/{cn} ({safe_pct(c5,cn):.2f}%)",
+               f"Origini complessive ≥1 ambo H5: {ao5}/{aon} ({safe_pct(ao5,aon):.2f}%)",
+               "Baseline ambo fisso: H1 ≈4.74% | H3 ≈13.57% | H5 ≈21.57%.",
+               f"Tracker AMBO prospettico da: {self.ambo_started_from_key or '-'} | origini create {self.ambo_origins} | pending ambi {len(self.ambo_pending)}"]
+        if self.pending:
+            lines.append("Pending ambate: "+", ".join(f"{int(x['num']):02d}@H{int(x.get('age',0))+1}" for x in self.pending[-12:]))
+        if self.ambo_pending:
+            lines.append("Pending ambi: "+", ".join(f"{str(x.get('slot'))}:{'-'.join(f'{int(n):02d}' for n in x.get('pair',[]))}@H{int(x.get('age',0))+1}" for x in self.ambo_pending[-12:]))
+        if self.last_signal:
+            lines.append("Ultimo segnale: "+str(self.last_signal.get("origin_key"))+" → "+" ".join(f"{int(n):02d}" for n in self.last_signal.get("numbers",[])))
+        lines.append("⚠️ Nessun risultato AMBO ricostruito a posteriori; state ambata precedente preservato.")
         return "\n".join(lines)
 
 
@@ -5460,7 +5702,7 @@ class EngineOnly:
         self.incrocio = IncrocioFocusV1()  # v19: persistenza candidati FOCUS, ambata+ambo H1-H5
         self.core_sync = FocusCoreSync20V1()  # v19: FOCUS3 + prima x2 + SYNC20 positivo, ambo H1-H5
         self.multichannel_bf12_legacy_state = None  # conserva il vecchio BF12, non piu attivo
-        self.multichannel = MultiChannelBD12ED12O2F12V1()  # v20.2: BD12+ED12+O2F12 prospettico
+        self.multichannel = MultiChannelBD12ED12O2F12V1()  # v20.3: ambata BD/ED/O2 + AMBO COOC900 prospettico
 
         self.state_load_info = {
             "loaded": False,
@@ -8530,7 +8772,7 @@ class EngineOnly:
         _,an,ah,pn,ph,sn,sah=self.incrocio._stats(self.incrocio.records)
         cr,cn,ch,con,coh,_=self.core_sync._stats(self.core_sync.records)
         lines=[
-            "🧾 VERIFICA TUTTO v20.2 — FOCUS + INCROCIO + CORE + MULTI BD12+ED12+O2F12",
+            "🧾 VERIFICA TUTTO v20.3 — FOCUS + INCROCIO + CORE + MULTI BD12+ED12+O2F12",
             "⏸️ Tutti gli altri metodi legacy sono PAUSATI e conservati nello state.",
             f"📡 Feed Base: {LIVE_FEED_LAST_SOURCE} | ultimo {LIVE_FEED_LAST_KEY} | Lottologia {LIVE_FEED_LAST_LOTTOLOGIA_KEY} | vecchia fonte {LIVE_FEED_LAST_PRIMARY_KEY}",
             "",
@@ -8549,19 +8791,20 @@ class EngineOnly:
             f"FOCUS3 {self.core_sync.focus3_seen} | prime ×2 {self.core_sync.first_x2_pairs} | SYNC20 PASS {self.core_sync.sync_pass_pairs} | origini {self.core_sync.core_signals} | pending {len(self.core_sync.pending)}",
             f"AMBI CORE H5 {ch}/{cn} ({safe_pct(ch,cn):.2f}%) | origini con ambo {coh}/{con} ({safe_pct(coh,con):.2f}%) | baseline 21.57%",
             "",
-            "🧪 MULTI BD12+ED12+O2F12 v1 — Base RIT12 ∩ Extra RIT12 ∩ Oro2 FREQ12",
+            "🧪 MULTI BD12+ED12+O2F12 v1 — Base RIT12 ∩ Extra RIT12 ∩ Oro2 FREQ12 + AMBO COOC900",
             self.multichannel.text().split("\n", 4)[3] if len(self.multichannel.text().split("\n")) > 3 else self.multichannel.text(),
+            self.multichannel.compact_ambo_line(),
         ]
         return "\n".join(lines)
 
     def menu_text(self):
         return (
-            "⚡ FOCUS + INCROCIO + CORE + MULTI BD12+ED12+O2F12 — v20.2 FEED FIX + BD12/ED12/O2F12\n\n"
+            "⚡ FOCUS + INCROCIO + CORE + MULTI BD12+ED12+O2F12 — v20.3 FEED FIX + BD12/ED12/O2F12 + AMBO COOC900\n\n"
             "METODI/TRACKER ATTIVI:\n"
             "1) FOCUS FAST v2: R13-18, 3-4 candidati, TRANS80 max, un numero H1.\n"
             "2) INCROCIO v1: tutti i candidati/coppie persistenti >=×2, monitor H1-H5.\n"
             "3) CORE SYNC20 v1: SOLO FOCUS con 3 candidati; coppia alla prima ×2; passa se nei 20 draw precedenti observed > expected; ambo H1-H5.\n"
-            "4) MULTI BD12+ED12+O2F12 v1 TEST: Base ritardatari TOP12 ∩ Extra ritardatari TOP12 ∩ Oro2 frequenti TOP12; ambata/e Base H1-H5.\n\n"
+            "4) MULTI BD12+ED12+O2F12 v1: ambata H1-H5 + AMBO COOC900: M-P1 e M-P2 sempre; P1-P2 SUPER solo support_sum≥4.\n\n"
             "/focus — stato FOCUS FAST\n"
             "/incrocio — stato INCROCIO generale\n"
             "/core — stato FOCUS CORE + SYNC20\n"
@@ -8674,7 +8917,7 @@ async def setup_commands(app):
         BotCommand("focus", "FOCUS FAST v2: un numero H1"),
         BotCommand("incrocio", "INCROCIO generale H1-H5"),
         BotCommand("core", "CORE SYNC20: primo x2, ambo H1-H5"),
-        BotCommand("multi", "MULTI BD12+ED12+O2F12: BaseRit/ExtraRit/Oro2Freq"),
+        BotCommand("multi", "MULTI BD/ED/O2 + 2 AMBI COOC900 + SUPER"),
         BotCommand("status", "Riepilogo FOCUS + INCROCIO + CORE + MULTI"),
         BotCommand("verificatutto", "Audit dei 4 metodi attivi"),
         BotCommand("menu", "Comandi attivi"),
@@ -8846,11 +9089,11 @@ async def startup(engine, app, retry_state=None):
     engine.save_state(git=True,force_git=True)
 
     await engine.tg(app,
-        "🚀 FOCUS + INCROCIO + CORE + MULTI BD12+ED12+O2F12 v20.2 AVVIATO\n\n"
+        "🚀 FOCUS + INCROCIO + CORE + MULTI BD12+ED12+O2F12 v20.3 AVVIATO\n\n"
         "⚡ FOCUS FAST v2: R13-18, 3-4 candidati, TRANS80 max, un numero H1.\n"
         "🔗 INCROCIO v1: persistenza generale candidati FOCUS, ambata + ambo H1-H5.\n"
         "🧬 CORE SYNC20 v1: SOLO FOCUS3, prima ×2, SYNC20 observed>expected, ambo H1-H5.\n"
-        "🧪 MULTI BD12+ED12+O2F12 v1 TEST: Base RIT12 ∩ Extra RIT12 ∩ Oro2 FREQ12, H1-H5.\n"
+        "🧪 MULTI BD/ED/O2 v1: ambata H1-H5 + AMBO1/2 COOC900 + SUPER P1-P2 con gate≥4.\n"
         "📡 v20.2: feed Base automatico dalla sorgente piu aggiornata (Lottologia con fallback).\n\n"
         "⏸️ ENGINE predittivo, SOSIA, FORCED ONE, TRIPLETTE, HC, BURST, POST-6, PLAY, AMBO, DUAL e altri tracker: PAUSATI.\n"
         "✅ Il loro state storico resta conservato e non viene aggiornato.\n\n"
@@ -8981,36 +9224,51 @@ async def run_self_test():
     assert evc and [22,33] in evc[0]['new_pairs'] and evc[0]['closed']
     rtc=FocusCoreSync20V1(); assert rtc.load(core.dump()) and len(rtc.records)==1 and 'SYNC20' in rtc.text()
 
-    # MULTI BD12+ED12+O2F12: intersezione e H1 prospettico, parser/state isolati.
+    # MULTI BD12+ED12+O2F12 + AMBO COOC900: parser/state isolati, niente backfill.
     mc=MultiChannelBD12ED12O2F12V1()
     rows=[]
-    # Costruisce 90 draw validi: 42 molto frequente Base/Oro e mai Extra negli ultimi draw.
     for i in range(1,91):
-        base=[42] + [n for n in range(1,91) if n!=42][:19]
-        # variazione sufficiente ma validita' strutturale garantita
-        shift=(i-1)%69
-        pool=[n for n in range(1,91) if n!=42]
-        tail=[pool[(shift+j)%len(pool)] for j in range(19)]
-        base=[42]+tail
-        # Extra disgiunti dalla Base; evita 42 per creare ritardo.
-        extra=[n for n in range(1,91) if n not in set(base) and n!=42][:15]
+        pool=list(range(1,91)); shift=(i-1)%90
+        base=[]
+        for j in range(90):
+            n=pool[(shift+j)%90]
+            if n not in base: base.append(n)
+            if len(base)==20: break
+        # Oro2=42 quando possibile per renderlo molto frequente; row sempre valida.
+        if 42 not in base: base[-1]=42
+        base=list(dict.fromkeys(base))
+        while len(base)<20:
+            for n in range(1,91):
+                if n not in base: base.append(n); break
+        extra=[n for n in range(1,91) if n not in set(base)][:15]
         rows.append({'key':f'2099-12-04#{i:03d}','day':'2099-12-04','draw_id':i,
-                     'nums':base,'oro':base[1],'doppio_oro':42,'extra':extra})
+                     'nums':base,'oro':base[0],'doppio_oro':42,'extra':extra})
     mc.bootstrap(rows); mc.ensure_start()
-    # Forza rankings per test deterministico dell'intersezione/cooldown.
     mc._rankings=lambda:{'base_gap':{n:(30 if n==42 else 0) for n in range(1,91)},
                          'extra_gap':{n:(30 if n==42 else 0) for n in range(1,91)},
-                         'o2_freq':{n:(40 if n==42 else 0) for n in range(1,91)},
+                         'o2_freq':{n:(40 if n in {42,50,51} else 0) for n in range(1,91)},
                          'top_base_delay':[42]+list(range(1,12)),
                          'top_extra_delay':[42]+list(range(12,23)),
-                         'top_o2':[42]+list(range(23,34))}
-    ms=mc.arm(); assert ms and ms['numbers']==[42] and len(mc.pending)==1
+                         'top_o2':[42,50,51]+list(range(23,32))}
+    # Forza solo il ranking partner, mantenendo la logica di arm e gate.
+    mc._partner_plan=lambda main,ranks:{'main':int(main),
+        'p1':{'num':50,'cooc':20,'support':3,'in_bd12':True,'in_ed12':True,'o2_freq80':40},
+        'p2':{'num':51,'cooc':18,'support':3,'in_bd12':True,'in_ed12':True,'o2_freq80':40},
+        'support_sum':6,'super_enabled':True,'cooc_window':90}
+    ms=mc.arm(); assert ms and ms['numbers']==[42] and len(mc.pending)==1 and len(mc.ambo_pending)==3
+    assert mc.ambo_super_signals==1 and ms['details'][0]['ambo']['super_enabled'] is True
+    nxt_base=[42,50,51]+[n for n in range(52,90)][:17]
     nxt={'key':'2099-12-04#091','day':'2099-12-04','draw_id':91,
-         'nums':[42]+list(range(50,69)),'oro':50,'doppio_oro':42,
-         'extra':list(range(1,16))}
-    mev=mc.ingest(nxt); assert mev and mev[0]['hit_now'] and len(mc.records)==1
+         'nums':nxt_base,'oro':42,'doppio_oro':50,
+         'extra':[n for n in range(1,91) if n not in set(nxt_base)][:15]}
+    mev=mc.ingest(nxt)
+    assert any(e.get('kind')=='ambata' and e.get('hit_now') for e in mev)
+    assert sum(1 for e in mev if e.get('kind')=='ambo' and e.get('hit_now'))==3
+    assert len(mc.records)==1 and len(mc.ambo_records)==3 and not mc.ambo_pending
     n,h1,h3,h5=mc._stats(); assert (n,h1,h3,h5)==(1,1,1,1)
-    mcrt=MultiChannelBD12ED12O2F12V1(); assert mcrt.load(mc.dump()) and len(mcrt.records)==1
+    bn,b1,b3,b5=mc._ambo_stats({'BASE1','BASE2'}); assert (bn,b1,b3,b5)==(2,2,2,2)
+    sn,s1,s3,s5=mc._ambo_stats({'SUPER'}); assert (sn,s1,s3,s5)==(1,1,1,1)
+    mcrt=MultiChannelBD12ED12O2F12V1(); assert mcrt.load(mc.dump()) and len(mcrt.records)==1 and len(mcrt.ambo_records)==3
 
     # Engine live v19: legacy congelati; FOCUS + INCROCIO + CORE possono avanzare.
     eng=EngineOnly(load=False); eng.engine_history=[]
@@ -9032,7 +9290,7 @@ async def run_self_test():
     assert '/focus' in eng.menu_text() and '/incrocio' in eng.menu_text() and '/core' in eng.menu_text() and '/multi' in eng.menu_text() and '/forcedone' not in eng.menu_text()
     vt=eng.verify_all_text(); assert 'CORE SYNC20' in vt and 'FORCED ONE' not in vt and len(vt)<4096
 
-    print('SELF-TEST OK: v20.2 = FOCUS/INCROCIO/CORE + MULTI BD12+ED12+O2F12 v1; BF12 legacy conservato.')
+    print('SELF-TEST OK: v20.3 = FOCUS/INCROCIO/CORE + MULTI BD12+ED12+O2F12 + AMBO COOC900/SUPER; BF12 legacy conservato.')
 
 async def main():
     if "--self-test" in sys.argv:
