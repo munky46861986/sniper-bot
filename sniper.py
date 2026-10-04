@@ -1,5 +1,5 @@
 # ============================================================
-# 🎯 10eLOTTO FOCUS FAST + INCROCIO + CORE SYNC20 + MULTI BF12 — v20.1 FEED FIX
+# 🎯 10eLOTTO FOCUS FAST + INCROCIO + CORE SYNC20 + MULTI BD12+ED12+O2F12 — v20.2 FEED FIX + BD12/ED12/O2F12
 # ============================================================
 #
 # METODI ATTIVI:
@@ -10,7 +10,7 @@
 #   • FOCUS: UN SOLO NUMERO, SOLO prossima H1
 #   • INCROCIO: persistenza candidati, ambata + ambo H1-H5
 #   • CORE SYNC20: solo FOCUS a 3 candidati, coppia al primo ×2, SYNC20 positivo, ambo H1-H5
-#   • nessun backfill dei risultati INCROCIO/CORE/MULTI BF12
+#   • nessun backfill dei risultati INCROCIO/CORE/MULTI BD12+ED12+O2F12
 #
 # PAUSA v19:
 #   • ENGINE predittivo, SOSIA, FORCED ONE, TRIPLETTE, HC, BURST,
@@ -493,7 +493,7 @@ def fetch_multichannel_recent(days=3):
     return sorted(merged.values(), key=lambda r: (r["day"], int(r["draw_id"])))
 
 
-# Live feed health. v20.1 usa Lottologia anche per i metodi Base legacy quando
+# Live feed health. v20.2 mantiene il feed-fix Lottologia anche per i metodi Base legacy quando
 # la vecchia fonte 10elotto5minuti.com e' indietro o non disponibile.
 LIVE_FEED_LAST_SOURCE = "-"
 LIVE_FEED_LAST_KEY = "-"
@@ -5180,298 +5180,172 @@ class FocusCoreSync20V1:
 
 
 # ============================================================
-# MULTI-CHANNEL BF12 v1 — LIVE TEST prospettico
+# MULTI-CHANNEL BD12 + ED12 + O2F12 v1 — LIVE TEST prospettico
 # ============================================================
-# Metodo congelato dal test gennaio-marzo 2025:
-#   TOP12 Base FREQUENTI (ultimi 80 draw)
+# Regola congelata dal test storico gennaio-settembre 2025:
+#   TOP12 Base RITARDATARI
 # ∩ TOP12 Extra RITARDATARI
-# ∩ TOP12 Oro FREQUENTI (ultimi 80 draw)
+# ∩ TOP12 Oro2 / Doppio Oro FREQUENTI negli ultimi 80 draw
 # Ogni numero dell'intersezione e' un segnale individuale Base H1/H3/H5.
 # Cooldown: 5 draw sullo stesso numero. Nessun backfill dei risultati.
-MULTI_BF12_VERSION = 1
-MULTI_BF12_WINDOW = max(20, int(os.getenv("MULTI_BF12_WINDOW", "80")))
-MULTI_BF12_TOP_N = max(1, min(30, int(os.getenv("MULTI_BF12_TOP_N", "12"))))
-MULTI_BF12_COOLDOWN = max(0, int(os.getenv("MULTI_BF12_COOLDOWN", "5")))
-MULTI_BF12_HORIZON = max(1, int(os.getenv("MULTI_BF12_HORIZON", "5")))
-MULTI_BF12_HISTORY_MAX = max(200, int(os.getenv("MULTI_BF12_HISTORY_MAX", "900")))
-MULTI_BF12_RECORD_MAX = max(500, int(os.getenv("MULTI_BF12_RECORD_MAX", "8000")))
-MULTI_BF12_NOTIFY = os.getenv("MULTI_BF12_NOTIFY", "1").strip().lower() not in {"0","false","no","off"}
-MULTI_BF12_NOTIFY_RESULT = os.getenv("MULTI_BF12_NOTIFY_RESULT", "1").strip().lower() not in {"0","false","no","off"}
+MULTI_BD_ED_O2_VERSION = 1
+MULTI_BD_ED_O2_WINDOW = max(20, int(os.getenv("MULTI_BD_ED_O2_WINDOW", "80")))
+MULTI_BD_ED_O2_TOP_N = max(1, min(30, int(os.getenv("MULTI_BD_ED_O2_TOP_N", "12"))))
+MULTI_BD_ED_O2_COOLDOWN = max(0, int(os.getenv("MULTI_BD_ED_O2_COOLDOWN", "5")))
+MULTI_BD_ED_O2_HORIZON = max(1, int(os.getenv("MULTI_BD_ED_O2_HORIZON", "5")))
+MULTI_BD_ED_O2_HISTORY_MAX = max(200, int(os.getenv("MULTI_BD_ED_O2_HISTORY_MAX", "900")))
+MULTI_BD_ED_O2_RECORD_MAX = max(500, int(os.getenv("MULTI_BD_ED_O2_RECORD_MAX", "8000")))
+MULTI_BD_ED_O2_NOTIFY = os.getenv("MULTI_BD_ED_O2_NOTIFY", "1").strip().lower() not in {"0","false","no","off"}
+MULTI_BD_ED_O2_NOTIFY_RESULT = os.getenv("MULTI_BD_ED_O2_NOTIFY_RESULT", "1").strip().lower() not in {"0","false","no","off"}
 
-
-class MultiChannelBF12V1:
+class MultiChannelBD12ED12O2F12V1:
     def __init__(self):
-        self.start_from_key = None
-        self.started_at = None
-        self.history = []
-        self.history_keys = set()
-        self.pending = []
-        self.records = []
-        self.draw_seq = 0
-        self.last_signal_seq = {}
-        self.last_armed_key = None
-        self.scans = 0
-        self.signals = 0
-        self.no_signal = 0
-        self.cooldown_skips = 0
-        self.last_signal = None
-        self.last_result = None
+        self.start_from_key=None; self.started_at=None; self.history=[]; self.history_keys=set()
+        self.pending=[]; self.records=[]; self.draw_seq=0; self.last_signal_seq={}
+        self.last_armed_key=None; self.scans=0; self.signals=0; self.no_signal=0
+        self.cooldown_skips=0; self.last_signal=None; self.last_result=None
 
     @staticmethod
     def _sanitize_row(row):
-        if not isinstance(row, dict):
-            return None
+        if not isinstance(row,dict): return None
         try:
-            key = str(row.get("key") or draw_key(row.get("day"), row.get("draw_id")))
-            day, sid = key.rsplit("#", 1)
-            draw_id = int(sid)
-            nums = [int(x) for x in row.get("nums", [])]
-            extra = [int(x) for x in row.get("extra", [])]
-            oro = int(row.get("oro"))
-            doppio = int(row.get("doppio_oro"))
-        except Exception:
-            return None
-        if len(nums) != 20 or len(set(nums)) != 20 or any(n < 1 or n > 90 for n in nums):
-            return None
-        if len(extra) != 15 or len(set(extra)) != 15 or any(n < 1 or n > 90 for n in extra):
-            return None
-        if set(nums) & set(extra) or oro not in nums or doppio not in nums:
-            return None
-        return {"key": key, "day": day, "draw_id": draw_id,
-                "nums": nums, "oro": oro, "doppio_oro": doppio, "extra": extra}
+            key=str(row.get("key") or draw_key(row.get("day"),row.get("draw_id")))
+            day,sid=key.rsplit("#",1); draw_id=int(sid)
+            nums=[int(x) for x in row.get("nums",[])]; extra=[int(x) for x in row.get("extra",[])]
+            oro=int(row.get("oro")); doppio=int(row.get("doppio_oro"))
+        except Exception: return None
+        if len(nums)!=20 or len(set(nums))!=20 or any(n<1 or n>90 for n in nums): return None
+        if len(extra)!=15 or len(set(extra))!=15 or any(n<1 or n>90 for n in extra): return None
+        if oro not in nums or doppio not in nums: return None
+        return {"key":key,"day":day,"draw_id":draw_id,"nums":nums,"oro":oro,"doppio_oro":doppio,"extra":extra}
 
-    def _refresh_keys(self):
-        self.history_keys = {str(r.get("key")) for r in self.history if isinstance(r, dict)}
-
-    def bootstrap(self, rows):
-        clean = []
-        for row in rows or []:
-            r = self._sanitize_row(row)
-            if r:
-                clean.append(r)
-        ded = {r["key"]: r for r in clean}
-        clean = sorted(ded.values(), key=lambda r: _verifica_order(r["key"]) or (-1, -1))
+    def _refresh_keys(self): self.history_keys={str(r.get("key")) for r in self.history if isinstance(r,dict)}
+    def bootstrap(self,rows):
+        clean=[r for row in (rows or []) if (r:=self._sanitize_row(row))]
+        ded={r["key"]:r for r in clean}
+        clean=sorted(ded.values(),key=lambda r:_verifica_order(r["key"]) or (-1,-1))
         if clean:
-            self.history = clean[-MULTI_BF12_HISTORY_MAX:]
-            self.draw_seq = max(self.draw_seq, len(self.history))
-            self._refresh_keys()
+            self.history=clean[-MULTI_BD_ED_O2_HISTORY_MAX:]; self.draw_seq=max(self.draw_seq,len(self.history)); self._refresh_keys()
         return len(self.history)
-
     def ensure_start(self):
-        if self.start_from_key or not self.history:
-            return False
-        self.start_from_key = str(self.history[-1]["key"])
-        self.started_at = datetime.now(BOT_TZ).isoformat(timespec="seconds")
+        if self.start_from_key or not self.history: return False
+        self.start_from_key=str(self.history[-1]["key"]); self.started_at=datetime.now(BOT_TZ).isoformat(timespec="seconds"); return True
+    def seen(self,key): return str(key) in self.history_keys
+    def load(self,obj):
+        if not isinstance(obj,dict) or int(obj.get("version",0) or 0)!=MULTI_BD_ED_O2_VERSION: return False
+        hist=[r for row in obj.get("history",[]) if (r:=self._sanitize_row(row))]
+        ded={r["key"]:r for r in hist}
+        self.history=sorted(ded.values(),key=lambda r:_verifica_order(r["key"]) or (-1,-1))[-MULTI_BD_ED_O2_HISTORY_MAX:]; self._refresh_keys()
+        sfk=obj.get("start_from_key"); self.start_from_key=str(sfk) if _verifica_order(sfk) is not None else None
+        self.started_at=obj.get("started_at") if isinstance(obj.get("started_at"),str) else None
+        self.pending=[dict(x) for x in obj.get("pending",[]) if isinstance(x,dict) and x.get("origin_key")][-200:]
+        self.records=[dict(x) for x in obj.get("records",[]) if isinstance(x,dict) and x.get("origin_key")][-MULTI_BD_ED_O2_RECORD_MAX:]
+        self.draw_seq=max(int(obj.get("draw_seq",0) or 0),len(self.history))
+        raw=obj.get("last_signal_seq",{}); self.last_signal_seq={int(k):int(v) for k,v in raw.items() if str(k).isdigit() and 1<=int(k)<=90} if isinstance(raw,dict) else {}
+        self.last_armed_key=obj.get("last_armed_key") if isinstance(obj.get("last_armed_key"),str) else None
+        for a in ("scans","signals","no_signal","cooldown_skips"): setattr(self,a,max(0,int(obj.get(a,0) or 0)))
+        self.last_signal=obj.get("last_signal") if isinstance(obj.get("last_signal"),dict) else None
+        self.last_result=obj.get("last_result") if isinstance(obj.get("last_result"),dict) else None
         return True
-
-    def seen(self, key):
-        return str(key) in self.history_keys
-
-    def load(self, obj):
-        if not isinstance(obj, dict) or int(obj.get("version", 0) or 0) != MULTI_BF12_VERSION:
-            return False
-        hist = []
-        for row in obj.get("history", []) if isinstance(obj.get("history"), list) else []:
-            r = self._sanitize_row(row)
-            if r: hist.append(r)
-        ded = {r["key"]: r for r in hist}
-        self.history = sorted(ded.values(), key=lambda r: _verifica_order(r["key"]) or (-1,-1))[-MULTI_BF12_HISTORY_MAX:]
-        self._refresh_keys()
-        sfk = obj.get("start_from_key")
-        self.start_from_key = str(sfk) if _verifica_order(sfk) is not None else None
-        self.started_at = obj.get("started_at") if isinstance(obj.get("started_at"), str) else None
-        self.pending = [dict(x) for x in obj.get("pending", []) if isinstance(x, dict) and x.get("origin_key")][-200:]
-        self.records = [dict(x) for x in obj.get("records", []) if isinstance(x, dict) and x.get("origin_key")][-MULTI_BF12_RECORD_MAX:]
-        self.draw_seq = max(int(obj.get("draw_seq", 0) or 0), len(self.history))
-        raw_lss = obj.get("last_signal_seq", {})
-        if isinstance(raw_lss, dict):
-            self.last_signal_seq = {int(k): int(v) for k,v in raw_lss.items() if str(k).isdigit() and 1 <= int(k) <= 90}
-        self.last_armed_key = obj.get("last_armed_key") if isinstance(obj.get("last_armed_key"), str) else None
-        self.scans = max(0, int(obj.get("scans", 0) or 0))
-        self.signals = max(0, int(obj.get("signals", 0) or 0))
-        self.no_signal = max(0, int(obj.get("no_signal", 0) or 0))
-        self.cooldown_skips = max(0, int(obj.get("cooldown_skips", 0) or 0))
-        self.last_signal = obj.get("last_signal") if isinstance(obj.get("last_signal"), dict) else None
-        self.last_result = obj.get("last_result") if isinstance(obj.get("last_result"), dict) else None
-        return True
-
     def dump(self):
-        return {
-            "version": MULTI_BF12_VERSION, "start_from_key": self.start_from_key,
-            "started_at": self.started_at, "history": self.history[-MULTI_BF12_HISTORY_MAX:],
-            "pending": self.pending[-200:], "records": self.records[-MULTI_BF12_RECORD_MAX:],
-            "draw_seq": self.draw_seq,
-            "last_signal_seq": {str(k): int(v) for k,v in self.last_signal_seq.items()},
-            "last_armed_key": self.last_armed_key, "scans": self.scans,
-            "signals": self.signals, "no_signal": self.no_signal,
-            "cooldown_skips": self.cooldown_skips,
-            "last_signal": self.last_signal, "last_result": self.last_result,
-        }
-
+        return {"version":MULTI_BD_ED_O2_VERSION,"start_from_key":self.start_from_key,"started_at":self.started_at,
+                "history":self.history[-MULTI_BD_ED_O2_HISTORY_MAX:],"pending":self.pending[-200:],"records":self.records[-MULTI_BD_ED_O2_RECORD_MAX:],
+                "draw_seq":self.draw_seq,"last_signal_seq":{str(k):int(v) for k,v in self.last_signal_seq.items()},"last_armed_key":self.last_armed_key,
+                "scans":self.scans,"signals":self.signals,"no_signal":self.no_signal,"cooldown_skips":self.cooldown_skips,
+                "last_signal":self.last_signal,"last_result":self.last_result}
+    @staticmethod
+    def _gap(history,n,field):
+        gap=0
+        for r in reversed(history):
+            vals=r[field] if isinstance(r.get(field),list) else [r.get(field)]
+            if n in vals: return gap
+            gap+=1
+        return len(history)+1
     def _rankings(self):
-        if len(self.history) < MULTI_BF12_WINDOW:
-            return None
-        w = self.history[-MULTI_BF12_WINDOW:]
-        base_freq = {n: 0 for n in range(1, 91)}
-        oro_freq = {n: 0 for n in range(1, 91)}
-        for r in w:
-            for n in r["nums"]:
-                base_freq[int(n)] += 1
-            oro_freq[int(r["oro"])] += 1
-        extra_gap = {}
-        # Ritardo reale sullo storico conservato, non frequenza Extra mascherata.
-        for n in range(1, 91):
-            gap = 0
-            found = False
-            for r in reversed(self.history):
-                if n in set(r["extra"]):
-                    found = True
-                    break
-                gap += 1
-            if not found:
-                gap = len(self.history) + 1
-            extra_gap[n] = gap
-        top_base = sorted(range(1, 91), key=lambda n: (-base_freq[n], n))[:MULTI_BF12_TOP_N]
-        top_extra_delay = sorted(range(1, 91), key=lambda n: (-extra_gap[n], n))[:MULTI_BF12_TOP_N]
-        top_oro = sorted(range(1, 91), key=lambda n: (-oro_freq[n], n))[:MULTI_BF12_TOP_N]
-        return {"base_freq": base_freq, "oro_freq": oro_freq, "extra_gap": extra_gap,
-                "top_base": top_base, "top_extra_delay": top_extra_delay, "top_oro": top_oro}
-
-    def advance(self, row):
-        r = self._sanitize_row(row)
-        if not r or not self.pending:
-            return []
-        actual = set(r["nums"])
-        remain, events = [], []
+        if len(self.history)<MULTI_BD_ED_O2_WINDOW: return None
+        w=self.history[-MULTI_BD_ED_O2_WINDOW:]
+        base_gap={n:self._gap(self.history,n,"nums") for n in range(1,91)}
+        extra_gap={n:self._gap(self.history,n,"extra") for n in range(1,91)}
+        o2_freq={n:0 for n in range(1,91)}
+        for r in w: o2_freq[int(r["doppio_oro"])]+=1
+        top_base_delay=sorted(range(1,91),key=lambda n:(-base_gap[n],n))[:MULTI_BD_ED_O2_TOP_N]
+        top_extra_delay=sorted(range(1,91),key=lambda n:(-extra_gap[n],n))[:MULTI_BD_ED_O2_TOP_N]
+        top_o2=sorted(range(1,91),key=lambda n:(-o2_freq[n],n))[:MULTI_BD_ED_O2_TOP_N]
+        return {"base_gap":base_gap,"extra_gap":extra_gap,"o2_freq":o2_freq,
+                "top_base_delay":top_base_delay,"top_extra_delay":top_extra_delay,"top_o2":top_o2}
+    def advance(self,row):
+        r=self._sanitize_row(row)
+        if not r or not self.pending: return []
+        actual=set(r["nums"]); remain=[]; events=[]
         for p in self.pending:
-            q = dict(p)
-            age = int(q.get("age", 0) or 0) + 1
-            q["age"] = age
-            q["last_key"] = r["key"]
-            hit_now = (not q.get("hit")) and int(q.get("num", 0)) in actual
-            if hit_now:
-                q["hit"] = True
-                q["hit_colpo"] = age
-            close = bool(q.get("hit")) or age >= MULTI_BF12_HORIZON
-            # Notifica H1 sempre; poi solo HIT o STOP H5.
-            if age == 1 or hit_now or (close and not q.get("hit")):
-                events.append({"row": dict(q), "hit_now": hit_now, "closed": close})
+            q=dict(p); age=int(q.get("age",0) or 0)+1; q["age"]=age; q["last_key"]=r["key"]
+            hit_now=(not q.get("hit")) and int(q.get("num",0)) in actual
+            if hit_now: q["hit"]=True; q["hit_colpo"]=age
+            close=bool(q.get("hit")) or age>=MULTI_BD_ED_O2_HORIZON
+            if age==1 or hit_now or (close and not q.get("hit")): events.append({"row":dict(q),"hit_now":hit_now,"closed":close})
             if close:
-                q["closed"] = True
-                q["closed_key"] = r["key"]
-                self.records.append(q)
-                self.records = self.records[-MULTI_BF12_RECORD_MAX:]
-                self.last_result = dict(q)
-            else:
-                remain.append(q)
-        self.pending = remain
-        return events
-
-    def ingest(self, row):
-        r = self._sanitize_row(row)
-        if not r or self.seen(r["key"]):
-            return []
-        events = self.advance(r)
-        self.history.append(r)
-        self.history = self.history[-MULTI_BF12_HISTORY_MAX:]
-        self.draw_seq += 1
-        self._refresh_keys()
-        return events
-
+                q["closed"]=True; q["closed_key"]=r["key"]; self.records.append(q); self.records=self.records[-MULTI_BD_ED_O2_RECORD_MAX:]; self.last_result=dict(q)
+            else: remain.append(q)
+        self.pending=remain; return events
+    def ingest(self,row):
+        r=self._sanitize_row(row)
+        if not r or self.seen(r["key"]): return []
+        events=self.advance(r); self.history.append(r); self.history=self.history[-MULTI_BD_ED_O2_HISTORY_MAX:]
+        self.draw_seq+=1; self._refresh_keys(); return events
     def arm(self):
-        if not self.history or len(self.history) < MULTI_BF12_WINDOW:
-            return None
-        origin_key = str(self.history[-1]["key"])
-        if self.last_armed_key == origin_key:
-            return None
-        self.last_armed_key = origin_key
-        self.scans += 1
-        ranks = self._rankings()
-        if not ranks:
-            self.no_signal += 1
-            return None
-        inter = sorted(set(ranks["top_base"]) & set(ranks["top_extra_delay"]) & set(ranks["top_oro"]))
-        selected = []
-        blocked = []
+        if not self.history or len(self.history)<MULTI_BD_ED_O2_WINDOW: return None
+        origin_key=str(self.history[-1]["key"])
+        if self.last_armed_key==origin_key: return None
+        self.last_armed_key=origin_key; self.scans+=1; ranks=self._rankings()
+        if not ranks: self.no_signal+=1; return None
+        inter=sorted(set(ranks["top_base_delay"]) & set(ranks["top_extra_delay"]) & set(ranks["top_o2"]))
+        selected=[]; blocked=[]
         for n in inter:
-            last = self.last_signal_seq.get(int(n))
-            if last is not None and self.draw_seq - int(last) < MULTI_BF12_COOLDOWN:
-                self.cooldown_skips += 1
-                blocked.append(int(n))
-                continue
+            last=self.last_signal_seq.get(int(n))
+            if last is not None and self.draw_seq-int(last)<MULTI_BD_ED_O2_COOLDOWN:
+                self.cooldown_skips+=1; blocked.append(int(n)); continue
             selected.append(int(n))
-        if not selected:
-            self.no_signal += 1
-            return None
-        details = []
+        if not selected: self.no_signal+=1; return None
+        details=[]
         for n in selected:
-            d = {"num": n, "base_freq80": int(ranks["base_freq"][n]),
-                 "extra_gap": int(ranks["extra_gap"][n]), "oro_freq80": int(ranks["oro_freq"][n])}
+            d={"num":n,"base_gap":int(ranks["base_gap"][n]),"extra_gap":int(ranks["extra_gap"][n]),"o2_freq80":int(ranks["o2_freq"][n])}
             details.append(d)
-            self.pending.append({"origin_key": origin_key, "num": n, "age": 0,
-                                 "hit": False, "hit_colpo": None, "created_at": now_txt(),
-                                 "base_freq80": d["base_freq80"], "extra_gap": d["extra_gap"],
-                                 "oro_freq80": d["oro_freq80"]})
-            self.last_signal_seq[n] = self.draw_seq
-        self.pending = self.pending[-200:]
-        self.signals += len(selected)
-        out = {"origin_key": origin_key, "numbers": selected, "details": details,
-               "top_base": ranks["top_base"], "top_extra_delay": ranks["top_extra_delay"],
-               "top_oro": ranks["top_oro"], "blocked": blocked}
-        self.last_signal = dict(out)
-        return out
-
+            self.pending.append({"origin_key":origin_key,"num":n,"age":0,"hit":False,"hit_colpo":None,"created_at":now_txt(),
+                                 "base_gap":d["base_gap"],"extra_gap":d["extra_gap"],"o2_freq80":d["o2_freq80"]})
+            self.last_signal_seq[n]=self.draw_seq
+        self.pending=self.pending[-200:]; self.signals+=len(selected)
+        out={"origin_key":origin_key,"numbers":selected,"details":details,"top_base_delay":ranks["top_base_delay"],
+             "top_extra_delay":ranks["top_extra_delay"],"top_o2":ranks["top_o2"],"blocked":blocked}
+        self.last_signal=dict(out); return out
     @staticmethod
     def signal_text(sig):
-        if not sig:
-            return None
-        lines = ["🧪 MULTI BF12 — SEGNALE LIVE TEST",
-                 f"Origine: {sig.get('origin_key')}",
-                 "Metodo congelato: Base FREQ TOP12 ∩ Extra RIT TOP12 ∩ Oro FREQ TOP12",
-                 f"🎯 AMBATA/E Base H1-H5: {' '.join(f'{int(n):02d}' for n in sig.get('numbers',[]))}", ""]
-        for d in sig.get("details", []):
-            lines.append(f"• {int(d['num']):02d}: Base freq80={d['base_freq80']} | Extra ritardo={d['extra_gap']} | Oro freq80={d['oro_freq80']}")
-        lines += ["", "⏱️ Valuto H1 / H3 / H5. Cooldown stesso numero: 5 draw.",
-                  "⚠️ Modulo sperimentale LIVE separato: non modifica FOCUS/INCROCIO/CORE."]
+        if not sig: return None
+        lines=["🧪 MULTI BD12+ED12+O2F12 — SEGNALE LIVE","Origine: "+str(sig.get("origin_key")),
+               "Metodo congelato: Base RIT TOP12 ∩ Extra RIT TOP12 ∩ Oro2 FREQ TOP12 (W80)",
+               f"🎯 AMBATA/E Base H1-H5: {' '.join(f'{int(n):02d}' for n in sig.get('numbers',[]))}",""]
+        for d in sig.get("details",[]): lines.append(f"• {int(d['num']):02d}: Base ritardo={d['base_gap']} | Extra ritardo={d['extra_gap']} | Oro2 freq80={d['o2_freq80']}")
+        lines += ["","⏱️ Valuto H1 / H3 / H5. Cooldown stesso numero: 5 draw.","⚠️ Modulo prospettico separato: nessun backfill; FOCUS/INCROCIO/CORE invariati."]
         return "\n".join(lines)
-
     @staticmethod
     def result_text(ev):
-        if not ev or not isinstance(ev.get("row"), dict):
-            return None
-        r = ev["row"]
-        n = int(r.get("num", 0)); age = int(r.get("age", 0) or 0)
-        if ev.get("hit_now"):
-            status = f"✅ HIT al colpo H{age}"
-        elif age == 1:
-            status = "❌ H1 MISS — resta aperto fino a H5"
-        else:
-            status = "🛑 STOP H5"
-        return ("🧾 MULTI BF12 — ESITO\n\n"
-                f"Origine {r.get('origin_key')} | numero {n:02d}\n"
-                f"{status}\n"
-                f"Base freq80={r.get('base_freq80')} | Extra ritardo={r.get('extra_gap')} | Oro freq80={r.get('oro_freq80')}")
-
+        if not ev or not isinstance(ev.get("row"),dict): return None
+        r=ev["row"]; n=int(r.get("num",0)); age=int(r.get("age",0) or 0)
+        status=f"✅ HIT al colpo H{age}" if ev.get("hit_now") else ("❌ H1 MISS — resta aperto fino a H5" if age==1 else "🛑 STOP H5")
+        return ("🧾 MULTI BD12+ED12+O2F12 — ESITO\n\n"+f"Origine {r.get('origin_key')} | numero {n:02d}\n{status}\n"+
+                f"Base ritardo={r.get('base_gap')} | Extra ritardo={r.get('extra_gap')} | Oro2 freq80={r.get('o2_freq80')}")
     def _stats(self):
-        rows = list(self.records)
-        n = len(rows)
-        h1 = sum(1 for r in rows if int(r.get("hit_colpo") or 99) <= 1)
-        h3 = sum(1 for r in rows if int(r.get("hit_colpo") or 99) <= 3)
-        h5 = sum(1 for r in rows if bool(r.get("hit")))
-        return n, h1, h3, h5
-
+        rows=list(self.records); n=len(rows)
+        h1=sum(1 for r in rows if int(r.get("hit_colpo") or 99)<=1); h3=sum(1 for r in rows if int(r.get("hit_colpo") or 99)<=3); h5=sum(1 for r in rows if bool(r.get("hit")))
+        return n,h1,h3,h5
     def text(self):
-        n,h1,h3,h5 = self._stats()
-        lines = ["🧪 MULTI-CHANNEL BF12 v1 — LIVE TEST",
-                 "Regola: Base FREQ TOP12 ∩ Extra RIT TOP12 ∩ Oro FREQ TOP12",
-                 f"Finestra frequenze: {MULTI_BF12_WINDOW} | cooldown stesso numero: {MULTI_BF12_COOLDOWN} | horizon H{MULTI_BF12_HORIZON}",
-                 f"Storico completo: {len(self.history)} | scan live {self.scans} | segnali {self.signals} | pending {len(self.pending)} | cooldown skip {self.cooldown_skips}",
-                 f"H1 {h1}/{n} ({safe_pct(h1,n):.2f}%) | H3 {h3}/{n} ({safe_pct(h3,n):.2f}%) | H5 {h5}/{n} ({safe_pct(h5,n):.2f}%)",
-                 "Baseline teorica: H1 22.22% | H3 52.95% | H5 71.54%."]
-        if self.pending:
-            lines.append("Pending: " + ", ".join(f"{int(x['num']):02d}@H{int(x.get('age',0))+1}" for x in self.pending[-12:]))
-        if self.last_signal:
-            lines.append("Ultimo segnale: " + str(self.last_signal.get("origin_key")) + " → " + " ".join(f"{int(n):02d}" for n in self.last_signal.get("numbers",[])))
+        n,h1,h3,h5=self._stats()
+        lines=["🧪 MULTI BD12+ED12+O2F12 v1 — LIVE TEST","Regola: Base RIT TOP12 ∩ Extra RIT TOP12 ∩ Oro2 FREQ TOP12",
+               f"Finestra Oro2: {MULTI_BD_ED_O2_WINDOW} | cooldown stesso numero: {MULTI_BD_ED_O2_COOLDOWN} | horizon H{MULTI_BD_ED_O2_HORIZON}",
+               f"Storico completo: {len(self.history)} | scan live {self.scans} | segnali {self.signals} | pending {len(self.pending)} | cooldown skip {self.cooldown_skips}",
+               f"H1 {h1}/{n} ({safe_pct(h1,n):.2f}%) | H3 {h3}/{n} ({safe_pct(h3,n):.2f}%) | H5 {h5}/{n} ({safe_pct(h5,n):.2f}%)",
+               "Baseline teorica: H1 22.22% | H3 52.95% | H5 71.54%."]
+        if self.pending: lines.append("Pending: "+", ".join(f"{int(x['num']):02d}@H{int(x.get('age',0))+1}" for x in self.pending[-12:]))
+        if self.last_signal: lines.append("Ultimo segnale: "+str(self.last_signal.get("origin_key"))+" → "+" ".join(f"{int(n):02d}" for n in self.last_signal.get("numbers",[])))
         lines.append("⚠️ Prospettico dal momento dell'installazione: nessun risultato ricostruito a posteriori.")
         return "\n".join(lines)
 
@@ -5585,7 +5459,8 @@ class EngineOnly:
         self.focus = FocusFastV2()  # v19: generatore candidati, R13-18 / 3-4 candidati / TRANS80
         self.incrocio = IncrocioFocusV1()  # v19: persistenza candidati FOCUS, ambata+ambo H1-H5
         self.core_sync = FocusCoreSync20V1()  # v19: FOCUS3 + prima x2 + SYNC20 positivo, ambo H1-H5
-        self.multichannel = MultiChannelBF12V1()  # v20 test: BF12/ED12/ORO-F12 prospettico
+        self.multichannel_bf12_legacy_state = None  # conserva il vecchio BF12, non piu attivo
+        self.multichannel = MultiChannelBD12ED12O2F12V1()  # v20.2: BD12+ED12+O2F12 prospettico
 
         self.state_load_info = {
             "loaded": False,
@@ -7799,7 +7674,8 @@ class EngineOnly:
             self.focus.load(d.get("focus_fast_v2"))
             self.incrocio.load(d.get("incrocio_focus_v1"))
             self.core_sync.load(d.get("focus_core_sync20_v1"))
-            self.multichannel.load(d.get("multichannel_bf12_v1"))
+            self.multichannel_bf12_legacy_state = d.get("multichannel_bf12_v1") if isinstance(d.get("multichannel_bf12_v1"), dict) else self.multichannel_bf12_legacy_state
+            self.multichannel.load(d.get("multichannel_bd12_ed12_o2f12_v1"))
 
             # v19: pending e sessioni legacy restano congelati esattamente come salvati.
 
@@ -7892,7 +7768,8 @@ class EngineOnly:
             "focus_fast_v2": self.focus.dump(),
             "incrocio_focus_v1": self.incrocio.dump(),
             "focus_core_sync20_v1": self.core_sync.dump(),
-            "multichannel_bf12_v1": self.multichannel.dump(),
+            "multichannel_bf12_v1": self.multichannel_bf12_legacy_state,
+            "multichannel_bd12_ed12_o2f12_v1": self.multichannel.dump(),
         }
         atomic_write_json(STATE_FILE, data)
         if git:
@@ -8653,7 +8530,7 @@ class EngineOnly:
         _,an,ah,pn,ph,sn,sah=self.incrocio._stats(self.incrocio.records)
         cr,cn,ch,con,coh,_=self.core_sync._stats(self.core_sync.records)
         lines=[
-            "🧾 VERIFICA TUTTO v20.1 — FOCUS + INCROCIO + CORE + MULTI BF12",
+            "🧾 VERIFICA TUTTO v20.2 — FOCUS + INCROCIO + CORE + MULTI BD12+ED12+O2F12",
             "⏸️ Tutti gli altri metodi legacy sono PAUSATI e conservati nello state.",
             f"📡 Feed Base: {LIVE_FEED_LAST_SOURCE} | ultimo {LIVE_FEED_LAST_KEY} | Lottologia {LIVE_FEED_LAST_LOTTOLOGIA_KEY} | vecchia fonte {LIVE_FEED_LAST_PRIMARY_KEY}",
             "",
@@ -8672,23 +8549,23 @@ class EngineOnly:
             f"FOCUS3 {self.core_sync.focus3_seen} | prime ×2 {self.core_sync.first_x2_pairs} | SYNC20 PASS {self.core_sync.sync_pass_pairs} | origini {self.core_sync.core_signals} | pending {len(self.core_sync.pending)}",
             f"AMBI CORE H5 {ch}/{cn} ({safe_pct(ch,cn):.2f}%) | origini con ambo {coh}/{con} ({safe_pct(coh,con):.2f}%) | baseline 21.57%",
             "",
-            "🧪 MULTI BF12 v1 — Base FREQ12 ∩ Extra RIT12 ∩ Oro FREQ12",
+            "🧪 MULTI BD12+ED12+O2F12 v1 — Base RIT12 ∩ Extra RIT12 ∩ Oro2 FREQ12",
             self.multichannel.text().split("\n", 4)[3] if len(self.multichannel.text().split("\n")) > 3 else self.multichannel.text(),
         ]
         return "\n".join(lines)
 
     def menu_text(self):
         return (
-            "⚡ FOCUS + INCROCIO + CORE + MULTI BF12 — v20.1 FEED FIX\n\n"
+            "⚡ FOCUS + INCROCIO + CORE + MULTI BD12+ED12+O2F12 — v20.2 FEED FIX + BD12/ED12/O2F12\n\n"
             "METODI/TRACKER ATTIVI:\n"
             "1) FOCUS FAST v2: R13-18, 3-4 candidati, TRANS80 max, un numero H1.\n"
             "2) INCROCIO v1: tutti i candidati/coppie persistenti >=×2, monitor H1-H5.\n"
             "3) CORE SYNC20 v1: SOLO FOCUS con 3 candidati; coppia alla prima ×2; passa se nei 20 draw precedenti observed > expected; ambo H1-H5.\n"
-            "4) MULTI BF12 v1 TEST: Base frequenti TOP12 ∩ Extra ritardatari TOP12 ∩ Oro frequenti TOP12; ambata/e Base H1-H5.\n\n"
+            "4) MULTI BD12+ED12+O2F12 v1 TEST: Base ritardatari TOP12 ∩ Extra ritardatari TOP12 ∩ Oro2 frequenti TOP12; ambata/e Base H1-H5.\n\n"
             "/focus — stato FOCUS FAST\n"
             "/incrocio — stato INCROCIO generale\n"
             "/core — stato FOCUS CORE + SYNC20\n"
-            "/multi — stato MULTI BF12 live test\n"
+            "/multi — stato MULTI BD12+ED12+O2F12 live test\n"
             "/status — riepilogo FOCUS/INCROCIO/CORE/MULTI\n"
             "/verificatutto — audit compatto\n"
             "/menu — questa schermata\n\n"
@@ -8797,9 +8674,9 @@ async def setup_commands(app):
         BotCommand("focus", "FOCUS FAST v2: un numero H1"),
         BotCommand("incrocio", "INCROCIO generale H1-H5"),
         BotCommand("core", "CORE SYNC20: primo x2, ambo H1-H5"),
-        BotCommand("multi", "MULTI BF12: BaseFreq/ExtraRit/OroFreq"),
+        BotCommand("multi", "MULTI BD12+ED12+O2F12: BaseRit/ExtraRit/Oro2Freq"),
         BotCommand("status", "Riepilogo FOCUS + INCROCIO + CORE + MULTI"),
-        BotCommand("verificatutto", "Audit dei 3 livelli attivi"),
+        BotCommand("verificatutto", "Audit dei 4 metodi attivi"),
         BotCommand("menu", "Comandi attivi"),
     ])
 
@@ -8895,7 +8772,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         mc.bootstrap(rows)
         mc.ensure_start()
         sig = mc.arm()
-        if sig and notify and MULTI_BF12_NOTIFY:
+        if sig and notify and MULTI_BD_ED_O2_NOTIFY:
             msg = mc.signal_text(sig)
             if msg: await engine.tg(app, msg)
         return {"rows":len(rows),"unseen":0,"signal":sig,"events":events,"bootstrapped":True}
@@ -8904,13 +8781,13 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     for r in unseen:
         evs = mc.ingest(r)
         events.extend(evs)
-        if notify and MULTI_BF12_NOTIFY_RESULT:
+        if notify and MULTI_BD_ED_O2_NOTIFY_RESULT:
             for ev in evs:
                 msg = mc.result_text(ev)
                 if msg: await engine.tg(app, msg)
     mc.ensure_start()
     sig = mc.arm() if mc.history else None
-    if sig and notify and MULTI_BF12_NOTIFY:
+    if sig and notify and MULTI_BD_ED_O2_NOTIFY:
         msg = mc.signal_text(sig)
         if msg: await engine.tg(app, msg)
     return {"rows":len(rows),"unseen":len(unseen),"signal":sig,"events":events,"bootstrapped":False}
@@ -8969,12 +8846,12 @@ async def startup(engine, app, retry_state=None):
     engine.save_state(git=True,force_git=True)
 
     await engine.tg(app,
-        "🚀 FOCUS + INCROCIO + CORE + MULTI BF12 v20.1 AVVIATO\n\n"
+        "🚀 FOCUS + INCROCIO + CORE + MULTI BD12+ED12+O2F12 v20.2 AVVIATO\n\n"
         "⚡ FOCUS FAST v2: R13-18, 3-4 candidati, TRANS80 max, un numero H1.\n"
         "🔗 INCROCIO v1: persistenza generale candidati FOCUS, ambata + ambo H1-H5.\n"
         "🧬 CORE SYNC20 v1: SOLO FOCUS3, prima ×2, SYNC20 observed>expected, ambo H1-H5.\n"
-        "🧪 MULTI BF12 v1 TEST: Base FREQ12 ∩ Extra RIT12 ∩ Oro FREQ12, H1-H5.\n"
-        "📡 v20.1: feed Base automatico dalla sorgente piu aggiornate (Lottologia con fallback).\n\n"
+        "🧪 MULTI BD12+ED12+O2F12 v1 TEST: Base RIT12 ∩ Extra RIT12 ∩ Oro2 FREQ12, H1-H5.\n"
+        "📡 v20.2: feed Base automatico dalla sorgente piu aggiornata (Lottologia con fallback).\n\n"
         "⏸️ ENGINE predittivo, SOSIA, FORCED ONE, TRIPLETTE, HC, BURST, POST-6, PLAY, AMBO, DUAL e altri tracker: PAUSATI.\n"
         "✅ Il loro state storico resta conservato e non viene aggiornato.\n\n"
         "Comandi: /focus /incrocio /core /multi /status /verificatutto /menu"
@@ -8988,7 +8865,7 @@ async def startup(engine, app, retry_state=None):
     if core_armed and CORE_SYNC_NOTIFY:
         msg=engine.core_sync.signal_text(core_armed)
         if msg: await engine.tg(app,msg)
-    if multi_sig and MULTI_BF12_NOTIFY:
+    if multi_sig and MULTI_BD_ED_O2_NOTIFY:
         msg=engine.multichannel.signal_text(multi_sig)
         if msg: await engine.tg(app,msg)
     return True
@@ -9104,8 +8981,8 @@ async def run_self_test():
     assert evc and [22,33] in evc[0]['new_pairs'] and evc[0]['closed']
     rtc=FocusCoreSync20V1(); assert rtc.load(core.dump()) and len(rtc.records)==1 and 'SYNC20' in rtc.text()
 
-    # MULTI BF12: intersezione e H1 prospettico, parser/state isolati.
-    mc=MultiChannelBF12V1()
+    # MULTI BD12+ED12+O2F12: intersezione e H1 prospettico, parser/state isolati.
+    mc=MultiChannelBD12ED12O2F12V1()
     rows=[]
     # Costruisce 90 draw validi: 42 molto frequente Base/Oro e mai Extra negli ultimi draw.
     for i in range(1,91):
@@ -9118,22 +8995,22 @@ async def run_self_test():
         # Extra disgiunti dalla Base; evita 42 per creare ritardo.
         extra=[n for n in range(1,91) if n not in set(base) and n!=42][:15]
         rows.append({'key':f'2099-12-04#{i:03d}','day':'2099-12-04','draw_id':i,
-                     'nums':base,'oro':42,'doppio_oro':base[1],'extra':extra})
+                     'nums':base,'oro':base[1],'doppio_oro':42,'extra':extra})
     mc.bootstrap(rows); mc.ensure_start()
     # Forza rankings per test deterministico dell'intersezione/cooldown.
-    mc._rankings=lambda:{'base_freq':{n:(50 if n==42 else 1) for n in range(1,91)},
-                         'oro_freq':{n:(40 if n==42 else 0) for n in range(1,91)},
+    mc._rankings=lambda:{'base_gap':{n:(30 if n==42 else 0) for n in range(1,91)},
                          'extra_gap':{n:(30 if n==42 else 0) for n in range(1,91)},
-                         'top_base':[42]+list(range(1,12)),
+                         'o2_freq':{n:(40 if n==42 else 0) for n in range(1,91)},
+                         'top_base_delay':[42]+list(range(1,12)),
                          'top_extra_delay':[42]+list(range(12,23)),
-                         'top_oro':[42]+list(range(23,34))}
+                         'top_o2':[42]+list(range(23,34))}
     ms=mc.arm(); assert ms and ms['numbers']==[42] and len(mc.pending)==1
     nxt={'key':'2099-12-04#091','day':'2099-12-04','draw_id':91,
-         'nums':[42]+list(range(50,69)),'oro':42,'doppio_oro':50,
+         'nums':[42]+list(range(50,69)),'oro':50,'doppio_oro':42,
          'extra':list(range(1,16))}
     mev=mc.ingest(nxt); assert mev and mev[0]['hit_now'] and len(mc.records)==1
     n,h1,h3,h5=mc._stats(); assert (n,h1,h3,h5)==(1,1,1,1)
-    mcrt=MultiChannelBF12V1(); assert mcrt.load(mc.dump()) and len(mcrt.records)==1
+    mcrt=MultiChannelBD12ED12O2F12V1(); assert mcrt.load(mc.dump()) and len(mcrt.records)==1
 
     # Engine live v19: legacy congelati; FOCUS + INCROCIO + CORE possono avanzare.
     eng=EngineOnly(load=False); eng.engine_history=[]
@@ -9155,7 +9032,7 @@ async def run_self_test():
     assert '/focus' in eng.menu_text() and '/incrocio' in eng.menu_text() and '/core' in eng.menu_text() and '/multi' in eng.menu_text() and '/forcedone' not in eng.menu_text()
     vt=eng.verify_all_text(); assert 'CORE SYNC20' in vt and 'FORCED ONE' not in vt and len(vt)<4096
 
-    print('SELF-TEST OK: v20 = v19 FOCUS/INCROCIO/CORE + MULTI BF12 v1; legacy congelati.')
+    print('SELF-TEST OK: v20.2 = FOCUS/INCROCIO/CORE + MULTI BD12+ED12+O2F12 v1; BF12 legacy conservato.')
 
 async def main():
     if "--self-test" in sys.argv:
