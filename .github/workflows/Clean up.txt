@@ -1,0 +1,95 @@
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+name: Cleanup 10eLotto old runs
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Confermo di voler eliminare tutte le run COMPLETATE di sniper.yml"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    if: ${{ inputs.confirm == true }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Elimina tutte le run completate di sniper.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          echo "Repository: $REPO"
+          echo "Cerco tutte le run completate di sniper.yml..."
+
+          RUN_IDS=$(gh api --paginate             -H "Accept: application/vnd.github+json"             "/repos/$REPO/actions/workflows/sniper.yml/runs?status=completed&per_page=100"             --jq '.workflow_runs[].id')
+
+          if [ -z "$RUN_IDS" ]; then
+            echo "Nessuna run completata da eliminare."
+            exit 0
+          fi
+
+          COUNT=0
+
+          for RUN_ID in $RUN_IDS; do
+            echo "Elimino run ID: $RUN_ID"
+            gh api               --method DELETE               -H "Accept: application/vnd.github+json"               "/repos/$REPO/actions/runs/$RUN_ID"
+            COUNT=$((COUNT + 1))
+          done
+
+          echo "Pulizia terminata. Run eliminate: $COUNT"
