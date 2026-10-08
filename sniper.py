@@ -1,5 +1,5 @@
 # ============================================================
-# 🎯 10eLOTTO MULTI BD12+ED12+O2F12 — v20.5 MULTI PRIME A+B + TRIANGLE
+# 🎯 10eLOTTO MULTI BD12+ED12+O2F12 — v20.5.1 MULTI PRIME A+B + TRIANGLE FIX
 # ============================================================
 # UNICO RAMO ATTIVO: MULTI
 #   STANDARD (shadow/control): BD12 ∩ ED12 ∩ O2F12, W80, cooldown 5
@@ -17,6 +17,8 @@
 #   - nessun backfill PRIME B / TRIANGLE OFF
 #   - PRIME A migra dalla v20.4 senza reset
 #   - state anti-regressione fra rotazioni GitHub runner
+#   - v20.5.1: merge conservativo LOCAL+REMOTE + push esplicito sul branch
+#   - STANDARD totalmente shadow: NON arma piu AMBO/SUPER
 #   - FOCUS / INCROCIO / CORE / legacy: PAUSATI, state conservato ma non aggiornato
 # ============================================================
 
@@ -326,9 +328,38 @@ def git_commit_state_if_needed(force=False):
     if c.returncode != 0:
         return {"ok": False, "action": "commit-fail", "detail": c.stderr.strip()[-500:]}
 
-    p = _run_git(["push"])
+    # GitHub Actions usa spesso un detached HEAD: push esplicito sul branch.
+    branch = _git_remote_branch()
+    p = _run_git(["push", "origin", f"HEAD:{branch}"], timeout=45)
     if p.returncode != 0:
-        return {"ok": False, "action": "push-fail", "detail": p.stderr.strip()[-500:]}
+        # Recovery: fondi lo state col remoto, riallinea il checkout, ricommetti e riprova.
+        local_snapshot = _read_json_file(STATE_FILE)
+        f = _run_git(["fetch", "--quiet", "origin", branch], timeout=45)
+        if f.returncode != 0:
+            return {"ok": False, "action": "push-fail-fetch-fail", "detail": p.stderr.strip()[-500:]}
+        remote_snapshot, _ = _fetch_remote_state()
+        merged_snapshot, _ = _merge_state_data(local_snapshot, remote_snapshot)
+        if not isinstance(merged_snapshot, dict):
+            return {"ok": False, "action": "push-fail-merge-fail", "detail": p.stderr.strip()[-500:]}
+        rr = _run_git(["reset", "--hard", f"origin/{branch}"], timeout=45)
+        if rr.returncode != 0:
+            return {"ok": False, "action": "push-fail-reset-fail", "detail": rr.stderr.strip()[-500:]}
+        atomic_write_json(STATE_FILE, merged_snapshot)
+        a2 = _run_git(["add", rel])
+        if a2.returncode != 0:
+            return {"ok": False, "action": "retry-add-fail", "detail": a2.stderr.strip()[-500:]}
+        d2 = _run_git(["diff", "--cached", "--quiet", "--", rel])
+        if d2.returncode == 0:
+            _LAST_GIT_COMMIT_TS = now
+            return {"ok": True, "action": "remote-already-current", "detail": "state fuso gia presente sul remoto"}
+        c2 = _run_git(["commit", "-m", msg + " [retry]", "--", rel])
+        if c2.returncode != 0:
+            return {"ok": False, "action": "retry-commit-fail", "detail": c2.stderr.strip()[-500:]}
+        p2 = _run_git(["push", "origin", f"HEAD:{branch}"], timeout=45)
+        if p2.returncode != 0:
+            return {"ok": False, "action": "retry-push-fail", "detail": p2.stderr.strip()[-500:]}
+        _LAST_GIT_COMMIT_TS = now
+        return {"ok": True, "action": "pushed-after-merge", "detail": msg}
 
     _LAST_GIT_COMMIT_TS = now
     return {"ok": True, "action": "pushed", "detail": msg}
@@ -427,15 +458,139 @@ def _fetch_remote_state():
         return None, f"remote-json-{type(exc).__name__}"
 
 
+def _key_max(a, b):
+    oa, ob = order_key(a), order_key(b)
+    if oa is None: return b
+    if ob is None: return a
+    return a if oa >= ob else b
+
+
+def _key_min(a, b):
+    oa, ob = order_key(a), order_key(b)
+    if oa is None: return b
+    if ob is None: return a
+    return a if oa <= ob else b
+
+
+def _row_last_order(row):
+    if not isinstance(row, dict): return (-1, -1)
+    for k in ("closed_key", "last_key", "origin_key", "key"):
+        o = order_key(row.get(k))
+        if o is not None: return o
+    return (-1, -1)
+
+
+def _row_progress(row):
+    if not isinstance(row, dict): return (-1, -1, -1, -1, -1)
+    o = _row_last_order(row)
+    return (int(bool(row.get("closed"))), int(row.get("age",0) or 0), int(bool(row.get("hit"))), o[0]*1000+o[1], -int(row.get("hit_colpo") or 999))
+
+
+def _merge_rows(a_rows, b_rows, identity, max_len):
+    out = {}
+    for row in list(a_rows or []) + list(b_rows or []):
+        if not isinstance(row, dict): continue
+        rid = identity(row)
+        if rid is None: continue
+        old = out.get(rid)
+        if old is None or _row_progress(row) > _row_progress(old): out[rid] = dict(row)
+    rows = list(out.values())
+    rows.sort(key=lambda r: (_row_last_order(r), str(identity(r))))
+    return rows[-max_len:]
+
+
+def _signal_id(r):
+    try: return f"{r.get('origin_key')}|N{int(r.get('num')):02d}"
+    except Exception: return None
+
+
+def _ambo_id(r):
+    try:
+        oid = str(r.get("origin_id") or f"{r.get('origin_key')}|M{int(r.get('main')):02d}")
+        return f"{oid}|{str(r.get('slot') or 'AMBO')}"
+    except Exception: return None
+
+
+def _history_id(r):
+    return str(r.get("key")) if isinstance(r, dict) and r.get("key") else None
+
+
+def _latest_obj(a, b, keys=("closed_key", "origin_key", "key")):
+    if not isinstance(a, dict): return b if isinstance(b, dict) else None
+    if not isinstance(b, dict): return a
+    def score(x):
+        for k in keys:
+            o = order_key(x.get(k))
+            if o is not None: return o
+        return (-1,-1)
+    return a if score(a) >= score(b) else b
+
+
+def _merge_multichannel_state(a, b):
+    if not isinstance(a, dict): return dict(b) if isinstance(b, dict) else None
+    if not isinstance(b, dict): return dict(a)
+    da={"multichannel_bd12_ed12_o2f12_v1":a}; db={"multichannel_bd12_ed12_o2f12_v1":b}
+    base = dict(a if _state_progress(da) >= _state_progress(db) else b)
+    hist = _merge_rows(a.get("history"), b.get("history"), _history_id, MULTI_HISTORY_MAX)
+    rec = _merge_rows(a.get("records"), b.get("records"), _signal_id, MULTI_RECORD_MAX)
+    pen = _merge_rows(a.get("pending"), b.get("pending"), _signal_id, 200)
+    closed={_signal_id(r) for r in rec}; pen=[r for r in pen if _signal_id(r) not in closed]
+    arec = _merge_rows(a.get("ambo_records"), b.get("ambo_records"), _ambo_id, MULTI_AMBO_RECORD_MAX)
+    apen = _merge_rows(a.get("ambo_pending"), b.get("ambo_pending"), _ambo_id, 900)
+    aclosed={_ambo_id(r) for r in arec}; apen=[r for r in apen if _ambo_id(r) not in aclosed]
+    base.update({"history":hist,"records":rec,"pending":pen,"ambo_records":arec,"ambo_pending":apen})
+    base["draw_seq"] = max(int(a.get("draw_seq",0) or 0), int(b.get("draw_seq",0) or 0), len(hist))
+    for k in ("scans","signals","no_signal","cooldown_skips","ambo_origins","ambo_super_signals"):
+        base[k]=max(int(a.get(k,0) or 0),int(b.get(k,0) or 0))
+    sigrows=rec+pen
+    def tier(r):
+        t=str(r.get("tier") or "").upper()
+        if t in {"A","B","STD"}: return t
+        return "A" if bool(r.get("prime")) else "STD"
+    ac=len({_signal_id(r) for r in sigrows if tier(r)=="A"}); bc=len({_signal_id(r) for r in sigrows if tier(r)=="B"})
+    base["prime_a_signals"]=max(int(a.get("prime_a_signals",a.get("prime_signals",0)) or 0),int(b.get("prime_a_signals",b.get("prime_signals",0)) or 0),ac)
+    base["prime_signals"]=base["prime_a_signals"]
+    base["prime_b_signals"]=max(int(a.get("prime_b_signals",0) or 0),int(b.get("prime_b_signals",0) or 0),bc)
+    lss={}
+    for src in (a.get("last_signal_seq"),b.get("last_signal_seq")):
+        if isinstance(src,dict):
+            for k,v in src.items():
+                try: ik,iv=int(k),int(v)
+                except Exception: continue
+                lss[str(ik)]=max(int(lss.get(str(ik),0) or 0),iv)
+    base["last_signal_seq"]=lss
+    for k in ("start_from_key","ambo_started_from_key","prime_started_from_key","prime_a_started_from_key","prime_b_started_from_key","triangle_started_from_key"):
+        base[k]=_key_min(a.get(k),b.get(k))
+    for k in ("started_at","ambo_started_at","prime_started_at","prime_a_started_at","prime_b_started_at","triangle_started_at"):
+        vals=[x for x in (a.get(k),b.get(k)) if isinstance(x,str) and x]; base[k]=min(vals) if vals else None
+    base["last_armed_key"]=_key_max(a.get("last_armed_key"),b.get("last_armed_key"))
+    base["last_signal"]=_latest_obj(a.get("last_signal"),b.get("last_signal"),("origin_key","key"))
+    base["last_result"]=_latest_obj(a.get("last_result"),b.get("last_result"))
+    base["last_ambo_signal"]=_latest_obj(a.get("last_ambo_signal"),b.get("last_ambo_signal"),("origin_key","key"))
+    base["last_ambo_result"]=_latest_obj(a.get("last_ambo_result"),b.get("last_ambo_result"))
+    return base
+
+
+def _merge_state_data(local_data, remote_data):
+    if not isinstance(local_data, dict): return (dict(remote_data),"REMOTE") if isinstance(remote_data,dict) else (None,"NONE")
+    if not isinstance(remote_data, dict): return dict(local_data),"LOCAL"
+    lp,rp=_state_progress(local_data),_state_progress(remote_data)
+    base=dict(local_data if lp>=rp else remote_data)
+    mm=_merge_multichannel_state(local_data.get("multichannel_bd12_ed12_o2f12_v1"),remote_data.get("multichannel_bd12_ed12_o2f12_v1"))
+    if mm is not None: base["multichannel_bd12_ed12_o2f12_v1"]=mm
+    vals=[]; seen=set()
+    for x in list(local_data.get("processed") or [])+list(remote_data.get("processed") or []):
+        if isinstance(x,str) and x not in seen: seen.add(x); vals.append(x)
+    vals.sort(key=lambda x:order_key(x) or (-1,-1)); base["processed"]=vals[-PROCESSED_MAX:]
+    base["last_draw_key"]=_key_max(local_data.get("last_draw_key"),remote_data.get("last_draw_key"))
+    base["multi_state_revision"]=max(int(local_data.get("multi_state_revision",0) or 0),int(remote_data.get("multi_state_revision",0) or 0))
+    ss=[x for x in (local_data.get("saved_at"),remote_data.get("saved_at")) if isinstance(x,str) and x]
+    if ss: base["saved_at"]=max(ss)
+    return base,"MERGED_LOCAL_REMOTE"
+
+
 def _best_available_state(local_data, remote_data):
-    if not isinstance(local_data, dict):
-        return remote_data, "REMOTE"
-    if not isinstance(remote_data, dict):
-        return local_data, "LOCAL"
-    lp, rp = _state_progress(local_data), _state_progress(remote_data)
-    if rp > lp:
-        return remote_data, "REMOTE_NEWER"
-    return local_data, "LOCAL_NEWER_OR_EQUAL"
+    return _merge_state_data(local_data, remote_data)
 
 
 # ============================================================
@@ -950,8 +1105,10 @@ class MultiPrimeV1:
                     "super_enabled": bool(plan["super_enabled"]),
                     "cooc_window": int(plan["cooc_window"]),
                 }
-                self._arm_ambo(origin_key, n, plan, tier=tier, bd_rank=bd_rank, o2_rank=o2_rank)
-                ambo_plans.append({"main": n, "tier": tier, **d["ambo"]})
+                # v20.5.1: STANDARD e' controllo puro e NON arma ambi/SUPER.
+                if tier in {"A", "B"}:
+                    self._arm_ambo(origin_key, n, plan, tier=tier, bd_rank=bd_rank, o2_rank=o2_rank)
+                    ambo_plans.append({"main": n, "tier": tier, **d["ambo"]})
 
             details.append(d)
             self.pending.append({
@@ -1056,7 +1213,7 @@ class MultiPrimeV1:
 
         lines += [
             "",
-            "🧪 STANDARD resta shadow/control.",
+            "🧪 STANDARD resta shadow/control e NON arma ambi/SUPER.",
             "🔥 A invariato; 🟠 B aggiunge segnali senza modificare A.",
             "🔺 TRIANGLE: terzo lato sempre seguito su A/B; OFF-gate resta shadow.",
             "⏸️ FOCUS / INCROCIO / CORE / legacy non vengono aggiornati.",
@@ -1089,7 +1246,7 @@ class MultiPrimeV1:
             fast_note = "\n🎯 FAST H1 centrato." if tier == "A" and slot == "BASE2" and age == 1 and ev.get("hit_now") else ""
             off_note = "\n👁️ Era OFF-gate: hit registrato solo come TRIANGLE SHADOW." if slot == "TRIANGLE_OFF" and ev.get("hit_now") else ""
             return (
-                f"🧾 MULTI v20.5 — {tag}\n\n"
+                f"🧾 MULTI v20.5.1 — {tag}\n\n"
                 f"Origine {r.get('origin_key')} | M {int(r.get('main',0)):02d}\n"
                 f"Coppia {pair[0]:02d}-{pair[1]:02d} | {status}"
                 f"{tier_line} | BD rank={r.get('bd_rank')} | O2 rank={r.get('o2_rank')}"
@@ -1134,9 +1291,8 @@ class MultiPrimeV1:
             # B: notifico l'ambata; tutti gli ambi B restano shadow per ora.
             return kind == "ambata" and NOTIFY_PRIME_B_RESULT
         else:
-            if kind == "ambo" and slot == "SUPER":
-                return NOTIFY_SUPER_RESULT
-            return NOTIFY_STANDARD_RESULT
+            # STANDARD completamente silenzioso.
+            return False
         return False
 
     def _stats(self, tier=None):
@@ -1220,7 +1376,9 @@ class MultiPrimeV1:
         a2n, a2h1, a2h3, a2h5 = self._ambo_stats({"BASE2"}, "A")
         b1n, b1h1, b1h3, b1h5 = self._ambo_stats({"BASE1"}, "B")
         b2n, b2h1, b2h3, b2h5 = self._ambo_stats({"BASE2"}, "B")
-        ton, toh1, toh3, toh5 = self._ambo_stats({"SUPER"}, None)
+        asn, ash1, ash3, ash5 = self._ambo_stats({"SUPER"}, "A")
+        bsn, bsh1, bsh3, bsh5 = self._ambo_stats({"SUPER"}, "B")
+        ton, toh1, toh3, toh5 = asn+bsn, ash1+bsh1, ash3+bsh3, ash5+bsh5
         aoffn, aoffh1, aoffh3, aoffh5 = self._ambo_stats({"TRIANGLE_OFF"}, "A")
         boffn, boffh1, boffh3, boffh5 = self._ambo_stats({"TRIANGLE_OFF"}, "B")
         acov = self._origin_coverage("A")
@@ -1229,7 +1387,7 @@ class MultiPrimeV1:
         bpa, bpam = self._pending_counts("B")
 
         lines = [
-            "🧪 MULTI PRIME A+B — v20.5 MULTI-ONLY",
+            "🧪 MULTI PRIME A+B — v20.5.1 MULTI-ONLY",
             "STANDARD shadow: BD12 ∩ ED12 ∩ O2F12",
             f"🔥 A: BD rank 11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX}",
             f"🟠 B: BD rank 11-12 + O2 rank {PRIME_B_O2_RANK_MIN}-{PRIME_B_O2_RANK_MAX}",
@@ -1252,7 +1410,7 @@ class MultiPrimeV1:
             f"B origini ≥1 BASE: {bcov['base_hit']}/{bcov['base_n']} ({safe_pct(bcov['base_hit'],bcov['base_n']):.2f}%) | ≥1 dei 3 lati: {bcov['all3_hit']}/{bcov['tri_n']} ({safe_pct(bcov['all3_hit'],bcov['tri_n']):.2f}%) | rescue terzo {bcov['rescue']}",
             f"B TRIANGLE OFF: H1 {boffh1}/{boffn} ({safe_pct(boffh1,boffn):.2f}%) | H5 {boffh5}/{boffn} ({safe_pct(boffh5,boffn):.2f}%) | pending ambi {bpam}",
             "",
-            f"🔥 SUPER ON (tutti): H1 {toh1}/{ton} ({safe_pct(toh1,ton):.2f}%) | H3 {toh3}/{ton} ({safe_pct(toh3,ton):.2f}%) | H5 {toh5}/{ton} ({safe_pct(toh5,ton):.2f}%)",
+            f"🔥 SUPER ON (solo PRIME A+B): H1 {toh1}/{ton} ({safe_pct(toh1,ton):.2f}%) | H3 {toh3}/{ton} ({safe_pct(toh3,ton):.2f}%) | H5 {toh5}/{ton} ({safe_pct(toh5,ton):.2f}%)",
             f"🔺 TRIANGLE tracking da {self.triangle_started_from_key or '-'} — nessun backfill OFF.",
             "Baseline: ambata H1 22.22% | ambo H1 ≈4.74% | ambo H5 ≈21.57%.",
             "",
@@ -1300,10 +1458,9 @@ class MultiOnlyEngine:
             }
             return False
         try:
-            # Se il remoto è più avanzato, lo materializziamo anche localmente PRIMA di lavorare.
-            if source == "REMOTE_NEWER":
-                atomic_write_json(STATE_FILE, data)
-                local_path = STATE_FILE
+            # v20.5.1: materializza sempre la fusione LOCAL+REMOTE.
+            atomic_write_json(STATE_FILE, data)
+            local_path = STATE_FILE
 
             self.raw_state = data
             self.state_revision = max(0, int(data.get("multi_state_revision", 0) or 0))
@@ -1333,7 +1490,6 @@ class MultiOnlyEngine:
             return False
 
     def save_state(self, git=True, force_git=False):
-        # Preserva integralmente ogni chiave legacy già presente; modifica solo MULTI + metadati.
         data = dict(self.raw_state) if isinstance(self.raw_state, dict) else {}
         self.state_revision += 1
         data["saved_at"] = now_dt().isoformat(timespec="seconds")
@@ -1341,13 +1497,21 @@ class MultiOnlyEngine:
         data["processed"] = self.processed[-PROCESSED_MAX:]
         data["last_draw_key"] = self.last_draw_key
         data["multichannel_bd12_ed12_o2f12_v1"] = self.multichannel.dump()
-        data["active_mode"] = "MULTI_PRIME_AB_TRIANGLE_v20.5"
+        data["active_mode"] = "MULTI_PRIME_AB_TRIANGLE_v20.5.1"
+        remote_data, _ = _fetch_remote_state() if git and PERSIST_GIT_STATE else (None, "disabled")
+        merged, _ = _merge_state_data(data, remote_data)
+        if isinstance(merged, dict):
+            data = merged
+            self.state_revision = max(self.state_revision, int(data.get("multi_state_revision", 0) or 0))
+            self.multichannel.load(data.get("multichannel_bd12_ed12_o2f12_v1"))
+            self.processed = [str(x) for x in data.get("processed", []) if isinstance(x, str)][-PROCESSED_MAX:]
+            self.processed_set = set(self.processed)
+            if isinstance(data.get("last_draw_key"), str): self.last_draw_key = data.get("last_draw_key")
         atomic_write_json(STATE_FILE, data)
         self.raw_state = data
         if git:
             st = git_commit_state_if_needed(force=force_git)
-            if not st.get("ok", False):
-                console_log(f"STATE GIT WARNING | {st.get('action')} | {st.get('detail','')}")
+            if not st.get("ok", False): console_log(f"STATE GIT WARNING | {st.get('action')} | {st.get('detail','')}")
             return st
         return {"ok": True, "action": "local-only", "detail": "state scritto"}
 
@@ -1362,7 +1526,7 @@ class MultiOnlyEngine:
     def status_text(self):
         mc = self.multichannel
         return (
-            "📡 STATUS v20.5 MULTI PRIME A+B\n\n"
+            "📡 STATUS v20.5.1 MULTI PRIME A+B FIX\n\n"
             f"Ultimo MULTI: {mc.history[-1]['key'] if mc.history else '-'}\n"
             f"State: {'OK' if self.state_load_info.get('loaded') else 'NUOVO'} | {self.state_load_info.get('reason')}\n"
             f"State source: {self.state_load_info.get('source','-')} | ff {self.state_load_info.get('ff','-')} | rev {self.state_revision}\n"
@@ -1508,13 +1672,13 @@ async def startup(engine, app):
 
     await engine.tg(
         app,
-        "🚀 MULTI BD12+ED12+O2F12 — v20.5 PRIME A+B AVVIATO\n\n"
+        "🚀 MULTI BD12+ED12+O2F12 — v20.5.1 PRIME A+B FIX AVVIATO\n\n"
         "🧪 STANDARD: BD12 ∩ ED12 ∩ O2F12 W80, cooldown 5 — SHADOW/control.\n"
         f"🔥 PRIME A: BD rank 11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} — invariato, qualità massima.\n"
         f"🟠 PRIME B: BD rank 11-12 + O2 rank {PRIME_B_O2_RANK_MIN}-{PRIME_B_O2_RANK_MAX} — più segnali, ambata H1.\n"
         "🔗 A: AMBO1 + AMBO2 FAST; B: ambi solo shadow.\n"
         f"🔥 SUPER ON se support_sum≥{MULTI_SUPER_GATE}; 🔺 TRIANGLE OFF sempre shadow su A/B.\n"
-        "🛡️ State anti-regressione: confronto LOCAL/REMOTE ad ogni avvio.\n\n"
+        "🛡️ State v20.5.1: merge LOCAL+REMOTE + push esplicito sul branch; contatori monotoni.\n\n"
         "⏸️ FOCUS / INCROCIO / CORE / ENGINE / SOSIA / legacy: PAUSATI.\n"
         "✅ Il loro state viene conservato ma NON aggiornato.\n"
         "🚫 Nessun backfill PRIME B/TRIANGLE.\n\n"
@@ -1537,7 +1701,7 @@ async def startup_until_ready(engine, app):
 
 async def live_loop(engine, app):
     console_log(
-        f"MULTI PRIME A+B LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s"
+        f"MULTI PRIME A+B FIX LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s"
     )
     started = time.monotonic()
     last_error = ""
@@ -1549,12 +1713,16 @@ async def live_loop(engine, app):
                 st = engine.save_state(git=True, force_git=True)
                 console_log(f"ROTATION save | {st.get('action')} | {st.get('detail','')}")
             except Exception as exc:
+                st = {"ok": False, "action": "exception", "detail": f"{type(exc).__name__}: {exc}"}
                 console_log(f"ROTATION save fail | {exc}")
             if BOT_ROTATION_NOTIFY:
+                ok = bool(st.get("ok", False)) if isinstance(st, dict) else False
+                detail = f"{st.get('action')} | {st.get('detail','')}" if isinstance(st, dict) else "save-status assente"
                 await engine.tg(
                     app,
-                    "♻️ MULTI PRIME A+B — ROTAZIONE RUNNER\n"
-                    "State salvato; avvio successivo automatico.",
+                    "♻️ MULTI PRIME A+B FIX — ROTAZIONE RUNNER\n"
+                    + ("✅ State salvato e pubblicato sul branch.\n" if ok else "⚠️ State NON confermato sul branch.\n")
+                    + f"{detail}\nAvvio successivo automatico.",
                 )
             return "rotation"
 
@@ -1711,7 +1879,19 @@ def run_self_test():
     mig = MultiPrimeV1()
     assert mig.load(legacy) and mig.prime_a_signals == 7
 
-    print("SELF-TEST OK: v20.5 PRIME A/B + TRIANGLE OFF + migration")
+    ms=MultiPrimeV1(); ms.history=list(mc.history); ms._refresh_keys(); ms.draw_seq=mc.draw_seq; ms.ensure_start()
+    ms._rankings=lambda:{"base_gap":{n:(30 if n==44 else 1) for n in range(1,91)},"extra_gap":{n:(30 if n==44 else 1) for n in range(1,91)},"o2_freq":{n:(10 if n in (44,11,12) else 0) for n in range(1,91)},"top_base_delay":[1,2,3,4,5,6,7,8,9,44,10,11],"top_extra_delay":[44,21,22,23,24,25,26,27,28,29,30,31],"top_o2":[41,42,43,45,46,47,48,49,50,51,44,52]}
+    before=len(ms.ambo_pending); ss=ms.arm()
+    assert ss and ss["numbers"] == [44] and not ss["prime_a_numbers"] and not ss["prime_b_numbers"]
+    assert len(ms.ambo_pending)==before
+
+    la={"multichannel_bd12_ed12_o2f12_v1":mc.dump(),"processed":[],"multi_state_revision":3}
+    rb=mb.dump(); rb["prime_b_signals"]=5
+    rr={"multichannel_bd12_ed12_o2f12_v1":rb,"processed":[],"multi_state_revision":4}
+    mm,_=_merge_state_data(la,rr); mcm=mm["multichannel_bd12_ed12_o2f12_v1"]
+    assert int(mcm.get("prime_a_signals",0))>=1 and int(mcm.get("prime_b_signals",0))>=5
+
+    print("SELF-TEST OK: v20.5.1 PRIME A/B + TRIANGLE + state merge + STANDARD pure shadow")
 
 
 # ============================================================
