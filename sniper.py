@@ -1,23 +1,27 @@
 # ============================================================
-# 🎯 10eLOTTO MULTI BD12+ED12+O2F12 — v20.5.1 MULTI PRIME A+B + TRIANGLE FIX
+# 🎯 10eLOTTO MULTI BD12+ED12+O2F12 — v20.6 PRIME A + A2 ELITE + C SHADOW
 # ============================================================
 # UNICO RAMO ATTIVO: MULTI
 #   STANDARD (shadow/control): BD12 ∩ ED12 ∩ O2F12, W80, cooldown 5
 #   PRIME A: STANDARD + BD rank 11-12 + O2 rank 6-12 (INVARIATO da v20.4)
-#   PRIME B: STANDARD + BD rank 11-12 + O2 rank 1-5 (espansione controllata)
+#   PRIME A2 ELITE: STANDARD + BD rank 11-12 + O2 rank 2-4 + ora <=08:00 oppure >16:00
+#   PRIME C SHADOW: STANDARD + BD rank 1-6 + O2 rank 7-12 + ora >16:00
+#   PRIME B: LEGACY congelato; nessun nuovo B viene creato
 #
 # AMBI:
 #   P1/P2 = 2 partner O2F12 con maggiore co-occorrenza Base nei 900 draw precedenti
 #   A: AMBO1 M-P1 + AMBO2 M-P2 FAST + terzo lato sempre monitorato
-#   B: tutti gli ambi restano shadow; l'ambata B viene notificata
+#   A2: AMBO1 + AMBO2 + terzo lato monitorati come nuovo forward operativo
+#   C: ambata/ambi solo shadow; nessuna notifica operativa
+#   B legacy: eventuali pending precedenti vengono solo chiusi
 #   SUPER = P1-P2 se support_sum >= 4
-#   TRIANGLE_OFF = P1-P2 se support_sum < 4, sempre shadow su A/B
+#   TRIANGLE_OFF = P1-P2 se support_sum < 4, sempre shadow su A/A2/C
 #
 # FORWARD TEST:
-#   - nessun backfill PRIME B / TRIANGLE OFF
+#   - nessun backfill PRIME A2 / PRIME C; PRIME B legacy non genera nuovi segnali
 #   - PRIME A migra dalla v20.4 senza reset
 #   - state anti-regressione fra rotazioni GitHub runner
-#   - v20.5.1: merge conservativo LOCAL+REMOTE + push esplicito sul branch
+#   - mantiene FIX state v20.5.1: merge conservativo LOCAL+REMOTE + push esplicito sul branch
 #   - STANDARD totalmente shadow: NON arma piu AMBO/SUPER
 #   - FOCUS / INCROCIO / CORE / legacy: PAUSATI, state conservato ma non aggiornato
 # ============================================================
@@ -93,23 +97,35 @@ MULTI_HISTORY_MAX = max(MULTI_COOC_WINDOW, int(os.getenv("MULTI_BD_ED_O2_HISTORY
 MULTI_RECORD_MAX = max(500, int(os.getenv("MULTI_BD_ED_O2_RECORD_MAX", "8000")))
 MULTI_AMBO_RECORD_MAX = max(1500, int(os.getenv("MULTI_BD_ED_O2_AMBO_RECORD_MAX", "24000")))
 
-# PRIME A/B — regole congelate dal test storico Jan-Sep 2025.
-# A = massima selettività: BD rank 11-12 + O2 rank 6-12.
-# B = espansione controllata: BD rank 11-12 + O2 rank 1-5.
-# A e B sono DISGIUNTI; insieme formano il CORE BD11-12.
-PRIME_VERSION = 2
-PRIME_BD_RANK_MIN = 11
-PRIME_BD_RANK_MAX = 12
+# PRIME — regole congelate dal test storico Jan-Sep 2025.
+# A = originale: BD rank 11-12 + O2 rank 6-12.
+# A2 ELITE = espansione selettiva: BD rank 11-12 + O2 rank 2-4
+#            e orario origine <=08:00 oppure >16:00.
+# C SHADOW = ipotesi sperimentale: BD rank 1-6 + O2 rank 7-12 e ora >16:00.
+# B = legacy v20.5: conservato nello state ma NON genera nuovi segnali.
+PRIME_VERSION = 3
+PRIME_A_BD_RANK_MIN = 11
+PRIME_A_BD_RANK_MAX = 12
 PRIME_A_O2_RANK_MIN = 6
 PRIME_A_O2_RANK_MAX = 12
-PRIME_B_O2_RANK_MIN = 1
-PRIME_B_O2_RANK_MAX = 5
+PRIME_A2_BD_RANK_MIN = 11
+PRIME_A2_BD_RANK_MAX = 12
+PRIME_A2_O2_RANK_MIN = 2
+PRIME_A2_O2_RANK_MAX = 4
+PRIME_A2_MORNING_MAX_MIN = 8 * 60       # <= 08:00
+PRIME_A2_EVENING_AFTER_MIN = 16 * 60    # > 16:00
+PRIME_C_BD_RANK_MIN = 1
+PRIME_C_BD_RANK_MAX = 6
+PRIME_C_O2_RANK_MIN = 7
+PRIME_C_O2_RANK_MAX = 12
+PRIME_C_AFTER_MIN = 16 * 60              # > 16:00
 
-# Notifiche. STANDARD resta shadow. A è pienamente operativo.
-# B notifica segnale/ambata, mentre i suoi ambi restano shadow.
+# Notifiche. STANDARD e C restano shadow. A e A2 sono operativi.
 NOTIFY_PRIME_A_SIGNAL = os.getenv("MULTI_PRIME_A_NOTIFY_SIGNAL", os.getenv("MULTI_PRIME_NOTIFY_SIGNAL", "1")).lower() not in {"0", "false", "no", "off"}
 NOTIFY_PRIME_A_RESULT = os.getenv("MULTI_PRIME_A_NOTIFY_RESULT", os.getenv("MULTI_PRIME_NOTIFY_RESULT", "1")).lower() not in {"0", "false", "no", "off"}
-NOTIFY_PRIME_B_SIGNAL = os.getenv("MULTI_PRIME_B_NOTIFY_SIGNAL", "1").lower() not in {"0", "false", "no", "off"}
+NOTIFY_PRIME_A2_SIGNAL = os.getenv("MULTI_PRIME_A2_NOTIFY_SIGNAL", "1").lower() not in {"0", "false", "no", "off"}
+NOTIFY_PRIME_A2_RESULT = os.getenv("MULTI_PRIME_A2_NOTIFY_RESULT", "1").lower() not in {"0", "false", "no", "off"}
+# B non crea nuovi segnali; questa opzione serve solo a chiudere eventuali pending legacy.
 NOTIFY_PRIME_B_RESULT = os.getenv("MULTI_PRIME_B_NOTIFY_RESULT", "1").lower() not in {"0", "false", "no", "off"}
 NOTIFY_TRIANGLE_OFF_HIT = os.getenv("MULTI_TRIANGLE_OFF_NOTIFY_HIT", "1").lower() not in {"0", "false", "no", "off"}
 NOTIFY_STANDARD_SIGNAL = os.getenv("MULTI_STANDARD_NOTIFY_SIGNAL", "0").lower() not in {"0", "false", "no", "off"}
@@ -402,6 +418,8 @@ def _state_progress(data):
         + int(mc.get("signals", 0) or 0)
         + int(mc.get("prime_a_signals", mc.get("prime_signals", 0)) or 0)
         + int(mc.get("prime_b_signals", 0) or 0)
+        + int(mc.get("prime_a2_signals", 0) or 0)
+        + int(mc.get("prime_c_signals", 0) or 0)
     )
     pending = len(mc.get("pending") or []) + len(mc.get("ambo_pending") or [])
     rev = int(data.get("multi_state_revision", 0) or 0)
@@ -545,12 +563,17 @@ def _merge_multichannel_state(a, b):
     sigrows=rec+pen
     def tier(r):
         t=str(r.get("tier") or "").upper()
-        if t in {"A","B","STD"}: return t
+        if t in {"A","A2","B","C","STD"}: return t
         return "A" if bool(r.get("prime")) else "STD"
-    ac=len({_signal_id(r) for r in sigrows if tier(r)=="A"}); bc=len({_signal_id(r) for r in sigrows if tier(r)=="B"})
+    ac=len({_signal_id(r) for r in sigrows if tier(r)=="A"})
+    a2c=len({_signal_id(r) for r in sigrows if tier(r)=="A2"})
+    bc=len({_signal_id(r) for r in sigrows if tier(r)=="B"})
+    cc=len({_signal_id(r) for r in sigrows if tier(r)=="C"})
     base["prime_a_signals"]=max(int(a.get("prime_a_signals",a.get("prime_signals",0)) or 0),int(b.get("prime_a_signals",b.get("prime_signals",0)) or 0),ac)
     base["prime_signals"]=base["prime_a_signals"]
+    base["prime_a2_signals"]=max(int(a.get("prime_a2_signals",0) or 0),int(b.get("prime_a2_signals",0) or 0),a2c)
     base["prime_b_signals"]=max(int(a.get("prime_b_signals",0) or 0),int(b.get("prime_b_signals",0) or 0),bc)
+    base["prime_c_signals"]=max(int(a.get("prime_c_signals",0) or 0),int(b.get("prime_c_signals",0) or 0),cc)
     lss={}
     for src in (a.get("last_signal_seq"),b.get("last_signal_seq")):
         if isinstance(src,dict):
@@ -559,9 +582,9 @@ def _merge_multichannel_state(a, b):
                 except Exception: continue
                 lss[str(ik)]=max(int(lss.get(str(ik),0) or 0),iv)
     base["last_signal_seq"]=lss
-    for k in ("start_from_key","ambo_started_from_key","prime_started_from_key","prime_a_started_from_key","prime_b_started_from_key","triangle_started_from_key"):
+    for k in ("start_from_key","ambo_started_from_key","prime_started_from_key","prime_a_started_from_key","prime_a2_started_from_key","prime_b_started_from_key","prime_c_started_from_key","triangle_started_from_key"):
         base[k]=_key_min(a.get(k),b.get(k))
-    for k in ("started_at","ambo_started_at","prime_started_at","prime_a_started_at","prime_b_started_at","triangle_started_at"):
+    for k in ("started_at","ambo_started_at","prime_started_at","prime_a_started_at","prime_a2_started_at","prime_b_started_at","prime_c_started_at","triangle_started_at"):
         vals=[x for x in (a.get(k),b.get(k)) if isinstance(x,str) and x]; base[k]=min(vals) if vals else None
     base["last_armed_key"]=_key_max(a.get("last_armed_key"),b.get("last_armed_key"))
     base["last_signal"]=_latest_obj(a.get("last_signal"),b.get("last_signal"),("origin_key","key"))
@@ -594,7 +617,7 @@ def _best_available_state(local_data, remote_data):
 
 
 # ============================================================
-# MULTI BD12 + ED12 + O2F12 + PRIME A/B + TRIANGLE SHADOW
+# MULTI BD12 + ED12 + O2F12 + PRIME A + A2 ELITE + C SHADOW + TRIANGLE
 # ============================================================
 class MultiPrimeV1:
     def __init__(self):
@@ -628,9 +651,17 @@ class MultiPrimeV1:
         self.prime_a_started_from_key = None
         self.prime_a_started_at = None
         self.prime_a_signals = 0
+        # A2 e C nascono in v20.6 senza backfill.
+        self.prime_a2_started_from_key = None
+        self.prime_a2_started_at = None
+        self.prime_a2_signals = 0
+        # B resta solo legacy: storico/pending preservati, nessun nuovo segnale.
         self.prime_b_started_from_key = None
         self.prime_b_started_at = None
         self.prime_b_signals = 0
+        self.prime_c_started_from_key = None
+        self.prime_c_started_at = None
+        self.prime_c_signals = 0
         self.triangle_started_from_key = None
         self.triangle_started_at = None
 
@@ -654,9 +685,10 @@ class MultiPrimeV1:
             return None
         if oro not in nums or doppio not in nums:
             return None
+        time_txt = str(row.get("time") or "").strip()
         return {
             "key": key, "day": day, "draw_id": draw_id, "nums": nums,
-            "oro": oro, "doppio_oro": doppio, "extra": extra,
+            "oro": oro, "doppio_oro": doppio, "extra": extra, "time": time_txt,
         }
 
     @staticmethod
@@ -664,7 +696,7 @@ class MultiPrimeV1:
         if not isinstance(row, dict):
             return "STD"
         tier = str(row.get("tier") or "").upper()
-        if tier in {"A", "B", "STD"}:
+        if tier in {"A", "A2", "B", "C", "STD"}:
             return tier
         # Migrazione v20.4: prime=True significava l'attuale PRIME A.
         if bool(row.get("prime", False)):
@@ -690,7 +722,7 @@ class MultiPrimeV1:
         q["slot"] = str(q.get("slot") or "BASE")
         q["origin_id"] = str(q.get("origin_id") or f"{q['origin_key']}|M{main:02d}")
         q["tier"] = cls._tier_from_obj(q)
-        q["prime"] = q["tier"] == "A"  # alias legacy, NON usare per B
+        q["prime"] = q["tier"] == "A"  # alias legacy: solo A originale
         return q
 
     @classmethod
@@ -736,10 +768,20 @@ class MultiPrimeV1:
             self.prime_a_started_from_key = current
             self.prime_a_started_at = now_iso
             changed = True
+        if not self.prime_a2_started_from_key:
+            # v20.6: A2 nasce qui, senza ricostruire segnali precedenti.
+            self.prime_a2_started_from_key = current
+            self.prime_a2_started_at = now_iso
+            changed = True
         if not self.prime_b_started_from_key:
-            # v20.5: B nasce qui, senza ricostruire segnali precedenti.
+            # Campo legacy B: viene inizializzato solo per compatibilità state.
             self.prime_b_started_from_key = current
             self.prime_b_started_at = now_iso
+            changed = True
+        if not self.prime_c_started_from_key:
+            # v20.6: C shadow nasce qui, senza backfill.
+            self.prime_c_started_from_key = current
+            self.prime_c_started_at = now_iso
             changed = True
         if not self.triangle_started_from_key:
             # v20.5: il terzo lato OFF viene tracciato solo da qui in avanti.
@@ -794,10 +836,20 @@ class MultiPrimeV1:
         )
         self.prime_a_signals = max(0, int(obj.get("prime_a_signals", obj.get("prime_signals", 0)) or 0))
 
+        a2sk = obj.get("prime_a2_started_from_key")
+        self.prime_a2_started_from_key = str(a2sk) if order_key(a2sk) is not None else None
+        self.prime_a2_started_at = obj.get("prime_a2_started_at") if isinstance(obj.get("prime_a2_started_at"), str) else None
+        self.prime_a2_signals = max(0, int(obj.get("prime_a2_signals", 0) or 0))
+
         bsk = obj.get("prime_b_started_from_key")
         self.prime_b_started_from_key = str(bsk) if order_key(bsk) is not None else None
         self.prime_b_started_at = obj.get("prime_b_started_at") if isinstance(obj.get("prime_b_started_at"), str) else None
         self.prime_b_signals = max(0, int(obj.get("prime_b_signals", 0) or 0))
+
+        csk = obj.get("prime_c_started_from_key")
+        self.prime_c_started_from_key = str(csk) if order_key(csk) is not None else None
+        self.prime_c_started_at = obj.get("prime_c_started_at") if isinstance(obj.get("prime_c_started_at"), str) else None
+        self.prime_c_signals = max(0, int(obj.get("prime_c_signals", 0) or 0))
 
         tsk = obj.get("triangle_started_from_key")
         self.triangle_started_from_key = str(tsk) if order_key(tsk) is not None else None
@@ -841,9 +893,15 @@ class MultiPrimeV1:
             "prime_a_started_from_key": self.prime_a_started_from_key,
             "prime_a_started_at": self.prime_a_started_at,
             "prime_a_signals": self.prime_a_signals,
+            "prime_a2_started_from_key": self.prime_a2_started_from_key,
+            "prime_a2_started_at": self.prime_a2_started_at,
+            "prime_a2_signals": self.prime_a2_signals,
             "prime_b_started_from_key": self.prime_b_started_from_key,
             "prime_b_started_at": self.prime_b_started_at,
             "prime_b_signals": self.prime_b_signals,
+            "prime_c_started_from_key": self.prime_c_started_from_key,
+            "prime_c_started_at": self.prime_c_started_at,
+            "prime_c_signals": self.prime_c_signals,
             "triangle_started_from_key": self.triangle_started_from_key,
             "triangle_started_at": self.triangle_started_at,
         }
@@ -885,16 +943,41 @@ class MultiPrimeV1:
             return None
 
     @staticmethod
-    def _tier(bd_rank, o2_rank):
+    def _clock_minutes(row):
+        if not isinstance(row, dict):
+            return None
+        txt = str(row.get("time") or "").strip()
+        m = re.fullmatch(r"(\d{1,2}):(\d{2})", txt)
+        if not m:
+            return None
+        hh, mm = int(m.group(1)), int(m.group(2))
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            return None
+        return hh * 60 + mm
+
+    @classmethod
+    def _tier(cls, bd_rank, o2_rank, origin_row=None):
         if bd_rank is None or o2_rank is None:
             return "STD"
         bd_rank, o2_rank = int(bd_rank), int(o2_rank)
-        if not (PRIME_BD_RANK_MIN <= bd_rank <= PRIME_BD_RANK_MAX):
-            return "STD"
-        if PRIME_A_O2_RANK_MIN <= o2_rank <= PRIME_A_O2_RANK_MAX:
+        # PRIME A originale: NON cambia.
+        if (PRIME_A_BD_RANK_MIN <= bd_rank <= PRIME_A_BD_RANK_MAX
+                and PRIME_A_O2_RANK_MIN <= o2_rank <= PRIME_A_O2_RANK_MAX):
             return "A"
-        if PRIME_B_O2_RANK_MIN <= o2_rank <= PRIME_B_O2_RANK_MAX:
-            return "B"
+
+        mins = cls._clock_minutes(origin_row)
+        elite_time = mins is not None and (mins <= PRIME_A2_MORNING_MAX_MIN or mins > PRIME_A2_EVENING_AFTER_MIN)
+        if (elite_time
+                and PRIME_A2_BD_RANK_MIN <= bd_rank <= PRIME_A2_BD_RANK_MAX
+                and PRIME_A2_O2_RANK_MIN <= o2_rank <= PRIME_A2_O2_RANK_MAX):
+            return "A2"
+
+        c_time = mins is not None and mins > PRIME_C_AFTER_MIN
+        if (c_time
+                and PRIME_C_BD_RANK_MIN <= bd_rank <= PRIME_C_BD_RANK_MAX
+                and PRIME_C_O2_RANK_MIN <= o2_rank <= PRIME_C_O2_RANK_MAX):
+            return "C"
+        # PRIME B v20.5 NON viene più creato.
         return "STD"
 
     def _partner_plan(self, main, ranks):
@@ -936,8 +1019,8 @@ class MultiPrimeV1:
         specs = [("BASE1", sorted([int(main), p1])), ("BASE2", sorted([int(main), p2]))]
         if plan.get("super_enabled"):
             specs.append(("SUPER", sorted([p1, p2])))
-        elif tier in {"A", "B"}:
-            # Novità v20.5: per PRIME A/B seguiamo SEMPRE il terzo lato,
+        elif tier in {"A", "A2", "C"}:
+            # A/A2/C seguono SEMPRE il terzo lato;
             # ma se il gate non passa resta TRIANGLE_OFF shadow.
             specs.append(("TRIANGLE_OFF", sorted([p1, p2])))
 
@@ -1076,18 +1159,23 @@ class MultiPrimeV1:
             return None
 
         details, ambo_plans = [], []
-        a_numbers, b_numbers = [], []
+        a_numbers, a2_numbers, c_numbers = [], [], []
+        origin_row = self.history[-1]
+        origin_time = str(origin_row.get("time") or "")
         for n in selected:
             bd_rank = self._rank_of(n, ranks["top_base_delay"])
             ed_rank = self._rank_of(n, ranks["top_extra_delay"])
             o2_rank = self._rank_of(n, ranks["top_o2"])
-            tier = self._tier(bd_rank, o2_rank)
+            tier = self._tier(bd_rank, o2_rank, origin_row)
             if tier == "A":
                 a_numbers.append(int(n))
                 self.prime_a_signals += 1
-            elif tier == "B":
-                b_numbers.append(int(n))
-                self.prime_b_signals += 1
+            elif tier == "A2":
+                a2_numbers.append(int(n))
+                self.prime_a2_signals += 1
+            elif tier == "C":
+                c_numbers.append(int(n))
+                self.prime_c_signals += 1
 
             d = {
                 "num": n,
@@ -1095,7 +1183,7 @@ class MultiPrimeV1:
                 "extra_gap": int(ranks["extra_gap"][n]),
                 "o2_freq80": int(ranks["o2_freq"][n]),
                 "bd_rank": bd_rank, "ed_rank": ed_rank, "o2_rank": o2_rank,
-                "tier": tier, "prime": tier == "A",
+                "origin_time": origin_time, "tier": tier, "prime": tier == "A",
             }
             plan = self._partner_plan(n, ranks)
             if plan:
@@ -1106,7 +1194,7 @@ class MultiPrimeV1:
                     "cooc_window": int(plan["cooc_window"]),
                 }
                 # v20.5.1: STANDARD e' controllo puro e NON arma ambi/SUPER.
-                if tier in {"A", "B"}:
+                if tier in {"A", "A2", "C"}:
                     self._arm_ambo(origin_key, n, plan, tier=tier, bd_rank=bd_rank, o2_rank=o2_rank)
                     ambo_plans.append({"main": n, "tier": tier, **d["ambo"]})
 
@@ -1117,7 +1205,7 @@ class MultiPrimeV1:
                 "base_gap": d["base_gap"], "extra_gap": d["extra_gap"],
                 "o2_freq80": d["o2_freq80"],
                 "bd_rank": bd_rank, "ed_rank": ed_rank, "o2_rank": o2_rank,
-                "tier": tier, "prime": tier == "A",
+                "origin_time": origin_time, "tier": tier, "prime": tier == "A",
             })
             self.last_signal_seq[n] = self.draw_seq
 
@@ -1127,7 +1215,9 @@ class MultiPrimeV1:
             "origin_key": origin_key,
             "numbers": selected,
             "prime_a_numbers": a_numbers,
-            "prime_b_numbers": b_numbers,
+            "prime_a2_numbers": a2_numbers,
+            "prime_c_numbers": c_numbers,
+            "prime_b_numbers": [],  # legacy: nessun nuovo B
             # alias v20.4
             "prime_numbers": a_numbers,
             "details": details,
@@ -1146,8 +1236,9 @@ class MultiPrimeV1:
             return False
         if sig.get("prime_a_numbers") and NOTIFY_PRIME_A_SIGNAL:
             return True
-        if sig.get("prime_b_numbers") and NOTIFY_PRIME_B_SIGNAL:
+        if sig.get("prime_a2_numbers") and NOTIFY_PRIME_A2_SIGNAL:
             return True
+        # C e STANDARD restano shadow; B non genera nuovi segnali.
         return NOTIFY_STANDARD_SIGNAL
 
     @staticmethod
@@ -1155,67 +1246,69 @@ class MultiPrimeV1:
         if not sig:
             return None
         a_nums = {int(x) for x in sig.get("prime_a_numbers", [])}
-        b_nums = {int(x) for x in sig.get("prime_b_numbers", [])}
+        a2_nums = {int(x) for x in sig.get("prime_a2_numbers", [])}
+        c_nums = {int(x) for x in sig.get("prime_c_numbers", [])}
+        origin_time = ""
+        if sig.get("details"):
+            origin_time = str((sig.get("details") or [{}])[0].get("origin_time") or "")
         lines = [
-            "🧪 MULTI BD12+ED12+O2F12 — v20.5",
-            "Origine: " + str(sig.get("origin_key")),
+            "🧪 MULTI BD12+ED12+O2F12 — v20.6",
+            "Origine: " + str(sig.get("origin_key")) + (f" | ora {origin_time}" if origin_time else ""),
             "STANDARD: Base RIT12 ∩ Extra RIT12 ∩ Oro2 FREQ12 (W80)",
             f"Segnali standard: {' '.join(f'{int(n):02d}' for n in sig.get('numbers', []))}",
         ]
         if a_nums:
             lines += [
-                "", "🔥 PRIME A — QUALITÀ MASSIMA",
+                "", "🔥 PRIME A — QUALITÀ MASSIMA (INVARIATO)",
                 f"🎯 A H1: {' '.join(f'{n:02d}' for n in sorted(a_nums))}",
                 f"Gate A: BD rank 11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX}",
             ]
-        if b_nums:
+        if a2_nums:
             lines += [
-                "", "🟠 PRIME B — ESPANSIONE CONTROLLATA",
-                f"🎯 B H1: {' '.join(f'{n:02d}' for n in sorted(b_nums))}",
-                f"Gate B: BD rank 11-12 + O2 rank {PRIME_B_O2_RANK_MIN}-{PRIME_B_O2_RANK_MAX}",
+                "", "💎 PRIME A2 ELITE — ESPANSIONE SELETTIVA",
+                f"🎯 A2 H1: {' '.join(f'{n:02d}' for n in sorted(a2_nums))}",
+                f"Gate A2: BD rank 11-12 + O2 rank {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + ora ≤08:00 oppure >16:00",
             ]
-        if not a_nums and not b_nums:
-            lines += ["", "🌑 Nessun PRIME A/B; STANDARD registrato in shadow."]
+        if not a_nums and not a2_nums:
+            lines += ["", "🌑 Nessun PRIME A/A2 operativo; STANDARD/C restano shadow."]
 
         lines.append("")
         for d in sig.get("details", []):
             n = int(d["num"])
             tier = str(d.get("tier") or "STD")
-            tag = "🔥 A" if tier == "A" else ("🟠 B" if tier == "B" else "• STD")
+            tag = {"A":"🔥 A", "A2":"💎 A2", "C":"🧬 C SHADOW"}.get(tier, "• STD")
             lines.append(
                 f"{tag} {n:02d}: BD rank={d.get('bd_rank')} rit={d.get('base_gap')} | "
                 f"ED rank={d.get('ed_rank')} rit={d.get('extra_gap')} | "
                 f"O2 rank={d.get('o2_rank')} freq80={d.get('o2_freq80')}"
             )
             a = d.get("ambo") or {}
-            if a:
+            if a and tier in {"A", "A2", "C"}:
                 p1, p2 = a.get("p1") or {}, a.get("p2") or {}
                 n1, n2 = int(p1.get("num", 0)), int(p2.get("num", 0))
                 if tier == "A":
                     lines.append(
-                        f"  🔗 AMBO1 {n:02d}-{n1:02d} | ⚡ AMBO2 FAST H1 {n:02d}-{n2:02d} | "
-                        f"COOC900 {p1.get('cooc',0)}/{p2.get('cooc',0)}"
+                        f"  🔗 AMBO1 {n:02d}-{n1:02d} | ⚡ AMBO2 FAST H1 {n:02d}-{n2:02d} | COOC900 {p1.get('cooc',0)}/{p2.get('cooc',0)}"
                     )
-                elif tier == "B":
+                elif tier == "A2":
                     lines.append(
-                        f"  👁️ AMBI B shadow: {n:02d}-{n1:02d} / {n:02d}-{n2:02d} | "
-                        f"COOC900 {p1.get('cooc',0)}/{p2.get('cooc',0)}"
+                        f"  🔗 A2 AMBO1 {n:02d}-{n1:02d} | 🔗 A2 AMBO2 {n:02d}-{n2:02d} | COOC900 {p1.get('cooc',0)}/{p2.get('cooc',0)}"
                     )
-                if tier in {"A", "B"}:
-                    if a.get("super_enabled"):
-                        lines.append(
-                            f"  🔥 TERZO {n1:02d}-{n2:02d} SUPER ON | support_sum={int(a.get('support_sum',0))} ≥ {MULTI_SUPER_GATE}"
-                        )
-                    else:
-                        lines.append(
-                            f"  🔺 TERZO {n1:02d}-{n2:02d} TRIANGLE SHADOW | support_sum={int(a.get('support_sum',0))} < {MULTI_SUPER_GATE}"
-                        )
+                else:
+                    lines.append(
+                        f"  👁️ C ambi shadow: {n:02d}-{n1:02d} / {n:02d}-{n2:02d} | COOC900 {p1.get('cooc',0)}/{p2.get('cooc',0)}"
+                    )
+                if a.get("super_enabled"):
+                    lines.append(f"  🔥 TERZO {n1:02d}-{n2:02d} SUPER ON | support_sum={int(a.get('support_sum',0))} ≥ {MULTI_SUPER_GATE}")
+                else:
+                    lines.append(f"  🔺 TERZO {n1:02d}-{n2:02d} TRIANGLE SHADOW | support_sum={int(a.get('support_sum',0))} < {MULTI_SUPER_GATE}")
 
         lines += [
             "",
             "🧪 STANDARD resta shadow/control e NON arma ambi/SUPER.",
-            "🔥 A invariato; 🟠 B aggiunge segnali senza modificare A.",
-            "🔺 TRIANGLE: terzo lato sempre seguito su A/B; OFF-gate resta shadow.",
+            "🔥 A resta invariato; 💎 A2 aggiunge solo il blocco Elite selezionato.",
+            "🧬 C viene registrato solo shadow; B legacy non genera nuovi segnali.",
+            "🔺 TRIANGLE: terzo lato seguito su A/A2/C; OFF-gate resta shadow.",
             "⏸️ FOCUS / INCROCIO / CORE / legacy non vengono aggiornati.",
         ]
         return "\n".join(lines)
@@ -1240,13 +1333,13 @@ class MultiPrimeV1:
             elif slot == "BASE1":
                 tag = "🔗 AMBO1"
             else:
-                tag = "⚡ AMBO2 FAST" if tier == "A" else "🔗 AMBO2"
+                tag = "⚡ AMBO2 FAST" if tier == "A" else ("🔗 A2 AMBO2" if tier == "A2" else "🔗 AMBO2")
             status = f"✅ HIT al colpo H{age}" if ev.get("hit_now") else "🛑 STOP H5"
-            tier_line = "\n🔥 PRIME A" if tier == "A" else ("\n🟠 PRIME B" if tier == "B" else "")
+            tier_line = "\n🔥 PRIME A" if tier == "A" else ("\n💎 PRIME A2 ELITE" if tier == "A2" else ("\n🟠 PRIME B LEGACY" if tier == "B" else ("\n🧬 PRIME C SHADOW" if tier == "C" else "")))
             fast_note = "\n🎯 FAST H1 centrato." if tier == "A" and slot == "BASE2" and age == 1 and ev.get("hit_now") else ""
             off_note = "\n👁️ Era OFF-gate: hit registrato solo come TRIANGLE SHADOW." if slot == "TRIANGLE_OFF" and ev.get("hit_now") else ""
             return (
-                f"🧾 MULTI v20.5.1 — {tag}\n\n"
+                f"🧾 MULTI v20.6 — {tag}\n\n"
                 f"Origine {r.get('origin_key')} | M {int(r.get('main',0)):02d}\n"
                 f"Coppia {pair[0]:02d}-{pair[1]:02d} | {status}"
                 f"{tier_line} | BD rank={r.get('bd_rank')} | O2 rank={r.get('o2_rank')}"
@@ -1261,13 +1354,17 @@ class MultiPrimeV1:
         )
         if tier == "A":
             title = "🔥 MULTI PRIME A — ESITO AMBATA"
+        elif tier == "A2":
+            title = "💎 MULTI PRIME A2 ELITE — ESITO AMBATA"
         elif tier == "B":
-            title = "🟠 MULTI PRIME B — ESITO AMBATA"
+            title = "🟠 MULTI PRIME B LEGACY — ESITO AMBATA"
+        elif tier == "C":
+            title = "🧬 MULTI PRIME C SHADOW — ESITO AMBATA"
         else:
             title = "🧾 MULTI STANDARD — ESITO AMBATA"
         return (
             f"{title}\n\n"
-            f"Origine {r.get('origin_key')} | numero {n:02d}\n{status}\n"
+            f"Origine {r.get('origin_key')} | numero {n:02d}" + (f" | ora {r.get('origin_time')}" if r.get('origin_time') else "") + f"\n{status}\n"
             f"BD rank={r.get('bd_rank')} | ED rank={r.get('ed_rank')} | O2 rank={r.get('o2_rank')}\n"
             f"Base rit={r.get('base_gap')} | Extra rit={r.get('extra_gap')} | Oro2 freq80={r.get('o2_freq80')}"
         )
@@ -1287,11 +1384,17 @@ class MultiPrimeV1:
                 return NOTIFY_PRIME_A_RESULT
             if slot == "TRIANGLE_OFF":
                 return bool(ev.get("hit_now")) and NOTIFY_TRIANGLE_OFF_HIT
+        elif tier == "A2":
+            if kind == "ambata":
+                return NOTIFY_PRIME_A2_RESULT
+            if slot in {"BASE1", "BASE2", "SUPER"}:
+                return NOTIFY_PRIME_A2_RESULT
+            if slot == "TRIANGLE_OFF":
+                return bool(ev.get("hit_now")) and NOTIFY_TRIANGLE_OFF_HIT
         elif tier == "B":
-            # B: notifico l'ambata; tutti gli ambi B restano shadow per ora.
+            # Solo eventuali pending legacy già nati in v20.5.
             return kind == "ambata" and NOTIFY_PRIME_B_RESULT
-        else:
-            # STANDARD completamente silenzioso.
+        elif tier == "C":
             return False
         return False
 
@@ -1371,26 +1474,37 @@ class MultiPrimeV1:
     def text(self):
         n, h1, h3, h5 = self._stats(None)
         an, ah1, ah3, ah5 = self._stats("A")
+        a2n, a2h1, a2h3, a2h5 = self._stats("A2")
+        cn, ch1, ch3, ch5 = self._stats("C")
         bn, bh1, bh3, bh5 = self._stats("B")
-        a1n, a1h1, a1h3, a1h5 = self._ambo_stats({"BASE1"}, "A")
-        a2n, a2h1, a2h3, a2h5 = self._ambo_stats({"BASE2"}, "A")
-        b1n, b1h1, b1h3, b1h5 = self._ambo_stats({"BASE1"}, "B")
-        b2n, b2h1, b2h3, b2h5 = self._ambo_stats({"BASE2"}, "B")
+
+        a1n, a1h1, _, a1h5 = self._ambo_stats({"BASE1"}, "A")
+        a2bn, a2bh1, _, a2bh5 = self._ambo_stats({"BASE2"}, "A")
+        e1n, e1h1, _, e1h5 = self._ambo_stats({"BASE1"}, "A2")
+        e2n, e2h1, _, e2h5 = self._ambo_stats({"BASE2"}, "A2")
+        c1n, c1h1, _, c1h5 = self._ambo_stats({"BASE1"}, "C")
+        c2n, c2h1, _, c2h5 = self._ambo_stats({"BASE2"}, "C")
+
         asn, ash1, ash3, ash5 = self._ambo_stats({"SUPER"}, "A")
-        bsn, bsh1, bsh3, bsh5 = self._ambo_stats({"SUPER"}, "B")
-        ton, toh1, toh3, toh5 = asn+bsn, ash1+bsh1, ash3+bsh3, ash5+bsh5
-        aoffn, aoffh1, aoffh3, aoffh5 = self._ambo_stats({"TRIANGLE_OFF"}, "A")
-        boffn, boffh1, boffh3, boffh5 = self._ambo_stats({"TRIANGLE_OFF"}, "B")
+        a2sn, a2sh1, a2sh3, a2sh5 = self._ambo_stats({"SUPER"}, "A2")
+        op_sn, op_h1, op_h3, op_h5 = asn+a2sn, ash1+a2sh1, ash3+a2sh3, ash5+a2sh5
+
+        aoffn, aoffh1, _, aoffh5 = self._ambo_stats({"TRIANGLE_OFF"}, "A")
+        eoffn, eoffh1, _, eoffh5 = self._ambo_stats({"TRIANGLE_OFF"}, "A2")
         acov = self._origin_coverage("A")
-        bcov = self._origin_coverage("B")
+        ecov = self._origin_coverage("A2")
+        ccov = self._origin_coverage("C")
         apa, apam = self._pending_counts("A")
+        epa, epam = self._pending_counts("A2")
+        cpa, cpam = self._pending_counts("C")
         bpa, bpam = self._pending_counts("B")
 
         lines = [
-            "🧪 MULTI PRIME A+B — v20.5.1 MULTI-ONLY",
+            "🧪 MULTI PRIME A + A2 ELITE — v20.6",
             "STANDARD shadow: BD12 ∩ ED12 ∩ O2F12",
-            f"🔥 A: BD rank 11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX}",
-            f"🟠 B: BD rank 11-12 + O2 rank {PRIME_B_O2_RANK_MIN}-{PRIME_B_O2_RANK_MAX}",
+            f"🔥 A: BD11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} (invariato)",
+            f"💎 A2: BD11-12 + O2 rank {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + ora ≤08:00/>16:00",
+            f"🧬 C shadow: BD1-6 + O2 rank {PRIME_C_O2_RANK_MIN}-{PRIME_C_O2_RANK_MAX} + ora >16:00",
             f"Oro2 W{MULTI_WINDOW} | cooldown {MULTI_COOLDOWN} | COOC W{MULTI_COOC_WINDOW} | H{MULTI_HORIZON}",
             "",
             f"📚 Storico MULTI {len(self.history)} | scan {self.scans} | STD {self.signals} | cooldown skip {self.cooldown_skips}",
@@ -1398,36 +1512,32 @@ class MultiPrimeV1:
             "",
             f"🔥 PRIME A — start {self.prime_a_started_from_key or '-'} | creati {self.prime_a_signals} | pending {apa}",
             f"AMBATA A: H1 {ah1}/{an} ({safe_pct(ah1,an):.2f}%) | H3 {ah3}/{an} ({safe_pct(ah3,an):.2f}%) | H5 {ah5}/{an} ({safe_pct(ah5,an):.2f}%)",
-            f"A AMBO1: H1 {a1h1}/{a1n} ({safe_pct(a1h1,a1n):.2f}%) | H5 {a1h5}/{a1n} ({safe_pct(a1h5,a1n):.2f}%)",
-            f"A AMBO2 FAST: H1 {a2h1}/{a2n} ({safe_pct(a2h1,a2n):.2f}%) | H5 {a2h5}/{a2n} ({safe_pct(a2h5,a2n):.2f}%)",
-            f"A origini ≥1 BASE: {acov['base_hit']}/{acov['base_n']} ({safe_pct(acov['base_hit'],acov['base_n']):.2f}%) | ≥1 dei 3 lati: {acov['all3_hit']}/{acov['tri_n']} ({safe_pct(acov['all3_hit'],acov['tri_n']):.2f}%) | rescue terzo {acov['rescue']}",
-            f"A TRIANGLE OFF: H1 {aoffh1}/{aoffn} ({safe_pct(aoffh1,aoffn):.2f}%) | H5 {aoffh5}/{aoffn} ({safe_pct(aoffh5,aoffn):.2f}%) | pending ambi {apam}",
+            f"A AMBO1 H1/H5 {a1h1}/{a1n} ({safe_pct(a1h1,a1n):.2f}%) / {a1h5}/{a1n} ({safe_pct(a1h5,a1n):.2f}%) | AMBO2 H1/H5 {a2bh1}/{a2bn} ({safe_pct(a2bh1,a2bn):.2f}%) / {a2bh5}/{a2bn} ({safe_pct(a2bh5,a2bn):.2f}%)",
+            f"A ≥1 BASE {acov['base_hit']}/{acov['base_n']} ({safe_pct(acov['base_hit'],acov['base_n']):.2f}%) | ≥1 dei 3 {acov['all3_hit']}/{acov['tri_n']} ({safe_pct(acov['all3_hit'],acov['tri_n']):.2f}%) | rescue {acov['rescue']} | pending ambi {apam}",
             "",
-            f"🟠 PRIME B — start {self.prime_b_started_from_key or '-'} | creati {self.prime_b_signals} | pending {bpa}",
-            f"AMBATA B: H1 {bh1}/{bn} ({safe_pct(bh1,bn):.2f}%) | H3 {bh3}/{bn} ({safe_pct(bh3,bn):.2f}%) | H5 {bh5}/{bn} ({safe_pct(bh5,bn):.2f}%)",
-            f"B AMBO1 shadow: H1 {b1h1}/{b1n} ({safe_pct(b1h1,b1n):.2f}%) | H5 {b1h5}/{b1n} ({safe_pct(b1h5,b1n):.2f}%)",
-            f"B AMBO2 shadow: H1 {b2h1}/{b2n} ({safe_pct(b2h1,b2n):.2f}%) | H5 {b2h5}/{b2n} ({safe_pct(b2h5,b2n):.2f}%)",
-            f"B origini ≥1 BASE: {bcov['base_hit']}/{bcov['base_n']} ({safe_pct(bcov['base_hit'],bcov['base_n']):.2f}%) | ≥1 dei 3 lati: {bcov['all3_hit']}/{bcov['tri_n']} ({safe_pct(bcov['all3_hit'],bcov['tri_n']):.2f}%) | rescue terzo {bcov['rescue']}",
-            f"B TRIANGLE OFF: H1 {boffh1}/{boffn} ({safe_pct(boffh1,boffn):.2f}%) | H5 {boffh5}/{boffn} ({safe_pct(boffh5,boffn):.2f}%) | pending ambi {bpam}",
+            f"💎 PRIME A2 ELITE — start {self.prime_a2_started_from_key or '-'} | creati {self.prime_a2_signals} | pending {epa}",
+            f"AMBATA A2: H1 {a2h1}/{a2n} ({safe_pct(a2h1,a2n):.2f}%) | H3 {a2h3}/{a2n} ({safe_pct(a2h3,a2n):.2f}%) | H5 {a2h5}/{a2n} ({safe_pct(a2h5,a2n):.2f}%)",
+            f"A2 AMBO1 H1/H5 {e1h1}/{e1n} ({safe_pct(e1h1,e1n):.2f}%) / {e1h5}/{e1n} ({safe_pct(e1h5,e1n):.2f}%) | AMBO2 H1/H5 {e2h1}/{e2n} ({safe_pct(e2h1,e2n):.2f}%) / {e2h5}/{e2n} ({safe_pct(e2h5,e2n):.2f}%)",
+            f"A2 ≥1 BASE {ecov['base_hit']}/{ecov['base_n']} ({safe_pct(ecov['base_hit'],ecov['base_n']):.2f}%) | ≥1 dei 3 {ecov['all3_hit']}/{ecov['tri_n']} ({safe_pct(ecov['all3_hit'],ecov['tri_n']):.2f}%) | rescue {ecov['rescue']} | pending ambi {epam}",
+            f"A2 TRIANGLE OFF H1 {eoffh1}/{eoffn} ({safe_pct(eoffh1,eoffn):.2f}%) | H5 {eoffh5}/{eoffn} ({safe_pct(eoffh5,eoffn):.2f}%)",
             "",
-            f"🔥 SUPER ON (solo PRIME A+B): H1 {toh1}/{ton} ({safe_pct(toh1,ton):.2f}%) | H3 {toh3}/{ton} ({safe_pct(toh3,ton):.2f}%) | H5 {toh5}/{ton} ({safe_pct(toh5,ton):.2f}%)",
-            f"🔺 TRIANGLE tracking da {self.triangle_started_from_key or '-'} — nessun backfill OFF.",
+            f"🧬 PRIME C SHADOW — start {self.prime_c_started_from_key or '-'} | creati {self.prime_c_signals} | pending {cpa}",
+            f"C AMBATA shadow: H1 {ch1}/{cn} ({safe_pct(ch1,cn):.2f}%) | H3 {ch3}/{cn} ({safe_pct(ch3,cn):.2f}%) | H5 {ch5}/{cn} ({safe_pct(ch5,cn):.2f}%)",
+            f"C ambi shadow: A1 H5 {c1h5}/{c1n} ({safe_pct(c1h5,c1n):.2f}%) | A2 H5 {c2h5}/{c2n} ({safe_pct(c2h5,c2n):.2f}%) | ≥1 dei 3 {ccov['all3_hit']}/{ccov['tri_n']} ({safe_pct(ccov['all3_hit'],ccov['tri_n']):.2f}%) | pending ambi {cpam}",
+            "",
+            f"🟠 B LEGACY congelato: creati storici {self.prime_b_signals} | chiusi {bn} | H1 {bh1}/{bn} ({safe_pct(bh1,bn):.2f}%) | pending {bpa}/{bpam}",
+            f"🔥 SUPER ON operativo A+A2: H1 {op_h1}/{op_sn} ({safe_pct(op_h1,op_sn):.2f}%) | H3 {op_h3}/{op_sn} ({safe_pct(op_h3,op_sn):.2f}%) | H5 {op_h5}/{op_sn} ({safe_pct(op_h5,op_sn):.2f}%)",
+            f"🔺 TRIANGLE tracking da {self.triangle_started_from_key or '-'}; A2/C nessun backfill.",
             "Baseline: ambata H1 22.22% | ambo H1 ≈4.74% | ambo H5 ≈21.57%.",
             "",
             "⏸️ FOCUS / INCROCIO / CORE / legacy: PAUSATI; state conservato.",
         ]
         if self.pending:
-            lines.append(
-                "Pending ambate: " + ", ".join(
-                    f"{self._tier_from_obj(x)}:{int(x['num']):02d}@H{int(x.get('age',0))+1}"
-                    for x in self.pending[-12:]
-                )
-            )
+            lines.append("Pending ambate: " + ", ".join(
+                f"{self._tier_from_obj(x)}:{int(x['num']):02d}@H{int(x.get('age',0))+1}" for x in self.pending[-12:]
+            ))
         if self.last_signal:
-            lines.append(
-                "Ultimo segnale: " + str(self.last_signal.get("origin_key")) + " → "
-                + " ".join(f"{int(n):02d}" for n in self.last_signal.get("numbers", []))
-            )
+            lines.append("Ultimo segnale: " + str(self.last_signal.get("origin_key")) + " → " + " ".join(f"{int(n):02d}" for n in self.last_signal.get("numbers", [])))
         return "\n".join(lines)
 
 
@@ -1479,7 +1589,7 @@ class MultiOnlyEngine:
                 f"STATE CARICATO | ff={ff_status} | source={source} | rev={self.state_revision} | "
                 f"MULTI history={len(self.multichannel.history)} | "
                 f"A start={self.multichannel.prime_a_started_from_key or '-'} | "
-                f"B start={self.multichannel.prime_b_started_from_key or '-'}"
+                f"A2 start={self.multichannel.prime_a2_started_from_key or '-'} | C start={self.multichannel.prime_c_started_from_key or '-'}"
             )
             return bool(loaded_multi)
         except Exception as exc:
@@ -1497,7 +1607,7 @@ class MultiOnlyEngine:
         data["processed"] = self.processed[-PROCESSED_MAX:]
         data["last_draw_key"] = self.last_draw_key
         data["multichannel_bd12_ed12_o2f12_v1"] = self.multichannel.dump()
-        data["active_mode"] = "MULTI_PRIME_AB_TRIANGLE_v20.5.1"
+        data["active_mode"] = "MULTI_PRIME_A_A2_ELITE_C_SHADOW_v20.6"
         remote_data, _ = _fetch_remote_state() if git and PERSIST_GIT_STATE else (None, "disabled")
         merged, _ = _merge_state_data(data, remote_data)
         if isinstance(merged, dict):
@@ -1526,15 +1636,18 @@ class MultiOnlyEngine:
     def status_text(self):
         mc = self.multichannel
         return (
-            "📡 STATUS v20.5.1 MULTI PRIME A+B FIX\n\n"
+            "📡 STATUS v20.6 MULTI PRIME A + A2 ELITE\n\n"
             f"Ultimo MULTI: {mc.history[-1]['key'] if mc.history else '-'}\n"
             f"State: {'OK' if self.state_load_info.get('loaded') else 'NUOVO'} | {self.state_load_info.get('reason')}\n"
             f"State source: {self.state_load_info.get('source','-')} | ff {self.state_load_info.get('ff','-')} | rev {self.state_revision}\n"
             f"History MULTI: {len(mc.history)}/{MULTI_HISTORY_MAX}\n"
             f"PRIME A start: {mc.prime_a_started_from_key or '-'}\n"
-            f"PRIME B start: {mc.prime_b_started_from_key or '-'}\n"
+            f"PRIME A2 start: {mc.prime_a2_started_from_key or '-'}\n"
+            f"PRIME C start: {mc.prime_c_started_from_key or '-'}\n"
+            f"B legacy start: {mc.prime_b_started_from_key or '-'}\n"
             f"TRIANGLE start: {mc.triangle_started_from_key or '-'}\n\n"
-            "✅ Attivo: MULTI BD/ED/O2 + PRIME A + PRIME B + TRIANGLE SHADOW\n"
+            "✅ Attivo: MULTI + PRIME A + PRIME A2 ELITE; PRIME C shadow\n"
+            "🟠 PRIME B: congelato, solo eventuali pending legacy.\n"
             "⏸️ FOCUS / INCROCIO / CORE / legacy: congelati nello state.\n\n"
             + mc.text()
         )
@@ -1542,17 +1655,18 @@ class MultiOnlyEngine:
     @staticmethod
     def menu_text():
         return (
-            "🎯 10eLOTTO v20.5 — MULTI PRIME A+B\n\n"
+            "🎯 10eLOTTO v20.6 — MULTI PRIME A + A2 ELITE\n\n"
             "ATTIVO:\n"
             "• STANDARD BD12∩ED12∩O2F12 shadow/control\n"
             f"• 🔥 PRIME A: BD11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX}\n"
-            f"• 🟠 PRIME B: BD11-12 + O2 rank {PRIME_B_O2_RANK_MIN}-{PRIME_B_O2_RANK_MAX}\n"
-            "• A: AMBO1 + AMBO2 FAST monitorati\n"
-            "• B: ambi solo shadow\n"
-            f"• SUPER ON se support_sum≥{MULTI_SUPER_GATE}\n"
-            "• TRIANGLE OFF-gate sempre shadow su A/B\n\n"
+            f"• 💎 PRIME A2 ELITE: BD11-12 + O2 rank {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + ora ≤08:00 oppure >16:00\n"
+            f"• 🧬 PRIME C SHADOW: BD1-6 + O2 rank {PRIME_C_O2_RANK_MIN}-{PRIME_C_O2_RANK_MAX} + ora >16:00\n"
+            "• A/A2: AMBO1 + AMBO2 + terzo lato monitorati\n"
+            "• C: tutto shadow\n"
+            "• B legacy: nessun nuovo segnale\n"
+            f"• SUPER ON se support_sum≥{MULTI_SUPER_GATE}; TRIANGLE OFF shadow\n\n"
             "PAUSATI (state conservato): FOCUS, INCROCIO, CORE e tutti i legacy.\n\n"
-            "/multi — statistiche complete A/B/TRIANGLE\n"
+            "/multi — statistiche complete A/A2/C\n"
             "/status — feed + state + statistiche\n"
             "/verificatutto — audit completo\n"
             "/menu — comandi"
@@ -1585,9 +1699,9 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setup_commands(app):
     await app.bot.set_my_commands([
-        BotCommand("multi", "MULTI BD/ED/O2 + PRIME A/B + TRIANGLE"),
-        BotCommand("status", "Stato MULTI A/B + feed/state"),
-        BotCommand("verificatutto", "Audit MULTI A/B/TRIANGLE"),
+        BotCommand("multi", "MULTI + PRIME A/A2 + C shadow"),
+        BotCommand("status", "Stato MULTI A/A2 + feed/state"),
+        BotCommand("verificatutto", "Audit MULTI A/A2/C/TRIANGLE"),
         BotCommand("menu", "Comandi attivi"),
     ])
 
@@ -1672,16 +1786,17 @@ async def startup(engine, app):
 
     await engine.tg(
         app,
-        "🚀 MULTI BD12+ED12+O2F12 — v20.5.1 PRIME A+B FIX AVVIATO\n\n"
+        "🚀 MULTI BD12+ED12+O2F12 — v20.6 PRIME A + A2 ELITE AVVIATO\n\n"
         "🧪 STANDARD: BD12 ∩ ED12 ∩ O2F12 W80, cooldown 5 — SHADOW/control.\n"
         f"🔥 PRIME A: BD rank 11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} — invariato, qualità massima.\n"
-        f"🟠 PRIME B: BD rank 11-12 + O2 rank {PRIME_B_O2_RANK_MIN}-{PRIME_B_O2_RANK_MAX} — più segnali, ambata H1.\n"
-        "🔗 A: AMBO1 + AMBO2 FAST; B: ambi solo shadow.\n"
-        f"🔥 SUPER ON se support_sum≥{MULTI_SUPER_GATE}; 🔺 TRIANGLE OFF sempre shadow su A/B.\n"
-        "🛡️ State v20.5.1: merge LOCAL+REMOTE + push esplicito sul branch; contatori monotoni.\n\n"
+        f"💎 PRIME A2 ELITE: BD rank 11-12 + O2 rank {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + ora ≤08:00 oppure >16:00.\n"
+        f"🧬 PRIME C SHADOW: BD rank 1-6 + O2 rank {PRIME_C_O2_RANK_MIN}-{PRIME_C_O2_RANK_MAX} + ora >16:00.\n"
+        "🔗 A/A2: AMBO1 + AMBO2 + terzo lato; C tutto shadow.\n"
+        f"🔥 SUPER ON se support_sum≥{MULTI_SUPER_GATE}; 🔺 TRIANGLE OFF sempre shadow su A/A2/C.\n"
+        "🛡️ State FIX preservato: merge LOCAL+REMOTE + push esplicito sul branch; contatori monotoni.\n\n"
         "⏸️ FOCUS / INCROCIO / CORE / ENGINE / SOSIA / legacy: PAUSATI.\n"
         "✅ Il loro state viene conservato ma NON aggiornato.\n"
-        "🚫 Nessun backfill PRIME B/TRIANGLE.\n\n"
+        "🚫 Nessun backfill PRIME A2/C; PRIME B legacy congelato.\n\n"
         "Comandi: /multi /status /verificatutto /menu"
     )
 
@@ -1701,7 +1816,7 @@ async def startup_until_ready(engine, app):
 
 async def live_loop(engine, app):
     console_log(
-        f"MULTI PRIME A+B FIX LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s"
+        f"MULTI PRIME A+A2 ELITE LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s"
     )
     started = time.monotonic()
     last_error = ""
@@ -1720,7 +1835,7 @@ async def live_loop(engine, app):
                 detail = f"{st.get('action')} | {st.get('detail','')}" if isinstance(st, dict) else "save-status assente"
                 await engine.tg(
                     app,
-                    "♻️ MULTI PRIME A+B FIX — ROTAZIONE RUNNER\n"
+                    "♻️ MULTI PRIME A+A2 — ROTAZIONE RUNNER\n"
                     + ("✅ State salvato e pubblicato sul branch.\n" if ok else "⚠️ State NON confermato sul branch.\n")
                     + f"{detail}\nAvvio successivo automatico.",
                 )
@@ -1744,7 +1859,7 @@ async def live_loop(engine, app):
             if txt != last_error or now - last_error_ts >= 900:
                 await engine.tg(
                     app,
-                    "⚠️ MULTI PRIME A+B — ERRORE\n"
+                    "⚠️ MULTI PRIME A+A2 — ERRORE\n"
                     + txt
                     + "\nRiprovo automaticamente.",
                 )
@@ -1807,91 +1922,86 @@ def _selftest_seed_mc():
 
 
 def run_self_test():
-    # --- PRIME A + TRIANGLE OFF rescue ---
+    # --- PRIME A invariato ---
     mc = _selftest_seed_mc()
+    mc.history[-1]["time"] = "12:00"
     bd = [1,2,3,4,5,6,7,8,9,10,42,43]
     ed = [42,12,13,14,15,16,17,18,19,20,21,22]
-    o2 = [50,51,52,53,54,42,55,56,57,58,59,60]  # 42 = O2 rank 6 => A
+    o2 = [50,51,52,53,54,42,55,56,57,58,59,60]  # 42 O2 rank 6 => A
     mc._rankings = lambda: {
-        "base_gap": {n: (100-n if n != 42 else 30) for n in range(1,91)},
-        "extra_gap": {n: (100-n if n != 42 else 25) for n in range(1,91)},
-        "o2_freq": {n: (20 if n in o2 else 0) for n in range(1,91)},
+        "base_gap": {n:(100-n if n!=42 else 30) for n in range(1,91)},
+        "extra_gap": {n:(100-n if n!=42 else 25) for n in range(1,91)},
+        "o2_freq": {n:(20 if n in o2 else 0) for n in range(1,91)},
         "top_base_delay": bd, "top_extra_delay": ed, "top_o2": o2,
     }
     mc._partner_plan = lambda main, ranks: {
-        "main": int(main),
-        "p1": {"num": 50, "cooc": 30, "support": 1, "in_bd12": False, "in_ed12": False, "o2_freq80": 20},
-        "p2": {"num": 51, "cooc": 28, "support": 2, "in_bd12": True, "in_ed12": False, "o2_freq80": 20},
-        "support_sum": 3, "super_enabled": False, "cooc_window": 900,
+        "main":int(main),
+        "p1":{"num":50,"cooc":30,"support":1,"in_bd12":False,"in_ed12":False,"o2_freq80":20},
+        "p2":{"num":51,"cooc":28,"support":2,"in_bd12":True,"in_ed12":False,"o2_freq80":20},
+        "support_sum":3,"super_enabled":False,"cooc_window":900,
     }
-    sig = mc.arm()
-    assert sig and sig["prime_a_numbers"] == [42] and not sig["prime_b_numbers"], sig
-    assert mc.prime_a_signals == 1
-    assert len(mc.ambo_pending) == 3
-    assert {x["slot"] for x in mc.ambo_pending} == {"BASE1", "BASE2", "TRIANGLE_OFF"}
-    assert all(x.get("tier") == "A" for x in mc.ambo_pending)
+    sig=mc.arm()
+    assert sig and sig["prime_a_numbers"]==[42] and not sig["prime_a2_numbers"], sig
+    assert mc.prime_a_signals==1 and len(mc.ambo_pending)==3
 
-    next_day = mc.history[-1]["day"]
-    next_id = mc.history[-1]["draw_id"] + 1
-    # 50-51 insieme, ma senza 42: il terzo lato OFF centra H1 e salva la terna.
-    nums = [50, 51] + [n for n in range(1, 91) if n not in {42,50,51}][:18]
-    extra = [n for n in range(1,91) if n not in set(nums)][:15]
-    evs = mc.ingest({"key": draw_key(next_day, next_id), "day": next_day, "draw_id": next_id,
-                     "nums": nums, "oro": 50, "doppio_oro": 51, "extra": extra})
-    tev = [e for e in evs if e["kind"] == "ambo" and e["row"].get("slot") == "TRIANGLE_OFF"]
-    assert tev and tev[0]["hit_now"] and int(tev[0]["row"]["hit_colpo"]) == 1
-
-    # --- PRIME B disgiunto da A ---
-    mb = _selftest_seed_mc()
-    bd2 = [1,2,3,4,5,6,7,8,9,10,11,43]       # 43 = BD rank 12
-    ed2 = [43,12,13,14,15,16,17,18,19,20,21,22]
-    o22 = [60,61,43,62,63,64,65,66,67,68,69,70]  # 43 = O2 rank 3 => B
-    mb._rankings = lambda: {
-        "base_gap": {n: (100-n if n != 43 else 29) for n in range(1,91)},
-        "extra_gap": {n: (100-n if n != 43 else 24) for n in range(1,91)},
-        "o2_freq": {n: (20 if n in o22 else 0) for n in range(1,91)},
-        "top_base_delay": bd2, "top_extra_delay": ed2, "top_o2": o22,
+    # --- A2 ELITE: rank 3, mattina ---
+    me=_selftest_seed_mc(); me.history[-1]["time"]="07:30"
+    bd2=[1,2,3,4,5,6,7,8,9,10,11,43]
+    ed2=[43,12,13,14,15,16,17,18,19,20,21,22]
+    o22=[60,61,43,62,63,64,65,66,67,68,69,70]
+    me._rankings=lambda:{
+        "base_gap":{n:(100-n if n!=43 else 29) for n in range(1,91)},
+        "extra_gap":{n:(100-n if n!=43 else 24) for n in range(1,91)},
+        "o2_freq":{n:(20 if n in o22 else 0) for n in range(1,91)},
+        "top_base_delay":bd2,"top_extra_delay":ed2,"top_o2":o22,
     }
-    mb._partner_plan = lambda main, ranks: {
-        "main": int(main),
-        "p1": {"num": 60, "cooc": 31, "support": 1, "in_bd12": False, "in_ed12": False, "o2_freq80": 20},
-        "p2": {"num": 61, "cooc": 27, "support": 1, "in_bd12": False, "in_ed12": False, "o2_freq80": 20},
-        "support_sum": 2, "super_enabled": False, "cooc_window": 900,
+    me._partner_plan=lambda main,ranks:{
+        "main":int(main),"p1":{"num":60,"cooc":31,"support":1,"in_bd12":False,"in_ed12":False,"o2_freq80":20},
+        "p2":{"num":61,"cooc":27,"support":1,"in_bd12":False,"in_ed12":False,"o2_freq80":20},
+        "support_sum":2,"super_enabled":False,"cooc_window":900,
     }
-    sigb = mb.arm()
-    assert sigb and sigb["prime_b_numbers"] == [43] and not sigb["prime_a_numbers"], sigb
-    assert mb.prime_b_signals == 1
-    assert len(mb.ambo_pending) == 3 and all(x.get("tier") == "B" for x in mb.ambo_pending)
+    sige=me.arm()
+    assert sige and sige["prime_a2_numbers"]==[43] and not sige["prime_a_numbers"], sige
+    assert me.prime_a2_signals==1 and len(me.ambo_pending)==3 and all(x.get("tier")=="A2" for x in me.ambo_pending)
 
-    # Dump/load preserva A/B/TRIANGLE e migrazione legacy A.
-    rt = MultiPrimeV1()
-    assert rt.load(mc.dump())
-    assert rt.prime_a_signals == 1
-    assert rt.triangle_started_from_key
+    # Stesso ranking A2 ma fascia centrale => resta STANDARD e NON arma ambi.
+    mx=_selftest_seed_mc(); mx.history[-1]["time"]="12:30"; mx._rankings=me._rankings; mx._partner_plan=me._partner_plan
+    before=len(mx.ambo_pending); sx=mx.arm()
+    assert sx and sx["numbers"]==[43] and not sx["prime_a2_numbers"] and len(mx.ambo_pending)==before
 
-    legacy = mc.dump()
-    legacy.pop("prime_a_started_from_key", None)
-    legacy.pop("prime_a_started_at", None)
-    legacy.pop("prime_a_signals", None)
-    legacy["prime_started_from_key"] = mc.prime_a_started_from_key
-    legacy["prime_started_at"] = mc.prime_a_started_at
-    legacy["prime_signals"] = 7
-    mig = MultiPrimeV1()
-    assert mig.load(legacy) and mig.prime_a_signals == 7
+    # --- C SHADOW: BD rank 4 + O2 rank 8, dopo le 16 ---
+    mc3=_selftest_seed_mc(); mc3.history[-1]["time"]="17:30"
+    bd3=[1,2,3,44,5,6,7,8,9,10,11,12]
+    ed3=[44,21,22,23,24,25,26,27,28,29,30,31]
+    o23=[41,42,43,45,46,47,48,44,49,50,51,52]
+    mc3._rankings=lambda:{
+        "base_gap":{n:(30 if n==44 else 1) for n in range(1,91)},
+        "extra_gap":{n:(30 if n==44 else 1) for n in range(1,91)},
+        "o2_freq":{n:(10 if n in o23 else 0) for n in range(1,91)},
+        "top_base_delay":bd3,"top_extra_delay":ed3,"top_o2":o23,
+    }
+    mc3._partner_plan=lambda main,ranks:{
+        "main":int(main),"p1":{"num":41,"cooc":20,"support":1,"in_bd12":False,"in_ed12":False,"o2_freq80":10},
+        "p2":{"num":42,"cooc":19,"support":1,"in_bd12":False,"in_ed12":False,"o2_freq80":10},
+        "support_sum":2,"super_enabled":False,"cooc_window":900,
+    }
+    sc=mc3.arm()
+    assert sc and sc["prime_c_numbers"]==[44] and mc3.prime_c_signals==1
+    assert len(mc3.ambo_pending)==3 and all(x.get("tier")=="C" for x in mc3.ambo_pending)
+    assert not mc3.should_notify_signal(sc)
 
-    ms=MultiPrimeV1(); ms.history=list(mc.history); ms._refresh_keys(); ms.draw_seq=mc.draw_seq; ms.ensure_start()
-    ms._rankings=lambda:{"base_gap":{n:(30 if n==44 else 1) for n in range(1,91)},"extra_gap":{n:(30 if n==44 else 1) for n in range(1,91)},"o2_freq":{n:(10 if n in (44,11,12) else 0) for n in range(1,91)},"top_base_delay":[1,2,3,4,5,6,7,8,9,44,10,11],"top_extra_delay":[44,21,22,23,24,25,26,27,28,29,30,31],"top_o2":[41,42,43,45,46,47,48,49,50,51,44,52]}
-    before=len(ms.ambo_pending); ss=ms.arm()
-    assert ss and ss["numbers"] == [44] and not ss["prime_a_numbers"] and not ss["prime_b_numbers"]
-    assert len(ms.ambo_pending)==before
+    # Dump/load preserva A/A2/C e marker.
+    rt=MultiPrimeV1(); assert rt.load(me.dump()) and rt.prime_a2_signals==1 and rt.prime_a2_started_from_key
+    rc=MultiPrimeV1(); assert rc.load(mc3.dump()) and rc.prime_c_signals==1 and rc.prime_c_started_from_key
 
+    # Merge state: i contatori nuovi devono essere monotoni.
     la={"multichannel_bd12_ed12_o2f12_v1":mc.dump(),"processed":[],"multi_state_revision":3}
-    rb=mb.dump(); rb["prime_b_signals"]=5
+    rb=me.dump(); rb["prime_a2_signals"]=5; rb["prime_c_signals"]=2
     rr={"multichannel_bd12_ed12_o2f12_v1":rb,"processed":[],"multi_state_revision":4}
     mm,_=_merge_state_data(la,rr); mcm=mm["multichannel_bd12_ed12_o2f12_v1"]
-    assert int(mcm.get("prime_a_signals",0))>=1 and int(mcm.get("prime_b_signals",0))>=5
+    assert int(mcm.get("prime_a_signals",0))>=1 and int(mcm.get("prime_a2_signals",0))>=5 and int(mcm.get("prime_c_signals",0))>=2
 
-    print("SELF-TEST OK: v20.5.1 PRIME A/B + TRIANGLE + state merge + STANDARD pure shadow")
+    print("SELF-TEST OK: v20.6 PRIME A invariato + A2 ELITE + C shadow + state FIX + STANDARD pure shadow")
 
 
 # ============================================================
