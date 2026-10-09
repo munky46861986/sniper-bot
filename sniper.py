@@ -1,5 +1,5 @@
 # ============================================================
-# 🎯 10eLOTTO MULTI BD12+ED12+O2F12 — v20.7 PRIME A + A2 + D + X ULTRA
+# 🎯 10eLOTTO MULTI BD12+ED12+O2F12 — v20.7.1 PRIME A + A2 + D + X ULTRA — STATE FIX
 # ============================================================
 # UNICO RAMO ATTIVO: MULTI
 #   STANDARD (shadow/control): BD12 ∩ ED12 ∩ O2F12, W80, cooldown 5
@@ -26,6 +26,8 @@
 #   - nessun backfill PRIME D / PRIME X; A/A2 restano invariati; C/B legacy preservati
 #   - PRIME A migra dalla v20.4 senza reset
 #   - state anti-regressione fra rotazioni GitHub runner
+#   - v20.7.1: recupero anche dalla STORIA GIT dello state, non solo HEAD locale/remoto
+#   - v20.7.1: marker A2/D/X fissati solo dopo il catch-up reale, mai ereditati da uno state vecchio
 #   - mantiene FIX state v20.5.1: merge conservativo LOCAL+REMOTE + push esplicito sul branch
 #   - STANDARD totalmente shadow: NON arma piu AMBO/SUPER
 #   - FOCUS / INCROCIO / CORE / legacy: PAUSATI, state conservato ma non aggiornato
@@ -90,6 +92,10 @@ WARMUP_RETRY_SEC = int(os.getenv("WARMUP_RETRY_SEC", "300"))
 PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
 PROCESSED_MAX = int(os.getenv("PROCESSED_MAX", "12000"))
+
+CODE_RELEASE = "v20.7.1"
+STATE_GUARD_SCHEMA = 2071
+STATE_HISTORY_RECOVERY_COMMITS = max(10, min(120, int(os.getenv("STATE_HISTORY_RECOVERY_COMMITS", "60"))))
 
 MULTI_VERSION = 1  # compatibile con state v20.2/v20.3
 MULTI_WINDOW = max(20, int(os.getenv("MULTI_BD_ED_O2_WINDOW", "80")))
@@ -501,6 +507,41 @@ def _fetch_remote_state():
         return None, f"remote-json-{type(exc).__name__}"
 
 
+def _fetch_state_history_candidates(limit=None):
+    """
+    Recupera versioni precedenti dello state dalla STORIA Git del branch remoto.
+    Serve a ripristinare uno state avanzato anche se HEAD e' stato accidentalmente
+    sovrascritto con una copia piu vecchia durante un cambio versione.
+    """
+    if not os.path.exists(os.path.join(BASE_DIR, ".git")):
+        return [], {"status": "no-git", "count": 0, "max_rev": 0}
+    branch = _git_remote_branch()
+    f = _run_git(["fetch", "--quiet", "origin", branch], timeout=45)
+    if f.returncode != 0:
+        return [], {"status": "fetch-fail", "count": 0, "max_rev": 0}
+    rel = os.path.relpath(STATE_FILE, BASE_DIR).replace(os.sep, "/")
+    lim = int(limit or STATE_HISTORY_RECOVERY_COMMITS)
+    lg = _run_git(["log", f"-n{lim}", "--format=%H", f"origin/{branch}", "--", rel], timeout=35)
+    if lg.returncode != 0:
+        return [], {"status": "log-fail", "count": 0, "max_rev": 0}
+    out = []
+    max_rev = 0
+    for sha in [x.strip() for x in lg.stdout.splitlines() if x.strip()]:
+        g = _run_git(["show", f"{sha}:{rel}"], timeout=12)
+        if g.returncode != 0 or not g.stdout.strip():
+            continue
+        try:
+            data = json.loads(g.stdout)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        rev = int(data.get("multi_state_revision", 0) or 0)
+        max_rev = max(max_rev, rev)
+        out.append((sha, data))
+    return out, {"status": "ok", "count": len(out), "max_rev": max_rev, "branch": branch}
+
+
 def _key_max(a, b):
     oa, ob = order_key(a), order_key(b)
     if oa is None: return b
@@ -613,10 +654,21 @@ def _merge_multichannel_state(a, b):
                 except Exception: continue
                 lss[str(ik)]=max(int(lss.get(str(ik),0) or 0),iv)
     base["last_signal_seq"]=lss
-    for k in ("start_from_key","ambo_started_from_key","prime_started_from_key","prime_a_started_from_key","prime_a2_started_from_key","prime_d_elite_started_from_key","prime_d_wide_started_from_key","prime_x_started_from_key","prime_b_started_from_key","prime_c_started_from_key","triangle_started_from_key"):
+    for k in ("start_from_key","ambo_started_from_key","prime_started_from_key","prime_a_started_from_key","prime_a2_started_from_key","prime_d_elite_started_from_key","prime_d_wide_started_from_key","prime_x_started_from_key","prime_b_started_from_key","prime_c_started_from_key","triangle_started_from_key","v2071_started_from_key"):
         base[k]=_key_min(a.get(k),b.get(k))
-    for k in ("started_at","ambo_started_at","prime_started_at","prime_a_started_at","prime_a2_started_at","prime_d_elite_started_at","prime_d_wide_started_at","prime_x_started_at","prime_b_started_at","prime_c_started_at","triangle_started_at"):
+    for k in ("started_at","ambo_started_at","prime_started_at","prime_a_started_at","prime_a2_started_at","prime_d_elite_started_at","prime_d_wide_started_at","prime_x_started_at","prime_b_started_at","prime_c_started_at","triangle_started_at","v2071_started_at"):
         vals=[x for x in (a.get(k),b.get(k)) if isinstance(x,str) and x]; base[k]=min(vals) if vals else None
+    # I baseline della FIX devono riferirsi alla stessa prima base forward: prendiamo il minimo
+    # quando entrambe le copie li hanno, altrimenti quello disponibile.
+    for k in ("v2071_scans_base","v2071_signals_base","v2071_draw_seq_base"):
+        vals=[]
+        for src in (a,b):
+            try:
+                if src.get("v2071_started_from_key") and src.get(k) is not None:
+                    vals.append(int(src.get(k) or 0))
+            except Exception:
+                pass
+        base[k]=min(vals) if vals else 0
     base["last_armed_key"]=_key_max(a.get("last_armed_key"),b.get("last_armed_key"))
     base["last_signal"]=_latest_obj(a.get("last_signal"),b.get("last_signal"),("origin_key","key"))
     base["last_result"]=_latest_obj(a.get("last_result"),b.get("last_result"))
@@ -643,8 +695,30 @@ def _merge_state_data(local_data, remote_data):
     return base,"MERGED_LOCAL_REMOTE"
 
 
-def _best_available_state(local_data, remote_data):
-    return _merge_state_data(local_data, remote_data)
+def _merge_many_states(candidates):
+    merged = None
+    used = []
+    for label, data in candidates:
+        if not isinstance(data, dict):
+            continue
+        if merged is None:
+            merged = dict(data)
+            used.append(label)
+            continue
+        merged, _ = _merge_state_data(merged, data)
+        used.append(label)
+    return merged, used
+
+
+def _best_available_state(local_data, remote_data, history_candidates=None):
+    candidates = [("LOCAL", local_data), ("REMOTE_HEAD", remote_data)]
+    for sha, data in (history_candidates or []):
+        candidates.append((f"GIT:{sha[:8]}", data))
+    merged, used = _merge_many_states(candidates)
+    if not isinstance(merged, dict):
+        return None, "NONE", []
+    source = "MERGED_LOCAL_REMOTE_GIT_HISTORY" if history_candidates else "MERGED_LOCAL_REMOTE"
+    return merged, source, used
 
 
 # ============================================================
@@ -705,6 +779,14 @@ class MultiPrimeV1:
         self.prime_c_signals = 0
         self.triangle_started_from_key = None
         self.triangle_started_at = None
+
+        # v20.7.1: base forward reale della FIX. Viene fissata UNA SOLA VOLTA
+        # dopo il catch-up alle estrazioni piu recenti, mai durante il load di uno state vecchio.
+        self.v2071_started_from_key = None
+        self.v2071_started_at = None
+        self.v2071_scans_base = 0
+        self.v2071_signals_base = 0
+        self.v2071_draw_seq_base = 0
 
     @staticmethod
     def _sanitize_row(row):
@@ -792,6 +874,9 @@ class MultiPrimeV1:
         return len(self.history)
 
     def ensure_start(self):
+        """Inizializza soltanto i marker storici/legacy sicuri.
+        A2/D/X vengono gestiti da ensure_v2071_forward_base DOPO il catch-up.
+        """
         if not self.history:
             return False
         current = str(self.history[-1]["key"])
@@ -809,42 +894,71 @@ class MultiPrimeV1:
             self.prime_a_started_from_key = current
             self.prime_a_started_at = now_iso
             changed = True
-        if not self.prime_a2_started_from_key:
-            # v20.6: A2 nasce qui, senza ricostruire segnali precedenti.
-            self.prime_a2_started_from_key = current
-            self.prime_a2_started_at = now_iso
-            changed = True
-        if not self.prime_d_elite_started_from_key:
-            # v20.7: D ELITE nasce qui, senza backfill.
-            self.prime_d_elite_started_from_key = current
-            self.prime_d_elite_started_at = now_iso
-            changed = True
-        if not self.prime_d_wide_started_from_key:
-            # v20.7: D WIDE nasce qui, senza backfill.
-            self.prime_d_wide_started_from_key = current
-            self.prime_d_wide_started_at = now_iso
-            changed = True
-        if not self.prime_x_started_from_key:
-            # v20.7: X ULTRA shadow nasce qui, senza backfill.
-            self.prime_x_started_from_key = current
-            self.prime_x_started_at = now_iso
-            changed = True
         if not self.prime_b_started_from_key:
-            # Campo legacy B: viene inizializzato solo per compatibilità state.
             self.prime_b_started_from_key = current
             self.prime_b_started_at = now_iso
             changed = True
         if not self.prime_c_started_from_key:
-            # v20.6: C shadow nasce qui, senza backfill.
             self.prime_c_started_from_key = current
             self.prime_c_started_at = now_iso
             changed = True
         if not self.triangle_started_from_key:
-            # v20.5: il terzo lato OFF viene tracciato solo da qui in avanti.
             self.triangle_started_from_key = current
             self.triangle_started_at = now_iso
             changed = True
         return changed
+
+    def _tier_has_evidence(self, tiers=None, x_ultra=False):
+        tiers = set(tiers or [])
+        for r in list(self.records) + list(self.pending):
+            if not isinstance(r, dict):
+                continue
+            if x_ultra and bool(r.get("x_ultra")):
+                return True
+            if tiers and self._tier_from_obj(r) in tiers:
+                return True
+        for r in list(self.ambo_records) + list(self.ambo_pending):
+            if not isinstance(r, dict):
+                continue
+            if x_ultra and bool(r.get("x_ultra")):
+                return True
+            if tiers and self._tier_from_obj(r) in tiers:
+                return True
+        return False
+
+    def ensure_v2071_forward_base(self):
+        """
+        Congela la base forward della v20.7.1 SOLO dopo che il feed e' stato
+        portato all'ultima estrazione disponibile. Se A2/D/X non hanno alcuna
+        evidenza salvata, corregge i vecchi marker ereditati (es. #127) e li
+        riallinea a questa base reale. Se esistono record/pending, li preserva.
+        """
+        if not self.history:
+            return False
+        if self.v2071_started_from_key:
+            return False
+        current = str(self.history[-1]["key"])
+        now_iso = now_dt().isoformat(timespec="seconds")
+        self.v2071_started_from_key = current
+        self.v2071_started_at = now_iso
+        self.v2071_scans_base = int(self.scans)
+        self.v2071_signals_base = int(self.signals)
+        self.v2071_draw_seq_base = int(self.draw_seq)
+
+        # A resta storico e non viene toccato.
+        if self.prime_a2_signals <= 0 and not self._tier_has_evidence({"A2"}):
+            self.prime_a2_started_from_key = current
+            self.prime_a2_started_at = now_iso
+        if self.prime_d_elite_signals <= 0 and not self._tier_has_evidence({"DE"}):
+            self.prime_d_elite_started_from_key = current
+            self.prime_d_elite_started_at = now_iso
+        if self.prime_d_wide_signals <= 0 and not self._tier_has_evidence({"DW"}):
+            self.prime_d_wide_started_from_key = current
+            self.prime_d_wide_started_at = now_iso
+        if self.prime_x_signals <= 0 and not self._tier_has_evidence(x_ultra=True):
+            self.prime_x_started_from_key = current
+            self.prime_x_started_at = now_iso
+        return True
 
     def load(self, obj):
         if not isinstance(obj, dict) or int(obj.get("version", 0) or 0) != MULTI_VERSION:
@@ -926,6 +1040,13 @@ class MultiPrimeV1:
         self.triangle_started_from_key = str(tsk) if order_key(tsk) is not None else None
         self.triangle_started_at = obj.get("triangle_started_at") if isinstance(obj.get("triangle_started_at"), str) else None
 
+        fsk = obj.get("v2071_started_from_key")
+        self.v2071_started_from_key = str(fsk) if order_key(fsk) is not None else None
+        self.v2071_started_at = obj.get("v2071_started_at") if isinstance(obj.get("v2071_started_at"), str) else None
+        self.v2071_scans_base = max(0, int(obj.get("v2071_scans_base", 0) or 0))
+        self.v2071_signals_base = max(0, int(obj.get("v2071_signals_base", 0) or 0))
+        self.v2071_draw_seq_base = max(0, int(obj.get("v2071_draw_seq_base", 0) or 0))
+
         self.ensure_start()
         return True
 
@@ -985,6 +1106,11 @@ class MultiPrimeV1:
             "prime_c_signals": self.prime_c_signals,
             "triangle_started_from_key": self.triangle_started_from_key,
             "triangle_started_at": self.triangle_started_at,
+            "v2071_started_from_key": self.v2071_started_from_key,
+            "v2071_started_at": self.v2071_started_at,
+            "v2071_scans_base": int(self.v2071_scans_base),
+            "v2071_signals_base": int(self.v2071_signals_base),
+            "v2071_draw_seq_base": int(self.v2071_draw_seq_base),
         }
 
     @staticmethod
@@ -1242,6 +1368,9 @@ class MultiPrimeV1:
         if not self.history or len(self.history) < MULTI_WINDOW:
             return None
         self.ensure_start()
+        # arm() viene chiamato solo sulla piu recente estrazione nota: qui e' sicuro
+        # fissare la base forward se startup/sync non l'hanno gia fatto.
+        self.ensure_v2071_forward_base()
         origin_key = str(self.history[-1]["key"])
         if self.last_armed_key == origin_key:
             return None
@@ -1396,7 +1525,7 @@ class MultiPrimeV1:
         if sig.get("details"):
             origin_time = str((sig.get("details") or [{}])[0].get("origin_time") or "")
         lines = [
-            "🧪 MULTI BD12+ED12+O2F12 — v20.7",
+            "🧪 MULTI BD12+ED12+O2F12 — v20.7.1",
             "Origine: " + str(sig.get("origin_key")) + (f" | ora {origin_time}" if origin_time else ""),
             "STANDARD: Base RIT12 ∩ Extra RIT12 ∩ Oro2 FREQ12 (W80)",
             f"Segnali standard: {' '.join(f'{int(n):02d}' for n in sig.get('numbers', []))}",
@@ -1508,7 +1637,7 @@ class MultiPrimeV1:
             fast_note = "\n🎯 FAST H1 centrato." if tier == "A" and slot == "BASE2" and age == 1 and ev.get("hit_now") else ""
             off_note = "\n👁️ Era OFF-gate: hit registrato solo come TRIANGLE SHADOW." if slot == "TRIANGLE_OFF" and ev.get("hit_now") else ""
             return (
-                f"🧾 MULTI v20.7 — {tag}\n\n"
+                f"🧾 MULTI v20.7.1 — {tag}\n\n"
                 f"Origine {r.get('origin_key')} | M {int(r.get('main',0)):02d}\n"
                 f"Coppia {pair[0]:02d}-{pair[1]:02d} | {status}"
                 f"{tier_line} | BD rank={r.get('bd_rank')} | O2 rank={r.get('o2_rank')}"
@@ -1706,12 +1835,13 @@ class MultiPrimeV1:
         dcov_n=decov['tri_n']+dwcov['tri_n']; dcov_hit=decov['all3_hit']+dwcov['all3_hit']
 
         lines = [
-            "🧪 MULTI PRIME A + A2 + D — v20.7",
+            "🧪 MULTI PRIME A + A2 + D — v20.7.1",
             "STANDARD shadow: BD12 ∩ ED12 ∩ O2F12",
             f"🔥 A: BD11-12 + O2 {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} | 💎 A2: BD11-12 + O2 {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + fascia Elite",
             "💠 D-ELITE: BD1-4 | 🔥 D-WIDE: BD5-8 | entrambi >16:00 + intersezione unica",
             "🧬 X ULTRA shadow: D + ED9-12 + >17:00 + Extra margin13≥1",
             f"Oro2 W{MULTI_WINDOW} | cooldown {MULTI_COOLDOWN} | COOC W{MULTI_COOC_WINDOW} | H{MULTI_HORIZON}",
+            f"🛡️ FIX base {self.v2071_started_from_key or '-'} | scan da fix {max(0,self.scans-self.v2071_scans_base)} | STD da fix {max(0,self.signals-self.v2071_signals_base)}",
             "",
             f"📚 MULTI history {len(self.history)} | scan {self.scans} | STD {self.signals} | skip {self.cooldown_skips}",
             f"STANDARD chiusi {n} | H1 {h1}/{n} ({safe_pct(h1,n):.2f}%) | H3 {h3}/{n} ({safe_pct(h3,n):.2f}%) | H5 {h5}/{n} ({safe_pct(h5,n):.2f}%)",
@@ -1768,7 +1898,8 @@ class MultiOnlyEngine:
         local_path = STATE_FILE if os.path.exists(STATE_FILE) else (LEGACY_STATE_FILE if os.path.exists(LEGACY_STATE_FILE) else None)
         local_data = _read_json_file(local_path) if local_path else None
         remote_data, remote_src = _fetch_remote_state()
-        data, source = _best_available_state(local_data, remote_data)
+        history_candidates, history_info = _fetch_state_history_candidates()
+        data, source, used_sources = _best_available_state(local_data, remote_data, history_candidates)
 
         if not isinstance(data, dict):
             self.state_load_info = {
@@ -1792,9 +1923,14 @@ class MultiOnlyEngine:
                 "reason": "OK" if loaded_multi else "MULTI state assente/incompatibile",
                 "source": source,
                 "remote": remote_src, "ff": ff_status,
+                "history_status": history_info.get("status"),
+                "history_count": int(history_info.get("count", 0) or 0),
+                "history_max_rev": int(history_info.get("max_rev", 0) or 0),
+                "used_sources": used_sources,
             }
             console_log(
                 f"STATE CARICATO | ff={ff_status} | source={source} | rev={self.state_revision} | "
+                f"history-guard={history_info.get('count',0)} maxrev={history_info.get('max_rev',0)} | "
                 f"MULTI history={len(self.multichannel.history)} | "
                 f"A start={self.multichannel.prime_a_started_from_key or '-'} | "
                 f"A2 start={self.multichannel.prime_a2_started_from_key or '-'} | D start={self.multichannel.prime_d_elite_started_from_key or '-'} | X start={self.multichannel.prime_x_started_from_key or '-'}"
@@ -1808,28 +1944,42 @@ class MultiOnlyEngine:
             return False
 
     def save_state(self, git=True, force_git=False):
+        # Costruisci lo snapshot locale SENZA incrementare ancora la revision.
         data = dict(self.raw_state) if isinstance(self.raw_state, dict) else {}
-        self.state_revision += 1
         data["saved_at"] = now_dt().isoformat(timespec="seconds")
-        data["multi_state_revision"] = int(self.state_revision)
         data["processed"] = self.processed[-PROCESSED_MAX:]
         data["last_draw_key"] = self.last_draw_key
         data["multichannel_bd12_ed12_o2f12_v1"] = self.multichannel.dump()
-        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_ULTRA_v20.7"
+        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_v20.7.1_STATE_FIX"
+        data["state_guard_schema"] = STATE_GUARD_SCHEMA
+
+        # Prima fondi con HEAD remoto; la revision viene assegnata SOLO dopo il merge,
+        # quindi non puo mai essere inferiore a una copia remota piu avanzata.
         remote_data, _ = _fetch_remote_state() if git and PERSIST_GIT_STATE else (None, "disabled")
         merged, _ = _merge_state_data(data, remote_data)
         if isinstance(merged, dict):
             data = merged
-            self.state_revision = max(self.state_revision, int(data.get("multi_state_revision", 0) or 0))
-            self.multichannel.load(data.get("multichannel_bd12_ed12_o2f12_v1"))
-            self.processed = [str(x) for x in data.get("processed", []) if isinstance(x, str)][-PROCESSED_MAX:]
-            self.processed_set = set(self.processed)
-            if isinstance(data.get("last_draw_key"), str): self.last_draw_key = data.get("last_draw_key")
+
+        remote_rev = int(data.get("multi_state_revision", 0) or 0)
+        self.state_revision = max(int(self.state_revision), remote_rev) + 1
+        data["multi_state_revision"] = int(self.state_revision)
+        data["saved_at"] = now_dt().isoformat(timespec="seconds")
+        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_v20.7.1_STATE_FIX"
+        data["state_guard_schema"] = STATE_GUARD_SCHEMA
+
+        # Ricarica l'eventuale merge prima della scrittura per mantenere record/pending monotoni.
+        self.multichannel.load(data.get("multichannel_bd12_ed12_o2f12_v1"))
+        self.processed = [str(x) for x in data.get("processed", []) if isinstance(x, str)][-PROCESSED_MAX:]
+        self.processed_set = set(self.processed)
+        if isinstance(data.get("last_draw_key"), str):
+            self.last_draw_key = data.get("last_draw_key")
+
         atomic_write_json(STATE_FILE, data)
         self.raw_state = data
         if git:
             st = git_commit_state_if_needed(force=force_git)
-            if not st.get("ok", False): console_log(f"STATE GIT WARNING | {st.get('action')} | {st.get('detail','')}")
+            if not st.get("ok", False):
+                console_log(f"STATE GIT WARNING | {st.get('action')} | {st.get('detail','')}")
             return st
         return {"ok": True, "action": "local-only", "detail": "state scritto"}
 
@@ -1844,11 +1994,13 @@ class MultiOnlyEngine:
     def status_text(self):
         mc = self.multichannel
         return (
-            "📡 STATUS v20.7 MULTI PRIME A + A2 + D\n\n"
+            "📡 STATUS v20.7.1 MULTI PRIME A + A2 + D — STATE FIX\n\n"
             f"Ultimo MULTI: {mc.history[-1]['key'] if mc.history else '-'}\n"
             f"State: {'OK' if self.state_load_info.get('loaded') else 'NUOVO'} | {self.state_load_info.get('reason')}\n"
             f"State source: {self.state_load_info.get('source','-')} | ff {self.state_load_info.get('ff','-')} | rev {self.state_revision}\n"
+            f"Git history guard: {self.state_load_info.get('history_count',0)} snapshot | max rev trovato {self.state_load_info.get('history_max_rev',0)}\n"
             f"History MULTI: {len(mc.history)}/{MULTI_HISTORY_MAX}\n"
+            f"v20.7.1 forward base: {mc.v2071_started_from_key or '-'} | scan da fix {max(0, mc.scans-mc.v2071_scans_base)} | STD da fix {max(0, mc.signals-mc.v2071_signals_base)}\n"
             f"PRIME A start: {mc.prime_a_started_from_key or '-'}\n"
             f"PRIME A2 start: {mc.prime_a2_started_from_key or '-'}\n"
             f"PRIME D ELITE start: {mc.prime_d_elite_started_from_key or '-'}\n"
@@ -1866,7 +2018,7 @@ class MultiOnlyEngine:
     @staticmethod
     def menu_text():
         return (
-            "🎯 10eLOTTO v20.7 — MULTI PRIME A + A2 + D\n\n"
+            "🎯 10eLOTTO v20.7.1 — MULTI PRIME A + A2 + D — STATE FIX\n\n"
             "ATTIVO:\n"
             "• STANDARD BD12∩ED12∩O2F12 shadow/control\n"
             f"• 🔥 PRIME A: BD11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX}\n"
@@ -1930,6 +2082,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     if bootstrap_if_empty and not mc.history:
         mc.bootstrap(rows)
         mc.ensure_start()
+        mc.ensure_v2071_forward_base()
         # Nessun segnale sui draw già noti al bootstrap: il prossimo draw sarà il primo forward reale.
         engine.save_state(git=True, force_git=True)
         return {"rows": len(rows), "unseen": 0, "signal": None, "events": [], "bootstrapped": True}
@@ -1950,6 +2103,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
                         await engine.tg(app, msg)
 
     mc.ensure_start()
+    mc.ensure_v2071_forward_base()
     sig = mc.arm() if mc.history else None
     if sig and notify and mc.should_notify_signal(sig):
         msg = mc.signal_text(sig)
@@ -1992,6 +2146,9 @@ async def startup(engine, app):
             mc.ingest(r)
         mc.ensure_start()
 
+    # v20.7.1: solo DOPO il catch-up fissiamo la base reale dei nuovi tracker.
+    mc.ensure_v2071_forward_base()
+
     # Congela SOLO ora il segnale sulla più recente estrazione disponibile.
     sig = mc.arm() if mc.history else None
     engine.last_draw_key = mc.history[-1]["key"] if mc.history else engine.last_draw_key
@@ -1999,7 +2156,7 @@ async def startup(engine, app):
 
     await engine.tg(
         app,
-        "🚀 MULTI BD12+ED12+O2F12 — v20.7 PRIME A + A2 + D AVVIATO\n\n"
+        "🚀 MULTI BD12+ED12+O2F12 — v20.7.1 PRIME A + A2 + D — STATE FIX AVVIATO\n\n"
         "🧪 STANDARD: BD12 ∩ ED12 ∩ O2F12 W80, cooldown 5 — SHADOW/control.\n"
         f"🔥 PRIME A: BD rank 11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} — invariato, qualità massima.\n"
         f"💎 PRIME A2 ELITE: BD rank 11-12 + O2 rank {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + ora ≤08:00 oppure >16:00.\n"
@@ -2008,7 +2165,7 @@ async def startup(engine, app):
         "🧬 PRIME X ULTRA: D + ED rank 9-12 + ora >17:00 + Extra margin13≥1 — SHADOW.\n"
         "🔗 A/A2: ambi operativi; D: ambi solo shadow; C legacy shadow.\n"
         f"🔥 SUPER operativo solo A/A2 se support_sum≥{MULTI_SUPER_GATE}; 🔺 TRIANGLE OFF shadow.\n"
-        "🛡️ State FIX preservato: merge LOCAL+REMOTE + push esplicito sul branch; contatori monotoni.\n\n"
+        "🛡️ State FIX 20.7.1: LOCAL+REMOTE+STORIA GIT, revision monotona, marker A2/D/X post-catch-up.\n\n"
         "⏸️ FOCUS / INCROCIO / CORE / ENGINE / SOSIA / legacy: PAUSATI.\n"
         "✅ Il loro state viene conservato ma NON aggiornato.\n"
         "🚫 Nessun backfill PRIME D/X; A/A2 invariati; C/B legacy preservati.\n\n"
@@ -2050,7 +2207,7 @@ async def live_loop(engine, app):
                 detail = f"{st.get('action')} | {st.get('detail','')}" if isinstance(st, dict) else "save-status assente"
                 await engine.tg(
                     app,
-                    "♻️ MULTI PRIME A+A2+D — ROTAZIONE RUNNER\n"
+                    "♻️ MULTI PRIME A+A2+D v20.7.1 — ROTAZIONE RUNNER\n"
                     + ("✅ State salvato e pubblicato sul branch.\n" if ok else "⚠️ State NON confermato sul branch.\n")
                     + f"{detail}\nAvvio successivo automatico.",
                 )
@@ -2253,7 +2410,24 @@ def run_self_test():
     assert int(mcm.get("prime_a_signals",0))>=1 and int(mcm.get("prime_a2_signals",0))>=5 and int(mcm.get("prime_c_signals",0))>=2
     assert int(mcm.get("prime_d_elite_signals",0))>=4 and int(mcm.get("prime_d_wide_signals",0))>=3 and int(mcm.get("prime_x_signals",0))>=2
 
-    print("SELF-TEST OK: v20.7 A/A2 invariati + D ELITE/WIDE + X ULTRA shadow + state FIX")
+    # v20.7.1 marker: se A2/D/X sono vuoti, il marker vecchio viene riallineato
+    # UNA SOLA VOLTA alla base forward corrente; A storico resta intatto.
+    mf=_selftest_seed_mc()
+    old_a = mf.prime_a_started_from_key
+    mf.prime_a2_started_from_key="2026-10-06#127"
+    mf.prime_d_elite_started_from_key="2026-10-06#127"
+    mf.prime_d_wide_started_from_key="2026-10-06#127"
+    mf.prime_x_started_from_key="2026-10-06#127"
+    mf.v2071_started_from_key=None
+    current=mf.history[-1]["key"]
+    assert mf.ensure_v2071_forward_base()
+    assert mf.v2071_started_from_key==current
+    assert mf.prime_a2_started_from_key==current and mf.prime_d_elite_started_from_key==current and mf.prime_x_started_from_key==current
+    assert mf.prime_a_started_from_key==old_a
+    once=mf.v2071_started_from_key
+    assert not mf.ensure_v2071_forward_base() and mf.v2071_started_from_key==once
+
+    print("SELF-TEST OK: v20.7.1 A/A2/D/X invariati + GIT-history state guard + marker post-catch-up")
 
 
 # ============================================================
