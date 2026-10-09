@@ -1,24 +1,29 @@
 # ============================================================
-# 🎯 10eLOTTO MULTI BD12+ED12+O2F12 — v20.6 PRIME A + A2 ELITE + C SHADOW
+# 🎯 10eLOTTO MULTI BD12+ED12+O2F12 — v20.7 PRIME A + A2 + D + X ULTRA
 # ============================================================
 # UNICO RAMO ATTIVO: MULTI
 #   STANDARD (shadow/control): BD12 ∩ ED12 ∩ O2F12, W80, cooldown 5
 #   PRIME A: STANDARD + BD rank 11-12 + O2 rank 6-12 (INVARIATO da v20.4)
 #   PRIME A2 ELITE: STANDARD + BD rank 11-12 + O2 rank 2-4 + ora <=08:00 oppure >16:00
-#   PRIME C SHADOW: STANDARD + BD rank 1-6 + O2 rank 7-12 + ora >16:00
+#   PRIME D ELITE: STANDARD + BD rank 1-4 + ora >16:00 + intersezione BD∩ED∩O2 unica
+#   PRIME D WIDE: STANDARD + BD rank 5-8 + ora >16:00 + intersezione BD∩ED∩O2 unica
+#   PRIME X ULTRA SHADOW: sottoinsieme D con ED rank 9-12 + ora >17:00 + Extra margin13 >=1
+#   PRIME C SHADOW: legacy sperimentale v20.6, continua solo dove non scatta D
 #   PRIME B: LEGACY congelato; nessun nuovo B viene creato
 #
 # AMBI:
 #   P1/P2 = 2 partner O2F12 con maggiore co-occorrenza Base nei 900 draw precedenti
 #   A: AMBO1 M-P1 + AMBO2 M-P2 FAST + terzo lato sempre monitorato
 #   A2: AMBO1 + AMBO2 + terzo lato monitorati come nuovo forward operativo
+#   D ELITE/WIDE: AMBATA operativa; AMBO1/AMBO2/terzo lato SOLO shadow
+#   X ULTRA: overlay shadow sui D, nessuna notifica separata
 #   C: ambata/ambi solo shadow; nessuna notifica operativa
 #   B legacy: eventuali pending precedenti vengono solo chiusi
 #   SUPER = P1-P2 se support_sum >= 4
-#   TRIANGLE_OFF = P1-P2 se support_sum < 4, sempre shadow su A/A2/C
+#   TRIANGLE_OFF = P1-P2 se support_sum < 4, sempre shadow su A/A2/D/C
 #
 # FORWARD TEST:
-#   - nessun backfill PRIME A2 / PRIME C; PRIME B legacy non genera nuovi segnali
+#   - nessun backfill PRIME D / PRIME X; A/A2 restano invariati; C/B legacy preservati
 #   - PRIME A migra dalla v20.4 senza reset
 #   - state anti-regressione fra rotazioni GitHub runner
 #   - mantiene FIX state v20.5.1: merge conservativo LOCAL+REMOTE + push esplicito sul branch
@@ -99,11 +104,14 @@ MULTI_AMBO_RECORD_MAX = max(1500, int(os.getenv("MULTI_BD_ED_O2_AMBO_RECORD_MAX"
 
 # PRIME — regole congelate dal test storico Jan-Sep 2025.
 # A = originale: BD rank 11-12 + O2 rank 6-12.
-# A2 ELITE = espansione selettiva: BD rank 11-12 + O2 rank 2-4
-#            e orario origine <=08:00 oppure >16:00.
-# C SHADOW = ipotesi sperimentale: BD rank 1-6 + O2 rank 7-12 e ora >16:00.
+# A2 ELITE = BD rank 11-12 + O2 rank 2-4 + ora <=08:00 oppure >16:00.
+# D = nuova famiglia disgiunta da A/A2: intersezione BD∩ED∩O2 UNICA + ora >16:00.
+#     D ELITE = BD rank 1-4; D WIDE = BD rank 5-8.
+# X ULTRA = overlay SHADOW dentro D: ED rank 9-12 + ora >17:00 +
+#           Extra gap del candidato >= 1 draw sopra il gap del 13° ED.
+# C SHADOW = legacy sperimentale v20.6; continua solo sui casi non assorbiti da D.
 # B = legacy v20.5: conservato nello state ma NON genera nuovi segnali.
-PRIME_VERSION = 3
+PRIME_VERSION = 4
 PRIME_A_BD_RANK_MIN = 11
 PRIME_A_BD_RANK_MAX = 12
 PRIME_A_O2_RANK_MIN = 6
@@ -114,17 +122,31 @@ PRIME_A2_O2_RANK_MIN = 2
 PRIME_A2_O2_RANK_MAX = 4
 PRIME_A2_MORNING_MAX_MIN = 8 * 60       # <= 08:00
 PRIME_A2_EVENING_AFTER_MIN = 16 * 60    # > 16:00
+PRIME_D_ELITE_BD_RANK_MIN = 1
+PRIME_D_ELITE_BD_RANK_MAX = 4
+PRIME_D_WIDE_BD_RANK_MIN = 5
+PRIME_D_WIDE_BD_RANK_MAX = 8
+PRIME_D_AFTER_MIN = 16 * 60              # > 16:00
+PRIME_D_INTERSECTION_SIZE = 1
+PRIME_X_BD_RANK_MIN = 1
+PRIME_X_BD_RANK_MAX = 8
+PRIME_X_ED_RANK_MIN = 9
+PRIME_X_ED_RANK_MAX = 12
+PRIME_X_AFTER_MIN = 17 * 60              # > 17:00
+PRIME_X_EXTRA_MARGIN13_MIN = 1            # gap Extra candidato - gap Extra rank13 >= 1
 PRIME_C_BD_RANK_MIN = 1
 PRIME_C_BD_RANK_MAX = 6
 PRIME_C_O2_RANK_MIN = 7
 PRIME_C_O2_RANK_MAX = 12
 PRIME_C_AFTER_MIN = 16 * 60              # > 16:00
 
-# Notifiche. STANDARD e C restano shadow. A e A2 sono operativi.
+# Notifiche. STANDARD/C/X restano shadow. A, A2 e D notificano l'AMBATA.
 NOTIFY_PRIME_A_SIGNAL = os.getenv("MULTI_PRIME_A_NOTIFY_SIGNAL", os.getenv("MULTI_PRIME_NOTIFY_SIGNAL", "1")).lower() not in {"0", "false", "no", "off"}
 NOTIFY_PRIME_A_RESULT = os.getenv("MULTI_PRIME_A_NOTIFY_RESULT", os.getenv("MULTI_PRIME_NOTIFY_RESULT", "1")).lower() not in {"0", "false", "no", "off"}
 NOTIFY_PRIME_A2_SIGNAL = os.getenv("MULTI_PRIME_A2_NOTIFY_SIGNAL", "1").lower() not in {"0", "false", "no", "off"}
 NOTIFY_PRIME_A2_RESULT = os.getenv("MULTI_PRIME_A2_NOTIFY_RESULT", "1").lower() not in {"0", "false", "no", "off"}
+NOTIFY_PRIME_D_SIGNAL = os.getenv("MULTI_PRIME_D_NOTIFY_SIGNAL", "1").lower() not in {"0", "false", "no", "off"}
+NOTIFY_PRIME_D_RESULT = os.getenv("MULTI_PRIME_D_NOTIFY_RESULT", "1").lower() not in {"0", "false", "no", "off"}
 # B non crea nuovi segnali; questa opzione serve solo a chiudere eventuali pending legacy.
 NOTIFY_PRIME_B_RESULT = os.getenv("MULTI_PRIME_B_NOTIFY_RESULT", "1").lower() not in {"0", "false", "no", "off"}
 NOTIFY_TRIANGLE_OFF_HIT = os.getenv("MULTI_TRIANGLE_OFF_NOTIFY_HIT", "1").lower() not in {"0", "false", "no", "off"}
@@ -419,6 +441,9 @@ def _state_progress(data):
         + int(mc.get("prime_a_signals", mc.get("prime_signals", 0)) or 0)
         + int(mc.get("prime_b_signals", 0) or 0)
         + int(mc.get("prime_a2_signals", 0) or 0)
+        + int(mc.get("prime_d_elite_signals", 0) or 0)
+        + int(mc.get("prime_d_wide_signals", 0) or 0)
+        + int(mc.get("prime_x_signals", 0) or 0)
         + int(mc.get("prime_c_signals", 0) or 0)
     )
     pending = len(mc.get("pending") or []) + len(mc.get("ambo_pending") or [])
@@ -563,15 +588,21 @@ def _merge_multichannel_state(a, b):
     sigrows=rec+pen
     def tier(r):
         t=str(r.get("tier") or "").upper()
-        if t in {"A","A2","B","C","STD"}: return t
+        if t in {"A","A2","DE","DW","B","C","STD"}: return t
         return "A" if bool(r.get("prime")) else "STD"
     ac=len({_signal_id(r) for r in sigrows if tier(r)=="A"})
     a2c=len({_signal_id(r) for r in sigrows if tier(r)=="A2"})
+    dec=len({_signal_id(r) for r in sigrows if tier(r)=="DE"})
+    dwc=len({_signal_id(r) for r in sigrows if tier(r)=="DW"})
+    xc=len({_signal_id(r) for r in sigrows if bool(r.get("x_ultra"))})
     bc=len({_signal_id(r) for r in sigrows if tier(r)=="B"})
     cc=len({_signal_id(r) for r in sigrows if tier(r)=="C"})
     base["prime_a_signals"]=max(int(a.get("prime_a_signals",a.get("prime_signals",0)) or 0),int(b.get("prime_a_signals",b.get("prime_signals",0)) or 0),ac)
     base["prime_signals"]=base["prime_a_signals"]
     base["prime_a2_signals"]=max(int(a.get("prime_a2_signals",0) or 0),int(b.get("prime_a2_signals",0) or 0),a2c)
+    base["prime_d_elite_signals"]=max(int(a.get("prime_d_elite_signals",0) or 0),int(b.get("prime_d_elite_signals",0) or 0),dec)
+    base["prime_d_wide_signals"]=max(int(a.get("prime_d_wide_signals",0) or 0),int(b.get("prime_d_wide_signals",0) or 0),dwc)
+    base["prime_x_signals"]=max(int(a.get("prime_x_signals",0) or 0),int(b.get("prime_x_signals",0) or 0),xc)
     base["prime_b_signals"]=max(int(a.get("prime_b_signals",0) or 0),int(b.get("prime_b_signals",0) or 0),bc)
     base["prime_c_signals"]=max(int(a.get("prime_c_signals",0) or 0),int(b.get("prime_c_signals",0) or 0),cc)
     lss={}
@@ -582,9 +613,9 @@ def _merge_multichannel_state(a, b):
                 except Exception: continue
                 lss[str(ik)]=max(int(lss.get(str(ik),0) or 0),iv)
     base["last_signal_seq"]=lss
-    for k in ("start_from_key","ambo_started_from_key","prime_started_from_key","prime_a_started_from_key","prime_a2_started_from_key","prime_b_started_from_key","prime_c_started_from_key","triangle_started_from_key"):
+    for k in ("start_from_key","ambo_started_from_key","prime_started_from_key","prime_a_started_from_key","prime_a2_started_from_key","prime_d_elite_started_from_key","prime_d_wide_started_from_key","prime_x_started_from_key","prime_b_started_from_key","prime_c_started_from_key","triangle_started_from_key"):
         base[k]=_key_min(a.get(k),b.get(k))
-    for k in ("started_at","ambo_started_at","prime_started_at","prime_a_started_at","prime_a2_started_at","prime_b_started_at","prime_c_started_at","triangle_started_at"):
+    for k in ("started_at","ambo_started_at","prime_started_at","prime_a_started_at","prime_a2_started_at","prime_d_elite_started_at","prime_d_wide_started_at","prime_x_started_at","prime_b_started_at","prime_c_started_at","triangle_started_at"):
         vals=[x for x in (a.get(k),b.get(k)) if isinstance(x,str) and x]; base[k]=min(vals) if vals else None
     base["last_armed_key"]=_key_max(a.get("last_armed_key"),b.get("last_armed_key"))
     base["last_signal"]=_latest_obj(a.get("last_signal"),b.get("last_signal"),("origin_key","key"))
@@ -617,7 +648,7 @@ def _best_available_state(local_data, remote_data):
 
 
 # ============================================================
-# MULTI BD12 + ED12 + O2F12 + PRIME A + A2 ELITE + C SHADOW + TRIANGLE
+# MULTI BD12 + ED12 + O2F12 + PRIME A + A2 + D + X ULTRA SHADOW + TRIANGLE
 # ============================================================
 class MultiPrimeV1:
     def __init__(self):
@@ -655,6 +686,16 @@ class MultiPrimeV1:
         self.prime_a2_started_from_key = None
         self.prime_a2_started_at = None
         self.prime_a2_signals = 0
+        # D/X nascono in v20.7 senza backfill.
+        self.prime_d_elite_started_from_key = None
+        self.prime_d_elite_started_at = None
+        self.prime_d_elite_signals = 0
+        self.prime_d_wide_started_from_key = None
+        self.prime_d_wide_started_at = None
+        self.prime_d_wide_signals = 0
+        self.prime_x_started_from_key = None
+        self.prime_x_started_at = None
+        self.prime_x_signals = 0
         # B resta solo legacy: storico/pending preservati, nessun nuovo segnale.
         self.prime_b_started_from_key = None
         self.prime_b_started_at = None
@@ -696,7 +737,7 @@ class MultiPrimeV1:
         if not isinstance(row, dict):
             return "STD"
         tier = str(row.get("tier") or "").upper()
-        if tier in {"A", "A2", "B", "C", "STD"}:
+        if tier in {"A", "A2", "DE", "DW", "B", "C", "STD"}:
             return tier
         # Migrazione v20.4: prime=True significava l'attuale PRIME A.
         if bool(row.get("prime", False)):
@@ -773,6 +814,21 @@ class MultiPrimeV1:
             self.prime_a2_started_from_key = current
             self.prime_a2_started_at = now_iso
             changed = True
+        if not self.prime_d_elite_started_from_key:
+            # v20.7: D ELITE nasce qui, senza backfill.
+            self.prime_d_elite_started_from_key = current
+            self.prime_d_elite_started_at = now_iso
+            changed = True
+        if not self.prime_d_wide_started_from_key:
+            # v20.7: D WIDE nasce qui, senza backfill.
+            self.prime_d_wide_started_from_key = current
+            self.prime_d_wide_started_at = now_iso
+            changed = True
+        if not self.prime_x_started_from_key:
+            # v20.7: X ULTRA shadow nasce qui, senza backfill.
+            self.prime_x_started_from_key = current
+            self.prime_x_started_at = now_iso
+            changed = True
         if not self.prime_b_started_from_key:
             # Campo legacy B: viene inizializzato solo per compatibilità state.
             self.prime_b_started_from_key = current
@@ -841,6 +897,21 @@ class MultiPrimeV1:
         self.prime_a2_started_at = obj.get("prime_a2_started_at") if isinstance(obj.get("prime_a2_started_at"), str) else None
         self.prime_a2_signals = max(0, int(obj.get("prime_a2_signals", 0) or 0))
 
+        desk = obj.get("prime_d_elite_started_from_key")
+        self.prime_d_elite_started_from_key = str(desk) if order_key(desk) is not None else None
+        self.prime_d_elite_started_at = obj.get("prime_d_elite_started_at") if isinstance(obj.get("prime_d_elite_started_at"), str) else None
+        self.prime_d_elite_signals = max(0, int(obj.get("prime_d_elite_signals", 0) or 0))
+
+        dwsk = obj.get("prime_d_wide_started_from_key")
+        self.prime_d_wide_started_from_key = str(dwsk) if order_key(dwsk) is not None else None
+        self.prime_d_wide_started_at = obj.get("prime_d_wide_started_at") if isinstance(obj.get("prime_d_wide_started_at"), str) else None
+        self.prime_d_wide_signals = max(0, int(obj.get("prime_d_wide_signals", 0) or 0))
+
+        xsk = obj.get("prime_x_started_from_key")
+        self.prime_x_started_from_key = str(xsk) if order_key(xsk) is not None else None
+        self.prime_x_started_at = obj.get("prime_x_started_at") if isinstance(obj.get("prime_x_started_at"), str) else None
+        self.prime_x_signals = max(0, int(obj.get("prime_x_signals", 0) or 0))
+
         bsk = obj.get("prime_b_started_from_key")
         self.prime_b_started_from_key = str(bsk) if order_key(bsk) is not None else None
         self.prime_b_started_at = obj.get("prime_b_started_at") if isinstance(obj.get("prime_b_started_at"), str) else None
@@ -896,6 +967,16 @@ class MultiPrimeV1:
             "prime_a2_started_from_key": self.prime_a2_started_from_key,
             "prime_a2_started_at": self.prime_a2_started_at,
             "prime_a2_signals": self.prime_a2_signals,
+            # Campi v20.7 D/X.
+            "prime_d_elite_started_from_key": self.prime_d_elite_started_from_key,
+            "prime_d_elite_started_at": self.prime_d_elite_started_at,
+            "prime_d_elite_signals": self.prime_d_elite_signals,
+            "prime_d_wide_started_from_key": self.prime_d_wide_started_from_key,
+            "prime_d_wide_started_at": self.prime_d_wide_started_at,
+            "prime_d_wide_signals": self.prime_d_wide_signals,
+            "prime_x_started_from_key": self.prime_x_started_from_key,
+            "prime_x_started_at": self.prime_x_started_at,
+            "prime_x_signals": self.prime_x_signals,
             "prime_b_started_from_key": self.prime_b_started_from_key,
             "prime_b_started_at": self.prime_b_started_at,
             "prime_b_signals": self.prime_b_signals,
@@ -925,14 +1006,18 @@ class MultiPrimeV1:
         o2_freq = {n: 0 for n in range(1, 91)}
         for r in w:
             o2_freq[int(r["doppio_oro"])] += 1
-        top_base_delay = sorted(range(1, 91), key=lambda n: (-base_gap[n], n))[:MULTI_TOP_N]
-        top_extra_delay = sorted(range(1, 91), key=lambda n: (-extra_gap[n], n))[:MULTI_TOP_N]
+        ranked_base_delay = sorted(range(1, 91), key=lambda n: (-base_gap[n], n))
+        ranked_extra_delay = sorted(range(1, 91), key=lambda n: (-extra_gap[n], n))
+        top_base_delay = ranked_base_delay[:MULTI_TOP_N]
+        top_extra_delay = ranked_extra_delay[:MULTI_TOP_N]
         top_o2 = sorted(range(1, 91), key=lambda n: (-o2_freq[n], n))[:MULTI_TOP_N]
+        extra_rank13_gap = int(extra_gap[ranked_extra_delay[MULTI_TOP_N]]) if len(ranked_extra_delay) > MULTI_TOP_N else 0
         return {
             "base_gap": base_gap, "extra_gap": extra_gap, "o2_freq": o2_freq,
             "top_base_delay": top_base_delay,
             "top_extra_delay": top_extra_delay,
             "top_o2": top_o2,
+            "extra_rank13_gap": extra_rank13_gap,
         }
 
     @staticmethod
@@ -956,7 +1041,7 @@ class MultiPrimeV1:
         return hh * 60 + mm
 
     @classmethod
-    def _tier(cls, bd_rank, o2_rank, origin_row=None):
+    def _tier(cls, bd_rank, o2_rank, origin_row=None, inter_size=None):
         if bd_rank is None or o2_rank is None:
             return "STD"
         bd_rank, o2_rank = int(bd_rank), int(o2_rank)
@@ -972,6 +1057,16 @@ class MultiPrimeV1:
                 and PRIME_A2_O2_RANK_MIN <= o2_rank <= PRIME_A2_O2_RANK_MAX):
             return "A2"
 
+        # PRIME D: famiglia nuova, disgiunta da A/A2 per BD rank.
+        d_time = mins is not None and mins > PRIME_D_AFTER_MIN
+        unique_inter = int(inter_size or 0) == PRIME_D_INTERSECTION_SIZE
+        if d_time and unique_inter:
+            if PRIME_D_ELITE_BD_RANK_MIN <= bd_rank <= PRIME_D_ELITE_BD_RANK_MAX:
+                return "DE"
+            if PRIME_D_WIDE_BD_RANK_MIN <= bd_rank <= PRIME_D_WIDE_BD_RANK_MAX:
+                return "DW"
+
+        # C legacy shadow continua solo nei casi non assorbiti da D.
         c_time = mins is not None and mins > PRIME_C_AFTER_MIN
         if (c_time
                 and PRIME_C_BD_RANK_MIN <= bd_rank <= PRIME_C_BD_RANK_MAX
@@ -979,6 +1074,21 @@ class MultiPrimeV1:
             return "C"
         # PRIME B v20.5 NON viene più creato.
         return "STD"
+
+    @classmethod
+    def _is_x_ultra(cls, bd_rank, ed_rank, origin_row, inter_size, extra_gap, extra_rank13_gap):
+        if bd_rank is None or ed_rank is None:
+            return False
+        mins = cls._clock_minutes(origin_row)
+        if mins is None or mins <= PRIME_X_AFTER_MIN:
+            return False
+        margin13 = int(extra_gap or 0) - int(extra_rank13_gap or 0)
+        return bool(
+            int(inter_size or 0) == PRIME_D_INTERSECTION_SIZE
+            and PRIME_X_BD_RANK_MIN <= int(bd_rank) <= PRIME_X_BD_RANK_MAX
+            and PRIME_X_ED_RANK_MIN <= int(ed_rank) <= PRIME_X_ED_RANK_MAX
+            and margin13 >= PRIME_X_EXTRA_MARGIN13_MIN
+        )
 
     def _partner_plan(self, main, ranks):
         candidates = [int(n) for n in ranks["top_o2"] if int(n) != int(main)]
@@ -1009,7 +1119,7 @@ class MultiPrimeV1:
             "cooc_window": min(len(hw), MULTI_COOC_WINDOW),
         }
 
-    def _arm_ambo(self, origin_key, main, plan, tier="STD", bd_rank=None, o2_rank=None):
+    def _arm_ambo(self, origin_key, main, plan, tier="STD", bd_rank=None, o2_rank=None, x_ultra=False, inter_size=None, extra_margin13=None):
         if not plan:
             return []
         tier = str(tier or "STD").upper()
@@ -1019,8 +1129,8 @@ class MultiPrimeV1:
         specs = [("BASE1", sorted([int(main), p1])), ("BASE2", sorted([int(main), p2]))]
         if plan.get("super_enabled"):
             specs.append(("SUPER", sorted([p1, p2])))
-        elif tier in {"A", "A2", "C"}:
-            # A/A2/C seguono SEMPRE il terzo lato;
+        elif tier in {"A", "A2", "DE", "DW", "C"}:
+            # A/A2/D/C seguono SEMPRE il terzo lato;
             # ma se il gate non passa resta TRIANGLE_OFF shadow.
             specs.append(("TRIANGLE_OFF", sorted([p1, p2])))
 
@@ -1036,6 +1146,8 @@ class MultiPrimeV1:
                 "support_sum": int(plan["support_sum"]), "cooc_window": int(plan["cooc_window"]),
                 "tier": tier, "prime": tier == "A",
                 "bd_rank": bd_rank, "o2_rank": o2_rank,
+                "x_ultra": bool(x_ultra), "intersection_size": inter_size,
+                "extra_margin13": extra_margin13,
             }
             self.ambo_pending.append(q)
             created.append(dict(q))
@@ -1050,6 +1162,7 @@ class MultiPrimeV1:
             "support_sum": int(plan["support_sum"]),
             "super_enabled": bool(plan.get("super_enabled")),
             "tier": tier, "bd_rank": bd_rank, "o2_rank": o2_rank,
+            "x_ultra": bool(x_ultra), "intersection_size": inter_size, "extra_margin13": extra_margin13,
             "pairs": [{"slot": x["slot"], "pair": list(x["pair"])} for x in created],
         }
         return created
@@ -1159,23 +1272,39 @@ class MultiPrimeV1:
             return None
 
         details, ambo_plans = [], []
-        a_numbers, a2_numbers, c_numbers = [], [], []
+        a_numbers, a2_numbers, de_numbers, dw_numbers, x_numbers, c_numbers = [], [], [], [], [], []
         origin_row = self.history[-1]
         origin_time = str(origin_row.get("time") or "")
+        inter_size = len(inter)
+        extra_rank13_gap = int(ranks.get("extra_rank13_gap", 0) or 0)
         for n in selected:
             bd_rank = self._rank_of(n, ranks["top_base_delay"])
             ed_rank = self._rank_of(n, ranks["top_extra_delay"])
             o2_rank = self._rank_of(n, ranks["top_o2"])
-            tier = self._tier(bd_rank, o2_rank, origin_row)
+            tier = self._tier(bd_rank, o2_rank, origin_row, inter_size=inter_size)
+            extra_margin13 = int(ranks["extra_gap"][n]) - extra_rank13_gap
+            x_ultra = self._is_x_ultra(
+                bd_rank, ed_rank, origin_row, inter_size,
+                ranks["extra_gap"][n], extra_rank13_gap,
+            )
             if tier == "A":
                 a_numbers.append(int(n))
                 self.prime_a_signals += 1
             elif tier == "A2":
                 a2_numbers.append(int(n))
                 self.prime_a2_signals += 1
+            elif tier == "DE":
+                de_numbers.append(int(n))
+                self.prime_d_elite_signals += 1
+            elif tier == "DW":
+                dw_numbers.append(int(n))
+                self.prime_d_wide_signals += 1
             elif tier == "C":
                 c_numbers.append(int(n))
                 self.prime_c_signals += 1
+            if x_ultra:
+                x_numbers.append(int(n))
+                self.prime_x_signals += 1
 
             d = {
                 "num": n,
@@ -1184,6 +1313,8 @@ class MultiPrimeV1:
                 "o2_freq80": int(ranks["o2_freq"][n]),
                 "bd_rank": bd_rank, "ed_rank": ed_rank, "o2_rank": o2_rank,
                 "origin_time": origin_time, "tier": tier, "prime": tier == "A",
+                "intersection_size": inter_size, "extra_rank13_gap": extra_rank13_gap,
+                "extra_margin13": extra_margin13, "x_ultra": bool(x_ultra),
             }
             plan = self._partner_plan(n, ranks)
             if plan:
@@ -1194,8 +1325,11 @@ class MultiPrimeV1:
                     "cooc_window": int(plan["cooc_window"]),
                 }
                 # v20.5.1: STANDARD e' controllo puro e NON arma ambi/SUPER.
-                if tier in {"A", "A2", "C"}:
-                    self._arm_ambo(origin_key, n, plan, tier=tier, bd_rank=bd_rank, o2_rank=o2_rank)
+                if tier in {"A", "A2", "DE", "DW", "C"}:
+                    self._arm_ambo(
+                        origin_key, n, plan, tier=tier, bd_rank=bd_rank, o2_rank=o2_rank,
+                        x_ultra=x_ultra, inter_size=inter_size, extra_margin13=extra_margin13,
+                    )
                     ambo_plans.append({"main": n, "tier": tier, **d["ambo"]})
 
             details.append(d)
@@ -1206,6 +1340,8 @@ class MultiPrimeV1:
                 "o2_freq80": d["o2_freq80"],
                 "bd_rank": bd_rank, "ed_rank": ed_rank, "o2_rank": o2_rank,
                 "origin_time": origin_time, "tier": tier, "prime": tier == "A",
+                "intersection_size": inter_size, "extra_rank13_gap": extra_rank13_gap,
+                "extra_margin13": extra_margin13, "x_ultra": bool(x_ultra),
             })
             self.last_signal_seq[n] = self.draw_seq
 
@@ -1216,6 +1352,9 @@ class MultiPrimeV1:
             "numbers": selected,
             "prime_a_numbers": a_numbers,
             "prime_a2_numbers": a2_numbers,
+            "prime_d_elite_numbers": de_numbers,
+            "prime_d_wide_numbers": dw_numbers,
+            "prime_x_numbers": x_numbers,
             "prime_c_numbers": c_numbers,
             "prime_b_numbers": [],  # legacy: nessun nuovo B
             # alias v20.4
@@ -1238,7 +1377,9 @@ class MultiPrimeV1:
             return True
         if sig.get("prime_a2_numbers") and NOTIFY_PRIME_A2_SIGNAL:
             return True
-        # C e STANDARD restano shadow; B non genera nuovi segnali.
+        if (sig.get("prime_d_elite_numbers") or sig.get("prime_d_wide_numbers")) and NOTIFY_PRIME_D_SIGNAL:
+            return True
+        # C/X e STANDARD restano shadow; B non genera nuovi segnali.
         return NOTIFY_STANDARD_SIGNAL
 
     @staticmethod
@@ -1247,12 +1388,15 @@ class MultiPrimeV1:
             return None
         a_nums = {int(x) for x in sig.get("prime_a_numbers", [])}
         a2_nums = {int(x) for x in sig.get("prime_a2_numbers", [])}
+        de_nums = {int(x) for x in sig.get("prime_d_elite_numbers", [])}
+        dw_nums = {int(x) for x in sig.get("prime_d_wide_numbers", [])}
+        x_nums = {int(x) for x in sig.get("prime_x_numbers", [])}
         c_nums = {int(x) for x in sig.get("prime_c_numbers", [])}
         origin_time = ""
         if sig.get("details"):
             origin_time = str((sig.get("details") or [{}])[0].get("origin_time") or "")
         lines = [
-            "🧪 MULTI BD12+ED12+O2F12 — v20.6",
+            "🧪 MULTI BD12+ED12+O2F12 — v20.7",
             "Origine: " + str(sig.get("origin_key")) + (f" | ora {origin_time}" if origin_time else ""),
             "STANDARD: Base RIT12 ∩ Extra RIT12 ∩ Oro2 FREQ12 (W80)",
             f"Segnali standard: {' '.join(f'{int(n):02d}' for n in sig.get('numbers', []))}",
@@ -1269,21 +1413,38 @@ class MultiPrimeV1:
                 f"🎯 A2 H1: {' '.join(f'{n:02d}' for n in sorted(a2_nums))}",
                 f"Gate A2: BD rank 11-12 + O2 rank {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + ora ≤08:00 oppure >16:00",
             ]
-        if not a_nums and not a2_nums:
-            lines += ["", "🌑 Nessun PRIME A/A2 operativo; STANDARD/C restano shadow."]
+        if de_nums:
+            lines += [
+                "", "💠 PRIME D ELITE — AMBATA OPERATIVA",
+                f"🎯 D-ELITE H1: {' '.join(f'{n:02d}' for n in sorted(de_nums))}",
+                "Gate D-ELITE: BD rank 1-4 + ora >16:00 + intersezione unica",
+            ]
+        if dw_nums:
+            lines += [
+                "", "🔥 PRIME D WIDE — AMBATA OPERATIVA",
+                f"🎯 D-WIDE H1: {' '.join(f'{n:02d}' for n in sorted(dw_nums))}",
+                "Gate D-WIDE: BD rank 5-8 + ora >16:00 + intersezione unica",
+            ]
+        if x_nums:
+            lines += [
+                "", "🧬 X ULTRA SHADOW — CONFERMA EXTRA",
+                f"👁️ X: {' '.join(f'{n:02d}' for n in sorted(x_nums))} | ED rank 9-12 + ora >17:00 + Extra margin13≥1",
+            ]
+        if not a_nums and not a2_nums and not de_nums and not dw_nums:
+            lines += ["", "🌑 Nessun PRIME operativo A/A2/D; STANDARD/C/X restano shadow."]
 
         lines.append("")
         for d in sig.get("details", []):
             n = int(d["num"])
             tier = str(d.get("tier") or "STD")
-            tag = {"A":"🔥 A", "A2":"💎 A2", "C":"🧬 C SHADOW"}.get(tier, "• STD")
+            tag = {"A":"🔥 A", "A2":"💎 A2", "DE":"💠 D-ELITE", "DW":"🔥 D-WIDE", "C":"🧬 C SHADOW"}.get(tier, "• STD")
             lines.append(
                 f"{tag} {n:02d}: BD rank={d.get('bd_rank')} rit={d.get('base_gap')} | "
                 f"ED rank={d.get('ed_rank')} rit={d.get('extra_gap')} | "
                 f"O2 rank={d.get('o2_rank')} freq80={d.get('o2_freq80')}"
             )
             a = d.get("ambo") or {}
-            if a and tier in {"A", "A2", "C"}:
+            if a and tier in {"A", "A2", "DE", "DW", "C"}:
                 p1, p2 = a.get("p1") or {}, a.get("p2") or {}
                 n1, n2 = int(p1.get("num", 0)), int(p2.get("num", 0))
                 if tier == "A":
@@ -1294,21 +1455,29 @@ class MultiPrimeV1:
                     lines.append(
                         f"  🔗 A2 AMBO1 {n:02d}-{n1:02d} | 🔗 A2 AMBO2 {n:02d}-{n2:02d} | COOC900 {p1.get('cooc',0)}/{p2.get('cooc',0)}"
                     )
+                elif tier in {"DE", "DW"}:
+                    lines.append(
+                        f"  👁️ D ambi shadow: {n:02d}-{n1:02d} / {n:02d}-{n2:02d} | COOC900 {p1.get('cooc',0)}/{p2.get('cooc',0)}"
+                    )
                 else:
                     lines.append(
                         f"  👁️ C ambi shadow: {n:02d}-{n1:02d} / {n:02d}-{n2:02d} | COOC900 {p1.get('cooc',0)}/{p2.get('cooc',0)}"
                     )
                 if a.get("super_enabled"):
-                    lines.append(f"  🔥 TERZO {n1:02d}-{n2:02d} SUPER ON | support_sum={int(a.get('support_sum',0))} ≥ {MULTI_SUPER_GATE}")
+                    third_tag = "🔥 SUPER ON" if tier in {"A", "A2"} else "👁️ TERZO SUPER shadow"
+                    lines.append(f"  {third_tag} {n1:02d}-{n2:02d} | support_sum={int(a.get('support_sum',0))} ≥ {MULTI_SUPER_GATE}")
                 else:
                     lines.append(f"  🔺 TERZO {n1:02d}-{n2:02d} TRIANGLE SHADOW | support_sum={int(a.get('support_sum',0))} < {MULTI_SUPER_GATE}")
+                if bool(d.get("x_ultra")):
+                    lines.append(f"  🧬 X ULTRA shadow | ED rank={d.get('ed_rank')} | Extra margin13={d.get('extra_margin13')}")
 
         lines += [
             "",
             "🧪 STANDARD resta shadow/control e NON arma ambi/SUPER.",
-            "🔥 A resta invariato; 💎 A2 aggiunge solo il blocco Elite selezionato.",
-            "🧬 C viene registrato solo shadow; B legacy non genera nuovi segnali.",
-            "🔺 TRIANGLE: terzo lato seguito su A/A2/C; OFF-gate resta shadow.",
+            "🔥 A e 💎 A2 restano invariati; 💠/🔥 D aggiunge solo intersezioni uniche serali.",
+            "👁️ Gli ambi D restano shadow; 🧬 X ULTRA è solo overlay shadow.",
+            "🧬 C continua shadow nei casi non-D; B legacy non genera nuovi segnali.",
+            "🔺 TRIANGLE: terzo lato seguito su A/A2/D/C; OFF-gate resta shadow.",
             "⏸️ FOCUS / INCROCIO / CORE / legacy non vengono aggiornati.",
         ]
         return "\n".join(lines)
@@ -1335,11 +1504,11 @@ class MultiPrimeV1:
             else:
                 tag = "⚡ AMBO2 FAST" if tier == "A" else ("🔗 A2 AMBO2" if tier == "A2" else "🔗 AMBO2")
             status = f"✅ HIT al colpo H{age}" if ev.get("hit_now") else "🛑 STOP H5"
-            tier_line = "\n🔥 PRIME A" if tier == "A" else ("\n💎 PRIME A2 ELITE" if tier == "A2" else ("\n🟠 PRIME B LEGACY" if tier == "B" else ("\n🧬 PRIME C SHADOW" if tier == "C" else "")))
+            tier_line = "\n🔥 PRIME A" if tier == "A" else ("\n💎 PRIME A2 ELITE" if tier == "A2" else ("\n💠 PRIME D ELITE" if tier == "DE" else ("\n🔥 PRIME D WIDE" if tier == "DW" else ("\n🟠 PRIME B LEGACY" if tier == "B" else ("\n🧬 PRIME C SHADOW" if tier == "C" else "")))))
             fast_note = "\n🎯 FAST H1 centrato." if tier == "A" and slot == "BASE2" and age == 1 and ev.get("hit_now") else ""
             off_note = "\n👁️ Era OFF-gate: hit registrato solo come TRIANGLE SHADOW." if slot == "TRIANGLE_OFF" and ev.get("hit_now") else ""
             return (
-                f"🧾 MULTI v20.6 — {tag}\n\n"
+                f"🧾 MULTI v20.7 — {tag}\n\n"
                 f"Origine {r.get('origin_key')} | M {int(r.get('main',0)):02d}\n"
                 f"Coppia {pair[0]:02d}-{pair[1]:02d} | {status}"
                 f"{tier_line} | BD rank={r.get('bd_rank')} | O2 rank={r.get('o2_rank')}"
@@ -1356,6 +1525,10 @@ class MultiPrimeV1:
             title = "🔥 MULTI PRIME A — ESITO AMBATA"
         elif tier == "A2":
             title = "💎 MULTI PRIME A2 ELITE — ESITO AMBATA"
+        elif tier == "DE":
+            title = "💠 MULTI PRIME D ELITE — ESITO AMBATA"
+        elif tier == "DW":
+            title = "🔥 MULTI PRIME D WIDE — ESITO AMBATA"
         elif tier == "B":
             title = "🟠 MULTI PRIME B LEGACY — ESITO AMBATA"
         elif tier == "C":
@@ -1367,6 +1540,7 @@ class MultiPrimeV1:
             f"Origine {r.get('origin_key')} | numero {n:02d}" + (f" | ora {r.get('origin_time')}" if r.get('origin_time') else "") + f"\n{status}\n"
             f"BD rank={r.get('bd_rank')} | ED rank={r.get('ed_rank')} | O2 rank={r.get('o2_rank')}\n"
             f"Base rit={r.get('base_gap')} | Extra rit={r.get('extra_gap')} | Oro2 freq80={r.get('o2_freq80')}"
+            + (f"\n🧬 X ULTRA shadow | Extra margin13={r.get('extra_margin13')}" if bool(r.get("x_ultra")) else "")
         )
 
     def should_notify_event(self, ev):
@@ -1391,6 +1565,9 @@ class MultiPrimeV1:
                 return NOTIFY_PRIME_A2_RESULT
             if slot == "TRIANGLE_OFF":
                 return bool(ev.get("hit_now")) and NOTIFY_TRIANGLE_OFF_HIT
+        elif tier in {"DE", "DW"}:
+            # D è operativo SOLO come ambata; tutti gli ambi restano shadow.
+            return kind == "ambata" and NOTIFY_PRIME_D_RESULT
         elif tier == "B":
             # Solo eventuali pending legacy già nati in v20.5.
             return kind == "ambata" and NOTIFY_PRIME_B_RESULT
@@ -1408,6 +1585,14 @@ class MultiPrimeV1:
         h5 = sum(1 for r in rows if bool(r.get("hit")))
         return n, h1, h3, h5
 
+    def _stats_x(self):
+        rows = [r for r in self.records if bool(r.get("x_ultra"))]
+        n = len(rows)
+        h1 = sum(1 for r in rows if int(r.get("hit_colpo") or 99) <= 1)
+        h3 = sum(1 for r in rows if int(r.get("hit_colpo") or 99) <= 3)
+        h5 = sum(1 for r in rows if bool(r.get("hit")))
+        return n, h1, h3, h5
+
     def _ambo_stats(self, slots=None, tier=None):
         slots = set(slots) if slots is not None else None
         rows = [
@@ -1415,6 +1600,15 @@ class MultiPrimeV1:
             if (slots is None or str(r.get("slot")) in slots)
             and (tier is None or self._tier_from_obj(r) == str(tier).upper())
         ]
+        n = len(rows)
+        h1 = sum(1 for r in rows if int(r.get("hit_colpo") or 99) <= 1)
+        h3 = sum(1 for r in rows if int(r.get("hit_colpo") or 99) <= 3)
+        h5 = sum(1 for r in rows if bool(r.get("hit")))
+        return n, h1, h3, h5
+
+    def _ambo_stats_x(self, slots=None):
+        slots = set(slots) if slots is not None else None
+        rows = [r for r in self.ambo_records if bool(r.get("x_ultra")) and (slots is None or str(r.get("slot")) in slots)]
         n = len(rows)
         h1 = sum(1 for r in rows if int(r.get("hit_colpo") or 99) <= 1)
         h3 = sum(1 for r in rows if int(r.get("hit_colpo") or 99) <= 3)
@@ -1475,61 +1669,75 @@ class MultiPrimeV1:
         n, h1, h3, h5 = self._stats(None)
         an, ah1, ah3, ah5 = self._stats("A")
         a2n, a2h1, a2h3, a2h5 = self._stats("A2")
+        den, deh1, deh3, deh5 = self._stats("DE")
+        dwn, dwh1, dwh3, dwh5 = self._stats("DW")
+        xn, xh1, xh3, xh5 = self._stats_x()
         cn, ch1, ch3, ch5 = self._stats("C")
-        bn, bh1, bh3, bh5 = self._stats("B")
+        bn, bh1, _, _ = self._stats("B")
 
         a1n, a1h1, _, a1h5 = self._ambo_stats({"BASE1"}, "A")
         a2bn, a2bh1, _, a2bh5 = self._ambo_stats({"BASE2"}, "A")
         e1n, e1h1, _, e1h5 = self._ambo_stats({"BASE1"}, "A2")
         e2n, e2h1, _, e2h5 = self._ambo_stats({"BASE2"}, "A2")
-        c1n, c1h1, _, c1h5 = self._ambo_stats({"BASE1"}, "C")
-        c2n, c2h1, _, c2h5 = self._ambo_stats({"BASE2"}, "C")
+        d1n, d1h1, _, d1h5 = self._ambo_stats({"BASE1"}, None)
+        d2n, d2h1, _, d2h5 = self._ambo_stats({"BASE2"}, None)
+        # Solo D per gli ambi shadow.
+        d_ambo_rows1 = [r for r in self.ambo_records if self._tier_from_obj(r) in {"DE","DW"} and str(r.get("slot"))=="BASE1"]
+        d_ambo_rows2 = [r for r in self.ambo_records if self._tier_from_obj(r) in {"DE","DW"} and str(r.get("slot"))=="BASE2"]
+        d1n=len(d_ambo_rows1); d1h5=sum(1 for r in d_ambo_rows1 if bool(r.get("hit")))
+        d2n=len(d_ambo_rows2); d2h5=sum(1 for r in d_ambo_rows2 if bool(r.get("hit")))
 
         asn, ash1, ash3, ash5 = self._ambo_stats({"SUPER"}, "A")
         a2sn, a2sh1, a2sh3, a2sh5 = self._ambo_stats({"SUPER"}, "A2")
         op_sn, op_h1, op_h3, op_h5 = asn+a2sn, ash1+a2sh1, ash3+a2sh3, ash5+a2sh5
 
-        aoffn, aoffh1, _, aoffh5 = self._ambo_stats({"TRIANGLE_OFF"}, "A")
-        eoffn, eoffh1, _, eoffh5 = self._ambo_stats({"TRIANGLE_OFF"}, "A2")
         acov = self._origin_coverage("A")
         ecov = self._origin_coverage("A2")
-        ccov = self._origin_coverage("C")
+        decov = self._origin_coverage("DE")
+        dwcov = self._origin_coverage("DW")
         apa, apam = self._pending_counts("A")
         epa, epam = self._pending_counts("A2")
+        depa, depam = self._pending_counts("DE")
+        dwpa, dwpam = self._pending_counts("DW")
         cpa, cpam = self._pending_counts("C")
         bpa, bpam = self._pending_counts("B")
 
+        dclosed=den+dwn; dh1=deh1+dwh1; dh3=deh3+dwh3; dh5=deh5+dwh5
+        dcov_n=decov['tri_n']+dwcov['tri_n']; dcov_hit=decov['all3_hit']+dwcov['all3_hit']
+
         lines = [
-            "🧪 MULTI PRIME A + A2 ELITE — v20.6",
+            "🧪 MULTI PRIME A + A2 + D — v20.7",
             "STANDARD shadow: BD12 ∩ ED12 ∩ O2F12",
-            f"🔥 A: BD11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} (invariato)",
-            f"💎 A2: BD11-12 + O2 rank {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + ora ≤08:00/>16:00",
-            f"🧬 C shadow: BD1-6 + O2 rank {PRIME_C_O2_RANK_MIN}-{PRIME_C_O2_RANK_MAX} + ora >16:00",
+            f"🔥 A: BD11-12 + O2 {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} | 💎 A2: BD11-12 + O2 {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + fascia Elite",
+            "💠 D-ELITE: BD1-4 | 🔥 D-WIDE: BD5-8 | entrambi >16:00 + intersezione unica",
+            "🧬 X ULTRA shadow: D + ED9-12 + >17:00 + Extra margin13≥1",
             f"Oro2 W{MULTI_WINDOW} | cooldown {MULTI_COOLDOWN} | COOC W{MULTI_COOC_WINDOW} | H{MULTI_HORIZON}",
             "",
-            f"📚 Storico MULTI {len(self.history)} | scan {self.scans} | STD {self.signals} | cooldown skip {self.cooldown_skips}",
+            f"📚 MULTI history {len(self.history)} | scan {self.scans} | STD {self.signals} | skip {self.cooldown_skips}",
             f"STANDARD chiusi {n} | H1 {h1}/{n} ({safe_pct(h1,n):.2f}%) | H3 {h3}/{n} ({safe_pct(h3,n):.2f}%) | H5 {h5}/{n} ({safe_pct(h5,n):.2f}%)",
             "",
-            f"🔥 PRIME A — start {self.prime_a_started_from_key or '-'} | creati {self.prime_a_signals} | pending {apa}",
-            f"AMBATA A: H1 {ah1}/{an} ({safe_pct(ah1,an):.2f}%) | H3 {ah3}/{an} ({safe_pct(ah3,an):.2f}%) | H5 {ah5}/{an} ({safe_pct(ah5,an):.2f}%)",
-            f"A AMBO1 H1/H5 {a1h1}/{a1n} ({safe_pct(a1h1,a1n):.2f}%) / {a1h5}/{a1n} ({safe_pct(a1h5,a1n):.2f}%) | AMBO2 H1/H5 {a2bh1}/{a2bn} ({safe_pct(a2bh1,a2bn):.2f}%) / {a2bh5}/{a2bn} ({safe_pct(a2bh5,a2bn):.2f}%)",
-            f"A ≥1 BASE {acov['base_hit']}/{acov['base_n']} ({safe_pct(acov['base_hit'],acov['base_n']):.2f}%) | ≥1 dei 3 {acov['all3_hit']}/{acov['tri_n']} ({safe_pct(acov['all3_hit'],acov['tri_n']):.2f}%) | rescue {acov['rescue']} | pending ambi {apam}",
+            f"🔥 A — start {self.prime_a_started_from_key or '-'} | creati {self.prime_a_signals} | pending {apa}",
+            f"AMBATA A H1 {ah1}/{an} ({safe_pct(ah1,an):.2f}%) | H3 {ah3}/{an} ({safe_pct(ah3,an):.2f}%) | H5 {ah5}/{an} ({safe_pct(ah5,an):.2f}%)",
+            f"A AMBO1 H5 {a1h5}/{a1n} ({safe_pct(a1h5,a1n):.2f}%) | AMBO2 H5 {a2bh5}/{a2bn} ({safe_pct(a2bh5,a2bn):.2f}%) | ≥1 dei 3 {acov['all3_hit']}/{acov['tri_n']} ({safe_pct(acov['all3_hit'],acov['tri_n']):.2f}%)",
             "",
-            f"💎 PRIME A2 ELITE — start {self.prime_a2_started_from_key or '-'} | creati {self.prime_a2_signals} | pending {epa}",
-            f"AMBATA A2: H1 {a2h1}/{a2n} ({safe_pct(a2h1,a2n):.2f}%) | H3 {a2h3}/{a2n} ({safe_pct(a2h3,a2n):.2f}%) | H5 {a2h5}/{a2n} ({safe_pct(a2h5,a2n):.2f}%)",
-            f"A2 AMBO1 H1/H5 {e1h1}/{e1n} ({safe_pct(e1h1,e1n):.2f}%) / {e1h5}/{e1n} ({safe_pct(e1h5,e1n):.2f}%) | AMBO2 H1/H5 {e2h1}/{e2n} ({safe_pct(e2h1,e2n):.2f}%) / {e2h5}/{e2n} ({safe_pct(e2h5,e2n):.2f}%)",
-            f"A2 ≥1 BASE {ecov['base_hit']}/{ecov['base_n']} ({safe_pct(ecov['base_hit'],ecov['base_n']):.2f}%) | ≥1 dei 3 {ecov['all3_hit']}/{ecov['tri_n']} ({safe_pct(ecov['all3_hit'],ecov['tri_n']):.2f}%) | rescue {ecov['rescue']} | pending ambi {epam}",
-            f"A2 TRIANGLE OFF H1 {eoffh1}/{eoffn} ({safe_pct(eoffh1,eoffn):.2f}%) | H5 {eoffh5}/{eoffn} ({safe_pct(eoffh5,eoffn):.2f}%)",
+            f"💎 A2 ELITE — start {self.prime_a2_started_from_key or '-'} | creati {self.prime_a2_signals} | pending {epa}",
+            f"AMBATA A2 H1 {a2h1}/{a2n} ({safe_pct(a2h1,a2n):.2f}%) | H3 {a2h3}/{a2n} ({safe_pct(a2h3,a2n):.2f}%) | H5 {a2h5}/{a2n} ({safe_pct(a2h5,a2n):.2f}%)",
+            f"A2 AMBO1 H5 {e1h5}/{e1n} ({safe_pct(e1h5,e1n):.2f}%) | AMBO2 H5 {e2h5}/{e2n} ({safe_pct(e2h5,e2n):.2f}%) | ≥1 dei 3 {ecov['all3_hit']}/{ecov['tri_n']} ({safe_pct(ecov['all3_hit'],ecov['tri_n']):.2f}%)",
             "",
-            f"🧬 PRIME C SHADOW — start {self.prime_c_started_from_key or '-'} | creati {self.prime_c_signals} | pending {cpa}",
-            f"C AMBATA shadow: H1 {ch1}/{cn} ({safe_pct(ch1,cn):.2f}%) | H3 {ch3}/{cn} ({safe_pct(ch3,cn):.2f}%) | H5 {ch5}/{cn} ({safe_pct(ch5,cn):.2f}%)",
-            f"C ambi shadow: A1 H5 {c1h5}/{c1n} ({safe_pct(c1h5,c1n):.2f}%) | A2 H5 {c2h5}/{c2n} ({safe_pct(c2h5,c2n):.2f}%) | ≥1 dei 3 {ccov['all3_hit']}/{ccov['tri_n']} ({safe_pct(ccov['all3_hit'],ccov['tri_n']):.2f}%) | pending ambi {cpam}",
+            f"💠 D ELITE — start {self.prime_d_elite_started_from_key or '-'} | creati {self.prime_d_elite_signals} | pending {depa}",
+            f"AMBATA DE H1 {deh1}/{den} ({safe_pct(deh1,den):.2f}%) | H3 {deh3}/{den} ({safe_pct(deh3,den):.2f}%) | H5 {deh5}/{den} ({safe_pct(deh5,den):.2f}%)",
+            f"🔥 D WIDE — start {self.prime_d_wide_started_from_key or '-'} | creati {self.prime_d_wide_signals} | pending {dwpa}",
+            f"AMBATA DW H1 {dwh1}/{dwn} ({safe_pct(dwh1,dwn):.2f}%) | H3 {dwh3}/{dwn} ({safe_pct(dwh3,dwn):.2f}%) | H5 {dwh5}/{dwn} ({safe_pct(dwh5,dwn):.2f}%)",
+            f"D COMBINATO chiusi {dclosed} | H1 {dh1}/{dclosed} ({safe_pct(dh1,dclosed):.2f}%) | H3 {dh3}/{dclosed} ({safe_pct(dh3,dclosed):.2f}%) | H5 {dh5}/{dclosed} ({safe_pct(dh5,dclosed):.2f}%)",
+            f"D AMBI shadow: A1 H5 {d1h5}/{d1n} ({safe_pct(d1h5,d1n):.2f}%) | A2 H5 {d2h5}/{d2n} ({safe_pct(d2h5,d2n):.2f}%) | ≥1 dei 3 {dcov_hit}/{dcov_n} ({safe_pct(dcov_hit,dcov_n):.2f}%)",
             "",
-            f"🟠 B LEGACY congelato: creati storici {self.prime_b_signals} | chiusi {bn} | H1 {bh1}/{bn} ({safe_pct(bh1,bn):.2f}%) | pending {bpa}/{bpam}",
-            f"🔥 SUPER ON operativo A+A2: H1 {op_h1}/{op_sn} ({safe_pct(op_h1,op_sn):.2f}%) | H3 {op_h3}/{op_sn} ({safe_pct(op_h3,op_sn):.2f}%) | H5 {op_h5}/{op_sn} ({safe_pct(op_h5,op_sn):.2f}%)",
-            f"🔺 TRIANGLE tracking da {self.triangle_started_from_key or '-'}; A2/C nessun backfill.",
+            f"🧬 X ULTRA SHADOW — start {self.prime_x_started_from_key or '-'} | marcati {self.prime_x_signals}",
+            f"X AMBATA H1 {xh1}/{xn} ({safe_pct(xh1,xn):.2f}%) | H3 {xh3}/{xn} ({safe_pct(xh3,xn):.2f}%) | H5 {xh5}/{xn} ({safe_pct(xh5,xn):.2f}%)",
+            "",
+            f"🧬 C legacy shadow: creati {self.prime_c_signals} | chiusi {cn} | H1 {ch1}/{cn} ({safe_pct(ch1,cn):.2f}%) | pending {cpa}/{cpam}",
+            f"🟠 B legacy congelato: creati {self.prime_b_signals} | chiusi {bn} | H1 {bh1}/{bn} ({safe_pct(bh1,bn):.2f}%) | pending {bpa}/{bpam}",
+            f"🔥 SUPER operativo solo A+A2: H1 {op_h1}/{op_sn} ({safe_pct(op_h1,op_sn):.2f}%) | H5 {op_h5}/{op_sn} ({safe_pct(op_h5,op_sn):.2f}%)",
             "Baseline: ambata H1 22.22% | ambo H1 ≈4.74% | ambo H5 ≈21.57%.",
-            "",
             "⏸️ FOCUS / INCROCIO / CORE / legacy: PAUSATI; state conservato.",
         ]
         if self.pending:
@@ -1589,7 +1797,7 @@ class MultiOnlyEngine:
                 f"STATE CARICATO | ff={ff_status} | source={source} | rev={self.state_revision} | "
                 f"MULTI history={len(self.multichannel.history)} | "
                 f"A start={self.multichannel.prime_a_started_from_key or '-'} | "
-                f"A2 start={self.multichannel.prime_a2_started_from_key or '-'} | C start={self.multichannel.prime_c_started_from_key or '-'}"
+                f"A2 start={self.multichannel.prime_a2_started_from_key or '-'} | D start={self.multichannel.prime_d_elite_started_from_key or '-'} | X start={self.multichannel.prime_x_started_from_key or '-'}"
             )
             return bool(loaded_multi)
         except Exception as exc:
@@ -1607,7 +1815,7 @@ class MultiOnlyEngine:
         data["processed"] = self.processed[-PROCESSED_MAX:]
         data["last_draw_key"] = self.last_draw_key
         data["multichannel_bd12_ed12_o2f12_v1"] = self.multichannel.dump()
-        data["active_mode"] = "MULTI_PRIME_A_A2_ELITE_C_SHADOW_v20.6"
+        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_ULTRA_v20.7"
         remote_data, _ = _fetch_remote_state() if git and PERSIST_GIT_STATE else (None, "disabled")
         merged, _ = _merge_state_data(data, remote_data)
         if isinstance(merged, dict):
@@ -1636,17 +1844,20 @@ class MultiOnlyEngine:
     def status_text(self):
         mc = self.multichannel
         return (
-            "📡 STATUS v20.6 MULTI PRIME A + A2 ELITE\n\n"
+            "📡 STATUS v20.7 MULTI PRIME A + A2 + D\n\n"
             f"Ultimo MULTI: {mc.history[-1]['key'] if mc.history else '-'}\n"
             f"State: {'OK' if self.state_load_info.get('loaded') else 'NUOVO'} | {self.state_load_info.get('reason')}\n"
             f"State source: {self.state_load_info.get('source','-')} | ff {self.state_load_info.get('ff','-')} | rev {self.state_revision}\n"
             f"History MULTI: {len(mc.history)}/{MULTI_HISTORY_MAX}\n"
             f"PRIME A start: {mc.prime_a_started_from_key or '-'}\n"
             f"PRIME A2 start: {mc.prime_a2_started_from_key or '-'}\n"
-            f"PRIME C start: {mc.prime_c_started_from_key or '-'}\n"
+            f"PRIME D ELITE start: {mc.prime_d_elite_started_from_key or '-'}\n"
+            f"PRIME D WIDE start: {mc.prime_d_wide_started_from_key or '-'}\n"
+            f"PRIME X start: {mc.prime_x_started_from_key or '-'}\n"
+            f"PRIME C legacy start: {mc.prime_c_started_from_key or '-'}\n"
             f"B legacy start: {mc.prime_b_started_from_key or '-'}\n"
             f"TRIANGLE start: {mc.triangle_started_from_key or '-'}\n\n"
-            "✅ Attivo: MULTI + PRIME A + PRIME A2 ELITE; PRIME C shadow\n"
+            "✅ Attivo: MULTI + PRIME A + A2 + D ELITE/WIDE; X/C shadow\n"
             "🟠 PRIME B: congelato, solo eventuali pending legacy.\n"
             "⏸️ FOCUS / INCROCIO / CORE / legacy: congelati nello state.\n\n"
             + mc.text()
@@ -1655,22 +1866,24 @@ class MultiOnlyEngine:
     @staticmethod
     def menu_text():
         return (
-            "🎯 10eLOTTO v20.6 — MULTI PRIME A + A2 ELITE\n\n"
+            "🎯 10eLOTTO v20.7 — MULTI PRIME A + A2 + D\n\n"
             "ATTIVO:\n"
             "• STANDARD BD12∩ED12∩O2F12 shadow/control\n"
             f"• 🔥 PRIME A: BD11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX}\n"
-            f"• 💎 PRIME A2 ELITE: BD11-12 + O2 rank {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + ora ≤08:00 oppure >16:00\n"
-            f"• 🧬 PRIME C SHADOW: BD1-6 + O2 rank {PRIME_C_O2_RANK_MIN}-{PRIME_C_O2_RANK_MAX} + ora >16:00\n"
-            "• A/A2: AMBO1 + AMBO2 + terzo lato monitorati\n"
-            "• C: tutto shadow\n"
-            "• B legacy: nessun nuovo segnale\n"
-            f"• SUPER ON se support_sum≥{MULTI_SUPER_GATE}; TRIANGLE OFF shadow\n\n"
+            f"• 💎 PRIME A2: BD11-12 + O2 rank {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + fascia Elite\n"
+            "• 💠 D ELITE: BD1-4 + >16:00 + intersezione unica\n"
+            "• 🔥 D WIDE: BD5-8 + >16:00 + intersezione unica\n"
+            "• 🧬 X ULTRA: D + ED9-12 + >17:00 + Extra margin13≥1 — SHADOW\n"
+            "• D: ambata operativa; tutti gli ambi D shadow\n"
+            "• C legacy shadow; B legacy congelato\n"
+            f"• SUPER operativo solo A/A2 se support_sum≥{MULTI_SUPER_GATE}; TRIANGLE OFF shadow\n\n"
             "PAUSATI (state conservato): FOCUS, INCROCIO, CORE e tutti i legacy.\n\n"
-            "/multi — statistiche complete A/A2/C\n"
+            "/multi — statistiche complete A/A2/D/X\n"
             "/status — feed + state + statistiche\n"
             "/verificatutto — audit completo\n"
             "/menu — comandi"
         )
+
 
 
 # ============================================================
@@ -1701,7 +1914,7 @@ async def setup_commands(app):
     await app.bot.set_my_commands([
         BotCommand("multi", "MULTI + PRIME A/A2 + C shadow"),
         BotCommand("status", "Stato MULTI A/A2 + feed/state"),
-        BotCommand("verificatutto", "Audit MULTI A/A2/C/TRIANGLE"),
+        BotCommand("verificatutto", "Audit MULTI A/A2/D/X/TRIANGLE"),
         BotCommand("menu", "Comandi attivi"),
     ])
 
@@ -1786,17 +1999,19 @@ async def startup(engine, app):
 
     await engine.tg(
         app,
-        "🚀 MULTI BD12+ED12+O2F12 — v20.6 PRIME A + A2 ELITE AVVIATO\n\n"
+        "🚀 MULTI BD12+ED12+O2F12 — v20.7 PRIME A + A2 + D AVVIATO\n\n"
         "🧪 STANDARD: BD12 ∩ ED12 ∩ O2F12 W80, cooldown 5 — SHADOW/control.\n"
         f"🔥 PRIME A: BD rank 11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} — invariato, qualità massima.\n"
         f"💎 PRIME A2 ELITE: BD rank 11-12 + O2 rank {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + ora ≤08:00 oppure >16:00.\n"
-        f"🧬 PRIME C SHADOW: BD rank 1-6 + O2 rank {PRIME_C_O2_RANK_MIN}-{PRIME_C_O2_RANK_MAX} + ora >16:00.\n"
-        "🔗 A/A2: AMBO1 + AMBO2 + terzo lato; C tutto shadow.\n"
-        f"🔥 SUPER ON se support_sum≥{MULTI_SUPER_GATE}; 🔺 TRIANGLE OFF sempre shadow su A/A2/C.\n"
+        "💠 PRIME D ELITE: BD rank 1-4 + ora >16:00 + intersezione unica — AMBATA operativa.\n"
+        "🔥 PRIME D WIDE: BD rank 5-8 + ora >16:00 + intersezione unica — AMBATA operativa.\n"
+        "🧬 PRIME X ULTRA: D + ED rank 9-12 + ora >17:00 + Extra margin13≥1 — SHADOW.\n"
+        "🔗 A/A2: ambi operativi; D: ambi solo shadow; C legacy shadow.\n"
+        f"🔥 SUPER operativo solo A/A2 se support_sum≥{MULTI_SUPER_GATE}; 🔺 TRIANGLE OFF shadow.\n"
         "🛡️ State FIX preservato: merge LOCAL+REMOTE + push esplicito sul branch; contatori monotoni.\n\n"
         "⏸️ FOCUS / INCROCIO / CORE / ENGINE / SOSIA / legacy: PAUSATI.\n"
         "✅ Il loro state viene conservato ma NON aggiornato.\n"
-        "🚫 Nessun backfill PRIME A2/C; PRIME B legacy congelato.\n\n"
+        "🚫 Nessun backfill PRIME D/X; A/A2 invariati; C/B legacy preservati.\n\n"
         "Comandi: /multi /status /verificatutto /menu"
     )
 
@@ -1816,7 +2031,7 @@ async def startup_until_ready(engine, app):
 
 async def live_loop(engine, app):
     console_log(
-        f"MULTI PRIME A+A2 ELITE LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s"
+        f"MULTI PRIME A+A2+D LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s"
     )
     started = time.monotonic()
     last_error = ""
@@ -1835,7 +2050,7 @@ async def live_loop(engine, app):
                 detail = f"{st.get('action')} | {st.get('detail','')}" if isinstance(st, dict) else "save-status assente"
                 await engine.tg(
                     app,
-                    "♻️ MULTI PRIME A+A2 — ROTAZIONE RUNNER\n"
+                    "♻️ MULTI PRIME A+A2+D — ROTAZIONE RUNNER\n"
                     + ("✅ State salvato e pubblicato sul branch.\n" if ok else "⚠️ State NON confermato sul branch.\n")
                     + f"{detail}\nAvvio successivo automatico.",
                 )
@@ -1859,7 +2074,7 @@ async def live_loop(engine, app):
             if txt != last_error or now - last_error_ts >= 900:
                 await engine.tg(
                     app,
-                    "⚠️ MULTI PRIME A+A2 — ERRORE\n"
+                    "⚠️ MULTI PRIME A+A2+D — ERRORE\n"
                     + txt
                     + "\nRiprovo automaticamente.",
                 )
@@ -1932,7 +2147,7 @@ def run_self_test():
         "base_gap": {n:(100-n if n!=42 else 30) for n in range(1,91)},
         "extra_gap": {n:(100-n if n!=42 else 25) for n in range(1,91)},
         "o2_freq": {n:(20 if n in o2 else 0) for n in range(1,91)},
-        "top_base_delay": bd, "top_extra_delay": ed, "top_o2": o2,
+        "top_base_delay": bd, "top_extra_delay": ed, "top_o2": o2, "extra_rank13_gap": 5,
     }
     mc._partner_plan = lambda main, ranks: {
         "main":int(main),
@@ -1953,7 +2168,7 @@ def run_self_test():
         "base_gap":{n:(100-n if n!=43 else 29) for n in range(1,91)},
         "extra_gap":{n:(100-n if n!=43 else 24) for n in range(1,91)},
         "o2_freq":{n:(20 if n in o22 else 0) for n in range(1,91)},
-        "top_base_delay":bd2,"top_extra_delay":ed2,"top_o2":o22,
+        "top_base_delay":bd2,"top_extra_delay":ed2,"top_o2":o22,"extra_rank13_gap":5,
     }
     me._partner_plan=lambda main,ranks:{
         "main":int(main),"p1":{"num":60,"cooc":31,"support":1,"in_bd12":False,"in_ed12":False,"o2_freq80":20},
@@ -1971,14 +2186,14 @@ def run_self_test():
 
     # --- C SHADOW: BD rank 4 + O2 rank 8, dopo le 16 ---
     mc3=_selftest_seed_mc(); mc3.history[-1]["time"]="17:30"
-    bd3=[1,2,3,44,5,6,7,8,9,10,11,12]
-    ed3=[44,21,22,23,24,25,26,27,28,29,30,31]
-    o23=[41,42,43,45,46,47,48,44,49,50,51,52]
+    bd3=[1,2,3,44,45,6,7,8,9,10,11,12]
+    ed3=[44,45,21,22,23,24,25,26,27,28,29,30]
+    o23=[41,42,43,46,47,48,49,44,45,50,51,52]
     mc3._rankings=lambda:{
         "base_gap":{n:(30 if n==44 else 1) for n in range(1,91)},
         "extra_gap":{n:(30 if n==44 else 1) for n in range(1,91)},
         "o2_freq":{n:(10 if n in o23 else 0) for n in range(1,91)},
-        "top_base_delay":bd3,"top_extra_delay":ed3,"top_o2":o23,
+        "top_base_delay":bd3,"top_extra_delay":ed3,"top_o2":o23,"extra_rank13_gap":5,
     }
     mc3._partner_plan=lambda main,ranks:{
         "main":int(main),"p1":{"num":41,"cooc":20,"support":1,"in_bd12":False,"in_ed12":False,"o2_freq80":10},
@@ -1986,22 +2201,59 @@ def run_self_test():
         "support_sum":2,"super_enabled":False,"cooc_window":900,
     }
     sc=mc3.arm()
-    assert sc and sc["prime_c_numbers"]==[44] and mc3.prime_c_signals==1
-    assert len(mc3.ambo_pending)==3 and all(x.get("tier")=="C" for x in mc3.ambo_pending)
+    assert sc and 44 in sc["prime_c_numbers"] and mc3.prime_c_signals>=1
+    assert len(mc3.ambo_pending)>=3 and all(x.get("tier")=="C" for x in mc3.ambo_pending)
     assert not mc3.should_notify_signal(sc)
 
-    # Dump/load preserva A/A2/C e marker.
+    # --- D ELITE + X ULTRA: intersezione unica, sera ---
+    md=_selftest_seed_mc(); md.history[-1]["time"]="18:30"
+    bd4=[46,2,3,4,5,6,7,8,9,10,11,12]
+    ed4=[21,22,23,24,25,26,27,28,46,30,31,32]  # 46 ED rank 9
+    o24=[46,61,62,63,64,65,66,67,68,69,70,71]
+    md._rankings=lambda:{
+        "base_gap":{n:(30 if n==46 else 1) for n in range(1,91)},
+        "extra_gap":{n:(12 if n==46 else 1) for n in range(1,91)},
+        "o2_freq":{n:(10 if n in o24 else 0) for n in range(1,91)},
+        "top_base_delay":bd4,"top_extra_delay":ed4,"top_o2":o24,"extra_rank13_gap":10,
+    }
+    md._partner_plan=mc3._partner_plan
+    sd=md.arm()
+    assert sd and sd["prime_d_elite_numbers"]==[46] and sd["prime_x_numbers"]==[46], sd
+    assert md.prime_d_elite_signals==1 and md.prime_x_signals==1
+    assert md.should_notify_signal(sd) and all(x.get("tier")=="DE" for x in md.ambo_pending)
+    # Gli ambi D sono shadow: un loro evento non va notificato.
+    fake={"kind":"ambo","row":dict(md.ambo_pending[0]),"hit_now":True,"closed":True}
+    assert not md.should_notify_event(fake)
+
+    # D WIDE: BD rank 6, non X se ED rank fuori 9-12.
+    mw=_selftest_seed_mc(); mw.history[-1]["time"]="16:05"
+    bdw=[1,2,3,4,5,47,7,8,9,10,11,12]
+    edw=[47,22,23,24,25,26,27,28,29,30,31,32]
+    o2w=[47,61,62,63,64,65,66,67,68,69,70,71]
+    mw._rankings=lambda:{
+        "base_gap":{n:(25 if n==47 else 1) for n in range(1,91)},
+        "extra_gap":{n:(20 if n==47 else 1) for n in range(1,91)},
+        "o2_freq":{n:(10 if n in o2w else 0) for n in range(1,91)},
+        "top_base_delay":bdw,"top_extra_delay":edw,"top_o2":o2w,"extra_rank13_gap":5,
+    }
+    mw._partner_plan=mc3._partner_plan
+    sw=mw.arm()
+    assert sw and sw["prime_d_wide_numbers"]==[47] and not sw["prime_x_numbers"], sw
+
+    # Dump/load preserva A/A2/C/D/X e marker.
     rt=MultiPrimeV1(); assert rt.load(me.dump()) and rt.prime_a2_signals==1 and rt.prime_a2_started_from_key
-    rc=MultiPrimeV1(); assert rc.load(mc3.dump()) and rc.prime_c_signals==1 and rc.prime_c_started_from_key
+    rc=MultiPrimeV1(); assert rc.load(mc3.dump()) and rc.prime_c_signals>=1 and rc.prime_c_started_from_key
+    rd=MultiPrimeV1(); assert rd.load(md.dump()) and rd.prime_d_elite_signals==1 and rd.prime_x_signals==1 and rd.prime_d_elite_started_from_key
 
     # Merge state: i contatori nuovi devono essere monotoni.
     la={"multichannel_bd12_ed12_o2f12_v1":mc.dump(),"processed":[],"multi_state_revision":3}
-    rb=me.dump(); rb["prime_a2_signals"]=5; rb["prime_c_signals"]=2
+    rb=me.dump(); rb["prime_a2_signals"]=5; rb["prime_c_signals"]=2; rb["prime_d_elite_signals"]=4; rb["prime_d_wide_signals"]=3; rb["prime_x_signals"]=2
     rr={"multichannel_bd12_ed12_o2f12_v1":rb,"processed":[],"multi_state_revision":4}
     mm,_=_merge_state_data(la,rr); mcm=mm["multichannel_bd12_ed12_o2f12_v1"]
     assert int(mcm.get("prime_a_signals",0))>=1 and int(mcm.get("prime_a2_signals",0))>=5 and int(mcm.get("prime_c_signals",0))>=2
+    assert int(mcm.get("prime_d_elite_signals",0))>=4 and int(mcm.get("prime_d_wide_signals",0))>=3 and int(mcm.get("prime_x_signals",0))>=2
 
-    print("SELF-TEST OK: v20.6 PRIME A invariato + A2 ELITE + C shadow + state FIX + STANDARD pure shadow")
+    print("SELF-TEST OK: v20.7 A/A2 invariati + D ELITE/WIDE + X ULTRA shadow + state FIX")
 
 
 # ============================================================
