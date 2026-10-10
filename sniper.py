@@ -1,5 +1,5 @@
 # ============================================================
-# 🎯 10eLOTTO MULTI BD12+ED12+O2F12 — v20.9 PRIME + QUATERNA + 7/9 LIVE — STATE FIX
+# 🎯 10eLOTTO MULTI BD12+ED12+O2F12 — v20.9.1 PRIME + QUATERNA + 7/9 LIVE — HARD LOCK
 # ============================================================
 # UNICO RAMO ATTIVO: MULTI
 #   STANDARD (shadow/control): BD12 ∩ ED12 ∩ O2F12, W80, cooldown 5
@@ -30,6 +30,7 @@
 #   - v20.7.1: marker A2/D/X fissati solo dopo il catch-up reale, mai ereditati da uno state vecchio
 #   - v20.8: QUATERNA PLUS/ELITE solo A2 + D ELITE, nessun backfill
 #   - v20.9: SETTINA/NOVINA LIVE con premi standard, costo/ROI e stop al primo premio
+#   - v20.9.1 HARD LOCK: snapshot locale PRIMA di Git + backup persistente + floor anti-regressione
 #   - QUATERNA: MAX-MIN Jaccard900 su TOP10/TOP11/TOP12; 2/3 consenso=PLUS, 3/3=ELITE
 #   - gestione operativa: 1 euro/colpo, STOP al primo 2/4 o meglio; shadow continua fino H5
 #   - mantiene FIX state v20.5.1: merge conservativo LOCAL+REMOTE + push esplicito sul branch
@@ -87,6 +88,9 @@ HEADERS = {
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(BASE_DIR, "10elotto_engine_only_state.json")
+# v20.9.1 HARD LOCK: seconda copia persistente dello state. Viene letta PRIMA di qualsiasi
+# fast-forward/reset Git e viene pubblicata insieme allo state principale.
+STATE_HARDLOCK_FILE = os.path.join(BASE_DIR, "10elotto_engine_only_state.hardlock.json")
 LEGACY_STATE_FILE = os.path.join(BASE_DIR, "superambo_gap4_core_fast_h1_state.json")
 LOCK_FILE = "/tmp/10elotto_multi_prime_only.lock"
 
@@ -98,8 +102,8 @@ PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
 PROCESSED_MAX = int(os.getenv("PROCESSED_MAX", "12000"))
 
-CODE_RELEASE = "v20.9"
-STATE_GUARD_SCHEMA = 2090
+CODE_RELEASE = "v20.9.1"
+STATE_GUARD_SCHEMA = 2091
 STATE_HISTORY_RECOVERY_COMMITS = max(10, min(120, int(os.getenv("STATE_HISTORY_RECOVERY_COMMITS", "60"))))
 
 MULTI_VERSION = 1  # compatibile con state v20.2/v20.3
@@ -393,6 +397,11 @@ def _run_git(args, timeout=35):
 
 
 def git_commit_state_if_needed(force=False):
+    """Pubblica state principale + copia HARD LOCK nello stesso commit.
+
+    In caso di push concorrente conserva in memoria le copie locali PRIMA del reset --hard,
+    le fonde con entrambe le copie remote e solo dopo riallinea il checkout.
+    """
     global _LAST_GIT_COMMIT_TS
     if not PERSIST_GIT_STATE:
         return {"ok": True, "action": "disabled", "detail": "PERSIST_GIT_STATE=0"}
@@ -404,56 +413,68 @@ def git_commit_state_if_needed(force=False):
         return {"ok": True, "action": "throttled", "detail": "commit rimandato"}
 
     rel = os.path.relpath(STATE_FILE, BASE_DIR)
-    a = _run_git(["add", rel])
+    hard_rel = os.path.relpath(STATE_HARDLOCK_FILE, BASE_DIR)
+    rels = [rel]
+    if os.path.exists(STATE_HARDLOCK_FILE):
+        rels.append(hard_rel)
+
+    a = _run_git(["add", *rels])
     if a.returncode != 0:
         return {"ok": False, "action": "add-fail", "detail": a.stderr.strip()[-500:]}
 
-    diff = _run_git(["diff", "--cached", "--quiet", "--", rel])
+    diff = _run_git(["diff", "--cached", "--quiet", "--", *rels])
     if diff.returncode == 0:
         _LAST_GIT_COMMIT_TS = now
         return {"ok": True, "action": "no-change", "detail": "state invariato"}
 
-    msg = f"state: MULTI PRIME {now_txt()}"
-    c = _run_git(["commit", "-m", msg, "--", rel])
+    msg = f"state: MULTI PRIME HARD LOCK {now_txt()}"
+    c = _run_git(["commit", "-m", msg, "--", *rels])
     if c.returncode != 0:
         return {"ok": False, "action": "commit-fail", "detail": c.stderr.strip()[-500:]}
 
-    # GitHub Actions usa spesso un detached HEAD: push esplicito sul branch.
     branch = _git_remote_branch()
     p = _run_git(["push", "origin", f"HEAD:{branch}"], timeout=45)
     if p.returncode != 0:
-        # Recovery: fondi lo state col remoto, riallinea il checkout, ricommetti e riprova.
+        # Congela le copie LOCALI prima di qualunque reset Git.
         local_snapshot = _read_json_file(STATE_FILE)
+        hard_snapshot = _read_json_file(STATE_HARDLOCK_FILE)
+        local_anchor, _ = _merge_state_data(local_snapshot, hard_snapshot)
+
         f = _run_git(["fetch", "--quiet", "origin", branch], timeout=45)
         if f.returncode != 0:
             return {"ok": False, "action": "push-fail-fetch-fail", "detail": p.stderr.strip()[-500:]}
         remote_snapshot, _ = _fetch_remote_state()
-        merged_snapshot, _ = _merge_state_data(local_snapshot, remote_snapshot)
+        remote_hard, _ = _fetch_remote_hardlock_state()
+        remote_merged, _ = _merge_state_data(remote_snapshot, remote_hard)
+        merged_snapshot, _ = _merge_state_data(local_anchor, remote_merged)
+        merged_snapshot, _, _ = _apply_hardlock_floor(merged_snapshot, local_anchor)
         if not isinstance(merged_snapshot, dict):
             return {"ok": False, "action": "push-fail-merge-fail", "detail": p.stderr.strip()[-500:]}
+
         rr = _run_git(["reset", "--hard", f"origin/{branch}"], timeout=45)
         if rr.returncode != 0:
             return {"ok": False, "action": "push-fail-reset-fail", "detail": rr.stderr.strip()[-500:]}
         atomic_write_json(STATE_FILE, merged_snapshot)
-        a2 = _run_git(["add", rel])
+        atomic_write_json(STATE_HARDLOCK_FILE, merged_snapshot)
+
+        a2 = _run_git(["add", rel, hard_rel])
         if a2.returncode != 0:
             return {"ok": False, "action": "retry-add-fail", "detail": a2.stderr.strip()[-500:]}
-        d2 = _run_git(["diff", "--cached", "--quiet", "--", rel])
+        d2 = _run_git(["diff", "--cached", "--quiet", "--", rel, hard_rel])
         if d2.returncode == 0:
             _LAST_GIT_COMMIT_TS = now
-            return {"ok": True, "action": "remote-already-current", "detail": "state fuso gia presente sul remoto"}
-        c2 = _run_git(["commit", "-m", msg + " [retry]", "--", rel])
+            return {"ok": True, "action": "remote-already-current", "detail": "state HARD LOCK gia presente sul remoto"}
+        c2 = _run_git(["commit", "-m", msg + " [retry]", "--", rel, hard_rel])
         if c2.returncode != 0:
             return {"ok": False, "action": "retry-commit-fail", "detail": c2.stderr.strip()[-500:]}
         p2 = _run_git(["push", "origin", f"HEAD:{branch}"], timeout=45)
         if p2.returncode != 0:
             return {"ok": False, "action": "retry-push-fail", "detail": p2.stderr.strip()[-500:]}
         _LAST_GIT_COMMIT_TS = now
-        return {"ok": True, "action": "pushed-after-merge", "detail": msg}
+        return {"ok": True, "action": "pushed-after-hardlock-merge", "detail": msg}
 
     _LAST_GIT_COMMIT_TS = now
     return {"ok": True, "action": "pushed", "detail": msg}
-
 
 def _git_remote_branch():
     """Trova il branch remoto senza assumere che GitHub Actions sia su HEAD locale."""
@@ -536,25 +557,35 @@ def _fast_forward_repo_to_remote():
     return "ff-skip"
 
 
-def _fetch_remote_state():
-    """Legge SOLO lo state dal branch remoto; non cambia il codice in esecuzione."""
+def _fetch_remote_json_file(path, missing_label="remote-state-missing"):
+    """Legge un JSON tracciato dal branch remoto senza modificare il checkout."""
     if not os.path.exists(os.path.join(BASE_DIR, ".git")):
         return None, "no-git"
     branch = _git_remote_branch()
     f = _run_git(["fetch", "--quiet", "origin", branch], timeout=45)
     if f.returncode != 0:
         return None, "fetch-fail"
-    rel = os.path.relpath(STATE_FILE, BASE_DIR).replace(os.sep, "/")
+    rel = os.path.relpath(path, BASE_DIR).replace(os.sep, "/")
     g = _run_git(["show", f"origin/{branch}:{rel}"], timeout=20)
     if g.returncode != 0 or not g.stdout.strip():
-        return None, "remote-state-missing"
+        return None, missing_label
     try:
         data = json.loads(g.stdout)
         if not isinstance(data, dict):
-            return None, "remote-state-invalid"
-        return data, f"origin/{branch}"
+            return None, "remote-json-invalid"
+        return data, f"origin/{branch}:{rel}"
     except Exception as exc:
         return None, f"remote-json-{type(exc).__name__}"
+
+
+def _fetch_remote_state():
+    """Legge SOLO lo state principale dal branch remoto."""
+    return _fetch_remote_json_file(STATE_FILE, "remote-state-missing")
+
+
+def _fetch_remote_hardlock_state():
+    """Legge la copia ridondante HARD LOCK dal branch remoto, se esiste."""
+    return _fetch_remote_json_file(STATE_HARDLOCK_FILE, "remote-hardlock-missing")
 
 
 def _fetch_state_history_candidates(limit=None):
@@ -798,6 +829,101 @@ def _merge_many_states(candidates):
         merged, _ = _merge_state_data(merged, data)
         used.append(label)
     return merged, used
+
+
+def _state_last_key(data):
+    if not isinstance(data, dict):
+        return None
+    mc = data.get("multichannel_bd12_ed12_o2f12_v1")
+    if isinstance(mc, dict):
+        hist = mc.get("history") or []
+        if hist and isinstance(hist[-1], dict) and hist[-1].get("key"):
+            return str(hist[-1].get("key"))
+    return str(data.get("last_draw_key")) if data.get("last_draw_key") else None
+
+
+def _detect_state_regressions(candidate, floor):
+    """Ritorna le regressioni che un candidato causerebbe rispetto al floor già raggiunto.
+
+    I pending non sono usati come contatore monotono perché possono chiudersi normalmente;
+    record/pending vengono comunque fusi per ID da _merge_multichannel_state.
+    """
+    if not isinstance(floor, dict):
+        return []
+    if not isinstance(candidate, dict):
+        return ["state-assente"]
+    out = []
+    ck, fk = order_key(_state_last_key(candidate)), order_key(_state_last_key(floor))
+    if fk is not None and (ck is None or ck < fk):
+        out.append(f"last:{_state_last_key(candidate) or '-'}<{_state_last_key(floor)}")
+    cm = candidate.get("multichannel_bd12_ed12_o2f12_v1") or {}
+    fm = floor.get("multichannel_bd12_ed12_o2f12_v1") or {}
+    for k in (
+        "draw_seq", "scans", "signals", "no_signal", "cooldown_skips",
+        "prime_a_signals", "prime_a2_signals", "prime_d_elite_signals",
+        "prime_d_wide_signals", "prime_x_signals", "prime_c_signals",
+        "quad_signals", "quad_elite_signals", "big7_signals", "big9_signals",
+    ):
+        cv = int(cm.get(k, cm.get("prime_signals", 0) if k == "prime_a_signals" else 0) or 0)
+        fv = int(fm.get(k, fm.get("prime_signals", 0) if k == "prime_a_signals" else 0) or 0)
+        if cv < fv:
+            out.append(f"{k}:{cv}<{fv}")
+    for k in ("records", "ambo_records", "quad_records", "big_records"):
+        if len(cm.get(k) or []) < len(fm.get(k) or []):
+            out.append(f"{k}:{len(cm.get(k) or [])}<{len(fm.get(k) or [])}")
+    return out
+
+
+def _apply_hardlock_floor(candidate, floor):
+    """Fonde il floor dentro il candidato e preserva i marker forward già congelati.
+
+    Il floor è lo snapshot letto PRIMA di qualsiasi operazione Git nel processo corrente.
+    Nessuna copia remota può quindi spostare indietro la base #196 (o qualunque base futura).
+    """
+    if not isinstance(floor, dict):
+        return candidate, False, []
+    regressions = _detect_state_regressions(candidate, floor)
+    merged, _ = _merge_state_data(candidate, floor)
+    if not isinstance(merged, dict):
+        merged = dict(floor)
+    mm = merged.get("multichannel_bd12_ed12_o2f12_v1")
+    fm = floor.get("multichannel_bd12_ed12_o2f12_v1")
+    if isinstance(mm, dict) and isinstance(fm, dict):
+        # Questi marker sono forward/no-backfill: una volta fissati NON devono tornare
+        # a una base diversa durante un cambio codice o una rotazione runner.
+        for k in (
+            "prime_a2_started_from_key", "prime_d_elite_started_from_key",
+            "prime_d_wide_started_from_key", "prime_x_started_from_key",
+            "v2071_started_from_key", "quad_started_from_key", "big_started_from_key",
+        ):
+            if fm.get(k):
+                mm[k] = fm.get(k)
+        for k in (
+            "prime_a2_started_at", "prime_d_elite_started_at", "prime_d_wide_started_at",
+            "prime_x_started_at", "v2071_started_at", "quad_started_at", "big_started_at",
+        ):
+            if fm.get(k):
+                mm[k] = fm.get(k)
+        if fm.get("v2071_started_from_key"):
+            for k in ("v2071_scans_base", "v2071_signals_base", "v2071_draw_seq_base"):
+                if fm.get(k) is not None:
+                    mm[k] = int(fm.get(k) or 0)
+        merged["multichannel_bd12_ed12_o2f12_v1"] = mm
+    return merged, bool(regressions), regressions
+
+
+def _merge_state_candidates(candidates):
+    merged = None
+    labels = []
+    for label, data in candidates:
+        if not isinstance(data, dict):
+            continue
+        if merged is None:
+            merged = dict(data)
+        else:
+            merged, _ = _merge_state_data(merged, data)
+        labels.append(label)
+    return merged, labels
 
 
 def _best_available_state(local_data, remote_data, history_candidates=None):
@@ -2014,7 +2140,7 @@ class MultiPrimeV1:
         if sig.get("details"):
             origin_time = str((sig.get("details") or [{}])[0].get("origin_time") or "")
         lines = [
-            "🧪 MULTI BD12+ED12+O2F12 — v20.9",
+            "🧪 MULTI BD12+ED12+O2F12 — v20.9.1",
             "Origine: " + str(sig.get("origin_key")) + (f" | ora {origin_time}" if origin_time else ""),
             "STANDARD: Base RIT12 ∩ Extra RIT12 ∩ Oro2 FREQ12 (W80)",
             f"Segnali standard: {' '.join(f'{int(n):02d}' for n in sig.get('numbers', []))}",
@@ -2100,7 +2226,7 @@ class MultiPrimeV1:
 
         bplans=list(sig.get("big_plans") or [])
         if bplans:
-            lines += ["", "🎯 SISTEMI 7/9 v20.9 — LIVE"]
+            lines += ["", "🎯 SISTEMI 7/9 v20.9.1 — LIVE"]
             for b in bplans:
                 nums=[int(x) for x in b.get("numbers",[])]
                 size=int(b.get("system_size",0) or 0)
@@ -2211,7 +2337,7 @@ class MultiPrimeV1:
             fast_note = "\n🎯 FAST H1 centrato." if tier == "A" and slot == "BASE2" and age == 1 and ev.get("hit_now") else ""
             off_note = "\n👁️ Era OFF-gate: hit registrato solo come TRIANGLE SHADOW." if slot == "TRIANGLE_OFF" and ev.get("hit_now") else ""
             return (
-                f"🧾 MULTI v20.9 — {tag}\n\n"
+                f"🧾 MULTI v20.9.1 — {tag}\n\n"
                 f"Origine {r.get('origin_key')} | M {int(r.get('main',0)):02d}\n"
                 f"Coppia {pair[0]:02d}-{pair[1]:02d} | {status}"
                 f"{tier_line} | BD rank={r.get('bd_rank')} | O2 rank={r.get('o2_rank')}"
@@ -2456,7 +2582,7 @@ class MultiPrimeV1:
         b9pending=sum(1 for r in self.big_pending if int(r.get("system_size",0) or 0)==9)
 
         lines = [
-            "🧪 MULTI PRIME A + A2 + D + QUATERNA + 7/9 LIVE — v20.9",
+            "🧪 MULTI PRIME A + A2 + D + QUATERNA + 7/9 LIVE — v20.9.1",
             "STANDARD shadow: BD12 ∩ ED12 ∩ O2F12",
             f"🔥 A: BD11-12 + O2 {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} | 💎 A2: BD11-12 + O2 {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + fascia Elite",
             "💠 D-ELITE: BD1-4 | 🔥 D-WIDE: BD5-8 | entrambi >16:00 + intersezione unica",
@@ -2530,21 +2656,53 @@ class MultiOnlyEngine:
         self.load_state()
 
     def load_state(self):
-        ff_status = _fast_forward_repo_to_remote()
-        local_path = STATE_FILE if os.path.exists(STATE_FILE) else (LEGACY_STATE_FILE if os.path.exists(LEGACY_STATE_FILE) else None)
-        local_data = _read_json_file(local_path) if local_path else None
-        remote_data, remote_src = _fetch_remote_state()
-        history_candidates, history_info = _fetch_state_history_candidates()
-        data, source, used_sources = _best_available_state(local_data, remote_data, history_candidates)
+        # HARD LOCK 1/3 — leggi e congela le copie LOCALI prima di qualsiasi fetch/merge Git.
+        local_path_pre = STATE_FILE if os.path.exists(STATE_FILE) else (LEGACY_STATE_FILE if os.path.exists(LEGACY_STATE_FILE) else None)
+        local_pre = _read_json_file(local_path_pre) if local_path_pre else None
+        hard_pre = _read_json_file(STATE_HARDLOCK_FILE)
+        pre_anchor, pre_labels = _merge_state_candidates([("LOCAL_PRE_GIT", local_pre), ("HARDLOCK_PRE_GIT", hard_pre)])
+        anchor_key = _state_last_key(pre_anchor)
 
+        # Solo DOPO aver congelato pre_anchor è consentito aggiornare il checkout.
+        ff_status = _fast_forward_repo_to_remote()
+
+        local_path = STATE_FILE if os.path.exists(STATE_FILE) else (LEGACY_STATE_FILE if os.path.exists(LEGACY_STATE_FILE) else None)
+        local_post = _read_json_file(local_path) if local_path else None
+        hard_post = _read_json_file(STATE_HARDLOCK_FILE)
+        remote_data, remote_src = _fetch_remote_state()
+        remote_hard, remote_hard_src = _fetch_remote_hardlock_state()
+        history_candidates, history_info = _fetch_state_history_candidates()
+
+        candidates = [
+            ("PRE_GIT_ANCHOR", pre_anchor),
+            ("LOCAL_POST_FF", local_post),
+            ("HARDLOCK_POST_FF", hard_post),
+            ("REMOTE_HEAD", remote_data),
+            ("REMOTE_HARDLOCK", remote_hard),
+        ]
+        candidates.extend((f"GIT:{sha[:8]}", d) for sha, d in history_candidates)
+        data, used_sources = _merge_state_candidates(candidates)
+
+        # Diagnostica: quali copie avrebbero fatto tornare indietro lo state rispetto
+        # a ciò che era presente localmente PRIMA del fast-forward?
+        blocked_sources = []
+        if isinstance(pre_anchor, dict):
+            for label, cand in (("LOCAL_POST_FF", local_post), ("REMOTE_HEAD", remote_data), ("REMOTE_HARDLOCK", remote_hard)):
+                regs = _detect_state_regressions(cand, pre_anchor)
+                if regs:
+                    blocked_sources.append(f"{label}[{','.join(regs[:3])}]")
+
+        data, floor_applied, floor_regs = _apply_hardlock_floor(data, pre_anchor)
         if not isinstance(data, dict):
             self.state_load_info = {
-                "loaded": False, "path": local_path, "reason": "state assente/non leggibile", "source": source,
+                "loaded": False, "path": local_path_pre, "reason": "state assente/non leggibile", "source": "NONE",
+                "hardlock": "NO-STATE",
             }
             return False
         try:
-            # v20.5.1: materializza sempre la fusione LOCAL+REMOTE.
+            # HARD LOCK 2/3 — materializza SEMPRE entrambe le copie prima di caricare il motore.
             atomic_write_json(STATE_FILE, data)
+            atomic_write_json(STATE_HARDLOCK_FILE, data)
             local_path = STATE_FILE
 
             self.raw_state = data
@@ -2553,57 +2711,74 @@ class MultiOnlyEngine:
             self.processed_set = set(self.processed)
             self.last_draw_key = data.get("last_draw_key") if isinstance(data.get("last_draw_key"), str) else None
             loaded_multi = self.multichannel.load(data.get("multichannel_bd12_ed12_o2f12_v1"))
+            final_key = self.multichannel.history[-1].get("key") if self.multichannel.history else self.last_draw_key
             self.state_load_info = {
                 "loaded": bool(loaded_multi),
-                "path": local_path or remote_src,
+                "path": local_path,
                 "reason": "OK" if loaded_multi else "MULTI state assente/incompatibile",
-                "source": source,
-                "remote": remote_src, "ff": ff_status,
+                "source": "HARDLOCK_MERGE_LOCAL_REMOTE_HISTORY",
+                "remote": remote_src, "remote_hard": remote_hard_src, "ff": ff_status,
                 "history_status": history_info.get("status"),
                 "history_count": int(history_info.get("count", 0) or 0),
                 "history_max_rev": int(history_info.get("max_rev", 0) or 0),
                 "used_sources": used_sources,
+                "pre_git_sources": pre_labels,
+                "hardlock_anchor_key": anchor_key,
+                "hardlock_final_key": final_key,
+                "hardlock_blocked": blocked_sources,
+                "hardlock_floor_applied": bool(floor_applied or blocked_sources),
+                "hardlock_floor_regs": floor_regs,
+                "hardlock_backup_ok": os.path.exists(STATE_HARDLOCK_FILE),
             }
             console_log(
-                f"STATE CARICATO | ff={ff_status} | source={source} | rev={self.state_revision} | "
-                f"history-guard={history_info.get('count',0)} maxrev={history_info.get('max_rev',0)} | "
-                f"MULTI history={len(self.multichannel.history)} | "
-                f"A start={self.multichannel.prime_a_started_from_key or '-'} | "
-                f"A2 start={self.multichannel.prime_a2_started_from_key or '-'} | D start={self.multichannel.prime_d_elite_started_from_key or '-'} | X start={self.multichannel.prime_x_started_from_key or '-'}"
+                f"STATE HARD LOCK CARICATO | ff={ff_status} | anchor={anchor_key or '-'} | final={final_key or '-'} | "
+                f"rev={self.state_revision} | blocked={len(blocked_sources)} | backup={'OK' if os.path.exists(STATE_HARDLOCK_FILE) else 'NO'} | "
+                f"MULTI history={len(self.multichannel.history)}"
             )
             return bool(loaded_multi)
         except Exception as exc:
             self.state_load_info = {
-                "loaded": False, "path": local_path, "reason": f"{type(exc).__name__}: {exc}", "source": source,
+                "loaded": False, "path": local_path, "reason": f"{type(exc).__name__}: {exc}",
+                "source": "HARDLOCK_FAIL", "hardlock_anchor_key": anchor_key,
             }
-            console_log(f"STATE LOAD FAIL | {self.state_load_info['reason']}")
+            console_log(f"STATE HARD LOCK LOAD FAIL | {self.state_load_info['reason']}")
             return False
 
     def save_state(self, git=True, force_git=False):
-        # Costruisci lo snapshot locale SENZA incrementare ancora la revision.
+        # Snapshot corrente del motore.
         data = dict(self.raw_state) if isinstance(self.raw_state, dict) else {}
         data["saved_at"] = now_dt().isoformat(timespec="seconds")
         data["processed"] = self.processed[-PROCESSED_MAX:]
         data["last_draw_key"] = self.last_draw_key
         data["multichannel_bd12_ed12_o2f12_v1"] = self.multichannel.dump()
-        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_7_9_v20.9_STATE_FIX"
+        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_7_9_v20.9.1_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
 
-        # Prima fondi con HEAD remoto; la revision viene assegnata SOLO dopo il merge,
-        # quindi non puo mai essere inferiore a una copia remota piu avanzata.
-        remote_data, _ = _fetch_remote_state() if git and PERSIST_GIT_STATE else (None, "disabled")
-        merged, _ = _merge_state_data(data, remote_data)
-        if isinstance(merged, dict):
-            data = merged
+        # HARD LOCK 3/3 — il backup già presente è il pavimento locale.
+        hard_floor = _read_json_file(STATE_HARDLOCK_FILE)
+        local_anchor, _ = _merge_state_data(data, hard_floor)
+        local_anchor, _, _ = _apply_hardlock_floor(local_anchor, hard_floor)
+        if isinstance(local_anchor, dict):
+            data = local_anchor
+
+        # Fonde entrambe le copie remote, ma non può scendere sotto il pavimento locale.
+        if git and PERSIST_GIT_STATE:
+            remote_data, _ = _fetch_remote_state()
+            remote_hard, _ = _fetch_remote_hardlock_state()
+            remote_merged, _ = _merge_state_data(remote_data, remote_hard)
+            merged, _ = _merge_state_data(data, remote_merged)
+            merged, _, _ = _apply_hardlock_floor(merged, data)
+            if isinstance(merged, dict):
+                data = merged
 
         remote_rev = int(data.get("multi_state_revision", 0) or 0)
         self.state_revision = max(int(self.state_revision), remote_rev) + 1
         data["multi_state_revision"] = int(self.state_revision)
         data["saved_at"] = now_dt().isoformat(timespec="seconds")
-        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_7_9_v20.9_STATE_FIX"
+        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_7_9_v20.9.1_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
 
-        # Ricarica l'eventuale merge prima della scrittura per mantenere record/pending monotoni.
+        # Ricarica il merge prima della scrittura per mantenere record/pending monotoni.
         self.multichannel.load(data.get("multichannel_bd12_ed12_o2f12_v1"))
         self.processed = [str(x) for x in data.get("processed", []) if isinstance(x, str)][-PROCESSED_MAX:]
         self.processed_set = set(self.processed)
@@ -2611,13 +2786,14 @@ class MultiOnlyEngine:
             self.last_draw_key = data.get("last_draw_key")
 
         atomic_write_json(STATE_FILE, data)
+        atomic_write_json(STATE_HARDLOCK_FILE, data)
         self.raw_state = data
         if git:
             st = git_commit_state_if_needed(force=force_git)
             if not st.get("ok", False):
-                console_log(f"STATE GIT WARNING | {st.get('action')} | {st.get('detail','')}")
+                console_log(f"STATE HARD LOCK GIT WARNING | {st.get('action')} | {st.get('detail','')}")
             return st
-        return {"ok": True, "action": "local-only", "detail": "state scritto"}
+        return {"ok": True, "action": "local-hardlock", "detail": "state + hardlock scritti"}
 
     async def tg(self, app, text):
         if not app or CHAT_ID is None or not text:
@@ -2631,11 +2807,12 @@ class MultiOnlyEngine:
     def status_text(self):
         mc = self.multichannel
         return (
-            "📡 STATUS v20.9 MULTI PRIME + QUATERNA + 7/9 LIVE — STATE FIX\n\n"
+            "📡 STATUS v20.9.1 MULTI PRIME + QUATERNA + 7/9 LIVE — HARD LOCK\n\n"
             f"Ultimo MULTI: {mc.history[-1]['key'] if mc.history else '-'}\n"
             f"State: {'OK' if self.state_load_info.get('loaded') else 'NUOVO'} | {self.state_load_info.get('reason')}\n"
             f"State source: {self.state_load_info.get('source','-')} | ff {self.state_load_info.get('ff','-')} | rev {self.state_revision}\n"
             f"Git history guard: {self.state_load_info.get('history_count',0)} snapshot | max rev trovato {self.state_load_info.get('history_max_rev',0)}\n"
+            f"HARD LOCK: {'ON' if self.state_load_info.get('hardlock_backup_ok') else 'WARN'} | anchor PRE-GIT {self.state_load_info.get('hardlock_anchor_key') or '-'} | final {self.state_load_info.get('hardlock_final_key') or '-'} | regressioni bloccate {len(self.state_load_info.get('hardlock_blocked') or [])}\n"
             f"History MULTI: {len(mc.history)}/{MULTI_HISTORY_MAX}\n"
             f"v20.7.1 forward base: {mc.v2071_started_from_key or '-'} | scan da fix {max(0, mc.scans-mc.v2071_scans_base)} | STD da fix {max(0, mc.signals-mc.v2071_signals_base)}\n"
             f"PRIME A start: {mc.prime_a_started_from_key or '-'}\n"
@@ -2647,7 +2824,7 @@ class MultiOnlyEngine:
             f"B legacy start: {mc.prime_b_started_from_key or '-'}\n"
             f"TRIANGLE start: {mc.triangle_started_from_key or '-'}\n"
             f"QUATERNA v20.8 start: {mc.quad_started_from_key or '-'}\n"
-            f"SISTEMI 7/9 v20.9 start: {mc.big_started_from_key or '-'}\n\n"
+            f"SISTEMI 7/9 v20.9.1 start: {mc.big_started_from_key or '-'}\n\n"
             "✅ Attivo: MULTI + PRIME A + A2 + D ELITE/WIDE + QUATERNA PLUS/ELITE + SETTINA/NOVINA LIVE; X/C shadow\n"
             "🟠 PRIME B: congelato, solo eventuali pending legacy.\n"
             "⏸️ FOCUS / INCROCIO / CORE / legacy: congelati nello state.\n\n"
@@ -2657,7 +2834,7 @@ class MultiOnlyEngine:
     @staticmethod
     def menu_text():
         return (
-            "🎯 10eLOTTO v20.9 — MULTI PRIME + QUATERNA + 7/9 LIVE — STATE FIX\n\n"
+            "🎯 10eLOTTO v20.9.1 — MULTI PRIME + QUATERNA + 7/9 LIVE — HARD LOCK\n\n"
             "ATTIVO:\n"
             "• STANDARD BD12∩ED12∩O2F12 shadow/control\n"
             f"• 🔥 PRIME A: BD11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX}\n"
@@ -2806,7 +2983,7 @@ async def startup(engine, app):
 
     await engine.tg(
         app,
-        "🚀 MULTI BD12+ED12+O2F12 — v20.9 PRIME + QUATERNA + 7/9 LIVE AVVIATO\n\n"
+        "🚀 MULTI BD12+ED12+O2F12 — v20.9.1 PRIME + QUATERNA + 7/9 LIVE HARD LOCK AVVIATO\n\n"
         "🧪 STANDARD: BD12 ∩ ED12 ∩ O2F12 W80, cooldown 5 — SHADOW/control.\n"
         f"🔥 PRIME A: BD rank 11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} — invariato, qualità massima.\n"
         f"💎 PRIME A2 ELITE: BD rank 11-12 + O2 rank {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + ora ≤08:00 oppure >16:00.\n"
@@ -2815,7 +2992,8 @@ async def startup(engine, app):
         "🧬 PRIME X ULTRA: D + ED rank 9-12 + ora >17:00 + Extra margin13≥1 — SHADOW.\n"
         "🔗 A/A2: ambi operativi; D: ambi solo shadow; C legacy shadow.\n"
         f"🔥 SUPER operativo solo A/A2 se support_sum≥{MULTI_SUPER_GATE}; 🔺 TRIANGLE OFF shadow.\n"
-        "🛡️ State FIX: LOCAL+REMOTE+STORIA GIT, revision monotona.\n"
+        "🛡️ HARD LOCK: snapshot PRE-GIT + backup doppio + LOCAL/REMOTE/STORIA GIT; regressioni bloccate.\n"
+        f"🔒 State ereditato: {engine.state_load_info.get('hardlock_final_key') or engine.last_draw_key or '-'} | backup {'OK' if engine.state_load_info.get('hardlock_backup_ok') else 'WARN'}.\n"
         "🔷 QUATERNA PLUS/ELITE: A2+D ELITE, MAX-MIN Jaccard900, consenso TOP10/11/12.\n"
         "💶 1€/colpo H1-H5, STOP operativo al primo 2/4+; shadow fino H5.\n\n"
         "⏸️ FOCUS / INCROCIO / CORE / ENGINE / SOSIA / legacy: PAUSATI.\n"
@@ -2859,7 +3037,7 @@ async def live_loop(engine, app):
                 detail = f"{st.get('action')} | {st.get('detail','')}" if isinstance(st, dict) else "save-status assente"
                 await engine.tg(
                     app,
-                    "♻️ MULTI PRIME + Q + 7/9 v20.9 — ROTAZIONE RUNNER\n"
+                    "♻️ MULTI PRIME + Q + 7/9 v20.9.1 HARD LOCK — ROTAZIONE RUNNER\n"
                     + ("✅ State salvato e pubblicato sul branch.\n" if ok else "⚠️ State NON confermato sul branch.\n")
                     + f"{detail}\nAvvio successivo automatico.",
                 )
@@ -3106,7 +3284,19 @@ def run_self_test():
     m1={"multichannel_bd12_ed12_o2f12_v1":bd,"processed":[],"multi_state_revision":7}
     m2={"multichannel_bd12_ed12_o2f12_v1":br.dump(),"processed":[],"multi_state_revision":8}
     bm,_=_merge_state_data(m1,m2); assert int(bm["multichannel_bd12_ed12_o2f12_v1"].get("big7_signals",0))>=1 and int(bm["multichannel_bd12_ed12_o2f12_v1"].get("big9_signals",0))>=1
-    print("SELF-TEST OK: v20.9 A/A2/D/X + QUATERNA + SETTINA/NOVINA LIVE + state guard")
+
+    # v20.9.1 HARD LOCK: uno state remoto vecchio NON può far arretrare draw/scans/base forward.
+    floor_mc=mb.dump(); floor_mc["history"]=[dict(x) for x in floor_mc.get("history",[])]; floor_mc["history"][-1]["key"]="2100-01-03#218"; floor_mc["history"][-1]["day"]="2100-01-03"; floor_mc["history"][-1]["draw_id"]=218
+    floor_mc["scans"]=452; floor_mc["signals"]=18; floor_mc["v2071_started_from_key"]="2100-01-03#196"; floor_mc["v2071_scans_base"]=429; floor_mc["v2071_signals_base"]=18
+    old_mc=dict(floor_mc); old_mc["history"]=[dict(x) for x in floor_mc["history"]]; old_mc["history"][-1]["key"]="2100-01-03#196"; old_mc["history"][-1]["draw_id"]=196; old_mc["scans"]=430; old_mc["v2071_started_from_key"]="2026-10-10#162"; old_mc["v2071_scans_base"]=429
+    floor_state={"last_draw_key":"2100-01-03#218","multichannel_bd12_ed12_o2f12_v1":floor_mc,"multi_state_revision":23,"processed":[]}
+    old_state={"last_draw_key":"2100-01-03#196","multichannel_bd12_ed12_o2f12_v1":old_mc,"multi_state_revision":1,"processed":[]}
+    assert _detect_state_regressions(old_state,floor_state), "regressione non rilevata"
+    locked, blocked, regs=_apply_hardlock_floor(old_state,floor_state)
+    lmc=locked["multichannel_bd12_ed12_o2f12_v1"]
+    assert blocked and _state_last_key(locked)=="2100-01-03#218" and int(lmc.get("scans",0))>=452, (blocked,regs,_state_last_key(locked),lmc.get("scans"))
+    assert lmc.get("v2071_started_from_key")=="2100-01-03#196" and int(lmc.get("v2071_scans_base",0))==429
+    print("SELF-TEST OK: v20.9.1 A/A2/D/X + QUATERNA + SETTINA/NOVINA LIVE + HARD LOCK")
 
 
 # ============================================================
