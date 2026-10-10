@@ -1,5 +1,5 @@
 # ============================================================
-# 🎯 10eLOTTO MULTI BD12+ED12+O2F12 — v20.9.1 PRIME + QUATERNA + 7/9 LIVE — HARD LOCK
+# 🎯 10eLOTTO MULTI BD12+ED12+O2F12 — v20.9.2 PRIME + QUATERNA + SETTINA PROFIT FAST + NOVINA LIVE — HARD LOCK
 # ============================================================
 # UNICO RAMO ATTIVO: MULTI
 #   STANDARD (shadow/control): BD12 ∩ ED12 ∩ O2F12, W80, cooldown 5
@@ -31,6 +31,7 @@
 #   - v20.8: QUATERNA PLUS/ELITE solo A2 + D ELITE, nessun backfill
 #   - v20.9: SETTINA/NOVINA LIVE con premi standard, costo/ROI e stop al primo premio
 #   - v20.9.1 HARD LOCK: snapshot locale PRIMA di Git + backup persistente + floor anti-regressione
+#   - v20.9.2: SETTINA PROFIT FAST sostituisce la SETTINA normale per i nuovi segnali (A2/DE gate, H1-H2)
 #   - QUATERNA: MAX-MIN Jaccard900 su TOP10/TOP11/TOP12; 2/3 consenso=PLUS, 3/3=ELITE
 #   - gestione operativa: 1 euro/colpo, STOP al primo 2/4 o meglio; shadow continua fino H5
 #   - mantiene FIX state v20.5.1: merge conservativo LOCAL+REMOTE + push esplicito sul branch
@@ -102,8 +103,8 @@ PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
 PROCESSED_MAX = int(os.getenv("PROCESSED_MAX", "12000"))
 
-CODE_RELEASE = "v20.9.1"
-STATE_GUARD_SCHEMA = 2091
+CODE_RELEASE = "v20.9.2"
+STATE_GUARD_SCHEMA = 2092
 STATE_HISTORY_RECOVERY_COMMITS = max(10, min(120, int(os.getenv("STATE_HISTORY_RECOVERY_COMMITS", "60"))))
 
 MULTI_VERSION = 1  # compatibile con state v20.2/v20.3
@@ -114,6 +115,16 @@ MULTI_HORIZON = max(1, int(os.getenv("MULTI_BD_ED_O2_HORIZON", "5")))
 MULTI_COOC_WINDOW = max(80, int(os.getenv("MULTI_BD_ED_O2_AMBO_COOC_WINDOW", "900")))
 MULTI_SUPER_GATE = max(2, int(os.getenv("MULTI_BD_ED_O2_AMBO_SUPER_GATE", "4")))
 MULTI_HISTORY_MAX = max(MULTI_COOC_WINDOW, int(os.getenv("MULTI_BD_ED_O2_HISTORY_MAX", "900")))
+
+# v20.9.2 SETTINA PROFIT FAST — sostituisce la SETTINA normale solo per i NUOVI segnali.
+SETTINA_FAST_STRATEGY = "PROFIT_FAST"
+SETTINA_FAST_HORIZON = 2
+SETTINA_FAST_A2_O2_RANK = 3
+SETTINA_FAST_A2_SUPPORT_SUM_MIN = 7
+SETTINA_FAST_DE_BD_RANK_MIN = 1
+SETTINA_FAST_DE_BD_RANK_MAX = 3
+SETTINA_FAST_DE_O2_RANK_MIN = 10
+SETTINA_FAST_DE_O2_RANK_MAX = 12
 MULTI_RECORD_MAX = max(500, int(os.getenv("MULTI_BD_ED_O2_RECORD_MAX", "8000")))
 MULTI_AMBO_RECORD_MAX = max(1500, int(os.getenv("MULTI_BD_ED_O2_AMBO_RECORD_MAX", "24000")))
 MULTI_QUAD_RECORD_MAX = max(500, int(os.getenv("MULTI_QUAD_RECORD_MAX", "8000")))
@@ -732,7 +743,7 @@ def _merge_multichannel_state(a, b):
     bclosed={_big_id(r) for r in brec}; bpen=[r for r in bpen if _big_id(r) not in bclosed]
     base.update({"history":hist,"records":rec,"pending":pen,"ambo_records":arec,"ambo_pending":apen,"quad_records":qrec,"quad_pending":qpen,"big_records":brec,"big_pending":bpen})
     base["draw_seq"] = max(int(a.get("draw_seq",0) or 0), int(b.get("draw_seq",0) or 0), len(hist))
-    for k in ("scans","signals","no_signal","cooldown_skips","ambo_origins","ambo_super_signals","quad_signals","quad_elite_signals","big7_signals","big9_signals"):
+    for k in ("scans","signals","no_signal","cooldown_skips","ambo_origins","ambo_super_signals","quad_signals","quad_elite_signals","big7_signals","big9_signals","big7_fast_signals"):
         base[k]=max(int(a.get(k,0) or 0),int(b.get(k,0) or 0))
     # I contatori quaterna non possono essere inferiori ai record/pending effettivamente fusi.
     qids={_quad_id(r) for r in qrec+qpen if _quad_id(r)}
@@ -743,6 +754,8 @@ def _merge_multichannel_state(a, b):
     big9_ids={_big_id(r) for r in brec+bpen if _big_id(r) and int(r.get("system_size",0) or 0)==9}
     base["big7_signals"]=max(int(base.get("big7_signals",0) or 0),len(big7_ids))
     base["big9_signals"]=max(int(base.get("big9_signals",0) or 0),len(big9_ids))
+    big7_fast_ids={_big_id(r) for r in brec+bpen if _big_id(r) and int(r.get("system_size",0) or 0)==7 and str(r.get("strategy") or "").upper()==SETTINA_FAST_STRATEGY}
+    base["big7_fast_signals"]=max(int(a.get("big7_fast_signals",0) or 0),int(b.get("big7_fast_signals",0) or 0),len(big7_fast_ids))
     sigrows=rec+pen
     def tier(r):
         t=str(r.get("tier") or "").upper()
@@ -771,9 +784,9 @@ def _merge_multichannel_state(a, b):
                 except Exception: continue
                 lss[str(ik)]=max(int(lss.get(str(ik),0) or 0),iv)
     base["last_signal_seq"]=lss
-    for k in ("start_from_key","ambo_started_from_key","prime_started_from_key","prime_a_started_from_key","prime_a2_started_from_key","prime_d_elite_started_from_key","prime_d_wide_started_from_key","prime_x_started_from_key","prime_b_started_from_key","prime_c_started_from_key","triangle_started_from_key","v2071_started_from_key","quad_started_from_key","big_started_from_key"):
+    for k in ("start_from_key","ambo_started_from_key","prime_started_from_key","prime_a_started_from_key","prime_a2_started_from_key","prime_d_elite_started_from_key","prime_d_wide_started_from_key","prime_x_started_from_key","prime_b_started_from_key","prime_c_started_from_key","triangle_started_from_key","v2071_started_from_key","quad_started_from_key","big_started_from_key","big7_fast_started_from_key"):
         base[k]=_key_min(a.get(k),b.get(k))
-    for k in ("started_at","ambo_started_at","prime_started_at","prime_a_started_at","prime_a2_started_at","prime_d_elite_started_at","prime_d_wide_started_at","prime_x_started_at","prime_b_started_at","prime_c_started_at","triangle_started_at","v2071_started_at","quad_started_at","big_started_at"):
+    for k in ("started_at","ambo_started_at","prime_started_at","prime_a_started_at","prime_a2_started_at","prime_d_elite_started_at","prime_d_wide_started_at","prime_x_started_at","prime_b_started_at","prime_c_started_at","triangle_started_at","v2071_started_at","quad_started_at","big_started_at","big7_fast_started_at"):
         vals=[x for x in (a.get(k),b.get(k)) if isinstance(x,str) and x]; base[k]=min(vals) if vals else None
     # I baseline della FIX devono riferirsi alla stessa prima base forward: prendiamo il minimo
     # quando entrambe le copie li hanno, altrimenti quello disponibile.
@@ -862,7 +875,7 @@ def _detect_state_regressions(candidate, floor):
         "draw_seq", "scans", "signals", "no_signal", "cooldown_skips",
         "prime_a_signals", "prime_a2_signals", "prime_d_elite_signals",
         "prime_d_wide_signals", "prime_x_signals", "prime_c_signals",
-        "quad_signals", "quad_elite_signals", "big7_signals", "big9_signals",
+        "quad_signals", "quad_elite_signals", "big7_signals", "big9_signals", "big7_fast_signals",
     ):
         cv = int(cm.get(k, cm.get("prime_signals", 0) if k == "prime_a_signals" else 0) or 0)
         fv = int(fm.get(k, fm.get("prime_signals", 0) if k == "prime_a_signals" else 0) or 0)
@@ -894,7 +907,7 @@ def _apply_hardlock_floor(candidate, floor):
         for k in (
             "prime_a2_started_from_key", "prime_d_elite_started_from_key",
             "prime_d_wide_started_from_key", "prime_x_started_from_key",
-            "v2071_started_from_key", "quad_started_from_key", "big_started_from_key",
+            "v2071_started_from_key", "quad_started_from_key", "big_started_from_key", "big7_fast_started_from_key",
         ):
             if fm.get(k):
                 mm[k] = fm.get(k)
@@ -1019,8 +1032,11 @@ class MultiPrimeV1:
         self.big_started_at = None
         self.big_pending = []
         self.big_records = []
-        self.big7_signals = 0
+        self.big7_signals = 0  # totale/legacy SETTINA conservato
         self.big9_signals = 0
+        self.big7_fast_started_from_key = None
+        self.big7_fast_started_at = None
+        self.big7_fast_signals = 0
         self.last_big_signal = None
         self.last_big_result = None
 
@@ -1139,6 +1155,9 @@ class MultiPrimeV1:
         q["payout"] = float(q.get("payout", 0.0) or 0.0)
         q["max_shadow_payout"] = float(q.get("max_shadow_payout", 0.0) or 0.0)
         q["max_shadow_match"] = int(q.get("max_shadow_match", 0) or 0)
+        q["strategy"] = str(q.get("strategy") or ("LEGACY_7" if size == 7 else "NOVINA_LIVE")).upper()
+        q["operational_horizon"] = max(1, min(MULTI_HORIZON, int(q.get("operational_horizon", MULTI_HORIZON) or MULTI_HORIZON)))
+        q["support_sum"] = int(q.get("support_sum", 0) or 0)
         return q
 
     def _refresh_keys(self):
@@ -1262,6 +1281,15 @@ class MultiPrimeV1:
         self.big_started_at = now_dt().isoformat(timespec="seconds")
         return True
 
+    def ensure_big7_fast_forward_base(self):
+        """v20.9.2: punto zero separato della SETTINA PROFIT FAST, dopo il catch-up."""
+        if not self.history or self.big7_fast_started_from_key:
+            return False
+        current = str(self.history[-1]["key"])
+        self.big7_fast_started_from_key = current
+        self.big7_fast_started_at = now_dt().isoformat(timespec="seconds")
+        return True
+
     def load(self, obj):
         if not isinstance(obj, dict) or int(obj.get("version", 0) or 0) != MULTI_VERSION:
             return False
@@ -1366,6 +1394,10 @@ class MultiPrimeV1:
         self.big_records = [q for x in obj.get("big_records", []) if (q := self._sanitize_big_row(x))][-MULTI_BIG_RECORD_MAX:]
         self.big7_signals = max(0, int(obj.get("big7_signals", 0) or 0), sum(1 for q in self.big_pending+self.big_records if int(q.get("system_size",0) or 0)==7))
         self.big9_signals = max(0, int(obj.get("big9_signals", 0) or 0), sum(1 for q in self.big_pending+self.big_records if int(q.get("system_size",0) or 0)==9))
+        b7fsk = obj.get("big7_fast_started_from_key")
+        self.big7_fast_started_from_key = str(b7fsk) if order_key(b7fsk) is not None else None
+        self.big7_fast_started_at = obj.get("big7_fast_started_at") if isinstance(obj.get("big7_fast_started_at"), str) else None
+        self.big7_fast_signals = max(0, int(obj.get("big7_fast_signals", 0) or 0), sum(1 for q in self.big_pending+self.big_records if int(q.get("system_size",0) or 0)==7 and str(q.get("strategy") or "").upper()==SETTINA_FAST_STRATEGY))
         self.last_big_signal = obj.get("last_big_signal") if isinstance(obj.get("last_big_signal"), dict) else None
         self.last_big_result = obj.get("last_big_result") if isinstance(obj.get("last_big_result"), dict) else None
 
@@ -1447,6 +1479,9 @@ class MultiPrimeV1:
             "big_records": self.big_records[-MULTI_BIG_RECORD_MAX:],
             "big7_signals": int(self.big7_signals),
             "big9_signals": int(self.big9_signals),
+            "big7_fast_started_from_key": self.big7_fast_started_from_key,
+            "big7_fast_started_at": self.big7_fast_started_at,
+            "big7_fast_signals": int(self.big7_fast_signals),
             "last_big_signal": self.last_big_signal,
             "last_big_result": self.last_big_result,
         }
@@ -1685,23 +1720,49 @@ class MultiPrimeV1:
         return dict(q)
 
     def _big7_plan(self, main, ranks, tier):
-        """SETTINA LIVE: solo A2 + D ELITE; M + 6 O2F12 con COOC900 Base più alto."""
+        """SETTINA PROFIT FAST v20.9.2.
+
+        A2: O2 rank == 3 + support_sum dei 6 partner COOC900 >= 7.
+        D-ELITE: BD rank 1-3 + O2 rank 10-12.
+        Operativa H1-H2; H3-H5 solo shadow.
+        """
         tier=str(tier or "").upper()
         if tier not in {"A2","DE"}:
             return None
         main=int(main)
+        bd_rank=self._rank_of(main, ranks["top_base_delay"])
+        o2_rank=self._rank_of(main, ranks["top_o2"])
         candidates=[int(n) for n in ranks["top_o2"] if int(n)!=main]
         if len(candidates)<6:
             return None
         hw=self.history[-min(len(self.history),MULTI_COOC_WINDOW):]
+        bset=set(int(x) for x in ranks["top_base_delay"])
+        eset=set(int(x) for x in ranks["top_extra_delay"])
         scored=[]
         for p in candidates:
             c=sum(1 for r in hw if main in set(r.get("nums",[])) and p in set(r.get("nums",[])))
-            scored.append((int(c),int(p)))
+            support=1 + int(p in bset) + int(p in eset)
+            scored.append((int(c),int(p),int(support)))
         scored.sort(key=lambda z:(-z[0],z[1]))
-        partners=[p for _,p in scored[:6]]
+        chosen=scored[:6]
+        support_sum=sum(x[2] for x in chosen)
+        if tier=="A2":
+            if int(o2_rank or 0) != SETTINA_FAST_A2_O2_RANK or int(support_sum) < SETTINA_FAST_A2_SUPPORT_SUM_MIN:
+                return None
+        else:
+            if not (SETTINA_FAST_DE_BD_RANK_MIN <= int(bd_rank or 0) <= SETTINA_FAST_DE_BD_RANK_MAX):
+                return None
+            if not (SETTINA_FAST_DE_O2_RANK_MIN <= int(o2_rank or 0) <= SETTINA_FAST_DE_O2_RANK_MAX):
+                return None
+        partners=[p for _,p,_ in chosen]
         nums=sorted([main]+partners)
-        return {"system_size":7,"numbers":nums,"selector":"COOC900","scores":[{"num":p,"cooc":c} for c,p in scored[:6]],"window":len(hw)}
+        return {
+            "system_size":7,"numbers":nums,"selector":"COOC900_PROFIT_FAST",
+            "strategy":SETTINA_FAST_STRATEGY,"operational_horizon":SETTINA_FAST_HORIZON,
+            "scores":[{"num":p,"cooc":c,"support":sup} for c,p,sup in chosen],
+            "support_sum":int(support_sum),"window":len(hw),
+            "bd_rank":bd_rank,"o2_rank":o2_rank,
+        }
 
     def _big9_plan(self, main, ranks, tier):
         """NOVINA LIVE: A2 + D ELITE/WIDE; M + 8 O2F12 con Jaccard900 rispetto a M."""
@@ -1748,13 +1809,20 @@ class MultiPrimeV1:
             "origin_key":str(origin_key),"origin_id":f"{origin_key}|M{int(main):02d}|S{size}",
             "main":int(main),"numbers":nums,"system_size":size,"tier":str(tier).upper(),
             "selector":str(plan.get("selector") or ""),"scores":plan.get("scores",[]),"window":int(plan.get("window",0) or 0),
+            "strategy":str(plan.get("strategy") or ("LEGACY_7" if size==7 else "NOVINA_LIVE")).upper(),
+            "operational_horizon":max(1,min(MULTI_HORIZON,int(plan.get("operational_horizon",MULTI_HORIZON) or MULTI_HORIZON))),
+            "support_sum":int(plan.get("support_sum",0) or 0),
             "age":0,"closed":False,"operational_stopped":False,"stop_age":None,"stop_match":None,
             "cost":0.0,"payout":0.0,"max_shadow_payout":0.0,"max_shadow_match":0,
             "bd_rank":bd_rank,"o2_rank":o2_rank,"created_at":now_txt(),
         }
         self.big_pending.append(q); self.big_pending=self.big_pending[-MULTI_BIG_PENDING_MAX:]
-        if size==7: self.big7_signals+=1
-        else: self.big9_signals+=1
+        if size==7:
+            self.big7_signals+=1
+            if str(q.get("strategy") or "").upper()==SETTINA_FAST_STRATEGY:
+                self.big7_fast_signals+=1
+        else:
+            self.big9_signals+=1
         self.last_big_signal=dict(q)
         return dict(q)
 
@@ -1914,6 +1982,7 @@ class MultiPrimeV1:
             q["age"]=age; q["last_key"]=r["key"]
             nums=[int(x) for x in q.get("numbers",[])]
             size=int(q.get("system_size",0) or 0)
+            op_horizon=max(1,min(MULTI_HORIZON,int(q.get("operational_horizon",MULTI_HORIZON) or MULTI_HORIZON)))
             matches=sum(1 for x in nums if x in actual)
             prize=self._big_prize(size,matches)
             prev_best=float(q.get("max_shadow_payout",0.0) or 0.0)
@@ -1921,11 +1990,16 @@ class MultiPrimeV1:
                 q["max_shadow_payout"]=prize; q["max_shadow_match"]=matches; q["max_shadow_age"]=age
             op_stop_now=False
             if not bool(q.get("operational_stopped")):
-                q["cost"]=float(q.get("cost",0.0) or 0.0)+BIG_STAKE_PER_COLPO
-                if prize>0:
-                    q["operational_stopped"]=True; q["stop_age"]=age; q["stop_match"]=matches; q["payout"]=prize
+                if age <= op_horizon:
+                    q["cost"]=float(q.get("cost",0.0) or 0.0)+BIG_STAKE_PER_COLPO
+                    if prize>0:
+                        q["operational_stopped"]=True; q["stop_age"]=age; q["stop_match"]=matches; q["payout"]=prize
+                        op_stop_now=True
+                        events.append({"kind":"big_stop","row":dict(q),"matches":matches,"prize":prize,"closed":age>=MULTI_HORIZON})
+                if (not bool(q.get("operational_stopped"))) and age >= op_horizon:
+                    q["operational_stopped"]=True; q["stop_age"]=age; q["stop_match"]=None; q["payout"]=0.0
                     op_stop_now=True
-                    events.append({"kind":"big_stop","row":dict(q),"matches":matches,"prize":prize,"closed":age>=MULTI_HORIZON})
+                    events.append({"kind":"big_stop","row":dict(q),"matches":matches,"prize":0.0,"closed":age>=MULTI_HORIZON,"no_hit":True})
             if bool(q.get("operational_stopped")) and prize>float(q.get("payout",0.0) or 0.0) and prize>prev_best and not op_stop_now:
                 events.append({"kind":"big_shadow_upgrade","row":dict(q),"matches":matches,"prize":prize,"closed":age>=MULTI_HORIZON})
             close=age>=MULTI_HORIZON
@@ -1934,6 +2008,7 @@ class MultiPrimeV1:
                 self.big_records.append(q); self.big_records=self.big_records[-MULTI_BIG_RECORD_MAX:]
                 self.last_big_result=dict(q)
                 if not bool(q.get("operational_stopped")):
+                    q["operational_stopped"]=True; q["stop_age"]=age; q["stop_match"]=None; q["payout"]=0.0
                     events.append({"kind":"big_stop","row":dict(q),"matches":matches,"prize":0.0,"closed":True,"no_hit":True})
             else:
                 bremain.append(q)
@@ -1960,6 +2035,7 @@ class MultiPrimeV1:
         self.ensure_v2071_forward_base()
         self.ensure_quad_forward_base()
         self.ensure_big_forward_base()
+        self.ensure_big7_fast_forward_base()
         origin_key = str(self.history[-1]["key"])
         if self.last_armed_key == origin_key:
             return None
@@ -2140,7 +2216,7 @@ class MultiPrimeV1:
         if sig.get("details"):
             origin_time = str((sig.get("details") or [{}])[0].get("origin_time") or "")
         lines = [
-            "🧪 MULTI BD12+ED12+O2F12 — v20.9.1",
+            "🧪 MULTI BD12+ED12+O2F12 — v20.9.2",
             "Origine: " + str(sig.get("origin_key")) + (f" | ora {origin_time}" if origin_time else ""),
             "STANDARD: Base RIT12 ∩ Extra RIT12 ∩ Oro2 FREQ12 (W80)",
             f"Segnali standard: {' '.join(f'{int(n):02d}' for n in sig.get('numbers', []))}",
@@ -2226,13 +2302,14 @@ class MultiPrimeV1:
 
         bplans=list(sig.get("big_plans") or [])
         if bplans:
-            lines += ["", "🎯 SISTEMI 7/9 v20.9.1 — LIVE"]
+            lines += ["", "🎯 SETTINA PROFIT FAST + NOVINA v20.9.2 — LIVE"]
             for b in bplans:
                 nums=[int(x) for x in b.get("numbers",[])]
                 size=int(b.get("system_size",0) or 0)
                 if size==7:
-                    lines.append(f"🎯 SETTINA LIVE {'-'.join(f'{x:02d}' for x in nums)} | {b.get('selector')} | origine {b.get('tier')}")
-                    lines.append("   💶 1€/colpo H1-H5 | premi: 0=€1, 4=€4, 5=€40, 6=€400, 7=€1600 | STOP al primo premio")
+                    lines.append(f"🎯 SETTINA PROFIT FAST {'-'.join(f'{x:02d}' for x in nums)} | {b.get('selector')} | origine {b.get('tier')}")
+                    lines.append(f"   Gate FAST: support_sum={int(b.get('support_sum',0) or 0)} | operativo H1-H{int(b.get('operational_horizon',SETTINA_FAST_HORIZON) or SETTINA_FAST_HORIZON)}")
+                    lines.append("   💶 1€/colpo | premi: 0=€1, 4=€4, 5=€40, 6=€400, 7=€1600 | STOP al primo premio | H3-H5 shadow")
                 elif size==9:
                     lines.append(f"💥 NOVINA LIVE {'-'.join(f'{x:02d}' for x in nums)} | {b.get('selector')} | origine {b.get('tier')}")
                     lines.append("   💶 1€/colpo H1-H5 | premi: 0=€2, 5=€10, 6=€40, 7=€400, 8=€2000, 9=€100000 | STOP al primo premio")
@@ -2261,17 +2338,17 @@ class MultiPrimeV1:
             size=int(r.get("system_size",0) or 0)
             if size not in (7,9) or len(nums)!=size:
                 return None
-            tag="🎯 SETTINA LIVE" if size==7 else "💥 NOVINA LIVE"
+            tag=("🎯 SETTINA PROFIT FAST" if str(r.get("strategy") or "").upper()==SETTINA_FAST_STRATEGY else "🎯 SETTINA LEGACY") if size==7 else "💥 NOVINA LIVE"
             matches=int(ev.get("matches",0) or 0); prize=float(ev.get("prize",0.0) or 0.0)
             if ev.get("kind")=="big_shadow_upgrade":
                 return (
                     f"👁️ {tag} — SHADOW UPGRADE H{age}\n\n"
                     f"Origine {r.get('origin_key')} | {'-'.join(f'{x:02d}' for x in nums)}\n"
                     f"Dopo lo STOP operativo: {matches}/{size} → €{prize:.0f} in shadow.\n"
-                    f"Operativo già chiuso H{r.get('stop_age')} con {r.get('stop_match')}/{size} → €{float(r.get('payout',0)):.0f}; nessuna nuova puntata."
+                    f"Operativo già chiuso H{r.get('stop_age')} con {'MISS' if r.get('stop_match') is None else str(r.get('stop_match'))+'/'+str(size)} → €{float(r.get('payout',0)):.0f}; nessuna nuova puntata."
                 )
             if ev.get("no_hit"):
-                status=f"🛑 STOP H5 — nessun premio"
+                status=f"🛑 STOP H{age} — nessun premio"
             else:
                 status=f"✅ {matches}/{size} a H{age} → €{prize:.0f} — STOP"
                 if prize>=400: status=f"💥 {matches}/{size} a H{age} → €{prize:.0f} — BIG HIT / STOP"
@@ -2337,7 +2414,7 @@ class MultiPrimeV1:
             fast_note = "\n🎯 FAST H1 centrato." if tier == "A" and slot == "BASE2" and age == 1 and ev.get("hit_now") else ""
             off_note = "\n👁️ Era OFF-gate: hit registrato solo come TRIANGLE SHADOW." if slot == "TRIANGLE_OFF" and ev.get("hit_now") else ""
             return (
-                f"🧾 MULTI v20.9.1 — {tag}\n\n"
+                f"🧾 MULTI v20.9.2 — {tag}\n\n"
                 f"Origine {r.get('origin_key')} | M {int(r.get('main',0)):02d}\n"
                 f"Coppia {pair[0]:02d}-{pair[1]:02d} | {status}"
                 f"{tier_line} | BD rank={r.get('bd_rank')} | O2 rank={r.get('o2_rank')}"
@@ -2503,18 +2580,18 @@ class MultiPrimeV1:
         pam = sum(1 for r in self.ambo_pending if self._tier_from_obj(r) == tier)
         return pa, pam
 
-    def _big_stats(self, size):
+    def _big_stats(self, size, strategy=None):
         size=int(size)
         rows=[r for r in self.big_records if int(r.get("system_size",0) or 0)==size]
+        if strategy is not None:
+            rows=[r for r in rows if str(r.get("strategy") or "").upper()==str(strategy).upper()]
         cost=sum(float(r.get("cost",0) or 0) for r in rows)
         payout=sum(float(r.get("payout",0) or 0) for r in rows)
         roi=(100.0*payout/cost) if cost>0 else 0.0
-        dist=Counter()
-        miss=0; big400=0; shbig=0
+        dist=Counter(); miss=0; big400=0; shbig=0
         for r in rows:
-            if bool(r.get("operational_stopped")):
-                m=int(r.get("stop_match",-1) if r.get("stop_match") is not None else -1)
-                dist[m]+=1
+            if float(r.get("payout",0) or 0)>0 and r.get("stop_match") is not None:
+                m=int(r.get("stop_match")); dist[m]+=1
                 if float(r.get("payout",0) or 0)>=400: big400+=1
             else:
                 miss+=1
@@ -2577,12 +2654,12 @@ class MultiPrimeV1:
         dcov_n=decov['tri_n']+dwcov['tri_n']; dcov_hit=decov['all3_hit']+dwcov['all3_hit']
         qplus=self._quad_stats(False); qelite=self._quad_stats(True)
         qpending=len(self.quad_pending)
-        b7=self._big_stats(7); b9=self._big_stats(9)
-        b7pending=sum(1 for r in self.big_pending if int(r.get("system_size",0) or 0)==7)
+        b7=self._big_stats(7, SETTINA_FAST_STRATEGY); b9=self._big_stats(9)
+        b7pending=sum(1 for r in self.big_pending if int(r.get("system_size",0) or 0)==7 and str(r.get("strategy") or "").upper()==SETTINA_FAST_STRATEGY)
         b9pending=sum(1 for r in self.big_pending if int(r.get("system_size",0) or 0)==9)
 
         lines = [
-            "🧪 MULTI PRIME A + A2 + D + QUATERNA + 7/9 LIVE — v20.9.1",
+            "🧪 MULTI PRIME A + A2 + D + QUATERNA + SETTINA FAST + NOVINA — v20.9.2",
             "STANDARD shadow: BD12 ∩ ED12 ∩ O2F12",
             f"🔥 A: BD11-12 + O2 {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} | 💎 A2: BD11-12 + O2 {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + fascia Elite",
             "💠 D-ELITE: BD1-4 | 🔥 D-WIDE: BD5-8 | entrambi >16:00 + intersezione unica",
@@ -2622,13 +2699,14 @@ class MultiPrimeV1:
             f"Q-ELITE stop: 2/4 {qelite['s2']} | 3/4 {qelite['s3']} | 4/4 {qelite['s4']} | MISS {qelite['miss']} | shadow H5 ≥3/4 {qelite['sh3']} | 4/4 {qelite['sh4']}",
             "💶 Regola live Q: 1€/colpo, STOP al primo 2/4+; tracking shadow continua fino H5.",
             "",
-            f"🎯 SETTINA LIVE — start {self.big_started_from_key or '-'} | create {self.big7_signals} | pending {b7pending} | chiuse {b7['n']}",
-            f"SETTINA costo €{b7['cost']:.0f} | premi €{b7['payout']:.0f} | ROI {b7['roi']:.1f}% | 0/7 {b7['dist'].get(0,0)} | 4/7 {b7['dist'].get(4,0)} | 5/7 {b7['dist'].get(5,0)} | 6/7 {b7['dist'].get(6,0)} | 7/7 {b7['dist'].get(7,0)} | MISS {b7['miss']}",
-            f"SETTINA BIG≥€400 operativi {b7['big400']} | shadow H5 ≥€400 {b7['shadow400']}",
+            f"🎯 SETTINA PROFIT FAST — start {self.big7_fast_started_from_key or '-'} | create {self.big7_fast_signals} | pending {b7pending} | chiuse {b7['n']}",
+            "Gate: A2 O2rank=3 + support6≥7 | DE BDrank1-3 + O2rank10-12 | operativo H1-H2",
+            f"SETTINA FAST costo €{b7['cost']:.0f} | premi €{b7['payout']:.0f} | ROI {b7['roi']:.1f}% | 0/7 {b7['dist'].get(0,0)} | 4/7 {b7['dist'].get(4,0)} | 5/7 {b7['dist'].get(5,0)} | 6/7 {b7['dist'].get(6,0)} | 7/7 {b7['dist'].get(7,0)} | MISS {b7['miss']}",
+            f"SETTINA FAST BIG≥€400 operativi {b7['big400']} | shadow H5 ≥€400 {b7['shadow400']}",
             f"💥 NOVINA LIVE — start {self.big_started_from_key or '-'} | create {self.big9_signals} | pending {b9pending} | chiuse {b9['n']}",
             f"NOVINA costo €{b9['cost']:.0f} | premi €{b9['payout']:.0f} | ROI {b9['roi']:.1f}% | 0/9 {b9['dist'].get(0,0)} | 5/9 {b9['dist'].get(5,0)} | 6/9 {b9['dist'].get(6,0)} | 7/9 {b9['dist'].get(7,0)} | 8/9 {b9['dist'].get(8,0)} | 9/9 {b9['dist'].get(9,0)} | MISS {b9['miss']}",
             f"NOVINA BIG≥€400 operativi {b9['big400']} | shadow H5 ≥€400 {b9['shadow400']}",
-            "💶 Regola LIVE 7/9: 1€/colpo H1-H5, STOP al primo premio ufficiale; shadow continua fino H5.",
+            "💶 Regola LIVE: SETTINA FAST H1-H2; NOVINA H1-H5; STOP al primo premio ufficiale; shadow continua fino H5.",
             "Baseline: ambata H1 22.22% | ambo H1 ≈4.74% | ambo H5 ≈21.57%.",
             "⏸️ FOCUS / INCROCIO / CORE / legacy: PAUSATI; state conservato.",
         ]
@@ -2751,7 +2829,7 @@ class MultiOnlyEngine:
         data["processed"] = self.processed[-PROCESSED_MAX:]
         data["last_draw_key"] = self.last_draw_key
         data["multichannel_bd12_ed12_o2f12_v1"] = self.multichannel.dump()
-        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_7_9_v20.9.1_HARD_LOCK"
+        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_v20.9.2_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
 
         # HARD LOCK 3/3 — il backup già presente è il pavimento locale.
@@ -2775,7 +2853,7 @@ class MultiOnlyEngine:
         self.state_revision = max(int(self.state_revision), remote_rev) + 1
         data["multi_state_revision"] = int(self.state_revision)
         data["saved_at"] = now_dt().isoformat(timespec="seconds")
-        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_7_9_v20.9.1_HARD_LOCK"
+        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_v20.9.2_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
 
         # Ricarica il merge prima della scrittura per mantenere record/pending monotoni.
@@ -2807,7 +2885,7 @@ class MultiOnlyEngine:
     def status_text(self):
         mc = self.multichannel
         return (
-            "📡 STATUS v20.9.1 MULTI PRIME + QUATERNA + 7/9 LIVE — HARD LOCK\n\n"
+            "📡 STATUS v20.9.2 MULTI PRIME + QUATERNA + SETTINA PROFIT FAST + NOVINA — HARD LOCK\n\n"
             f"Ultimo MULTI: {mc.history[-1]['key'] if mc.history else '-'}\n"
             f"State: {'OK' if self.state_load_info.get('loaded') else 'NUOVO'} | {self.state_load_info.get('reason')}\n"
             f"State source: {self.state_load_info.get('source','-')} | ff {self.state_load_info.get('ff','-')} | rev {self.state_revision}\n"
@@ -2824,8 +2902,9 @@ class MultiOnlyEngine:
             f"B legacy start: {mc.prime_b_started_from_key or '-'}\n"
             f"TRIANGLE start: {mc.triangle_started_from_key or '-'}\n"
             f"QUATERNA v20.8 start: {mc.quad_started_from_key or '-'}\n"
-            f"SISTEMI 7/9 v20.9.1 start: {mc.big_started_from_key or '-'}\n\n"
-            "✅ Attivo: MULTI + PRIME A + A2 + D ELITE/WIDE + QUATERNA PLUS/ELITE + SETTINA/NOVINA LIVE; X/C shadow\n"
+            f"SISTEMI 7/9 base start: {mc.big_started_from_key or '-'}\n"
+            f"SETTINA PROFIT FAST v20.9.2 start: {mc.big7_fast_started_from_key or '-'}\n\n"
+            "✅ Attivo: MULTI + PRIME A + A2 + D ELITE/WIDE + QUATERNA PLUS/ELITE + SETTINA PROFIT FAST + NOVINA LIVE; X/C shadow\n"
             "🟠 PRIME B: congelato, solo eventuali pending legacy.\n"
             "⏸️ FOCUS / INCROCIO / CORE / legacy: congelati nello state.\n\n"
             + mc.text()
@@ -2834,7 +2913,7 @@ class MultiOnlyEngine:
     @staticmethod
     def menu_text():
         return (
-            "🎯 10eLOTTO v20.9.1 — MULTI PRIME + QUATERNA + 7/9 LIVE — HARD LOCK\n\n"
+            "🎯 10eLOTTO v20.9.2 — MULTI PRIME + QUATERNA + SETTINA PROFIT FAST + NOVINA — HARD LOCK\n\n"
             "ATTIVO:\n"
             "• STANDARD BD12∩ED12∩O2F12 shadow/control\n"
             f"• 🔥 PRIME A: BD11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX}\n"
@@ -2846,7 +2925,7 @@ class MultiOnlyEngine:
             "• 🔷 QUATERNA PLUS: A2+D ELITE, consenso MAX-MIN Jaccard900 TOP10/11/12 ≥2/3\n"
             "• 💎 QUATERNA ELITE: stessa quaterna scelta da TOP10=TOP11=TOP12\n"
             "• 💶 Q: 1€/colpo, STOP al primo 2/4+, shadow fino H5\n"
-            "• 🎯 SETTINA LIVE: A2+D ELITE, M+6 O2F12 COOC900; 1€/colpo, STOP al primo premio\n"
+            "• 🎯 SETTINA PROFIT FAST: gate A2/DE selettivi, COOC900; 1€/colpo H1-H2, H3-H5 shadow\n"
             "• 💥 NOVINA LIVE: A2+D ELITE+D WIDE, M+8 O2F12 Jaccard900; 1€/colpo, STOP al primo premio\n"
             "• C legacy shadow; B legacy congelato\n"
             f"• SUPER operativo solo A/A2 se support_sum≥{MULTI_SUPER_GATE}; TRIANGLE OFF shadow\n\n"
@@ -2907,6 +2986,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         mc.ensure_v2071_forward_base()
         mc.ensure_quad_forward_base()
         mc.ensure_big_forward_base()
+        mc.ensure_big7_fast_forward_base()
         # Nessun segnale sui draw già noti al bootstrap: il prossimo draw sarà il primo forward reale.
         engine.save_state(git=True, force_git=True)
         return {"rows": len(rows), "unseen": 0, "signal": None, "events": [], "bootstrapped": True}
@@ -2930,6 +3010,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     mc.ensure_v2071_forward_base()
     mc.ensure_quad_forward_base()
     mc.ensure_big_forward_base()
+    mc.ensure_big7_fast_forward_base()
     sig = mc.arm() if mc.history else None
     if sig and notify and mc.should_notify_signal(sig):
         msg = mc.signal_text(sig)
@@ -2975,6 +3056,8 @@ async def startup(engine, app):
     # v20.7.1: solo DOPO il catch-up fissiamo la base reale dei nuovi tracker.
     mc.ensure_v2071_forward_base()
     mc.ensure_quad_forward_base()
+    mc.ensure_big_forward_base()
+    mc.ensure_big7_fast_forward_base()
 
     # Congela SOLO ora il segnale sulla più recente estrazione disponibile.
     sig = mc.arm() if mc.history else None
@@ -2983,7 +3066,7 @@ async def startup(engine, app):
 
     await engine.tg(
         app,
-        "🚀 MULTI BD12+ED12+O2F12 — v20.9.1 PRIME + QUATERNA + 7/9 LIVE HARD LOCK AVVIATO\n\n"
+        "🚀 MULTI BD12+ED12+O2F12 — v20.9.2 PRIME + QUATERNA + SETTINA PROFIT FAST + NOVINA — HARD LOCK AVVIATO\n\n"
         "🧪 STANDARD: BD12 ∩ ED12 ∩ O2F12 W80, cooldown 5 — SHADOW/control.\n"
         f"🔥 PRIME A: BD rank 11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} — invariato, qualità massima.\n"
         f"💎 PRIME A2 ELITE: BD rank 11-12 + O2 rank {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + ora ≤08:00 oppure >16:00.\n"
@@ -2995,7 +3078,9 @@ async def startup(engine, app):
         "🛡️ HARD LOCK: snapshot PRE-GIT + backup doppio + LOCAL/REMOTE/STORIA GIT; regressioni bloccate.\n"
         f"🔒 State ereditato: {engine.state_load_info.get('hardlock_final_key') or engine.last_draw_key or '-'} | backup {'OK' if engine.state_load_info.get('hardlock_backup_ok') else 'WARN'}.\n"
         "🔷 QUATERNA PLUS/ELITE: A2+D ELITE, MAX-MIN Jaccard900, consenso TOP10/11/12.\n"
-        "💶 1€/colpo H1-H5, STOP operativo al primo 2/4+; shadow fino H5.\n\n"
+        "🎯 SETTINA PROFIT FAST: A2 O2rank=3+support6≥7 oppure DE BDrank1-3+O2rank10-12; H1-H2 operativo, H3-H5 shadow.\n"
+        "💥 NOVINA LIVE invariata: A2+D ELITE/WIDE, Jaccard900_M, H1-H5.\n"
+        "💶 QUATERNA: 1€/colpo H1-H5, STOP al primo 2/4+; shadow fino H5.\n\n"
         "⏸️ FOCUS / INCROCIO / CORE / ENGINE / SOSIA / legacy: PAUSATI.\n"
         "✅ Il loro state viene conservato ma NON aggiornato.\n"
         "🚫 Nessun backfill QUATERNA/7/9/D/X; A/A2 invariati; C/B legacy preservati.\n\n"
@@ -3037,7 +3122,7 @@ async def live_loop(engine, app):
                 detail = f"{st.get('action')} | {st.get('detail','')}" if isinstance(st, dict) else "save-status assente"
                 await engine.tg(
                     app,
-                    "♻️ MULTI PRIME + Q + 7/9 v20.9.1 HARD LOCK — ROTAZIONE RUNNER\n"
+                    "♻️ MULTI PRIME + Q + SETTINA FAST + NOVINA v20.9.2 HARD LOCK — ROTAZIONE RUNNER\n"
                     + ("✅ State salvato e pubblicato sul branch.\n" if ok else "⚠️ State NON confermato sul branch.\n")
                     + f"{detail}\nAvvio successivo automatico.",
                 )
@@ -3296,7 +3381,7 @@ def run_self_test():
     lmc=locked["multichannel_bd12_ed12_o2f12_v1"]
     assert blocked and _state_last_key(locked)=="2100-01-03#218" and int(lmc.get("scans",0))>=452, (blocked,regs,_state_last_key(locked),lmc.get("scans"))
     assert lmc.get("v2071_started_from_key")=="2100-01-03#196" and int(lmc.get("v2071_scans_base",0))==429
-    print("SELF-TEST OK: v20.9.1 A/A2/D/X + QUATERNA + SETTINA/NOVINA LIVE + HARD LOCK")
+    print("SELF-TEST OK: v20.9.2 A/A2/D/X + QUATERNA + SETTINA PROFIT FAST + NOVINA LIVE + HARD LOCK")
 
 
 # ============================================================
