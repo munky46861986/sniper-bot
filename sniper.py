@@ -1,5 +1,5 @@
 # ============================================================
-# 🎯 10eLOTTO MULTI BD12+ED12+O2F12 — v20.8 PRIME + QUATERNA PLUS/ELITE — STATE FIX
+# 🎯 10eLOTTO MULTI BD12+ED12+O2F12 — v20.9 PRIME + QUATERNA + 7/9 LIVE — STATE FIX
 # ============================================================
 # UNICO RAMO ATTIVO: MULTI
 #   STANDARD (shadow/control): BD12 ∩ ED12 ∩ O2F12, W80, cooldown 5
@@ -29,6 +29,7 @@
 #   - v20.7.1: recupero anche dalla STORIA GIT dello state, non solo HEAD locale/remoto
 #   - v20.7.1: marker A2/D/X fissati solo dopo il catch-up reale, mai ereditati da uno state vecchio
 #   - v20.8: QUATERNA PLUS/ELITE solo A2 + D ELITE, nessun backfill
+#   - v20.9: SETTINA/NOVINA LIVE con premi standard, costo/ROI e stop al primo premio
 #   - QUATERNA: MAX-MIN Jaccard900 su TOP10/TOP11/TOP12; 2/3 consenso=PLUS, 3/3=ELITE
 #   - gestione operativa: 1 euro/colpo, STOP al primo 2/4 o meglio; shadow continua fino H5
 #   - mantiene FIX state v20.5.1: merge conservativo LOCAL+REMOTE + push esplicito sul branch
@@ -97,8 +98,8 @@ PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
 PROCESSED_MAX = int(os.getenv("PROCESSED_MAX", "12000"))
 
-CODE_RELEASE = "v20.8"
-STATE_GUARD_SCHEMA = 2080
+CODE_RELEASE = "v20.9"
+STATE_GUARD_SCHEMA = 2090
 STATE_HISTORY_RECOVERY_COMMITS = max(10, min(120, int(os.getenv("STATE_HISTORY_RECOVERY_COMMITS", "60"))))
 
 MULTI_VERSION = 1  # compatibile con state v20.2/v20.3
@@ -119,6 +120,14 @@ QUAD_STAKE_PER_COLPO = 1.0
 QUAD_PRIZE_2 = 1.0
 QUAD_PRIZE_3 = 10.0
 QUAD_PRIZE_4 = 90.0
+
+# v20.9 — SISTEMI LIVE 7 e 9 numeri, sempre 1 €/colpo H1-H5.
+# Premi standard 10eLotto (senza Oro/Doppio Oro/Extra).
+MULTI_BIG_RECORD_MAX = max(500, int(os.getenv("MULTI_BIG_RECORD_MAX", "12000")))
+MULTI_BIG_PENDING_MAX = max(50, int(os.getenv("MULTI_BIG_PENDING_MAX", "1200")))
+BIG_STAKE_PER_COLPO = 1.0
+BIG7_PRIZES = {0: 1.0, 4: 4.0, 5: 40.0, 6: 400.0, 7: 1600.0}
+BIG9_PRIZES = {0: 2.0, 5: 10.0, 6: 40.0, 7: 400.0, 8: 2000.0, 9: 100000.0}
 
 # PRIME — regole congelate dal test storico Jan-Sep 2025.
 # A = originale: BD rank 11-12 + O2 rank 6-12.
@@ -174,6 +183,9 @@ NOTIFY_SUPER_RESULT = os.getenv("MULTI_SUPER_NOTIFY_RESULT", "1").lower() not in
 NOTIFY_QUAD_SIGNAL = os.getenv("MULTI_QUAD_NOTIFY_SIGNAL", "1").lower() not in {"0", "false", "no", "off"}
 NOTIFY_QUAD_RESULT = os.getenv("MULTI_QUAD_NOTIFY_RESULT", "1").lower() not in {"0", "false", "no", "off"}
 NOTIFY_QUAD_SHADOW_UPGRADE = os.getenv("MULTI_QUAD_NOTIFY_SHADOW_UPGRADE", "0").lower() not in {"0", "false", "no", "off"}
+NOTIFY_BIG_SIGNAL = os.getenv("MULTI_BIG_NOTIFY_SIGNAL", "1").lower() not in {"0", "false", "no", "off"}
+NOTIFY_BIG_RESULT = os.getenv("MULTI_BIG_NOTIFY_RESULT", "1").lower() not in {"0", "false", "no", "off"}
+NOTIFY_BIG_SHADOW_UPGRADE = os.getenv("MULTI_BIG_NOTIFY_SHADOW_UPGRADE", "0").lower() not in {"0", "false", "no", "off"}
 
 _LAST_GIT_COMMIT_TS = 0.0
 
@@ -215,6 +227,25 @@ def order_key(key):
 
 def safe_pct(num, den):
     return (100.0 * float(num) / float(den)) if den else 0.0
+
+
+def split_telegram_text(text, limit=3900):
+    """Divide messaggi lunghi senza spezzare brutalmente le righe."""
+    txt=str(text or "")
+    if len(txt)<=limit:
+        return [txt] if txt else []
+    out=[]; cur=[]; n=0
+    for line in txt.splitlines(True):
+        if cur and n+len(line)>limit:
+            out.append("".join(cur).rstrip()); cur=[]; n=0
+        while len(line)>limit:
+            if cur:
+                out.append("".join(cur).rstrip()); cur=[]; n=0
+            out.append(line[:limit]); line=line[limit:]
+        cur.append(line); n+=len(line)
+    if cur:
+        out.append("".join(cur).rstrip())
+    return [x for x in out if x]
 
 
 def console_log(message):
@@ -455,7 +486,7 @@ def _state_progress(data):
     if not last_key:
         last_key = data.get("last_draw_key")
     ok = order_key(last_key) or (-1, -1)
-    closed = len(mc.get("records") or []) + len(mc.get("ambo_records") or []) + len(mc.get("quad_records") or [])
+    closed = len(mc.get("records") or []) + len(mc.get("ambo_records") or []) + len(mc.get("quad_records") or []) + len(mc.get("big_records") or [])
     counters = (
         int(mc.get("scans", 0) or 0)
         + int(mc.get("signals", 0) or 0)
@@ -468,8 +499,10 @@ def _state_progress(data):
         + int(mc.get("prime_c_signals", 0) or 0)
         + int(mc.get("quad_signals", 0) or 0)
         + int(mc.get("quad_elite_signals", 0) or 0)
+        + int(mc.get("big7_signals", 0) or 0)
+        + int(mc.get("big9_signals", 0) or 0)
     )
-    pending = len(mc.get("pending") or []) + len(mc.get("ambo_pending") or []) + len(mc.get("quad_pending") or [])
+    pending = len(mc.get("pending") or []) + len(mc.get("ambo_pending") or []) + len(mc.get("quad_pending") or []) + len(mc.get("big_pending") or [])
     rev = int(data.get("multi_state_revision", 0) or 0)
     return (ok[0], ok[1], int(mc.get("draw_seq", 0) or 0), closed, counters, rev + pending)
 
@@ -626,6 +659,17 @@ def _quad_id(r):
         return None
 
 
+def _big_id(r):
+    try:
+        nums = tuple(sorted(int(x) for x in (r.get("numbers") or [])))
+        size = int(r.get("system_size") or len(nums))
+        if size not in (7, 9) or len(nums) != size:
+            return None
+        return f"{r.get('origin_key')}|M{int(r.get('main')):02d}|S{size}|{'-'.join(f'{x:02d}' for x in nums)}"
+    except Exception:
+        return None
+
+
 def _latest_obj(a, b, keys=("closed_key", "origin_key", "key")):
     if not isinstance(a, dict): return b if isinstance(b, dict) else None
     if not isinstance(b, dict): return a
@@ -652,15 +696,22 @@ def _merge_multichannel_state(a, b):
     qrec = _merge_rows(a.get("quad_records"), b.get("quad_records"), _quad_id, MULTI_QUAD_RECORD_MAX)
     qpen = _merge_rows(a.get("quad_pending"), b.get("quad_pending"), _quad_id, MULTI_QUAD_PENDING_MAX)
     qclosed={_quad_id(r) for r in qrec}; qpen=[r for r in qpen if _quad_id(r) not in qclosed]
-    base.update({"history":hist,"records":rec,"pending":pen,"ambo_records":arec,"ambo_pending":apen,"quad_records":qrec,"quad_pending":qpen})
+    brec = _merge_rows(a.get("big_records"), b.get("big_records"), _big_id, MULTI_BIG_RECORD_MAX)
+    bpen = _merge_rows(a.get("big_pending"), b.get("big_pending"), _big_id, MULTI_BIG_PENDING_MAX)
+    bclosed={_big_id(r) for r in brec}; bpen=[r for r in bpen if _big_id(r) not in bclosed]
+    base.update({"history":hist,"records":rec,"pending":pen,"ambo_records":arec,"ambo_pending":apen,"quad_records":qrec,"quad_pending":qpen,"big_records":brec,"big_pending":bpen})
     base["draw_seq"] = max(int(a.get("draw_seq",0) or 0), int(b.get("draw_seq",0) or 0), len(hist))
-    for k in ("scans","signals","no_signal","cooldown_skips","ambo_origins","ambo_super_signals","quad_signals","quad_elite_signals"):
+    for k in ("scans","signals","no_signal","cooldown_skips","ambo_origins","ambo_super_signals","quad_signals","quad_elite_signals","big7_signals","big9_signals"):
         base[k]=max(int(a.get(k,0) or 0),int(b.get(k,0) or 0))
     # I contatori quaterna non possono essere inferiori ai record/pending effettivamente fusi.
     qids={_quad_id(r) for r in qrec+qpen if _quad_id(r)}
     elite_ids={_quad_id(r) for r in qrec+qpen if _quad_id(r) and str(r.get("quad_level") or "").upper()=="ELITE"}
     base["quad_signals"]=max(int(base.get("quad_signals",0) or 0),len(qids))
     base["quad_elite_signals"]=max(int(base.get("quad_elite_signals",0) or 0),len(elite_ids))
+    big7_ids={_big_id(r) for r in brec+bpen if _big_id(r) and int(r.get("system_size",0) or 0)==7}
+    big9_ids={_big_id(r) for r in brec+bpen if _big_id(r) and int(r.get("system_size",0) or 0)==9}
+    base["big7_signals"]=max(int(base.get("big7_signals",0) or 0),len(big7_ids))
+    base["big9_signals"]=max(int(base.get("big9_signals",0) or 0),len(big9_ids))
     sigrows=rec+pen
     def tier(r):
         t=str(r.get("tier") or "").upper()
@@ -689,9 +740,9 @@ def _merge_multichannel_state(a, b):
                 except Exception: continue
                 lss[str(ik)]=max(int(lss.get(str(ik),0) or 0),iv)
     base["last_signal_seq"]=lss
-    for k in ("start_from_key","ambo_started_from_key","prime_started_from_key","prime_a_started_from_key","prime_a2_started_from_key","prime_d_elite_started_from_key","prime_d_wide_started_from_key","prime_x_started_from_key","prime_b_started_from_key","prime_c_started_from_key","triangle_started_from_key","v2071_started_from_key","quad_started_from_key"):
+    for k in ("start_from_key","ambo_started_from_key","prime_started_from_key","prime_a_started_from_key","prime_a2_started_from_key","prime_d_elite_started_from_key","prime_d_wide_started_from_key","prime_x_started_from_key","prime_b_started_from_key","prime_c_started_from_key","triangle_started_from_key","v2071_started_from_key","quad_started_from_key","big_started_from_key"):
         base[k]=_key_min(a.get(k),b.get(k))
-    for k in ("started_at","ambo_started_at","prime_started_at","prime_a_started_at","prime_a2_started_at","prime_d_elite_started_at","prime_d_wide_started_at","prime_x_started_at","prime_b_started_at","prime_c_started_at","triangle_started_at","v2071_started_at","quad_started_at"):
+    for k in ("started_at","ambo_started_at","prime_started_at","prime_a_started_at","prime_a2_started_at","prime_d_elite_started_at","prime_d_wide_started_at","prime_x_started_at","prime_b_started_at","prime_c_started_at","triangle_started_at","v2071_started_at","quad_started_at","big_started_at"):
         vals=[x for x in (a.get(k),b.get(k)) if isinstance(x,str) and x]; base[k]=min(vals) if vals else None
     # I baseline della FIX devono riferirsi alla stessa prima base forward: prendiamo il minimo
     # quando entrambe le copie li hanno, altrimenti quello disponibile.
@@ -711,6 +762,8 @@ def _merge_multichannel_state(a, b):
     base["last_ambo_result"]=_latest_obj(a.get("last_ambo_result"),b.get("last_ambo_result"))
     base["last_quad_signal"]=_latest_obj(a.get("last_quad_signal"),b.get("last_quad_signal"),("origin_key","key"))
     base["last_quad_result"]=_latest_obj(a.get("last_quad_result"),b.get("last_quad_result"))
+    base["last_big_signal"]=_latest_obj(a.get("last_big_signal"),b.get("last_big_signal"),("origin_key","key"))
+    base["last_big_result"]=_latest_obj(a.get("last_big_result"),b.get("last_big_result"))
     return base
 
 
@@ -835,6 +888,16 @@ class MultiPrimeV1:
         self.last_quad_signal = None
         self.last_quad_result = None
 
+        # v20.9: SISTEMI 7/9 LIVE, forward puro senza backfill.
+        self.big_started_from_key = None
+        self.big_started_at = None
+        self.big_pending = []
+        self.big_records = []
+        self.big7_signals = 0
+        self.big9_signals = 0
+        self.last_big_signal = None
+        self.last_big_result = None
+
     @staticmethod
     def _sanitize_row(row):
         if not isinstance(row, dict):
@@ -925,6 +988,31 @@ class MultiPrimeV1:
         q["consensus"] = max(2, min(3, int(q.get("consensus", 2) or 2)))
         q["cost"] = float(q.get("cost", 0.0) or 0.0)
         q["payout"] = float(q.get("payout", 0.0) or 0.0)
+        return q
+
+    @classmethod
+    def _sanitize_big_row(cls, row):
+        if not isinstance(row, dict) or not row.get("origin_key"):
+            return None
+        try:
+            nums = sorted({int(x) for x in (row.get("numbers") or [])})
+            size = int(row.get("system_size") or len(nums))
+            main = int(row.get("main"))
+            age = max(0, int(row.get("age", 0) or 0))
+        except Exception:
+            return None
+        if size not in (7, 9) or len(nums) != size or any(n < 1 or n > 90 for n in nums) or main not in nums:
+            return None
+        q = dict(row)
+        q["numbers"] = nums
+        q["system_size"] = size
+        q["main"] = main
+        q["age"] = age
+        q["tier"] = cls._tier_from_obj(q)
+        q["cost"] = float(q.get("cost", 0.0) or 0.0)
+        q["payout"] = float(q.get("payout", 0.0) or 0.0)
+        q["max_shadow_payout"] = float(q.get("max_shadow_payout", 0.0) or 0.0)
+        q["max_shadow_match"] = int(q.get("max_shadow_match", 0) or 0)
         return q
 
     def _refresh_keys(self):
@@ -1039,6 +1127,15 @@ class MultiPrimeV1:
         self.quad_started_at = now_dt().isoformat(timespec="seconds")
         return True
 
+    def ensure_big_forward_base(self):
+        """v20.9: congela il punto zero dei sistemi 7/9 LIVE dopo il catch-up, senza backfill."""
+        if not self.history or self.big_started_from_key:
+            return False
+        current = str(self.history[-1]["key"])
+        self.big_started_from_key = current
+        self.big_started_at = now_dt().isoformat(timespec="seconds")
+        return True
+
     def load(self, obj):
         if not isinstance(obj, dict) or int(obj.get("version", 0) or 0) != MULTI_VERSION:
             return False
@@ -1136,6 +1233,16 @@ class MultiPrimeV1:
         self.last_quad_signal = obj.get("last_quad_signal") if isinstance(obj.get("last_quad_signal"), dict) else None
         self.last_quad_result = obj.get("last_quad_result") if isinstance(obj.get("last_quad_result"), dict) else None
 
+        bgsk = obj.get("big_started_from_key")
+        self.big_started_from_key = str(bgsk) if order_key(bgsk) is not None else None
+        self.big_started_at = obj.get("big_started_at") if isinstance(obj.get("big_started_at"), str) else None
+        self.big_pending = [q for x in obj.get("big_pending", []) if (q := self._sanitize_big_row(x))][-MULTI_BIG_PENDING_MAX:]
+        self.big_records = [q for x in obj.get("big_records", []) if (q := self._sanitize_big_row(x))][-MULTI_BIG_RECORD_MAX:]
+        self.big7_signals = max(0, int(obj.get("big7_signals", 0) or 0), sum(1 for q in self.big_pending+self.big_records if int(q.get("system_size",0) or 0)==7))
+        self.big9_signals = max(0, int(obj.get("big9_signals", 0) or 0), sum(1 for q in self.big_pending+self.big_records if int(q.get("system_size",0) or 0)==9))
+        self.last_big_signal = obj.get("last_big_signal") if isinstance(obj.get("last_big_signal"), dict) else None
+        self.last_big_result = obj.get("last_big_result") if isinstance(obj.get("last_big_result"), dict) else None
+
         self.ensure_start()
         return True
 
@@ -1208,6 +1315,14 @@ class MultiPrimeV1:
             "quad_elite_signals": int(self.quad_elite_signals),
             "last_quad_signal": self.last_quad_signal,
             "last_quad_result": self.last_quad_result,
+            "big_started_from_key": self.big_started_from_key,
+            "big_started_at": self.big_started_at,
+            "big_pending": self.big_pending[-MULTI_BIG_PENDING_MAX:],
+            "big_records": self.big_records[-MULTI_BIG_RECORD_MAX:],
+            "big7_signals": int(self.big7_signals),
+            "big9_signals": int(self.big9_signals),
+            "last_big_signal": self.last_big_signal,
+            "last_big_result": self.last_big_result,
         }
 
     @staticmethod
@@ -1443,6 +1558,80 @@ class MultiPrimeV1:
         self.last_quad_signal=dict(q)
         return dict(q)
 
+    def _big7_plan(self, main, ranks, tier):
+        """SETTINA LIVE: solo A2 + D ELITE; M + 6 O2F12 con COOC900 Base più alto."""
+        tier=str(tier or "").upper()
+        if tier not in {"A2","DE"}:
+            return None
+        main=int(main)
+        candidates=[int(n) for n in ranks["top_o2"] if int(n)!=main]
+        if len(candidates)<6:
+            return None
+        hw=self.history[-min(len(self.history),MULTI_COOC_WINDOW):]
+        scored=[]
+        for p in candidates:
+            c=sum(1 for r in hw if main in set(r.get("nums",[])) and p in set(r.get("nums",[])))
+            scored.append((int(c),int(p)))
+        scored.sort(key=lambda z:(-z[0],z[1]))
+        partners=[p for _,p in scored[:6]]
+        nums=sorted([main]+partners)
+        return {"system_size":7,"numbers":nums,"selector":"COOC900","scores":[{"num":p,"cooc":c} for c,p in scored[:6]],"window":len(hw)}
+
+    def _big9_plan(self, main, ranks, tier):
+        """NOVINA LIVE: A2 + D ELITE/WIDE; M + 8 O2F12 con Jaccard900 rispetto a M."""
+        tier=str(tier or "").upper()
+        if tier not in {"A2","DE","DW"}:
+            return None
+        main=int(main)
+        candidates=[int(n) for n in ranks["top_o2"] if int(n)!=main]
+        if len(candidates)<8:
+            return None
+        hw=self.history[-min(len(self.history),MULTI_COOC_WINDOW):]
+        fm=0; fp={p:0 for p in candidates}; co={p:0 for p in candidates}
+        for r in hw:
+            b=set(int(x) for x in r.get("nums",[]))
+            mhere=main in b
+            if mhere: fm+=1
+            for p in candidates:
+                if p in b:
+                    fp[p]+=1
+                    if mhere: co[p]+=1
+        scored=[]
+        for p in candidates:
+            den=fm+fp[p]-co[p]
+            j=(co[p]/den) if den>0 else 0.0
+            scored.append((float(j),int(co[p]),int(p)))
+        scored.sort(key=lambda z:(-z[0],-z[1],z[2]))
+        partners=[p for _,_,p in scored[:8]]
+        nums=sorted([main]+partners)
+        return {"system_size":9,"numbers":nums,"selector":"JACCARD900_M","scores":[{"num":p,"jaccard":j,"cooc":c} for j,c,p in scored[:8]],"window":len(hw)}
+
+    @staticmethod
+    def _big_prize(size, matches):
+        table=BIG7_PRIZES if int(size)==7 else BIG9_PRIZES if int(size)==9 else {}
+        return float(table.get(int(matches),0.0) or 0.0)
+
+    def _arm_big(self, origin_key, main, plan, tier, bd_rank=None, o2_rank=None):
+        if not plan:
+            return None
+        nums=sorted(int(x) for x in plan.get("numbers",[]))
+        size=int(plan.get("system_size") or len(nums))
+        if size not in (7,9) or len(nums)!=size:
+            return None
+        q={
+            "origin_key":str(origin_key),"origin_id":f"{origin_key}|M{int(main):02d}|S{size}",
+            "main":int(main),"numbers":nums,"system_size":size,"tier":str(tier).upper(),
+            "selector":str(plan.get("selector") or ""),"scores":plan.get("scores",[]),"window":int(plan.get("window",0) or 0),
+            "age":0,"closed":False,"operational_stopped":False,"stop_age":None,"stop_match":None,
+            "cost":0.0,"payout":0.0,"max_shadow_payout":0.0,"max_shadow_match":0,
+            "bd_rank":bd_rank,"o2_rank":o2_rank,"created_at":now_txt(),
+        }
+        self.big_pending.append(q); self.big_pending=self.big_pending[-MULTI_BIG_PENDING_MAX:]
+        if size==7: self.big7_signals+=1
+        else: self.big9_signals+=1
+        self.last_big_signal=dict(q)
+        return dict(q)
+
     def _arm_ambo(self, origin_key, main, plan, tier="STD", bd_rank=None, o2_rank=None, x_ultra=False, inter_size=None, extra_margin13=None):
         if not plan:
             return []
@@ -1591,6 +1780,38 @@ class MultiPrimeV1:
             else:
                 qremain.append(q)
         self.quad_pending=qremain
+
+        bremain=[]
+        for p in self.big_pending:
+            q=dict(p)
+            age=int(q.get("age",0) or 0)+1
+            q["age"]=age; q["last_key"]=r["key"]
+            nums=[int(x) for x in q.get("numbers",[])]
+            size=int(q.get("system_size",0) or 0)
+            matches=sum(1 for x in nums if x in actual)
+            prize=self._big_prize(size,matches)
+            prev_best=float(q.get("max_shadow_payout",0.0) or 0.0)
+            if prize>prev_best:
+                q["max_shadow_payout"]=prize; q["max_shadow_match"]=matches; q["max_shadow_age"]=age
+            op_stop_now=False
+            if not bool(q.get("operational_stopped")):
+                q["cost"]=float(q.get("cost",0.0) or 0.0)+BIG_STAKE_PER_COLPO
+                if prize>0:
+                    q["operational_stopped"]=True; q["stop_age"]=age; q["stop_match"]=matches; q["payout"]=prize
+                    op_stop_now=True
+                    events.append({"kind":"big_stop","row":dict(q),"matches":matches,"prize":prize,"closed":age>=MULTI_HORIZON})
+            if bool(q.get("operational_stopped")) and prize>float(q.get("payout",0.0) or 0.0) and prize>prev_best and not op_stop_now:
+                events.append({"kind":"big_shadow_upgrade","row":dict(q),"matches":matches,"prize":prize,"closed":age>=MULTI_HORIZON})
+            close=age>=MULTI_HORIZON
+            if close:
+                q["closed"]=True; q["closed_key"]=r["key"]
+                self.big_records.append(q); self.big_records=self.big_records[-MULTI_BIG_RECORD_MAX:]
+                self.last_big_result=dict(q)
+                if not bool(q.get("operational_stopped")):
+                    events.append({"kind":"big_stop","row":dict(q),"matches":matches,"prize":0.0,"closed":True,"no_hit":True})
+            else:
+                bremain.append(q)
+        self.big_pending=bremain
         return events
 
     def ingest(self, row):
@@ -1612,6 +1833,7 @@ class MultiPrimeV1:
         # fissare la base forward se startup/sync non l'hanno gia fatto.
         self.ensure_v2071_forward_base()
         self.ensure_quad_forward_base()
+        self.ensure_big_forward_base()
         origin_key = str(self.history[-1]["key"])
         if self.last_armed_key == origin_key:
             return None
@@ -1641,7 +1863,7 @@ class MultiPrimeV1:
             self.no_signal += 1
             return None
 
-        details, ambo_plans, quad_plans = [], [], []
+        details, ambo_plans, quad_plans, big_plans = [], [], [], []
         a_numbers, a2_numbers, de_numbers, dw_numbers, x_numbers, c_numbers = [], [], [], [], [], []
         origin_row = self.history[-1]
         origin_time = str(origin_row.get("time") or "")
@@ -1710,6 +1932,18 @@ class MultiPrimeV1:
                     d["quad"] = qplan
                     quad_plans.append(dict(qcreated))
 
+            # v20.9: SETTINA e NOVINA LIVE. Nessun backfill.
+            p7=self._big7_plan(n,ranks,tier)
+            if p7:
+                b7=self._arm_big(origin_key,n,p7,tier,bd_rank=bd_rank,o2_rank=o2_rank)
+                if b7:
+                    d["big7"]=p7; big_plans.append(dict(b7))
+            p9=self._big9_plan(n,ranks,tier)
+            if p9:
+                b9=self._arm_big(origin_key,n,p9,tier,bd_rank=bd_rank,o2_rank=o2_rank)
+                if b9:
+                    d["big9"]=p9; big_plans.append(dict(b9))
+
             details.append(d)
             self.pending.append({
                 "origin_key": origin_key, "num": n, "age": 0,
@@ -1740,6 +1974,7 @@ class MultiPrimeV1:
             "details": details,
             "ambo_plans": ambo_plans,
             "quad_plans": quad_plans,
+            "big_plans": big_plans,
             "top_base_delay": ranks["top_base_delay"],
             "top_extra_delay": ranks["top_extra_delay"],
             "top_o2": ranks["top_o2"],
@@ -1760,6 +1995,8 @@ class MultiPrimeV1:
             return True
         if sig.get("quad_plans") and NOTIFY_QUAD_SIGNAL:
             return True
+        if sig.get("big_plans") and NOTIFY_BIG_SIGNAL:
+            return True
         # C/X e STANDARD restano shadow; B non genera nuovi segnali.
         return NOTIFY_STANDARD_SIGNAL
 
@@ -1777,7 +2014,7 @@ class MultiPrimeV1:
         if sig.get("details"):
             origin_time = str((sig.get("details") or [{}])[0].get("origin_time") or "")
         lines = [
-            "🧪 MULTI BD12+ED12+O2F12 — v20.8",
+            "🧪 MULTI BD12+ED12+O2F12 — v20.9",
             "Origine: " + str(sig.get("origin_key")) + (f" | ora {origin_time}" if origin_time else ""),
             "STANDARD: Base RIT12 ∩ Extra RIT12 ∩ Oro2 FREQ12 (W80)",
             f"Segnali standard: {' '.join(f'{int(n):02d}' for n in sig.get('numbers', []))}",
@@ -1854,12 +2091,25 @@ class MultiPrimeV1:
 
         qplans=list(sig.get("quad_plans") or [])
         if qplans:
-            lines += ["", "🔷 QUATERNA v20.8 — FORWARD"]
+            lines += ["", "🔷 QUATERNA — FORWARD"]
             for q in qplans:
                 qq=[int(x) for x in q.get("quartet",[])]
                 icon="💎" if str(q.get("quad_level"))=="ELITE" else "🔷"
                 lines.append(f"{icon} Q-{q.get('quad_level')} {'-'.join(f'{x:02d}' for x in qq)} | consenso {q.get('consensus')}/3 | Jmin={float(q.get('min_jaccard',0)):.3f}")
                 lines.append("   💶 1€/colpo H1-H5 | STOP al primo 2/4 o meglio | shadow continua fino H5")
+
+        bplans=list(sig.get("big_plans") or [])
+        if bplans:
+            lines += ["", "🎯 SISTEMI 7/9 v20.9 — LIVE"]
+            for b in bplans:
+                nums=[int(x) for x in b.get("numbers",[])]
+                size=int(b.get("system_size",0) or 0)
+                if size==7:
+                    lines.append(f"🎯 SETTINA LIVE {'-'.join(f'{x:02d}' for x in nums)} | {b.get('selector')} | origine {b.get('tier')}")
+                    lines.append("   💶 1€/colpo H1-H5 | premi: 0=€1, 4=€4, 5=€40, 6=€400, 7=€1600 | STOP al primo premio")
+                elif size==9:
+                    lines.append(f"💥 NOVINA LIVE {'-'.join(f'{x:02d}' for x in nums)} | {b.get('selector')} | origine {b.get('tier')}")
+                    lines.append("   💶 1€/colpo H1-H5 | premi: 0=€2, 5=€10, 6=€40, 7=€400, 8=€2000, 9=€100000 | STOP al primo premio")
 
         lines += [
             "",
@@ -1879,6 +2129,35 @@ class MultiPrimeV1:
         r = ev["row"]
         age = int(r.get("age", 0) or 0)
         tier = MultiPrimeV1._tier_from_obj(r)
+
+        if ev.get("kind") in {"big_stop","big_shadow_upgrade"}:
+            nums=[int(x) for x in r.get("numbers",[])]
+            size=int(r.get("system_size",0) or 0)
+            if size not in (7,9) or len(nums)!=size:
+                return None
+            tag="🎯 SETTINA LIVE" if size==7 else "💥 NOVINA LIVE"
+            matches=int(ev.get("matches",0) or 0); prize=float(ev.get("prize",0.0) or 0.0)
+            if ev.get("kind")=="big_shadow_upgrade":
+                return (
+                    f"👁️ {tag} — SHADOW UPGRADE H{age}\n\n"
+                    f"Origine {r.get('origin_key')} | {'-'.join(f'{x:02d}' for x in nums)}\n"
+                    f"Dopo lo STOP operativo: {matches}/{size} → €{prize:.0f} in shadow.\n"
+                    f"Operativo già chiuso H{r.get('stop_age')} con {r.get('stop_match')}/{size} → €{float(r.get('payout',0)):.0f}; nessuna nuova puntata."
+                )
+            if ev.get("no_hit"):
+                status=f"🛑 STOP H5 — nessun premio"
+            else:
+                status=f"✅ {matches}/{size} a H{age} → €{prize:.0f} — STOP"
+                if prize>=400: status=f"💥 {matches}/{size} a H{age} → €{prize:.0f} — BIG HIT / STOP"
+            return (
+                f"{tag} — ESITO OPERATIVO\n\n"
+                f"Origine {r.get('origin_key')} | M {int(r.get('main',0)):02d} | origine {r.get('tier')}\n"
+                f"Numeri: {'-'.join(f'{x:02d}' for x in nums)}\n"
+                f"{status}\n"
+                f"Costo origine: €{float(r.get('cost',0)):.0f} | premio operativo: €{float(r.get('payout',0)):.0f}\n"
+                f"Selettore {r.get('selector')} | finestra {r.get('window')}\n"
+                "👁️ Dopo lo STOP il tracker continua in shadow fino a H5 senza altre puntate."
+            )
 
         if ev.get("kind") in {"quad_stop","quad_shadow_upgrade"}:
             quartet=[int(x) for x in r.get("quartet",[])]
@@ -1932,7 +2211,7 @@ class MultiPrimeV1:
             fast_note = "\n🎯 FAST H1 centrato." if tier == "A" and slot == "BASE2" and age == 1 and ev.get("hit_now") else ""
             off_note = "\n👁️ Era OFF-gate: hit registrato solo come TRIANGLE SHADOW." if slot == "TRIANGLE_OFF" and ev.get("hit_now") else ""
             return (
-                f"🧾 MULTI v20.8 — {tag}\n\n"
+                f"🧾 MULTI v20.9 — {tag}\n\n"
                 f"Origine {r.get('origin_key')} | M {int(r.get('main',0)):02d}\n"
                 f"Coppia {pair[0]:02d}-{pair[1]:02d} | {status}"
                 f"{tier_line} | BD rank={r.get('bd_rank')} | O2 rank={r.get('o2_rank')}"
@@ -1975,6 +2254,10 @@ class MultiPrimeV1:
         kind = str(ev.get("kind") or "")
         slot = str(r.get("slot") or "")
 
+        if kind == "big_stop":
+            return NOTIFY_BIG_RESULT
+        if kind == "big_shadow_upgrade":
+            return NOTIFY_BIG_SHADOW_UPGRADE
         if kind == "quad_stop":
             return NOTIFY_QUAD_RESULT
         if kind == "quad_shadow_upgrade":
@@ -2094,6 +2377,24 @@ class MultiPrimeV1:
         pam = sum(1 for r in self.ambo_pending if self._tier_from_obj(r) == tier)
         return pa, pam
 
+    def _big_stats(self, size):
+        size=int(size)
+        rows=[r for r in self.big_records if int(r.get("system_size",0) or 0)==size]
+        cost=sum(float(r.get("cost",0) or 0) for r in rows)
+        payout=sum(float(r.get("payout",0) or 0) for r in rows)
+        roi=(100.0*payout/cost) if cost>0 else 0.0
+        dist=Counter()
+        miss=0; big400=0; shbig=0
+        for r in rows:
+            if bool(r.get("operational_stopped")):
+                m=int(r.get("stop_match",-1) if r.get("stop_match") is not None else -1)
+                dist[m]+=1
+                if float(r.get("payout",0) or 0)>=400: big400+=1
+            else:
+                miss+=1
+            if float(r.get("max_shadow_payout",0) or 0)>=400: shbig+=1
+        return {"n":len(rows),"cost":cost,"payout":payout,"roi":roi,"dist":dist,"miss":miss,"big400":big400,"shadow400":shbig}
+
     def _quad_stats(self, elite_only=False):
         rows=[r for r in self.quad_records if (not elite_only or str(r.get("quad_level") or "").upper()=="ELITE")]
         n=len(rows)
@@ -2150,9 +2451,12 @@ class MultiPrimeV1:
         dcov_n=decov['tri_n']+dwcov['tri_n']; dcov_hit=decov['all3_hit']+dwcov['all3_hit']
         qplus=self._quad_stats(False); qelite=self._quad_stats(True)
         qpending=len(self.quad_pending)
+        b7=self._big_stats(7); b9=self._big_stats(9)
+        b7pending=sum(1 for r in self.big_pending if int(r.get("system_size",0) or 0)==7)
+        b9pending=sum(1 for r in self.big_pending if int(r.get("system_size",0) or 0)==9)
 
         lines = [
-            "🧪 MULTI PRIME A + A2 + D + QUATERNA — v20.8",
+            "🧪 MULTI PRIME A + A2 + D + QUATERNA + 7/9 LIVE — v20.9",
             "STANDARD shadow: BD12 ∩ ED12 ∩ O2F12",
             f"🔥 A: BD11-12 + O2 {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} | 💎 A2: BD11-12 + O2 {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + fascia Elite",
             "💠 D-ELITE: BD1-4 | 🔥 D-WIDE: BD5-8 | entrambi >16:00 + intersezione unica",
@@ -2191,6 +2495,14 @@ class MultiPrimeV1:
             f"💎 Q-ELITE chiuse {qelite['n']} | costo €{qelite['cost']:.0f} | premi €{qelite['payout']:.0f} | ROI {qelite['roi']:.1f}%",
             f"Q-ELITE stop: 2/4 {qelite['s2']} | 3/4 {qelite['s3']} | 4/4 {qelite['s4']} | MISS {qelite['miss']} | shadow H5 ≥3/4 {qelite['sh3']} | 4/4 {qelite['sh4']}",
             "💶 Regola live Q: 1€/colpo, STOP al primo 2/4+; tracking shadow continua fino H5.",
+            "",
+            f"🎯 SETTINA LIVE — start {self.big_started_from_key or '-'} | create {self.big7_signals} | pending {b7pending} | chiuse {b7['n']}",
+            f"SETTINA costo €{b7['cost']:.0f} | premi €{b7['payout']:.0f} | ROI {b7['roi']:.1f}% | 0/7 {b7['dist'].get(0,0)} | 4/7 {b7['dist'].get(4,0)} | 5/7 {b7['dist'].get(5,0)} | 6/7 {b7['dist'].get(6,0)} | 7/7 {b7['dist'].get(7,0)} | MISS {b7['miss']}",
+            f"SETTINA BIG≥€400 operativi {b7['big400']} | shadow H5 ≥€400 {b7['shadow400']}",
+            f"💥 NOVINA LIVE — start {self.big_started_from_key or '-'} | create {self.big9_signals} | pending {b9pending} | chiuse {b9['n']}",
+            f"NOVINA costo €{b9['cost']:.0f} | premi €{b9['payout']:.0f} | ROI {b9['roi']:.1f}% | 0/9 {b9['dist'].get(0,0)} | 5/9 {b9['dist'].get(5,0)} | 6/9 {b9['dist'].get(6,0)} | 7/9 {b9['dist'].get(7,0)} | 8/9 {b9['dist'].get(8,0)} | 9/9 {b9['dist'].get(9,0)} | MISS {b9['miss']}",
+            f"NOVINA BIG≥€400 operativi {b9['big400']} | shadow H5 ≥€400 {b9['shadow400']}",
+            "💶 Regola LIVE 7/9: 1€/colpo H1-H5, STOP al primo premio ufficiale; shadow continua fino H5.",
             "Baseline: ambata H1 22.22% | ambo H1 ≈4.74% | ambo H5 ≈21.57%.",
             "⏸️ FOCUS / INCROCIO / CORE / legacy: PAUSATI; state conservato.",
         ]
@@ -2274,7 +2586,7 @@ class MultiOnlyEngine:
         data["processed"] = self.processed[-PROCESSED_MAX:]
         data["last_draw_key"] = self.last_draw_key
         data["multichannel_bd12_ed12_o2f12_v1"] = self.multichannel.dump()
-        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_v20.8_STATE_FIX"
+        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_7_9_v20.9_STATE_FIX"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
 
         # Prima fondi con HEAD remoto; la revision viene assegnata SOLO dopo il merge,
@@ -2288,7 +2600,7 @@ class MultiOnlyEngine:
         self.state_revision = max(int(self.state_revision), remote_rev) + 1
         data["multi_state_revision"] = int(self.state_revision)
         data["saved_at"] = now_dt().isoformat(timespec="seconds")
-        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_v20.8_STATE_FIX"
+        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_7_9_v20.9_STATE_FIX"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
 
         # Ricarica l'eventuale merge prima della scrittura per mantenere record/pending monotoni.
@@ -2311,14 +2623,15 @@ class MultiOnlyEngine:
         if not app or CHAT_ID is None or not text:
             return
         try:
-            await app.bot.send_message(chat_id=CHAT_ID, text=str(text))
+            for chunk in split_telegram_text(text):
+                await app.bot.send_message(chat_id=CHAT_ID, text=chunk)
         except Exception as exc:
             console_log(f"TELEGRAM FAIL | {type(exc).__name__}: {exc}")
 
     def status_text(self):
         mc = self.multichannel
         return (
-            "📡 STATUS v20.8 MULTI PRIME + QUATERNA — STATE FIX\n\n"
+            "📡 STATUS v20.9 MULTI PRIME + QUATERNA + 7/9 LIVE — STATE FIX\n\n"
             f"Ultimo MULTI: {mc.history[-1]['key'] if mc.history else '-'}\n"
             f"State: {'OK' if self.state_load_info.get('loaded') else 'NUOVO'} | {self.state_load_info.get('reason')}\n"
             f"State source: {self.state_load_info.get('source','-')} | ff {self.state_load_info.get('ff','-')} | rev {self.state_revision}\n"
@@ -2333,8 +2646,9 @@ class MultiOnlyEngine:
             f"PRIME C legacy start: {mc.prime_c_started_from_key or '-'}\n"
             f"B legacy start: {mc.prime_b_started_from_key or '-'}\n"
             f"TRIANGLE start: {mc.triangle_started_from_key or '-'}\n"
-            f"QUATERNA v20.8 start: {mc.quad_started_from_key or '-'}\n\n"
-            "✅ Attivo: MULTI + PRIME A + A2 + D ELITE/WIDE + QUATERNA PLUS/ELITE; X/C shadow\n"
+            f"QUATERNA v20.8 start: {mc.quad_started_from_key or '-'}\n"
+            f"SISTEMI 7/9 v20.9 start: {mc.big_started_from_key or '-'}\n\n"
+            "✅ Attivo: MULTI + PRIME A + A2 + D ELITE/WIDE + QUATERNA PLUS/ELITE + SETTINA/NOVINA LIVE; X/C shadow\n"
             "🟠 PRIME B: congelato, solo eventuali pending legacy.\n"
             "⏸️ FOCUS / INCROCIO / CORE / legacy: congelati nello state.\n\n"
             + mc.text()
@@ -2343,7 +2657,7 @@ class MultiOnlyEngine:
     @staticmethod
     def menu_text():
         return (
-            "🎯 10eLOTTO v20.8 — MULTI PRIME + QUATERNA — STATE FIX\n\n"
+            "🎯 10eLOTTO v20.9 — MULTI PRIME + QUATERNA + 7/9 LIVE — STATE FIX\n\n"
             "ATTIVO:\n"
             "• STANDARD BD12∩ED12∩O2F12 shadow/control\n"
             f"• 🔥 PRIME A: BD11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX}\n"
@@ -2355,10 +2669,12 @@ class MultiOnlyEngine:
             "• 🔷 QUATERNA PLUS: A2+D ELITE, consenso MAX-MIN Jaccard900 TOP10/11/12 ≥2/3\n"
             "• 💎 QUATERNA ELITE: stessa quaterna scelta da TOP10=TOP11=TOP12\n"
             "• 💶 Q: 1€/colpo, STOP al primo 2/4+, shadow fino H5\n"
+            "• 🎯 SETTINA LIVE: A2+D ELITE, M+6 O2F12 COOC900; 1€/colpo, STOP al primo premio\n"
+            "• 💥 NOVINA LIVE: A2+D ELITE+D WIDE, M+8 O2F12 Jaccard900; 1€/colpo, STOP al primo premio\n"
             "• C legacy shadow; B legacy congelato\n"
             f"• SUPER operativo solo A/A2 se support_sum≥{MULTI_SUPER_GATE}; TRIANGLE OFF shadow\n\n"
             "PAUSATI (state conservato): FOCUS, INCROCIO, CORE e tutti i legacy.\n\n"
-            "/multi — statistiche complete A/A2/D/X + QUATERNA\n"
+            "/multi — statistiche complete A/A2/D/X + QUATERNA + 7/9 LIVE\n"
             "/status — feed + state + statistiche\n"
             "/verificatutto — audit completo\n"
             "/menu — comandi"
@@ -2371,7 +2687,8 @@ class MultiOnlyEngine:
 # ============================================================
 async def reply(update, text):
     if update and update.message:
-        await update.message.reply_text(text)
+        for chunk in split_telegram_text(text):
+            await update.message.reply_text(chunk)
 
 
 async def cmd_multi(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2392,9 +2709,9 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setup_commands(app):
     await app.bot.set_my_commands([
-        BotCommand("multi", "MULTI + PRIME + QUATERNA"),
-        BotCommand("status", "Stato MULTI + QUATERNA + feed/state"),
-        BotCommand("verificatutto", "Audit MULTI/PRIME/QUATERNA"),
+        BotCommand("multi", "MULTI + PRIME + Q + 7/9 LIVE"),
+        BotCommand("status", "Stato MULTI + Q + 7/9 LIVE + state"),
+        BotCommand("verificatutto", "Audit MULTI/PRIME/Q/7/9 LIVE"),
         BotCommand("menu", "Comandi attivi"),
     ])
 
@@ -2412,6 +2729,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         mc.ensure_start()
         mc.ensure_v2071_forward_base()
         mc.ensure_quad_forward_base()
+        mc.ensure_big_forward_base()
         # Nessun segnale sui draw già noti al bootstrap: il prossimo draw sarà il primo forward reale.
         engine.save_state(git=True, force_git=True)
         return {"rows": len(rows), "unseen": 0, "signal": None, "events": [], "bootstrapped": True}
@@ -2434,6 +2752,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     mc.ensure_start()
     mc.ensure_v2071_forward_base()
     mc.ensure_quad_forward_base()
+    mc.ensure_big_forward_base()
     sig = mc.arm() if mc.history else None
     if sig and notify and mc.should_notify_signal(sig):
         msg = mc.signal_text(sig)
@@ -2487,7 +2806,7 @@ async def startup(engine, app):
 
     await engine.tg(
         app,
-        "🚀 MULTI BD12+ED12+O2F12 — v20.8 PRIME + QUATERNA AVVIATO\n\n"
+        "🚀 MULTI BD12+ED12+O2F12 — v20.9 PRIME + QUATERNA + 7/9 LIVE AVVIATO\n\n"
         "🧪 STANDARD: BD12 ∩ ED12 ∩ O2F12 W80, cooldown 5 — SHADOW/control.\n"
         f"🔥 PRIME A: BD rank 11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} — invariato, qualità massima.\n"
         f"💎 PRIME A2 ELITE: BD rank 11-12 + O2 rank {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + ora ≤08:00 oppure >16:00.\n"
@@ -2501,7 +2820,7 @@ async def startup(engine, app):
         "💶 1€/colpo H1-H5, STOP operativo al primo 2/4+; shadow fino H5.\n\n"
         "⏸️ FOCUS / INCROCIO / CORE / ENGINE / SOSIA / legacy: PAUSATI.\n"
         "✅ Il loro state viene conservato ma NON aggiornato.\n"
-        "🚫 Nessun backfill QUATERNA/D/X; A/A2 invariati; C/B legacy preservati.\n\n"
+        "🚫 Nessun backfill QUATERNA/7/9/D/X; A/A2 invariati; C/B legacy preservati.\n\n"
         "Comandi: /multi /status /verificatutto /menu"
     )
 
@@ -2521,7 +2840,7 @@ async def startup_until_ready(engine, app):
 
 async def live_loop(engine, app):
     console_log(
-        f"MULTI PRIME + QUATERNA LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s"
+        f"MULTI PRIME + Q + 7/9 LIVE | poll={LOOP_SEC}s | rotation={BOT_MAX_RUNTIME_SECONDS}s"
     )
     started = time.monotonic()
     last_error = ""
@@ -2540,7 +2859,7 @@ async def live_loop(engine, app):
                 detail = f"{st.get('action')} | {st.get('detail','')}" if isinstance(st, dict) else "save-status assente"
                 await engine.tg(
                     app,
-                    "♻️ MULTI PRIME + QUATERNA v20.8 — ROTAZIONE RUNNER\n"
+                    "♻️ MULTI PRIME + Q + 7/9 v20.9 — ROTAZIONE RUNNER\n"
                     + ("✅ State salvato e pubblicato sul branch.\n" if ok else "⚠️ State NON confermato sul branch.\n")
                     + f"{detail}\nAvvio successivo automatico.",
                 )
@@ -2564,7 +2883,7 @@ async def live_loop(engine, app):
             if txt != last_error or now - last_error_ts >= 900:
                 await engine.tg(
                     app,
-                    "⚠️ MULTI PRIME + QUATERNA — ERRORE\n"
+                    "⚠️ MULTI PRIME + Q + 7/9 — ERRORE\n"
                     + txt
                     + "\nRiprovo automaticamente.",
                 )
@@ -2767,7 +3086,27 @@ def run_self_test():
     rr=dict(mq.history[-1]); rr["key"]="2100-01-01#001"; rr["day"]="2100-01-01"; rr["draw_id"]=1; rr["nums"]=[1,2]+[n for n in range(5,23)]; rr["oro"]=1; rr["doppio_oro"]=2
     evq=mq.advance(rr); assert any(e.get("kind")=="quad_stop" and int(e.get("matches",0))==2 for e in evq)
     assert mq.quad_pending and mq.quad_pending[0].get("operational_stopped") and float(mq.quad_pending[0].get("payout",0))==1.0
-    print("SELF-TEST OK: v20.8 A/A2/D/X invariati + QUATERNA PLUS/ELITE + state guard")
+    # v20.9 SISTEMI 7/9: creazione LIVE + premi/stop + shadow.
+    mb=_selftest_seed_mc(); mb.ensure_v2071_forward_base(); mb.ensure_quad_forward_base(); mb.ensure_big_forward_base()
+    # SETTINA: 0/7 è già premio €1 e deve chiudere operativo a H1.
+    p7={"system_size":7,"numbers":[1,2,3,4,5,6,7],"selector":"COOC900","scores":[],"window":900}
+    mb._arm_big(mb.history[-1]["key"],1,p7,"A2",11,3)
+    r7=dict(mb.history[-1]); r7["key"]="2100-01-02#001"; r7["day"]="2100-01-02"; r7["draw_id"]=1
+    r7["nums"]=[n for n in range(20,40)]; r7["oro"]=20; r7["doppio_oro"]=21
+    e7=mb.advance(r7); assert any(e.get("kind")=="big_stop" and int(e.get("matches",-1))==0 and float(e.get("prize",0))==1.0 for e in e7), e7
+    assert mb.big_pending and mb.big_pending[0].get("operational_stopped") and float(mb.big_pending[0].get("payout",0))==1.0
+    # NOVINA: 7/9 = €400 e stop.
+    p9={"system_size":9,"numbers":[1,2,3,4,5,6,7,8,9],"selector":"JACCARD900_M","scores":[],"window":900}
+    mb._arm_big(mb.history[-1]["key"],1,p9,"DE",3,8)
+    r9=dict(mb.history[-1]); r9["key"]="2100-01-02#002"; r9["day"]="2100-01-02"; r9["draw_id"]=2
+    r9["nums"]=[1,2,3,4,5,6,7]+[n for n in range(20,33)]; r9["oro"]=1; r9["doppio_oro"]=2
+    e9=mb.advance(r9); assert any(e.get("kind")=="big_stop" and int(e.get("matches",-1))==7 and float(e.get("prize",0))==400.0 for e in e9), e9
+    # Dump/load e merge preservano i sistemi.
+    bd=mb.dump(); br=MultiPrimeV1(); assert br.load(bd) and br.big7_signals>=1 and br.big9_signals>=1 and br.big_started_from_key
+    m1={"multichannel_bd12_ed12_o2f12_v1":bd,"processed":[],"multi_state_revision":7}
+    m2={"multichannel_bd12_ed12_o2f12_v1":br.dump(),"processed":[],"multi_state_revision":8}
+    bm,_=_merge_state_data(m1,m2); assert int(bm["multichannel_bd12_ed12_o2f12_v1"].get("big7_signals",0))>=1 and int(bm["multichannel_bd12_ed12_o2f12_v1"].get("big9_signals",0))>=1
+    print("SELF-TEST OK: v20.9 A/A2/D/X + QUATERNA + SETTINA/NOVINA LIVE + state guard")
 
 
 # ============================================================
