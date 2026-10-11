@@ -103,7 +103,7 @@ PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
 PROCESSED_MAX = int(os.getenv("PROCESSED_MAX", "12000"))
 
-CODE_RELEASE = "v20.9.2"
+CODE_RELEASE = "v20.9.2+V27"
 STATE_GUARD_SCHEMA = 2092
 STATE_HISTORY_RECOVERY_COMMITS = max(10, min(120, int(os.getenv("STATE_HISTORY_RECOVERY_COMMITS", "60"))))
 
@@ -2719,6 +2719,147 @@ class MultiPrimeV1:
         return "\n".join(lines)
 
 
+
+# ============================================================
+# V27 ELITE + STANDARD — AUTO WARMUP / SOLO FORWARD
+# Stato aggiuntivo nello stesso JSON HARD LOCK, nessun reset legacy.
+# ============================================================
+V27_HISTORY_REQUIRED = 900
+V27_MIN_HISTORY = 320
+V27_KEY = "v27_elite_standard_forward_v1"
+
+
+def _v27_z(values):
+    mean = sum(values) / len(values)
+    var = sum((v - mean)**2 for v in values) / len(values)
+    return [(v-mean)/(var**0.5 + 1e-8) for v in values]
+
+
+def v27_predict(history):
+    """Replicazione causale V27, posizione t prevista dopo history[-1].
+    Finestra [t-w,t): non include mai il draw futuro. Tie-break stabile numero crescente.
+    """
+    if len(history) < V27_MIN_HISTORY:
+        return None
+    before, last = history[-2], history[-1]
+    group = list(range(70, 80))
+    b0, b1 = set(before['nums']), set(last['nums'])
+    if sum(n in b0 for n in group)-sum(n in b1 for n in group) < 3:
+        return None
+    if sum(n in b0 and n not in b1 for n in range(70,75)) < 3:
+        return None
+    rep = {n for n in range(70,75) if n in b0 and n in b1}
+    elite = rep == {70}
+    standard = 70 not in rep and bool(rep)
+    if not elite and not standard:
+        return None
+
+    def counts(field, window, num):
+        h = history[-window:]
+        return sum(num in set(r['nums']) for r in h) if field == 'base' else sum(int(r['oro']) == num for r in h)
+
+    base80=[counts('base',80,n) for n in group]
+    base320=[counts('base',320,n) for n in group]
+    base20=[counts('base',20,n) for n in group]
+    # Stable sort conservando i numeri minori sui pareggi.
+    top5=sorted(range(10),key=lambda j:(-base80[j], j))[:5]
+    zb=_v27_z(base320)
+    zm=_v27_z([base20[j]-base320[j]*20/320 for j in range(10)])
+    choice=min(top5,key=lambda j:(-(zb[j]+zm[j]),j))
+    num=group[choice]
+    oro1=[counts('oro1',160,n) for n in group]
+    oro1_z=_v27_z(oro1)[choice]
+    if standard and oro1_z < 0.5:
+        return None
+    return {'number':num,'tier':'ELITE_70' if elite else 'STANDARD_ORO1',
+            'oro1_z':round(oro1_z,5),'origin_key':last['key']}
+
+
+class V27Tracker:
+    def __init__(self, data=None):
+        d = data if isinstance(data,dict) else {}
+        self.start_key = str(d.get('start_key') or '')
+        self.last_evaluated_origin = str(d.get('last_evaluated_origin') or '')
+        self.pending = d.get('pending') if isinstance(d.get('pending'),dict) else None
+        self.signals = list(d.get('signals',[]))[-1500:]
+        self.closed = list(d.get('closed',[]))[-1500:]
+
+    def dump(self):
+        return {'start_key':self.start_key,'last_evaluated_origin':self.last_evaluated_origin,
+                'pending':self.pending,'signals':self.signals[-1500:],
+                'closed':self.closed[-1500:]}
+
+    def refresh(self, history):
+        """Chiude pending usando H1 effettivo; arma soltanto sull'ultimo draw noto.
+        Non genera backfill V27. Ritorna messaggi nuovi.
+        """
+        if not history:
+            return []
+        out=[]; latest=str(history[-1]['key'])
+        if not self.start_key:
+            self.start_key=latest
+        if self.pending:
+            origin=self.pending['origin_key']
+            pos=next((i for i,r in enumerate(history) if r['key']==origin),None)
+            if pos is not None and pos+1 < len(history):
+                r=history[pos+1]
+                w=int(self.pending['number']) in set(r['nums'])
+                q=dict(self.pending, result_key=r['key'], hit=bool(w))
+                if not any(x.get('origin_key')==origin for x in self.closed):
+                    self.closed.append(q)
+                    out.append('✅ V27 HIT H1' if w else '❌ V27 MISS H1')
+                    out[-1] += f" | {q['tier']} | {q['number']} | origine {origin} | estrazione {r['key']}"
+                self.pending=None
+            elif pos is None and order_key(latest) and order_key(origin) and order_key(latest)>order_key(origin):
+                # Storico disconnesso: non inventare esito e non sovrascrivere pending.
+                return out
+        if self.last_evaluated_origin == latest or self.pending:
+            return out
+        # Unico armamento dopo ultimo record disponibile; niente segnali storici.
+        self.last_evaluated_origin=latest
+        pred=v27_predict(history)
+        if pred:
+            self.pending=pred
+            if not any(x.get('origin_key')==latest for x in self.signals):
+                self.signals.append(pred)
+                out.append(f"🎯 V27 AMBATA H1 — {pred['tier']}\n"
+                           f"Numero: {pred['number']}\nOrigine: {latest}\n"
+                           f"Oro1 z: {pred['oro1_z']:+.3f}\n"
+                           "Giocata teorica €1, solo colpo successivo. Nessuna martingala.")
+        return out
+
+    def report(self, history):
+        n=len(self.closed); hit=sum(bool(x.get('hit')) for x in self.closed)
+        miss=n-hit; net=3*hit-n; streak=mx=0; balance=peak=dd=0
+        for x in self.closed:
+            won=bool(x.get('hit')); streak=0 if won else streak+1; mx=max(mx,streak)
+            balance+=(3 if won else 0)-1
+            peak=max(peak,balance); dd=max(dd,peak-balance)
+        return (f"🎯 V27 ELITE 70 + STANDARD ORO1\n"
+                f"Warmup: {len(history)}/{V27_HISTORY_REQUIRED} (minimo {V27_MIN_HISTORY})\n"
+                f"Inizio forward: {self.start_key or '-'}\n"
+                f"Segnali: {len(self.signals)} | chiusi {n} | HIT {hit} | MISS {miss}\n"
+                f"H1 {safe_pct(hit,n):.2f}% | ROI {safe_pct(3*hit,n):.2f}% | netto €{net:+}\n"
+                f"Max MISS {mx} | max DD €{dd}\n"
+                f"Pending: {self.pending['number'] if self.pending else '-'} | Ultima origine controllata: {self.last_evaluated_origin or '-'}\n"
+                "Risultati solo forward; nessun backfill dei test storici.")
+
+
+async def v27_notify_latest(engine, app, notify=True):
+    if len(engine.multichannel.history) < V27_MIN_HISTORY:
+        console_log(f"V27 WARMUP INCOMPLETO {len(engine.multichannel.history)}/{V27_MIN_HISTORY}")
+        return False
+    messages=engine.v27.refresh(engine.multichannel.history)
+    if notify:
+        for msg in messages:
+            await engine.tg(app,msg)
+    return bool(messages)
+
+
+async def cmd_v27(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    en=context.application.bot_data['engine']
+    await reply(update,en.v27.report(en.multichannel.history))
+
 # ============================================================
 # STATE WRAPPER — preserva TUTTE le chiavi legacy + anti-regressione runner
 # ============================================================
@@ -2729,6 +2870,7 @@ class MultiOnlyEngine:
         self.processed_set = set()
         self.last_draw_key = None
         self.multichannel = MultiPrimeV1()
+        self.v27 = V27Tracker()
         self.state_revision = 0
         self.state_load_info = {"loaded": False, "path": None, "reason": "not-run", "source": "-"}
         self.load_state()
@@ -2784,6 +2926,7 @@ class MultiOnlyEngine:
             local_path = STATE_FILE
 
             self.raw_state = data
+            self.v27 = V27Tracker(data.get(V27_KEY))
             self.state_revision = max(0, int(data.get("multi_state_revision", 0) or 0))
             self.processed = [str(x) for x in data.get("processed", []) if isinstance(x, str)][-PROCESSED_MAX:]
             self.processed_set = set(self.processed)
@@ -2829,6 +2972,7 @@ class MultiOnlyEngine:
         data["processed"] = self.processed[-PROCESSED_MAX:]
         data["last_draw_key"] = self.last_draw_key
         data["multichannel_bd12_ed12_o2f12_v1"] = self.multichannel.dump()
+        data[V27_KEY] = self.v27.dump()
         data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_v20.9.2_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
 
@@ -2855,6 +2999,7 @@ class MultiOnlyEngine:
         data["saved_at"] = now_dt().isoformat(timespec="seconds")
         data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_v20.9.2_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
+        data[V27_KEY] = self.v27.dump()  # il merge legacy non deve cancellare il ramo nuovo
 
         # Ricarica il merge prima della scrittura per mantenere record/pending monotoni.
         self.multichannel.load(data.get("multichannel_bd12_ed12_o2f12_v1"))
@@ -2966,6 +3111,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setup_commands(app):
     await app.bot.set_my_commands([
         BotCommand("multi", "MULTI + PRIME + Q + 7/9 LIVE"),
+        BotCommand("v27", "Stato V27 ELITE + STANDARD"),
         BotCommand("status", "Stato MULTI + Q + 7/9 LIVE + state"),
         BotCommand("verificatutto", "Audit MULTI/PRIME/Q/7/9 LIVE"),
         BotCommand("menu", "Comandi attivi"),
@@ -2987,7 +3133,8 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         mc.ensure_quad_forward_base()
         mc.ensure_big_forward_base()
         mc.ensure_big7_fast_forward_base()
-        # Nessun segnale sui draw già noti al bootstrap: il prossimo draw sarà il primo forward reale.
+        # Warmup bootstrap: arma solo una previsione sulla prossima estrazione.
+        await v27_notify_latest(engine, app, notify=notify)
         engine.save_state(git=True, force_git=True)
         return {"rows": len(rows), "unseen": 0, "signal": None, "events": [], "bootstrapped": True}
 
@@ -3012,12 +3159,13 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     mc.ensure_big_forward_base()
     mc.ensure_big7_fast_forward_base()
     sig = mc.arm() if mc.history else None
+    v27_updated = await v27_notify_latest(engine, app, notify=notify)
     if sig and notify and mc.should_notify_signal(sig):
         msg = mc.signal_text(sig)
         if msg:
             await engine.tg(app, msg)
 
-    if unseen or sig or events:
+    if unseen or sig or events or v27_updated:
         engine.last_draw_key = mc.history[-1]["key"] if mc.history else engine.last_draw_key
         engine.save_state(git=True)
 
@@ -3061,12 +3209,13 @@ async def startup(engine, app):
 
     # Congela SOLO ora il segnale sulla più recente estrazione disponibile.
     sig = mc.arm() if mc.history else None
+    await v27_notify_latest(engine, app, notify=True)
     engine.last_draw_key = mc.history[-1]["key"] if mc.history else engine.last_draw_key
     engine.save_state(git=True, force_git=True)
 
     await engine.tg(
         app,
-        "🚀 MULTI BD12+ED12+O2F12 — v20.9.2 PRIME + QUATERNA + SETTINA PROFIT FAST + NOVINA — HARD LOCK AVVIATO\n\n"
+        "🚀 MULTI BD12+ED12+O2F12 — v20.9.2 + V27 AUTO WARMUP PRIME + QUATERNA + SETTINA PROFIT FAST + NOVINA — HARD LOCK AVVIATO\n\n"
         "🧪 STANDARD: BD12 ∩ ED12 ∩ O2F12 W80, cooldown 5 — SHADOW/control.\n"
         f"🔥 PRIME A: BD rank 11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} — invariato, qualità massima.\n"
         f"💎 PRIME A2 ELITE: BD rank 11-12 + O2 rank {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + ora ≤08:00 oppure >16:00.\n"
@@ -3080,11 +3229,12 @@ async def startup(engine, app):
         "🔷 QUATERNA PLUS/ELITE: A2+D ELITE, MAX-MIN Jaccard900, consenso TOP10/11/12.\n"
         "🎯 SETTINA PROFIT FAST: A2 O2rank=3+support6≥7 oppure DE BDrank1-3+O2rank10-12; H1-H2 operativo, H3-H5 shadow.\n"
         "💥 NOVINA LIVE invariata: A2+D ELITE/WIDE, Jaccard900_M, H1-H5.\n"
+        "🎯 V27 ELITE+STANDARD LIVE forward: AUTO WARMUP 900, /v27 per il report.\n"
         "💶 QUATERNA: 1€/colpo H1-H5, STOP al primo 2/4+; shadow fino H5.\n\n"
         "⏸️ FOCUS / INCROCIO / CORE / ENGINE / SOSIA / legacy: PAUSATI.\n"
         "✅ Il loro state viene conservato ma NON aggiornato.\n"
         "🚫 Nessun backfill QUATERNA/7/9/D/X; A/A2 invariati; C/B legacy preservati.\n\n"
-        "Comandi: /multi /status /verificatutto /menu"
+        "Comandi: /multi /v27 /status /verificatutto /menu"
     )
 
     if sig and mc.should_notify_signal(sig):
@@ -3403,6 +3553,7 @@ async def main():
     app.bot_data["engine"] = engine
 
     app.add_handler(CommandHandler("multi", cmd_multi))
+    app.add_handler(CommandHandler("v27", cmd_v27))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("verificatutto", cmd_verificatutto))
     app.add_handler(CommandHandler("menu", cmd_menu))
