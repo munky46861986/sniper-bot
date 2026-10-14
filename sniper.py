@@ -103,7 +103,7 @@ PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
 PROCESSED_MAX = int(os.getenv("PROCESSED_MAX", "12000"))
 
-CODE_RELEASE = "v20.9.2+V27+V28+V38+V52-LIVE"
+CODE_RELEASE = "v20.9.2+V27+V28+V38+V52-MULTI-LIVE"
 STATE_GUARD_SCHEMA = 2092
 STATE_HISTORY_RECOVERY_COMMITS = max(10, min(120, int(os.getenv("STATE_HISTORY_RECOVERY_COMMITS", "60"))))
 
@@ -2787,7 +2787,7 @@ class MultiPrimeV1:
 
 
 # ============================================================
-# V52 COMBINATA — LIVE, UN SOLO PRIMO SEGNALE GIORNALIERO
+# V52 MULTI — LIVE, TUTTI I SEGNALI DELLE 5 COPPIE, SENZA LIMITE GIORNALIERO
 # Regole V51/V52 bloccate, nessuna ricalibrazione, nessun backfill.
 # ============================================================
 class V52LiveTracker:
@@ -2805,7 +2805,7 @@ class V52LiveTracker:
             'last_evaluated_origin': self.last_evaluated_origin,
             'plays': self.plays[-12000:],
             'used_days': sorted(self.used_days)[-12000:],
-            'rules_version': 'V52_COMBINATA_FIXED_5_2025',
+            'rules_version': 'V52_MULTI_FIXED_5_2025',
         }
 
     def initialize(self, history):
@@ -2866,11 +2866,9 @@ class V52LiveTracker:
         if any(n in set(rows[-1].get('nums', [])) for n in rows[-1]['extra']): return None
         oro = int(rows[0].get('oro') or 0)
         extra = set(int(n) for n in rows[-1]['extra'])
-        # A parita' di concorso la priorita' e' deterministica: ordine V52.
-        for pair, spia_oro, spia_extra in V52_RULES:
-            if oro == spia_oro and spia_extra in extra:
-                return pair, spia_oro, spia_extra
-        return None
+        # Tutte le coppie qualificate nello stesso concorso: nessun taglio al primo.
+        return [(pair, spia_oro, spia_extra) for pair, spia_oro, spia_extra in V52_RULES
+                if oro == spia_oro and spia_extra in extra]
 
     def close_with_draw(self, newest, previous, previous_time=None):
         out = []
@@ -2886,16 +2884,16 @@ class V52LiveTracker:
                     row.update(status='CLOSED', hit=win, result_key=newest_key,
                                prize=V52_PRIZE_H1 if win else 0.0)
                     symbol = '✅ HIT' if win else '❌ MISS'
-                    out.append(f"{symbol} — V52 COMBINATA LIVE — AMBO H1\n"
+                    out.append(f"{symbol} — V52 MULTI LIVE — AMBO H1\n"
                                f"{row['pair'][0]:02d}-{row['pair'][1]:02d} | concorso {newest_key}\n"
                                f"{'Premio simulato €14 | netto +€13' if win else 'Netto simulato -€1'}\n"
                                "Puntata di riferimento €1. Nessuna giocata automatica.")
                 else:
                     row.update(status='MISSING', hit=None, result_key=newest_key, prize=0.0)
-                    out.append(f"⚠️ V52 H1 NON VERIFICABILE {row['pair'][0]:02d}-{row['pair'][1]:02d} | {expected}; manca una continuita' certa del feed.")
+                    out.append(f"⚠️ V52 MULTI H1 NON VERIFICABILE {row['pair'][0]:02d}-{row['pair'][1]:02d} | {expected}; manca una continuita' certa del feed.")
             elif order_key(newest_key) and order_key(expected) and order_key(newest_key) > order_key(expected):
                 row.update(status='MISSING', hit=None, result_key=newest_key, prize=0.0)
-                out.append(f"⚠️ V52 H1 NON VERIFICABILE {row['pair'][0]:02d}-{row['pair'][1]:02d} | estrazione attesa {expected} non presente nel feed.")
+                out.append(f"⚠️ V52 MULTI H1 NON VERIFICABILE {row['pair'][0]:02d}-{row['pair'][1]:02d} | estrazione attesa {expected} non presente nel feed.")
         return out
 
     def arm(self, history, clock=None, check_freshness=True):
@@ -2906,36 +2904,41 @@ class V52LiveTracker:
         if not order_key(origin) or not order_key(self.start_key): return []
         if order_key(origin) <= order_key(self.start_key): return []
         if self.last_evaluated_origin and order_key(self.last_evaluated_origin) and order_key(origin) <= order_key(self.last_evaluated_origin): return []
-        # Marca come esaminata l'origine, anche se non emette un segnale.
+        # Nessuna emissione retroattiva dopo riavvio / catch-up: si valuta soltanto l'origine piu' recente.
         self.last_evaluated_origin = origin
         target_key = self._next_expected_key(current)
         if target_key is None: return []
-        target_day = str(target_key).split('#')[0]
-        if target_day in self.used_days: return []
-        candidate = self._eligible(history)
-        if candidate is None: return []
-        # Non armare segnali tardivi: il concorso da giocare deve ancora arrivare.
+        candidates = self._eligible(history)
+        if not candidates: return []
+        # Il concorso previsto deve essere ancora futuro.
         if check_freshness:
             ts = self._draw_stamp(current)
             now = clock or now_dt()
             if ts is None or not (0 <= (now-ts).total_seconds() < 290): return []
-        pair, oro, extra = candidate
-        if any(r.get('origin_key') == origin for r in self.plays): return []
-        rec = {'id':f'V52|{origin}', 'day':target_day, 'origin_key':origin,
-               'target_key':target_key, 'pair':list(pair), 'oro1_t4':oro,
-               'extra_t1':extra, 'status':'PENDING', 'result_key':None,
-               'hit':None, 'stake':V52_STAKE_H1, 'prize':0.0,
-               'created_at':now_dt().isoformat(timespec='seconds')}
-        self.plays.append(rec)
-        self.plays = self.plays[-12000:]
-        self.used_days.add(target_day)
-        return [f"🚀 V52 COMBINATA — AMBO LIVE H1\n"
+        target_day = str(target_key).split('#')[0]
+        existing = {(str(r.get('origin_key')), tuple(r.get('pair') or [])) for r in self.plays}
+        messages = []
+        for pair, oro, extra in candidates:
+            if (origin, tuple(pair)) in existing: continue
+            rec = {'id':f'V52|{origin}|{pair[0]:02d}-{pair[1]:02d}',
+                   'day':target_day, 'origin_key':origin, 'target_key':target_key,
+                   'pair':list(pair), 'oro1_t4':oro, 'extra_t1':extra,
+                   'status':'PENDING', 'result_key':None, 'hit':None,
+                   'stake':V52_STAKE_H1, 'prize':0.0,
+                   'created_at':now_dt().isoformat(timespec='seconds')}
+            self.plays.append(rec)
+            existing.add((origin, tuple(pair)))
+            self.used_days.add(target_day)  # solo compatibilita' state precedente
+            messages.append(
+                f"🚀 V52 MULTI — AMBO LIVE H1\n"
                 f"🎯 AMBO: {pair[0]:02d}-{pair[1]:02d}\n"
-                f"Spie confermate: Oro1 {oro:02d} a t−4 + Extra {extra:02d} a t−1\n"
+                f"Spie: Oro1 {oro:02d} a t−4 + Extra {extra:02d} a t−1\n"
                 f"Ultimo concorso noto: {origin}\n"
-                f"✅ PREVISIONE PER IL PROSSIMO CONCORSO: {target_key}\n"
-                "1 solo ambo al giorno | €1 indicativo | H1 soltanto | nessuna progressione.\n"
-                "⚠️ Segnale statistico sperimentale; NON e' una vincita garantita."]
+                f"✅ PROSSIMO CONCORSO: {target_key}\n"
+                "TUTTI i segnali validi delle 5 coppie | €1 indicativo ciascuno | H1 | nessuna progressione.\n"
+                "⚠️ Metodo sperimentale; nessuna vincita garantita.")
+        self.plays = self.plays[-12000:]
+        return messages
 
     def report(self, history):
         closed = [r for r in self.plays if r.get('status') == 'CLOSED']
@@ -2946,17 +2949,27 @@ class V52LiveTracker:
         prize = sum(float(r.get('prize') or 0) for r in closed)
         last = self.plays[-1] if self.plays else {}
         today = str(history[-1]['day']) if history else now_dt().date().isoformat()
-        return ('🚀 V52 COMBINATA — LIVE H1\n'
-                f"Stato: {'ATTIVO' if V52_LIVE_ENABLED else 'SPENTO'} | Warmup {len(history)}/4\n"
-                'Regola: primo cronologico fra 80-86,38-39,60-61,02-09,71-78\n'
-                f"Forward dal: {self.start_key or '-'}\n"
-                f"Totale {len(self.plays)} | chiusi {len(closed)} | HIT {hits}/{len(closed)} "
-                f"({safe_pct(hits,len(closed)):.2f}%) | pending {len(pending)} | MISSING {missing}\n"
-                f"Saldo SOLO chiusi, €1/H1: €{prize-stakes:+.0f}\n"
-                f"Oggi ({today}): {'segnale gia generato' if today in self.used_days else 'in attesa'}\n"
-                f"Ultimo: {last.get('origin_key','-')} -> {last.get('target_key','-')} | "
-                f"{('-'.join(f'{n:02d}' for n in last['pair'])) if last.get('pair') else '-'} | {last.get('status','-')}\n"
-                '⚠️ Statistiche 2025 retrospettive; nessuna schedina acquistata automaticamente.')
+        today_rows = [r for r in self.plays if r.get('day') == today]
+        lines = [
+            '🚀 V52 MULTI — TUTTI I SEGNALI LIVE H1',
+            f"Stato: {'ATTIVO' if V52_LIVE_ENABLED else 'SPENTO'} | Warmup {len(history)}/900",
+            'Regola: ogni trigger di 80-86, 38-39, 60-61, 02-09, 71-78; anche ripetizioni nello stesso giorno.',
+            f"Forward dal: {self.start_key or '-'}",
+            f"Totale {len(self.plays)} | chiusi {len(closed)} | HIT {hits}/{len(closed)} "
+            f"({safe_pct(hits,len(closed)):.2f}%) | pending {len(pending)} | MISSING {missing}",
+            f"Saldo SOLO chiusi, €1/H1 ciascuno: €{prize-stakes:+.0f}",
+            f"Oggi ({today}): {len(today_rows)} segnali V52",
+        ]
+        for pair, _, _ in V52_RULES:
+            rows = [r for r in closed if tuple(r.get('pair',[])) == tuple(pair)]
+            wins = sum(r.get('hit') is True for r in rows)
+            lines.append(f"• {pair[0]:02d}-{pair[1]:02d}: {wins}/{len(rows)} HIT | €{14*wins-len(rows):+d}")
+        lines += [
+            f"Ultimo: {last.get('origin_key','-')} -> {last.get('target_key','-')} | "
+            f"{('-'.join(f'{n:02d}' for n in last['pair'])) if last.get('pair') else '-'} | {last.get('status','-')}",
+            '⚠️ Statistiche 2025 retrospettive; nessuna schedina acquistata automaticamente.',
+        ]
+        return '\n'.join(lines)
 
 
 def _merge_v52_state(a,b):
@@ -2968,7 +2981,8 @@ def _merge_v52_state(a,b):
     for src in (aa,bb):
         for rec in src.get('plays') or []:
             if not isinstance(rec,dict) or not rec.get('origin_key'): continue
-            identity = str(rec['origin_key'])
+            # Merge compatibile anche con i record della V52 precedente (ID solo origine).
+            identity = (str(rec['origin_key']), tuple(rec.get('pair') or []))
             old = best.get(identity)
             if old is None or ranks.get(str(rec.get('status')), -1) > ranks.get(str(old.get('status')),-1):
                 best[identity] = dict(rec)
@@ -2979,7 +2993,7 @@ def _merge_v52_state(a,b):
         'start_key':_key_min(aa.get('start_key'),bb.get('start_key')) or aa.get('start_key') or bb.get('start_key') or '',
         'last_evaluated_origin':_key_max(aa.get('last_evaluated_origin'),bb.get('last_evaluated_origin')) or '',
         'plays':plays, 'used_days':sorted(days)[-12000:],
-        'rules_version':'V52_COMBINATA_FIXED_5_2025',
+        'rules_version':'V52_MULTI_FIXED_5_2025',
     }
 
 
@@ -3004,7 +3018,7 @@ V38_METHODS = ("A_BASE2", "A2_BASE1", "A2_BASE2", "V28_ELITE", "V28_STANDARD")
 V38_CAPS = {"CONTROL": 6, "ACTIVE": 8}
 V38_NOTIFY = os.getenv("V38_NOTIFY", "1").strip().lower() not in {"0", "no", "false", "off"}
 
-# V52 COMBINATA — LIVE Telegram (mai acquisto automatico di schedine).
+# V52 MULTI — LIVE Telegram (mai acquisto automatico di schedine).
 # Regole congelate, deriva da ricerca retrospettiva 2025: NON vantaggio dimostrato.
 V52_KEY = "v52_combinata_primo_cronologico_live_forward_v1"
 V52_LIVE_ENABLED = os.getenv("V52_LIVE_ENABLED", "1").strip().lower() not in {"0", "no", "false", "off"}
@@ -3594,7 +3608,7 @@ class MultiOnlyEngine:
         data[V28_KEY] = self.v28.dump()
         data[V38_KEY] = self.v38.dump()
         data[V52_KEY] = self.v52.dump()
-        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_LIVE_v20.9.2_HARD_LOCK"
+        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_MULTI_LIVE_v20.9.2_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
 
         # HARD LOCK 3/3 — il backup già presente è il pavimento locale.
@@ -3618,7 +3632,7 @@ class MultiOnlyEngine:
         self.state_revision = max(int(self.state_revision), remote_rev) + 1
         data["multi_state_revision"] = int(self.state_revision)
         data["saved_at"] = now_dt().isoformat(timespec="seconds")
-        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_LIVE_v20.9.2_HARD_LOCK"
+        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_MULTI_LIVE_v20.9.2_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
         # Il ramo forward viene fuso anche se un runner remoto porta uno state vecchio.
         data[V27_KEY] = _merge_forward_tracker_state(data.get(V27_KEY), self.v27.dump())
@@ -3659,7 +3673,7 @@ class MultiOnlyEngine:
     def status_text(self):
         mc = self.multichannel
         return (
-            "📡 STATUS v20.9.2 MULTI PRIME + QUATERNA + SETTINA FAST + NOVINA + V52 LIVE — HARD LOCK\n\n"
+            "📡 STATUS v20.9.2 MULTI PRIME + QUATERNA + SETTINA FAST + NOVINA + V52 MULTI LIVE — HARD LOCK\n\n"
             f"Ultimo MULTI: {mc.history[-1]['key'] if mc.history else '-'}\n"
             f"State: {'OK' if self.state_load_info.get('loaded') else 'NUOVO'} | {self.state_load_info.get('reason')}\n"
             f"State source: {self.state_load_info.get('source','-')} | ff {self.state_load_info.get('ff','-')} | rev {self.state_revision}\n"
@@ -3667,7 +3681,7 @@ class MultiOnlyEngine:
             f"HARD LOCK: {'ON' if self.state_load_info.get('hardlock_backup_ok') else 'WARN'} | anchor PRE-GIT {self.state_load_info.get('hardlock_anchor_key') or '-'} | final {self.state_load_info.get('hardlock_final_key') or '-'} | regressioni bloccate {len(self.state_load_info.get('hardlock_blocked') or [])}\n"
             f"History MULTI: {len(mc.history)}/{MULTI_HISTORY_MAX}\n"
             f"V27: {len(self.v27.signals)} segnali, {len(self.v27.closed)} chiusi | V28: {len(self.v28.signals)} segnali, {len(self.v28.closed)} chiusi\n"
-            f"V52 COMBINATA LIVE: {len(self.v52.plays)} segnali | /v52\n"
+            f"V52 MULTI LIVE: {len(self.v52.plays)} segnali | /v52\n"
             f"V38 DAILY SHADOW: CONTROL {len([r for r in self.v38.plays if r.get('policy')=='CONTROL'])} coppie | ACTIVE {len([r for r in self.v38.plays if r.get('policy')=='ACTIVE'])} coppie | /v38\n"
             f"v20.7.1 forward base: {mc.v2071_started_from_key or '-'} | scan da fix {max(0, mc.scans-mc.v2071_scans_base)} | STD da fix {max(0, mc.signals-mc.v2071_signals_base)}\n"
             f"PRIME A start: {mc.prime_a_started_from_key or '-'}\n"
@@ -3707,7 +3721,7 @@ class MultiOnlyEngine:
             "• 💥 NOVINA LIVE: A2+D ELITE+D WIDE, M+8 O2F12 Jaccard900; 1€/colpo, STOP al primo premio\n"
             "• 🎯 V27 ELITE+STANDARD: ambata H1, warmup 900\n"
             "• 🔗 V28 ELITE+STANDARD: ambo H1, partner momentum Base20-320, €1/ambo\n"
-            "• 🚀 V52 COMBINATA LIVE: primo cronologico 80-86/38-39/60-61/02-09/71-78, max 1 al giorno H1\n"
+            "• 🚀 V52 MULTI LIVE: tutti i segnali 80-86/38-39/60-61/02-09/71-78, senza limite al giorno, H1\n"
             "• 🎯 V38 DAILY SHADOW: CONTROL max6 / ACTIVE max8, A FAST+A2+V28, H1 e saldo giornaliero\n"
             "• C legacy shadow; B legacy congelato\n"
             f"• SUPER operativo solo A/A2 se support_sum≥{MULTI_SUPER_GATE}; TRIANGLE OFF shadow\n\n"
@@ -3716,7 +3730,7 @@ class MultiOnlyEngine:
             "/v27 — report ambata ELITE e STANDARD\n"
             "/v28 — report ambo H1 ELITE e STANDARD\n"
             "/v38 — simulazione giornaliera ambi CONTROL/ACTIVE\n"
-            "/v52 — V52 COMBINATA LIVE: segnali/HIT/MISS/saldo\n"
+            "/v52 — V52 MULTI LIVE: segnali/HIT/MISS/saldo\n"
             "/status — feed + state + statistiche\n"
             "/verificatutto — audit completo\n"
             "/menu — comandi"
@@ -3760,7 +3774,7 @@ async def setup_commands(app):
         BotCommand("v27", "Stato V27 ELITE + STANDARD"),
         BotCommand("v28", "Stato V28 AMBO H1"),
         BotCommand("v38", "Simulazioni V38 CONTROL/ACTIVE"),
-        BotCommand("v52", "V52 COMBINATA LIVE H1"),
+        BotCommand("v52", "V52 MULTI LIVE H1"),
         BotCommand("status", "Stato MULTI + Q + 7/9 LIVE + state"),
         BotCommand("verificatutto", "Audit MULTI/PRIME/Q/7/9 LIVE"),
         BotCommand("menu", "Comandi attivi"),
@@ -3828,7 +3842,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     v38_messages = engine.v38.arm(mc.history, mc, engine.v28)
     v52_messages = engine.v52.arm(mc.history)
     if notify and V52_LIVE_NOTIFY and v52_messages:
-        # Esito di arm salvato PRIMA dell'invio: massimo un segnale in caso di crash/rotazione.
+        # Esito di arm salvato PRIMA dell'invio: anti-duplicato per (origine, ambo) in caso di crash/rotazione.
         engine.save_state(git=False)
         await engine.tg(app, '\n\n'.join(v52_messages))
     if notify and V38_NOTIFY and v38_messages:
@@ -3913,7 +3927,7 @@ async def startup(engine, app):
         "💥 NOVINA LIVE invariata: A2+D ELITE/WIDE, Jaccard900_M, H1-H5.\n"
         "🎯 V27 ELITE+STANDARD AMBATA H1 LIVE: AUTO WARMUP 900, /v27.\n"
         "🔗 V28 AMBO H1 LIVE: M V27 + partner momentum 70-79, €1/ambo, ELITE e STANDARD, /v28.\n"
-        "🚀 V52 COMBINATA LIVE: max 1 ambo/giorno, primo cronologico fra 5 regole fisse, H1, /v52.\n"
+        "🚀 V52 MULTI LIVE: tutti gli ambi delle 5 regole, ripetizioni comprese, H1, /v52.\n"
         "🎯 V38 DAILY SHADOW: PRIME A FAST + A2 BASE1/BASE2 + V28, CONTROL max6, ACTIVE max8, /v38.\n"
         "💶 QUATERNA: 1€/colpo H1-H5, STOP al primo 2/4+; shadow fino H5.\n\n"
         "⏸️ FOCUS / INCROCIO / CORE / ENGINE / SOSIA / legacy: PAUSATI.\n"
@@ -4252,7 +4266,7 @@ def run_self_test():
     merged=_merge_v38_state(older,tv.dump())
     assert len(merged['plays'])==6 and all(x['status']=='CLOSED' for x in merged['plays'])
     assert tv._day_stats('ACTIVE','2100-01-01')[2]>0
-    # --- V52 LIVE: nessun backfill, doppia spia, un segnale/giorno, H1 e merge ---
+    # --- V52 MULTI LIVE: nessun backfill, doppia spia, ripetizioni nello stesso giorno, H1 e merge ---
     seed = []
     for i in range(901):
         day = (datetime(2025, 1, 1) + timedelta(days=i//288)).strftime('%Y-%m-%d')
@@ -4276,7 +4290,20 @@ def run_self_test():
     merged=_merge_v52_state(wrong,older)
     assert len(merged['plays'])==1 and merged['plays'][0]['status']=='CLOSED'
     assert not V52LiveTracker(merged).arm(seed[:900],check_freshness=False)
-    print("SELF-TEST OK: v20.9.2 + V27 + V28 + V38 + V52 LIVE + HARD LOCK")
+    # Seconda previsione della stessa coppia nello STESSO giorno, senza limite giornaliero.
+    # Dopo il draw 900, il draw 901 puo' innescare un nuovo segnale con oro t-4 nel draw 897.
+    seed[897]['oro'] = 33
+    # Trigger consecutivo sul draw 900: t-4 e' draw 897, che ora e' 33.
+    follow = tracker.arm(seed[:901], check_freshness=False)
+    assert len(follow) == 1 and '80-86' in follow[0], follow
+    assert len(tracker.plays) == 2 and len({r['origin_key'] for r in tracker.plays}) == 2
+    assert tracker.plays[0]['day'] == tracker.plays[1]['day']
+    assert not tracker.arm(seed[:901], check_freshness=False)
+    # Due coppie nello stesso concorso devono sopravvivere al merge e chiudersi entrambe.
+    shadow = [dict(tracker.plays[1], id='V52|'+tracker.plays[1]['origin_key']+'|38-39', pair=[38,39])]
+    both = _merge_v52_state(tracker.dump(), {'plays': shadow})
+    assert len(both['plays']) == 3 and len({(r['origin_key'],tuple(r['pair'])) for r in both['plays']}) == 3
+    print("SELF-TEST OK: v20.9.2 + V27 + V28 + V38 + V52 MULTI LIVE + HARD LOCK")
 
 
 # ============================================================
