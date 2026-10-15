@@ -103,7 +103,7 @@ PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
 PROCESSED_MAX = int(os.getenv("PROCESSED_MAX", "12000"))
 
-CODE_RELEASE = "v20.9.2+V27+V28+V38+V52-MULTI-LIVE"
+CODE_RELEASE = "v20.9.2+V27+V28+V38+V52-MULTI+V55-INCROCI-LIVE"
 STATE_GUARD_SCHEMA = 2092
 STATE_HISTORY_RECOVERY_COMMITS = max(10, min(120, int(os.getenv("STATE_HISTORY_RECOVERY_COMMITS", "60"))))
 
@@ -439,7 +439,9 @@ def git_commit_state_if_needed(force=False):
         return {"ok": True, "action": "no-change", "detail": "state invariato"}
 
     msg = f"state: MULTI PRIME HARD LOCK {now_txt()}"
-    c = _run_git(["commit", "-m", msg, "--", *rels])
+    c = _run_git(["-c", "user.name=github-actions[bot]",
+                  "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
+                  "commit", "-m", msg, "--", *rels])
     if c.returncode != 0:
         return {"ok": False, "action": "commit-fail", "detail": c.stderr.strip()[-500:]}
 
@@ -475,7 +477,9 @@ def git_commit_state_if_needed(force=False):
         if d2.returncode == 0:
             _LAST_GIT_COMMIT_TS = now
             return {"ok": True, "action": "remote-already-current", "detail": "state HARD LOCK gia presente sul remoto"}
-        c2 = _run_git(["commit", "-m", msg + " [retry]", "--", rel, hard_rel])
+        c2 = _run_git(["-c", "user.name=github-actions[bot]",
+                       "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
+                       "commit", "-m", msg + " [retry]", "--", rel, hard_rel])
         if c2.returncode != 0:
             return {"ok": False, "action": "retry-commit-fail", "detail": c2.stderr.strip()[-500:]}
         p2 = _run_git(["push", "origin", f"HEAD:{branch}"], timeout=45)
@@ -884,6 +888,9 @@ def _merge_state_data(local_data, remote_data):
     merged_v52 = _merge_v52_state(local_data.get(V52_KEY),remote_data.get(V52_KEY))
     if merged_v52 is not None:
         base[V52_KEY] = merged_v52
+    merged_v55 = _merge_v55_state(local_data.get(V55_KEY), remote_data.get(V55_KEY))
+    if merged_v55 is not None:
+        base[V55_KEY] = merged_v55
     vals=[]; seen=set()
     for x in list(local_data.get("processed") or [])+list(remote_data.get("processed") or []):
         if isinstance(x,str) and x not in seen: seen.add(x); vals.append(x)
@@ -2998,6 +3005,241 @@ def _merge_v52_state(a,b):
 
 
 # ============================================================
+# V55 INCROCI SELETTIVI — LIVE H1
+# V52 resta LIVE; V55 produce UN SOLO incrocio per target.
+# Regola: seconda coppia V52 entro 12 estrazioni dal precedente
+# segnale V52 di un'ALTRA coppia, il cui H1 aveva una sola ambata.
+# Scegli il partner della nuova coppia che massimizza la somma
+# delle frequenze Base nelle 80 estrazioni PRIMA del nuovo H1.
+# Nessun backfill, nessuna progressione, nessuna scommessa reale.
+# ============================================================
+class V55LiveTracker:
+    def __init__(self, data=None):
+        d = data if isinstance(data, dict) else {}
+        self.start_key = str(d.get('start_key') or '')
+        self.last_evaluated_origin = str(d.get('last_evaluated_origin') or '')
+        self.plays = [dict(r) for r in d.get('plays', []) if isinstance(r, dict) and r.get('origin_key')][-12000:]
+
+    def dump(self):
+        return {
+            'start_key': self.start_key,
+            'last_evaluated_origin': self.last_evaluated_origin,
+            'plays': self.plays[-12000:],
+            'rules_version': 'V55_OLD_ONE_HIT_NEXT_V52_WITHIN_12_SUM_BASE80_ONE_PER_TARGET_H1',
+        }
+
+    def initialize(self, history):
+        if self.start_key or not history:
+            return False
+        # Nuovo tracker: parte DOPO l'ultima estrazione già in archivio.
+        # È intenzionale non ricostruire segnali LIVE precedenti al deploy.
+        self.start_key = str(history[-1]['key'])
+        self.last_evaluated_origin = self.start_key
+        return True
+
+    @staticmethod
+    def _pair_code(pair):
+        return '-'.join(f'{int(n):02d}' for n in sorted(pair))
+
+    @staticmethod
+    def _target_gap(older, newer):
+        try:
+            da, na = str(older).split('#')
+            db, nb = str(newer).split('#')
+            if da != db:
+                return None
+            g = int(nb) - int(na)
+            return g if g > 0 else None
+        except Exception:
+            return None
+
+    def close_with_draw(self, newest, previous):
+        out = []
+        newkey = str(newest.get('key') or '')
+        for rec in self.plays:
+            if rec.get('status') != 'PENDING':
+                continue
+            target = str(rec.get('target_key') or '')
+            if newkey == target:
+                if previous and V52LiveTracker._consecutive(previous, newest):
+                    base = set(int(n) for n in newest.get('nums') or [])
+                    hit = all(int(n) in base for n in rec['pair'])
+                    rec.update(status='CLOSED', hit=bool(hit),
+                               prize=(V55_PRIZE_H1 if hit else 0.0), result_key=newkey)
+                    tag = '✅ HIT' if hit else '❌ MISS'
+                    out.append(f'{tag} — V55 INCROCIO LIVE H1\n'
+                               f"Ambo {self._pair_code(rec['pair'])} | concorso {newkey}\n"
+                               f"{'Premio teorico €14, netto +€13' if hit else 'Netto teorico −€1'}\n"
+                               '€1 indicativo; nessuna giocata automatica.')
+                else:
+                    rec.update(status='MISSING', hit=None, prize=0.0, result_key=newkey)
+                    out.append(f"⚠️ V55 H1 NON VERIFICABILE | {self._pair_code(rec['pair'])} | {target}: feed discontinuo.")
+            elif order_key(newkey) and order_key(target) and order_key(newkey) > order_key(target):
+                rec.update(status='MISSING', hit=None, prize=0.0, result_key=newkey)
+                out.append(f"⚠️ V55 H1 NON VERIFICABILE | {self._pair_code(rec['pair'])} | estrazione {target} mancante.")
+        return out
+
+    def arm(self, history, v52, clock=None, check_freshness=True):
+        if not V55_LIVE_ENABLED or len(history) < 900:
+            return []
+        if self.initialize(history):
+            return []
+        current = history[-1]
+        origin = str(current.get('key') or '')
+        if not order_key(origin) or not order_key(self.start_key):
+            return []
+        if order_key(origin) <= order_key(self.start_key):
+            return []
+        if self.last_evaluated_origin and order_key(self.last_evaluated_origin) and order_key(origin) <= order_key(self.last_evaluated_origin):
+            return []
+        # Evidenziare l'origine già valutata anche se non c'è alcun incrocio.
+        self.last_evaluated_origin = origin
+        target = V52LiveTracker._next_expected_key(current)
+        if not target:
+            return []
+        if check_freshness:
+            stamp = V52LiveTracker._draw_stamp(current)
+            instant = clock or now_dt()
+            if stamp is None or not (0 <= (instant-stamp).total_seconds() < 290):
+                return []
+
+        new_signals = [r for r in v52.plays if r.get('origin_key') == origin
+                       and r.get('target_key') == target and r.get('status') == 'PENDING']
+        if not new_signals:
+            return []
+
+        # Le origini V52 meno recenti devono avere un esito H1 certo.
+        # Usa il più recente segnale di ciascuna delle altre cinque coppie,
+        # anche se quel segnale più recente non ha prodotto un'ambata.
+        past = {}
+        for rec in v52.plays:
+            rk = str(rec.get('target_key') or '')
+            pair = tuple(sorted(int(x) for x in rec.get('pair', [])))
+            if len(pair) != 2 or rec.get('origin_key') == origin:
+                continue
+            gap = self._target_gap(rk, target)
+            if not gap or gap > V55_MAX_GAP_DRAWS:
+                continue
+            old = past.get(pair)
+            if old is None or self._target_gap(str(old['target_key']), rk):
+                past[pair] = rec
+        if not past:
+            return []
+
+        rows_by_key = {str(r.get('key')): (i, r) for i, r in enumerate(history)}
+        candidates = []
+        recent80 = history[-80:]
+        counter = Counter(n for r in recent80 for n in r.get('nums', []))
+        for fresh in new_signals:
+            newpair = tuple(sorted(int(x) for x in fresh.get('pair', [])))
+            if len(newpair) != 2:
+                continue
+            for oldpair, oldrec in past.items():
+                if oldpair == newpair or oldrec.get('status') != 'CLOSED':
+                    continue
+                oldkey = str(oldrec['target_key'])
+                if oldkey not in rows_by_key:
+                    continue
+                gap = self._target_gap(oldkey, target)
+                if not gap or gap > V55_MAX_GAP_DRAWS:
+                    continue
+                old_idx, olddraw = rows_by_key[oldkey]
+                # Tutta la catena fra H1 precedente e origine corrente
+                # deve essere reale e senza concorsi saltati.
+                chain = history[old_idx:]
+                if len(chain) != gap or not all(
+                    V52LiveTracker._consecutive(a, b) for a,b in zip(chain, chain[1:])
+                ):
+                    continue
+                old_base = set(int(n) for n in olddraw.get('nums', []))
+                numbers_won = [n for n in oldpair if n in old_base]
+                if len(numbers_won) != 1:
+                    continue
+                anchor = numbers_won[0]
+                # SUM80, tie-break numerico crescente, come analisi_v55.py.
+                partner = max(newpair, key=lambda n: (counter[anchor] + counter[n], -anchor, -n))
+                cross = tuple(sorted((anchor, partner)))
+                if cross[0] == cross[1]:
+                    continue
+                candidates.append((gap, self._pair_code(oldpair), self._pair_code(newpair),
+                                   cross, anchor, partner, oldkey))
+        if not candidates:
+            return []
+        # Politica V55: massimo UN incrocio per concorso target.
+        # Priorità al primo segnale passato in ordine di distanza, poi coppia.
+        gap, old_name, new_name, cross, anchor, partner, oldtarget = min(candidates)
+        if any(str(r.get('target_key')) == target for r in self.plays):
+            return []
+        rec = {
+            'id': f'V55|{origin}|{self._pair_code(cross)}',
+            'origin_key': origin, 'target_key': target, 'day': target.split('#')[0],
+            'old_target_key': oldtarget, 'old_pair': old_name, 'new_pair': new_name,
+            'old_ambata_h1': anchor, 'new_partner_base80': partner,
+            'gap_draws': gap, 'pair': list(cross), 'status': 'PENDING',
+            'hit': None, 'prize': 0.0, 'stake': V55_STAKE_H1,
+            'created_at': now_dt().isoformat(timespec='seconds'),
+        }
+        self.plays.append(rec)
+        self.plays = self.plays[-12000:]
+        return [
+            '🚀 V55 INCROCIO SELETTIVO — AMBO LIVE H1\n'
+            f'Prima coppia V52: {old_name} | al suo H1 è uscito SOLO {anchor:02d}\n'
+            f'Seconda coppia V52: {new_name} | distanza {gap} colpi ({gap*5} minuti)\n'
+            f'🎯 NUOVO AMBO: {self._pair_code(cross)}\n'
+            f'Origine: {origin} | PROSSIMA ESTRAZIONE: {target}\n'
+            'Un solo incrocio per concorso, €1 indicativo, H1 soltanto.\n'
+            '⚠️ Strategia sperimentale; nessuna vincita garantita.'
+        ]
+
+    def report(self, history):
+        closed = [r for r in self.plays if r.get('status') == 'CLOSED']
+        hits = sum(r.get('hit') is True for r in closed)
+        pending = sum(r.get('status') == 'PENDING' for r in self.plays)
+        missing = sum(r.get('status') == 'MISSING' for r in self.plays)
+        cost = sum(float(r.get('stake') or 0) for r in closed)
+        prize = sum(float(r.get('prize') or 0) for r in closed)
+        day = str(history[-1]['day']) if history else now_dt().date().isoformat()
+        today = [r for r in self.plays if r.get('day') == day]
+        last = self.plays[-1] if self.plays else {}
+        return '\n'.join([
+            '🚀 V55 — INCROCI SELETTIVI LIVE H1',
+            f"Stato: {'ATTIVO' if V55_LIVE_ENABLED else 'SPENTO'} | warmup {len(history)}/900",
+            'Regola: 1 ambata precedente H1 + 2° V52 entro 12 estrazioni; max 1 incrocio per concorso.',
+            f'Forward dal: {self.start_key or "-"}',
+            f'Totale {len(self.plays)} | chiusi {len(closed)} | HIT {hits}/{len(closed)} ({safe_pct(hits,len(closed)):.2f}%)',
+            f'Pending {pending} | non verificabili {missing} | saldo teorico €{prize-cost:+.0f}',
+            f'Oggi ({day}): {len(today)} segnali V55',
+            f"Ultimo: {last.get('origin_key','-')} -> {last.get('target_key','-')} | "
+            f"{self._pair_code(last['pair']) if last.get('pair') else '-'} | {last.get('status','-')}",
+            '⚠️ V55 deriva da un test retrospettivo molto piccolo (2 HIT/21 nel 2025).',
+        ])
+
+
+def _merge_v55_state(a, b):
+    aa = a if isinstance(a, dict) else {}
+    bb = b if isinstance(b, dict) else {}
+    if not aa and not bb:
+        return None
+    ranks = {'PENDING': 0, 'MISSING': 1, 'CLOSED': 2}
+    records = {}
+    for src in (aa, bb):
+        for rec in src.get('plays') or []:
+            if not isinstance(rec, dict) or not rec.get('target_key'):
+                continue
+            identity = str(rec['target_key'])  # un segnale V55 per concorso.
+            old = records.get(identity)
+            if old is None or ranks.get(str(rec.get('status')), -1) > ranks.get(str(old.get('status')), -1):
+                records[identity] = dict(rec)
+    plays = sorted(records.values(), key=lambda x: order_key(x.get('target_key')) or (-1,-1))[-12000:]
+    return {
+        'start_key': _key_min(aa.get('start_key'), bb.get('start_key')) or '',
+        'last_evaluated_origin': _key_max(aa.get('last_evaluated_origin'), bb.get('last_evaluated_origin')) or '',
+        'plays': plays,
+        'rules_version': 'V55_OLD_ONE_HIT_NEXT_V52_WITHIN_12_SUM_BASE80_ONE_PER_TARGET_H1',
+    }
+
+
+# ============================================================
 # V27 ELITE + STANDARD — AUTO WARMUP / SOLO FORWARD
 # Stato aggiuntivo nello stesso JSON HARD LOCK, nessun reset legacy.
 # ============================================================
@@ -3033,6 +3275,15 @@ V52_RULES = (
     ((2, 9), 44, 37),
     ((71, 78), 48, 86),
 )
+
+# V55 INCROCI: attivo in LIVE Telegram, non invia puntate al concessionario.
+V55_KEY = 'v55_incroci_selective_live_forward_v1'
+V55_LIVE_ENABLED = os.getenv('V55_LIVE_ENABLED', '1').strip().lower() not in {'0','no','false','off'}
+V55_LIVE_NOTIFY = os.getenv('V55_LIVE_NOTIFY', '1').strip().lower() not in {'0','no','false','off'}
+V55_MAX_GAP_DRAWS = 12  # 60 minuti
+V55_STAKE_H1 = 1.0
+V55_PRIZE_H1 = 14.0
+
 
 
 
@@ -3500,6 +3751,7 @@ class MultiOnlyEngine:
         self.v28 = V28Tracker()
         self.v38 = V38Tracker()
         self.v52 = V52LiveTracker()
+        self.v55 = V55LiveTracker()
         self.state_revision = 0
         self.state_load_info = {"loaded": False, "path": None, "reason": "not-run", "source": "-"}
         self.load_state()
@@ -3559,6 +3811,7 @@ class MultiOnlyEngine:
             self.v28 = V28Tracker(data.get(V28_KEY))
             self.v38 = V38Tracker(data.get(V38_KEY))
             self.v52 = V52LiveTracker(data.get(V52_KEY))
+            self.v55 = V55LiveTracker(data.get(V55_KEY))
             self.state_revision = max(0, int(data.get("multi_state_revision", 0) or 0))
             self.processed = [str(x) for x in data.get("processed", []) if isinstance(x, str)][-PROCESSED_MAX:]
             self.processed_set = set(self.processed)
@@ -3608,7 +3861,8 @@ class MultiOnlyEngine:
         data[V28_KEY] = self.v28.dump()
         data[V38_KEY] = self.v38.dump()
         data[V52_KEY] = self.v52.dump()
-        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_MULTI_LIVE_v20.9.2_HARD_LOCK"
+        data[V55_KEY] = self.v55.dump()
+        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_MULTI_V55_LIVE_v20.9.2_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
 
         # HARD LOCK 3/3 — il backup già presente è il pavimento locale.
@@ -3632,17 +3886,19 @@ class MultiOnlyEngine:
         self.state_revision = max(int(self.state_revision), remote_rev) + 1
         data["multi_state_revision"] = int(self.state_revision)
         data["saved_at"] = now_dt().isoformat(timespec="seconds")
-        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_MULTI_LIVE_v20.9.2_HARD_LOCK"
+        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_MULTI_V55_LIVE_v20.9.2_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
         # Il ramo forward viene fuso anche se un runner remoto porta uno state vecchio.
         data[V27_KEY] = _merge_forward_tracker_state(data.get(V27_KEY), self.v27.dump())
         data[V28_KEY] = _merge_forward_tracker_state(data.get(V28_KEY), self.v28.dump())
         data[V38_KEY] = _merge_v38_state(data.get(V38_KEY), self.v38.dump())
         data[V52_KEY] = _merge_v52_state(data.get(V52_KEY), self.v52.dump())
+        data[V55_KEY] = _merge_v55_state(data.get(V55_KEY), self.v55.dump())
         self.v27 = V27Tracker(data[V27_KEY])
         self.v28 = V28Tracker(data[V28_KEY])
         self.v38 = V38Tracker(data[V38_KEY])
         self.v52 = V52LiveTracker(data[V52_KEY])
+        self.v55 = V55LiveTracker(data[V55_KEY])
 
         # Ricarica il merge prima della scrittura per mantenere record/pending monotoni.
         self.multichannel.load(data.get("multichannel_bd12_ed12_o2f12_v1"))
@@ -3682,6 +3938,7 @@ class MultiOnlyEngine:
             f"History MULTI: {len(mc.history)}/{MULTI_HISTORY_MAX}\n"
             f"V27: {len(self.v27.signals)} segnali, {len(self.v27.closed)} chiusi | V28: {len(self.v28.signals)} segnali, {len(self.v28.closed)} chiusi\n"
             f"V52 MULTI LIVE: {len(self.v52.plays)} segnali | /v52\n"
+            f"V55 INCROCI LIVE: {len(self.v55.plays)} segnali | /v55\n"
             f"V38 DAILY SHADOW: CONTROL {len([r for r in self.v38.plays if r.get('policy')=='CONTROL'])} coppie | ACTIVE {len([r for r in self.v38.plays if r.get('policy')=='ACTIVE'])} coppie | /v38\n"
             f"v20.7.1 forward base: {mc.v2071_started_from_key or '-'} | scan da fix {max(0, mc.scans-mc.v2071_scans_base)} | STD da fix {max(0, mc.signals-mc.v2071_signals_base)}\n"
             f"PRIME A start: {mc.prime_a_started_from_key or '-'}\n"
@@ -3731,6 +3988,7 @@ class MultiOnlyEngine:
             "/v28 — report ambo H1 ELITE e STANDARD\n"
             "/v38 — simulazione giornaliera ambi CONTROL/ACTIVE\n"
             "/v52 — V52 MULTI LIVE: segnali/HIT/MISS/saldo\n"
+            "/v55 — V55 INCROCI LIVE: segnali/HIT/MISS/saldo\n"
             "/status — feed + state + statistiche\n"
             "/verificatutto — audit completo\n"
             "/menu — comandi"
@@ -3764,6 +4022,11 @@ async def cmd_v52(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, engine.v52.report(engine.multichannel.history))
 
 
+async def cmd_v55(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data['engine']
+    await reply(update, engine.v55.report(engine.multichannel.history))
+
+
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].menu_text())
 
@@ -3775,6 +4038,7 @@ async def setup_commands(app):
         BotCommand("v28", "Stato V28 AMBO H1"),
         BotCommand("v38", "Simulazioni V38 CONTROL/ACTIVE"),
         BotCommand("v52", "V52 MULTI LIVE H1"),
+        BotCommand("v55", "V55 incroci LIVE H1"),
         BotCommand("status", "Stato MULTI + Q + 7/9 LIVE + state"),
         BotCommand("verificatutto", "Audit MULTI/PRIME/Q/7/9 LIVE"),
         BotCommand("menu", "Comandi attivi"),
@@ -3799,6 +4063,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         # Forward V38, senza segnali retroattivi.
         engine.v38.initialize(mc.history)
         engine.v52.initialize(mc.history)
+        engine.v55.initialize(mc.history)
         # Warmup bootstrap: arma solo una previsione sulla prossima estrazione.
         await v27_notify_latest(engine, app, notify=notify)
         engine.save_state(git=True, force_git=True)
@@ -3816,11 +4081,15 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         v38_results = engine.v38.close_with_draw(r, previous, prev_time)
         previous_row = mc.history[-2] if len(mc.history)>=2 else None
         v52_results = engine.v52.close_with_draw(r, previous_row, prev_time)
+        v55_results = engine.v55.close_with_draw(r, previous_row)
         events.extend(evs)
-        if notify and V52_LIVE_NOTIFY and v52_results:
-            # Persistiamo prima della notifica: chiusura H1 idempotente sui riavvii.
+        if v52_results or v55_results:
+            # Gli esiti sono fissati sul disco prima di qualsiasi invio Telegram.
             engine.save_state(git=False)
+        if notify and V52_LIVE_NOTIFY and v52_results:
             await engine.tg(app, '\n\n'.join(v52_results))
+        if notify and V55_LIVE_NOTIFY and v55_results:
+            await engine.tg(app, '\n\n'.join(v55_results))
         if notify and V38_NOTIFY and v38_results:
             await engine.tg(app, '\n'.join(v38_results))
         if notify:
@@ -3837,14 +4106,19 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     mc.ensure_big7_fast_forward_base()
     v38_initialized = engine.v38.initialize(mc.history)
     v52_initialized = engine.v52.initialize(mc.history)
+    v55_initialized = engine.v55.initialize(mc.history)
     sig = mc.arm() if mc.history else None
     v27_updated = await v27_notify_latest(engine, app, notify=notify)
     v38_messages = engine.v38.arm(mc.history, mc, engine.v28)
     v52_messages = engine.v52.arm(mc.history)
-    if notify and V52_LIVE_NOTIFY and v52_messages:
-        # Esito di arm salvato PRIMA dell'invio: anti-duplicato per (origine, ambo) in caso di crash/rotazione.
+    v55_messages = engine.v55.arm(mc.history, engine.v52)
+    if v52_messages or v55_messages:
+        # Salvataggio del doppio tracker prima di qualsiasi notifica LIVE.
         engine.save_state(git=False)
+    if notify and V52_LIVE_NOTIFY and v52_messages:
         await engine.tg(app, '\n\n'.join(v52_messages))
+    if notify and V55_LIVE_NOTIFY and v55_messages:
+        await engine.tg(app, '\n\n'.join(v55_messages))
     if notify and V38_NOTIFY and v38_messages:
         await engine.tg(app, '\n\n'.join(v38_messages))
     if sig and notify and mc.should_notify_signal(sig):
@@ -3852,7 +4126,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         if msg:
             await engine.tg(app, msg)
 
-    if unseen or sig or events or v27_updated or v38_initialized or v38_messages or v52_initialized or v52_messages:
+    if unseen or sig or events or v27_updated or v38_initialized or v38_messages or v52_initialized or v52_messages or v55_initialized or v55_messages:
         engine.last_draw_key = mc.history[-1]["key"] if mc.history else engine.last_draw_key
         engine.save_state(git=True)
 
@@ -3889,7 +4163,9 @@ async def startup(engine, app):
             prev_time = str(mc.history[-1].get('time') or '') if mc.history else None
             mc.ingest(r)
             engine.v38.close_with_draw(r, previous, prev_time)  # recupera SOLO l'esito di pending veri
-            engine.v52.close_with_draw(r, mc.history[-2] if len(mc.history)>=2 else None, prev_time)
+            prevrow = mc.history[-2] if len(mc.history)>=2 else None
+            engine.v52.close_with_draw(r, prevrow, prev_time)
+            engine.v55.close_with_draw(r, prevrow)
         mc.ensure_start()
 
     # v20.7.1: solo DOPO il catch-up fissiamo la base reale dei nuovi tracker.
@@ -3901,6 +4177,7 @@ async def startup(engine, app):
     # Congela SOLO ora il segnale sulla più recente estrazione disponibile.
     engine.v38.initialize(mc.history)
     engine.v52.initialize(mc.history)
+    engine.v55.initialize(mc.history)
     sig = mc.arm() if mc.history else None
     await v27_notify_latest(engine, app, notify=True)
     v38_messages = engine.v38.arm(mc.history, mc, engine.v28)
@@ -3928,12 +4205,13 @@ async def startup(engine, app):
         "🎯 V27 ELITE+STANDARD AMBATA H1 LIVE: AUTO WARMUP 900, /v27.\n"
         "🔗 V28 AMBO H1 LIVE: M V27 + partner momentum 70-79, €1/ambo, ELITE e STANDARD, /v28.\n"
         "🚀 V52 MULTI LIVE: tutti gli ambi delle 5 regole, ripetizioni comprese, H1, /v52.\n"
+        "🧬 V55 INCROCI LIVE: ambata H1 precedente + seconda coppia V52 entro 60 min, singolo incrocio H1, /v55.\n"
         "🎯 V38 DAILY SHADOW: PRIME A FAST + A2 BASE1/BASE2 + V28, CONTROL max6, ACTIVE max8, /v38.\n"
         "💶 QUATERNA: 1€/colpo H1-H5, STOP al primo 2/4+; shadow fino H5.\n\n"
         "⏸️ FOCUS / INCROCIO / CORE / ENGINE / SOSIA / legacy: PAUSATI.\n"
         "✅ Il loro state viene conservato ma NON aggiornato.\n"
         "🚫 Nessun backfill QUATERNA/7/9/D/X; A/A2 invariati; C/B legacy preservati.\n\n"
-        "Comandi: /multi /v27 /v28 /v38 /v52 /status /verificatutto /menu"
+        "Comandi: /multi /v27 /v28 /v38 /v52 /v55 /status /verificatutto /menu"
     )
 
     if sig and mc.should_notify_signal(sig):
@@ -4303,7 +4581,10 @@ def run_self_test():
     shadow = [dict(tracker.plays[1], id='V52|'+tracker.plays[1]['origin_key']+'|38-39', pair=[38,39])]
     both = _merge_v52_state(tracker.dump(), {'plays': shadow})
     assert len(both['plays']) == 3 and len({(r['origin_key'],tuple(r['pair'])) for r in both['plays']}) == 3
-    print("SELF-TEST OK: v20.9.2 + V27 + V28 + V38 + V52 MULTI LIVE + HARD LOCK")
+    v55 = V55LiveTracker({'start_key': '2100-01-01#001'})
+    assert not v55.arm(seed[:901], tracker, check_freshness=False)
+    assert _merge_v55_state({'start_key': '2100-01-01#001'}, {'start_key': '2100-01-01#002'})['start_key'] == '2100-01-01#001'
+    print("SELF-TEST OK: v20.9.2 + V27 + V28 + V38 + V52 MULTI + V55 INCROCI LIVE + HARD LOCK")
 
 
 # ============================================================
@@ -4329,6 +4610,7 @@ async def main():
     app.add_handler(CommandHandler("v28", cmd_v28))
     app.add_handler(CommandHandler("v38", cmd_v38))
     app.add_handler(CommandHandler("v52", cmd_v52))
+    app.add_handler(CommandHandler("v55", cmd_v55))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("verificatutto", cmd_verificatutto))
     app.add_handler(CommandHandler("menu", cmd_menu))
