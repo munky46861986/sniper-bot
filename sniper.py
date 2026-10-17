@@ -103,7 +103,7 @@ PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
 PROCESSED_MAX = int(os.getenv("PROCESSED_MAX", "12000"))
 
-CODE_RELEASE = "v20.9.2+V27+V28+V38+V52-MULTI+V55-INCROCI+V56-CORE-LIVE"
+CODE_RELEASE = "v20.9.2+V27+V28+V38+V52-MULTI+V55-INCROCI+V56-CORE-LIVE+V67-DAILY-SHADOW+V70-DAILY-SHADOW"
 STATE_GUARD_SCHEMA = 2092
 STATE_HISTORY_RECOVERY_COMMITS = max(10, min(120, int(os.getenv("STATE_HISTORY_RECOVERY_COMMITS", "60"))))
 
@@ -894,6 +894,12 @@ def _merge_state_data(local_data, remote_data):
     merged_v56 = _merge_v56_state(local_data.get(V56_KEY), remote_data.get(V56_KEY))
     if merged_v56 is not None:
         base[V56_KEY] = merged_v56
+    merged_v67 = _merge_v67_state(local_data.get(V67_KEY), remote_data.get(V67_KEY))
+    if merged_v67 is not None:
+        base[V67_KEY] = merged_v67
+    merged_v70 = _merge_v70_state(local_data.get(V70_KEY), remote_data.get(V70_KEY))
+    if merged_v70 is not None:
+        base[V70_KEY] = merged_v70
     vals=[]; seen=set()
     for x in list(local_data.get("processed") or [])+list(remote_data.get("processed") or []):
         if isinstance(x,str) and x not in seen: seen.add(x); vals.append(x)
@@ -3451,6 +3457,412 @@ def _merge_v56_state(a,b):
     }
 
 
+
+# ============================================================
+# V67 DAILY — V66 H1 16:00, dopo MISS primo V52 successivo
+# MONITORAGGIO PROSPETTICO: ogni record usa SOLO concorsi noti.
+# Nessun acquisto o raddoppio: seconda selezione V52 non e' un
+# secondo acquisto oltre all'eventuale segnale gia' inviato da V52.
+# ============================================================
+V67_KEY = 'v67_v66_1600_v52_after_miss_forward_v1'
+V67_ENABLED = os.getenv('V67_ENABLED', '1').strip().lower() not in {'0','no','false','off'}
+V67_NOTIFY = os.getenv('V67_NOTIFY', '1').strip().lower() not in {'0','no','false','off'}
+V67_MODE = os.getenv('V67_MODE', 'SHADOW').strip().upper()  # LIVE = etichetta operativa, non acquista nulla
+V67_FIXED_PAIRS = ((44,59),(15,78),(78,89),(46,57),(7,36),
+                   (12,52),(22,64),(59,61),(57,80),(36,58))
+V67_COOC_WINDOW = 320
+V67_MIN_WARMUP = 900
+V67_RULES_VERSION = 'V67_V66_1600_FIRST_V52_AFTER_MISS_H1_FIXED'
+
+
+class V67DailyTracker:
+    def __init__(self, data=None):
+        d=data if isinstance(data,dict) else {}
+        self.start_key=str(d.get('start_key') or '')
+        self.blocked_days=set(str(x) for x in (d.get('blocked_days') or []) if x)
+        self.plays=[dict(r) for r in (d.get('plays') or []) if isinstance(r,dict) and r.get('day')][-1200:]
+        self.plays.sort(key=lambda r:r.get('day',''))
+
+    def dump(self):
+        return {'start_key':self.start_key,'blocked_days':sorted(self.blocked_days)[-1200:],
+                'plays':self.plays[-1200:],'rules_version':V67_RULES_VERSION}
+
+    def initialize(self, history):
+        if self.start_key or not history:return False
+        # Sul deploy NON ricostruiamo ne' selezioniamo la prima 16:00
+        # della giornata in corso; si parte dalla giornata successiva.
+        last=history[-1]
+        self.start_key=str(last.get('key') or '')
+        self.blocked_days.add(str(last.get('day') or ''))
+        return True
+
+    @staticmethod
+    def _pair_txt(pair):
+        return '-'.join(f'{int(n):02d}' for n in pair)
+
+    @staticmethod
+    def _stamp(row):
+        return V52LiveTracker._draw_stamp(row)
+
+    def _eligible_primary(self, history):
+        if len(history)<V67_MIN_WARMUP:return None
+        last=history[-1]
+        stamp=self._stamp(last)
+        if not stamp or (stamp.hour,stamp.minute)!=(15,55):return None
+        day=str(last['day'])
+        today=[r for r in history if str(r.get('day'))==day]
+        row14=next((r for r in reversed(today) if self._stamp(r) and
+                    (self._stamp(r).hour,self._stamp(r).minute)==(14,0)),None)
+        if not row14:return None
+        interval=[r for r in today if self._stamp(r) and
+                  self._stamp(row14)<=self._stamp(r)<=stamp]
+        if len(interval)!=24 or interval[0].get('key')!=row14.get('key') or interval[-1].get('key')!=last.get('key'):
+            return None
+        if not all(V52LiveTracker._consecutive(a,b) for a,b in zip(interval,interval[1:])):
+            return None
+        recent=history[-V67_COOC_WINDOW:]
+        if any(len(r.get('nums') or [])!=20 or len(set(r['nums']))!=20 for r in recent):return None
+        if len(row14.get('nums') or [])!=20:return None
+        left=V67_FIXED_PAIRS[sum(int(n) for n in last['nums'])%10]
+        right=V67_FIXED_PAIRS[sum(int(n) for n in row14['nums'])%10]
+        def cooc(pair):return sum(all(int(n) in set(r['nums']) for n in pair) for r in recent)
+        ca,cb=cooc(left),cooc(right)
+        chosen=left if ca>=cb else right
+        return {'pair':list(chosen),'v59':list(left),'v61':list(right),
+                'sum_1555':sum(last['nums']),'sum_1400':sum(row14['nums']),
+                'cooc_v59':ca,'cooc_v61':cb}
+
+    def close_with_draw(self, newest,previous):
+        out=[];key=str(newest.get('key') or '')
+        for r in self.plays:
+            for stage in ('primary','backup'):
+                if r.get(stage+'_status')!='PENDING':continue
+                target=str(r.get(stage+'_target_key') or '')
+                if not target or not order_key(target) or not order_key(key):continue
+                if order_key(key)<order_key(target):continue
+                if key==target and previous and V52LiveTracker._consecutive(previous,newest):
+                    hit=all(n in set(newest['nums']) for n in r[stage+'_pair'])
+                    r[stage+'_status']='CLOSED';r[stage+'_hit']=hit
+                    r[stage+'_result_key']=key
+                    if stage=='primary':
+                        r['backup_status']='NOT_NEEDED' if hit else 'WAITING'
+                    out.append(f"{'✅ HIT' if hit else '❌ MISS'} — V67 {stage.upper()} H1 | "
+                               f"{self._pair_txt(r[stage+'_pair'])} | concorso {key} | "
+                               f"{'+13€ teorici' if hit and stage=='primary' else '+12€ giornalieri teorici' if hit else '-1€ teorico' if stage=='primary' else '-2€ giornalieri teorici'}")
+                    if stage=='primary' and not hit:
+                        out.append('🔎 V67: primo ambo delle 16:00 perso. Attendo il primo V52 successivo valido e DIVERSO, senza obbligo di giocare.')
+                else:
+                    r[stage+'_status']='MISSING';r[stage+'_hit']=None;r[stage+'_result_key']=key
+                    if stage=='primary':r['backup_status']='NOT_NEEDED'
+                    out.append(f'⚠️ V67 {stage.upper()} NON VERIFICABILE: concorso {target} mancante/non consecutivo; nessun HIT assegnato')
+        return out
+
+    def arm(self,history,v52,clock=None,check_freshness=True):
+        if not V67_ENABLED or not history:return []
+        if self.initialize(history):return []
+        latest=history[-1]
+        origin=str(latest.get('key') or '')
+        if not order_key(origin) or not order_key(self.start_key) or order_key(origin)<=order_key(self.start_key):return []
+        ts=self._stamp(latest);now=clock or now_dt()
+        # Nessun backfill/catch-up: segnale emesso solo se il dato e' fresco.
+        if check_freshness and (ts is None or not (0<=(now-ts).total_seconds()<290)):return []
+        day=str(latest.get('day') or '')
+        if not day or day in self.blocked_days:return []
+        prior=next((x for x in self.plays if x.get('day')==day),None)
+        target=V52LiveTracker._next_expected_key(latest)
+        if not target or target.split('#')[0]!=day:return []
+        if prior is None:
+            prediction=self._eligible_primary(history)
+            if not prediction:return []
+            record={
+                'id':'V67|'+day, 'day':day,
+                'primary_origin_key':origin,'primary_target_key':target,
+                'primary_pair':prediction['pair'],'primary_status':'PENDING',
+                'primary_hit':None,'primary_result_key':None,
+                'backup_status':'NOT_NEEDED','backup_hit':None,
+                'backup_pair':None,'backup_target_key':None,
+                'v59_pair':prediction['v59'],'v61_pair':prediction['v61'],
+                'cooc_v59':prediction['cooc_v59'],'cooc_v61':prediction['cooc_v61'],
+                'sum_1555':prediction['sum_1555'],'sum_1400':prediction['sum_1400'],
+            }
+            self.plays.append(record)
+            self.plays=self.plays[-1200:]
+            return [
+                f'🎯 V67 {V67_MODE} — PRIMO AMBO H1 DELLE 16:00\n'
+                f'V66: {self._pair_txt(record["primary_pair"])} | previsione {target}\n'
+                f'V59 {self._pair_txt(record["v59_pair"])} (cooc320={record["cooc_v59"]}) · '
+                f'V61 {self._pair_txt(record["v61_pair"])} (cooc320={record["cooc_v61"]})\n'
+                'Se HIT: STOP giornata. Se MISS: attendo il primo V52 DOPO le 16:00 su coppia diversa.\n'
+                '€1 indicativo H1 per segnale, niente progressione, nessun acquisto automatico.'
+            ]
+        if prior.get('primary_status')!='CLOSED' or prior.get('primary_hit') is not False:return []
+        if prior.get('backup_status')!='WAITING':return []
+        if ts is None or (ts.hour,ts.minute)<=(16,0):return []
+        # Selezionare solamente le proposte V52 appena emesse, non ricalcolarle.
+        pending=[r for r in v52.plays if r.get('origin_key')==origin and
+                 r.get('target_key')==target and r.get('status')=='PENDING' and
+                 tuple(sorted(int(x) for x in (r.get('pair') or [])))!=tuple(sorted(prior['primary_pair']))]
+        if not pending:return []
+        priority={tuple(x[0]):i for i,x in enumerate(V52_RULES)}
+        first=min(pending,key=lambda r:(priority.get(tuple(r['pair']),99),tuple(r['pair'])))
+        prior.update(backup_origin_key=origin,backup_target_key=target,
+                     backup_pair=list(first['pair']),backup_status='PENDING',backup_hit=None,
+                     backup_result_key=None)
+        return [
+            f'🔎 V67 {V67_MODE} — SECONDO AMBO DOPO MISS V66\n'
+            f'Prima coppia {self._pair_txt(prior["primary_pair"])} → MISS alle 16:00\n'
+            f'Seconda coppia V52 {self._pair_txt(first["pair"])} | TARGET {target} | SOLO H1\n'
+            'Questa coppia e già segnalata da V52: NON effettuare una puntata aggiuntiva V67.\n'
+            'Dopo H1 STOP giornaliero in ogni caso; €1 teorico, nessuna progressione.'
+        ]
+
+    def report(self,history):
+        checked=[r for r in self.plays if r.get('primary_status')=='CLOSED']
+        win1=sum(r.get('primary_hit') is True for r in checked)
+        backups=[r for r in self.plays if r.get('backup_status')=='CLOSED']
+        win2=sum(r.get('backup_hit') is True for r in backups)
+        stakes=len(checked)+len(backups)
+        # Nei saldi non contare backup pending o concorsi non verificabili.
+        net=14*(win1+win2)-stakes
+        missing=sum(r.get('primary_status')=='MISSING' or r.get('backup_status')=='MISSING' for r in self.plays)
+        day=str(history[-1].get('day') or '') if history else now_dt().date().isoformat()
+        r=next((x for x in self.plays if x.get('day')==day),None)
+        lines=[
+            '🎯 V67 — V66 ORE 16:00 + PRIMO V52 DOPO MISS',
+            f'Modalità: {V67_MODE} | Forward da {self.start_key or "-"} | warmup {len(history)}/900',
+            f'Giornate {len(self.plays)} | V66 H1: {win1}/{len(checked)} | backup V52 H1: {win2}/{len(backups)}',
+            f'Saldo teorico delle sole selezioni verificate: €{net:+d} | NON verificabili {missing}',
+            'Una previsione V66 al giorno; secondo V52 soltanto dopo MISS e su un ambo diverso.',
+            'V52 continua a notificare tutti i propri segnali. V67 non aggiunge una seconda puntata.',
+        ]
+        if r:
+            lines.append(f'Oggi {day}: V66 {self._pair_txt(r["primary_pair"])} = {r["primary_status"]}'
+                         f' | V52 backup {r.get("backup_status") or "-"}'
+                         + (f' {self._pair_txt(r["backup_pair"])}' if r.get('backup_pair') else ''))
+        else:lines.append(f'Oggi {day}: nessuna previsione V67' + (' (installazione in giornata: avvio prossimo giorno)' if day in self.blocked_days else ''))
+        lines.append('Sperimentale: i risultati 2025 sono retrospettivi, non garanzia di utili.')
+        return '\n'.join(lines)
+
+
+def _merge_v67_state(a,b):
+    aa=a if isinstance(a,dict) else {}
+    bb=b if isinstance(b,dict) else {}
+    if not aa and not bb:return None
+    scores={'NOT_NEEDED':0,'WAITING':1,'PENDING':2,'MISSING':3,'CLOSED':4}
+    merged={}
+    for src in (aa,bb):
+        for r in src.get('plays') or []:
+            if not isinstance(r,dict) or not r.get('day'):continue
+            day=str(r['day'])
+            existing=merged.get(day)
+            if existing is None:merged[day]=dict(r);continue
+            # L'avanzamento di una fase non deve far regredire l'altra.
+            for stage in ('primary','backup'):
+                k=stage+'_status'
+                if scores.get(r.get(k),-1)>scores.get(existing.get(k),-1):
+                    for fld,v in r.items():
+                        if fld.startswith(stage+'_'):existing[fld]=v
+            for k,v in r.items():
+                if k not in existing or existing[k] is None:existing[k]=v
+    return {'start_key':_key_min(aa.get('start_key'),bb.get('start_key')) or '',
+            'blocked_days':sorted(set(aa.get('blocked_days') or []).union(bb.get('blocked_days') or []))[-1200:],
+            'plays':sorted(merged.values(),key=lambda r:r['day'])[-1200:],
+            'rules_version':V67_RULES_VERSION}
+
+
+# ============================================================
+# V70 DAILY — Incrocio V69 tripla Base+ V59 coppia fissa, H1
+# Stesso concorso di origine, DUE simulazioni SEPARATE, niente
+# giocata automatica e niente segnali retroattivi. Studio
+# esplorativo V69/V70 2025, non una conferma indipendente.
+# ============================================================
+V70_KEY = 'v70_triplet_v59_same_sum_daily_forward_v1'
+V70_ENABLED = os.getenv('V70_ENABLED', '1').strip().lower() not in {'0','false','no','off'}
+V70_NOTIFY = os.getenv('V70_NOTIFY', '1').strip().lower() not in {'0','false','no','off'}
+V70_MODE = 'SHADOW'  # non vi sono acquisti / puntate automatiche
+V70_MIN_WARMUP = 900
+V70_REPEAT_LAG = 12
+V70_RULES_VERSION = 'V70_2_INDEPENDENT_TICKETS_MOD90_REPEAT12_FROM0800_H1'
+
+
+class V70DailyTracker:
+    """Prima origine >=08:00 con resto modulo 90 ripetuto negli ultimi 12
+    concorsi consecutivi. Non altera le regole/stato del tracker V67.
+    """
+    def __init__(self, data=None):
+        d = data if isinstance(data, dict) else {}
+        self.start_key = str(d.get('start_key') or '')
+        self.blocked_days = set(str(x) for x in (d.get('blocked_days') or []) if x)
+        self.plays = [dict(r) for r in (d.get('plays') or []) if isinstance(r, dict) and r.get('day')][-1200:]
+        self.plays.sort(key=lambda r: str(r.get('day') or ''))
+
+    def dump(self):
+        return {'start_key':self.start_key, 'blocked_days':sorted(self.blocked_days)[-1200:],
+                'plays':self.plays[-1200:], 'rules_version':V70_RULES_VERSION}
+
+    def initialize(self, history):
+        if self.start_key or not history: return False
+        latest = history[-1]
+        self.start_key = str(latest.get('key') or '')
+        self.blocked_days.add(str(latest.get('day') or ''))
+        return True
+
+    @staticmethod
+    def formula(nums):
+        if len(nums) != 20 or len(set(nums)) != 20 or not all(1 <= int(x) <= 90 for x in nums):
+            return None
+        total = sum(int(x) for x in nums)
+        reduced = ((total - 1) % 90) + 1
+        trip = (reduced, 90 - reduced, 91 - reduced)
+        # n=45 produce duplicato, n=90 produce lo 0 (inammissibile).
+        if len(set(trip)) != 3 or not all(1 <= t <= 90 for t in trip):
+            return None
+        ambo = V67_FIXED_PAIRS[total % 10]
+        return {'sum':total, 'reduced':reduced, 'last_digit':total%10,
+                'triplet':list(trip), 'ambo':list(ambo)}
+
+    @classmethod
+    def _eligible(cls, history):
+        if len(history) < V70_MIN_WARMUP: return None
+        last = history[-1]
+        stamp = V52LiveTracker._draw_stamp(last)
+        if stamp is None or (stamp.hour,stamp.minute) < (8,0): return None
+        formula = cls.formula(last.get('nums') or [])
+        if formula is None: return None
+        # Solo righe realmente consecutive, mai rimpiazzare concorsi mancanti.
+        # La ricorrenza si puo' trovare in uno qualsiasi degli ultimi 12 draw;
+        # per ogni lag verifichiamo TUTTI i passi fino a quel concorso.
+        recent = history[-(V70_REPEAT_LAG+1):]
+        if len(recent) != V70_REPEAT_LAG+1: return None
+        for lag in range(1,V70_REPEAT_LAG+1):
+            chain = recent[-lag-1:]
+            if not all(V52LiveTracker._consecutive(a,b) for a,b in zip(chain,chain[1:])):
+                continue
+            # ATTENZIONE: il resto precedente puo' essere 45/90, quindi
+            # confronto solo il modulo 90 dalla somma, anche se tripletta
+            # precedente invalida. Uso somma direttamente e non formula().
+            nums = chain[0].get('nums') or []
+            if len(nums)!=20 or len(set(nums))!=20: continue
+            if ((sum(int(x) for x in nums)-1)%90)+1 == formula['reduced']:
+                formula['repeat_lag'] = lag
+                return formula
+        return None
+
+    def arm(self, history, clock=None, check_freshness=True):
+        if not V70_ENABLED or not history: return []
+        if self.initialize(history): return []
+        last = history[-1]
+        origin = str(last.get('key') or '')
+        if not order_key(origin) or not order_key(self.start_key) or order_key(origin)<=order_key(self.start_key):return []
+        stamp = V52LiveTracker._draw_stamp(last)
+        now = clock or now_dt()
+        if check_freshness and (stamp is None or not (0 <= (now-stamp).total_seconds() < 290)):
+            return []
+        day = str(last.get('day') or '')
+        if not day or day in self.blocked_days or any(str(r.get('day'))==day for r in self.plays):return []
+        calc = self._eligible(history)
+        if calc is None:return []
+        target = V52LiveTracker._next_expected_key(last)
+        if not target or target.split('#')[0]!=day:return []
+        item = {'id':'V70|'+day,'day':day,'origin_key':origin,'target_key':target,
+                'status':'PENDING','result_key':None,'sum':calc['sum'],
+                'reduced':calc['reduced'],'last_digit':calc['last_digit'],
+                'repeat_lag':calc['repeat_lag'],'ambo':calc['ambo'],
+                'triplet':calc['triplet'],'ambo_hit':None,'triplet_hits':None,
+                'gross_ambo':None,'gross_triplet':None}
+        self.plays.append(item)
+        self.plays=self.plays[-1200:]
+        return [
+            f'🔢 V70 {V70_MODE} — RIPETIZIONE SOMMA BASE | H1\n'
+            f'Origine {origin} | somma {item["sum"]} | resto90 {item["reduced"]} '
+            f'(ritornato dopo {item["repeat_lag"]} estrazioni)\n'
+            f'🎯 AMBO V59: {V67DailyTracker._pair_txt(item["ambo"])} '
+            f'(ultima cifra {item["last_digit"]})\n'
+            f'🎯 TRIPLETTA V69: {V67DailyTracker._pair_txt(item["triplet"])}\n'
+            f'Verifica SOLO prossimo concorso {target}. Entrambi calcolati da identica somma; '
+            'NON sono conferme indipendenti. Due simulazioni separate da €1 ciascuna; '
+            'nessuna giocata automatica. Metodo esplorativo.'
+        ]
+
+    def close_with_draw(self, newest, previous):
+        out=[]
+        key=str(newest.get('key') or '')
+        kn=order_key(key)
+        if not kn:return out
+        for r in self.plays:
+            if r.get('status')!='PENDING':continue
+            kt=order_key(str(r.get('target_key') or ''))
+            if kt is None or kn < kt:continue
+            if key==str(r.get('target_key')) and previous and V52LiveTracker._consecutive(previous,newest):
+                ns=set(newest.get('nums') or [])
+                if len(ns)!=20 or not all(1<=int(n)<=90 for n in ns):
+                    r['status']='MISSING'
+                    r['result_key']=key
+                    out.append(f'⚠️ V70 H1 non verificabile: 20 Base mancanti/anomali al {key}.')
+                    continue
+                ah=all(n in ns for n in r['ambo'])
+                th=sum(n in ns for n in r['triplet'])
+                g2=14 if ah else 0
+                g3=45 if th==3 else (2 if th==2 else 0)
+                r.update(status='CLOSED',result_key=key,ambo_hit=bool(ah),triplet_hits=th,
+                         gross_ambo=g2,gross_triplet=g3)
+                out.append(
+                    f"{'✅' if ah else '❌'} V70 AMBO H1 {V67DailyTracker._pair_txt(r['ambo'])} "
+                    f"| {'HIT' if ah else 'MISS'} | €{g2-1:+d} teorici\n"
+                    f"{'✅' if th>=2 else '❌'} V70 TRIPLETTA H1 {V67DailyTracker._pair_txt(r['triplet'])} "
+                    f'| {th}/3 | €{g3-1:+d} teorici\n'
+                    f'Totale due simulazioni: €{g2+g3-2:+d}. '
+                    'Nessun raddoppio o prolungamento H2–H5.'
+                )
+            else:
+                r['status']='MISSING';r['result_key']=key
+                out.append(f'⚠️ V70 H1 non verificabile: atteso {r.get("target_key")}, ricevuto {key}; nessun HIT attribuito.')
+        return out
+
+    def report(self, history):
+        closed=[p for p in self.plays if p.get('status')=='CLOSED']
+        missed=[p for p in self.plays if p.get('status')=='MISSING']
+        ah=sum(p.get('ambo_hit') is True for p in closed)
+        prizes=sum((p.get('triplet_hits') or 0)>=2 for p in closed)
+        terni=sum(p.get('triplet_hits')==3 for p in closed)
+        g2=sum(int(p.get('gross_ambo') or 0) for p in closed)
+        g3=sum(int(p.get('gross_triplet') or 0) for p in closed)
+        n=len(closed)
+        day=str(history[-1].get('day')) if history else now_dt().date().isoformat()
+        today=next((p for p in self.plays if p.get('day')==day), None)
+        res=[f'🔢 V70 DAILY {V70_MODE} — V59 AMBO + V69 TRIPLETTA',
+             f'Start forward: {self.start_key or "-"} | warmup {len(history)}/{V70_MIN_WARMUP}',
+             f'Segnali: {len(self.plays)} | completati: {n} | non verificabili: {len(missed)}',
+             f'Ambo V59 H1: {ah}/{n}, saldo teorico €{g2-n:+d}',
+             f'Tripletta V69 H1: {prizes}/{n} premi, {terni} terni, saldo teorico €{g3-n:+d}',
+             f'Due schedine virtuali da €1: netto teorico €{g2+g3-2*n:+d}',
+             'Solo prima ripetizione del resto90 entro 12 concorsi dopo le 08:00; STOP H1.',
+             'V70 non modifica V67: eventuali coppie in comune NON sono nuove puntate. Risultati storici non garantiti.']
+        if today:
+            res.append(f'Oggi {day}: {today["status"]} | ambo {V67DailyTracker._pair_txt(today["ambo"])} '
+                       f'| terna {V67DailyTracker._pair_txt(today["triplet"])} '
+                       f'| target {today["target_key"]}')
+        else:res.append(f'Oggi {day}: nessun segnale V70' + (' (installazione: inizio domani)' if day in self.blocked_days else ''))
+        return '\n'.join(res)
+
+
+def _merge_v70_state(a,b):
+    aa=a if isinstance(a,dict) else {}
+    bb=b if isinstance(b,dict) else {}
+    if not aa and not bb:return None
+    score={'PENDING':0,'MISSING':1,'CLOSED':2}
+    result={}
+    for state in (aa,bb):
+        for r in state.get('plays') or []:
+            if not isinstance(r,dict) or not r.get('day'):continue
+            k=str(r['day'])
+            old=result.get(k)
+            if old is None or score.get(r.get('status'),-1)>score.get(old.get('status'),-1):result[k]=dict(r)
+    return {'start_key':_key_min(aa.get('start_key'),bb.get('start_key')) or '',
+            'blocked_days':sorted(set(aa.get('blocked_days') or []).union(bb.get('blocked_days') or []))[-1200:],
+            'plays':sorted(result.values(),key=lambda r:r['day'])[-1200:],
+            'rules_version':V70_RULES_VERSION}
+
 # ============================================================
 # V27 ELITE + STANDARD — AUTO WARMUP / SOLO FORWARD
 # Stato aggiuntivo nello stesso JSON HARD LOCK, nessun reset legacy.
@@ -3965,6 +4377,8 @@ class MultiOnlyEngine:
         self.v52 = V52LiveTracker()
         self.v55 = V55LiveTracker()
         self.v56 = V56SuperCoreTracker()
+        self.v67 = V67DailyTracker()
+        self.v70 = V70DailyTracker()
         self.state_revision = 0
         self.state_load_info = {"loaded": False, "path": None, "reason": "not-run", "source": "-"}
         self.load_state()
@@ -4026,6 +4440,8 @@ class MultiOnlyEngine:
             self.v52 = V52LiveTracker(data.get(V52_KEY))
             self.v55 = V55LiveTracker(data.get(V55_KEY))
             self.v56 = V56SuperCoreTracker(data.get(V56_KEY))
+            self.v67 = V67DailyTracker(data.get(V67_KEY))
+            self.v70 = V70DailyTracker(data.get(V70_KEY))
             self.state_revision = max(0, int(data.get("multi_state_revision", 0) or 0))
             self.processed = [str(x) for x in data.get("processed", []) if isinstance(x, str)][-PROCESSED_MAX:]
             self.processed_set = set(self.processed)
@@ -4077,7 +4493,9 @@ class MultiOnlyEngine:
         data[V52_KEY] = self.v52.dump()
         data[V55_KEY] = self.v55.dump()
         data[V56_KEY] = self.v56.dump()
-        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_MULTI_V55_V56_CORE_LIVE_v20.9.2_HARD_LOCK"
+        data[V67_KEY] = self.v67.dump()
+        data[V70_KEY] = self.v70.dump()
+        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_MULTI_V55_V56_CORE_LIVE_V67_DAILY_V70_SHADOW_v20.9.2_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
 
         # HARD LOCK 3/3 — il backup già presente è il pavimento locale.
@@ -4101,7 +4519,7 @@ class MultiOnlyEngine:
         self.state_revision = max(int(self.state_revision), remote_rev) + 1
         data["multi_state_revision"] = int(self.state_revision)
         data["saved_at"] = now_dt().isoformat(timespec="seconds")
-        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_MULTI_V55_V56_CORE_LIVE_v20.9.2_HARD_LOCK"
+        data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_MULTI_V55_V56_CORE_LIVE_V67_DAILY_V70_SHADOW_v20.9.2_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
         # Il ramo forward viene fuso anche se un runner remoto porta uno state vecchio.
         data[V27_KEY] = _merge_forward_tracker_state(data.get(V27_KEY), self.v27.dump())
@@ -4110,12 +4528,16 @@ class MultiOnlyEngine:
         data[V52_KEY] = _merge_v52_state(data.get(V52_KEY), self.v52.dump())
         data[V55_KEY] = _merge_v55_state(data.get(V55_KEY), self.v55.dump())
         data[V56_KEY] = _merge_v56_state(data.get(V56_KEY), self.v56.dump())
+        data[V67_KEY] = _merge_v67_state(data.get(V67_KEY), self.v67.dump())
+        data[V70_KEY] = _merge_v70_state(data.get(V70_KEY), self.v70.dump())
         self.v27 = V27Tracker(data[V27_KEY])
         self.v28 = V28Tracker(data[V28_KEY])
         self.v38 = V38Tracker(data[V38_KEY])
         self.v52 = V52LiveTracker(data[V52_KEY])
         self.v55 = V55LiveTracker(data[V55_KEY])
         self.v56 = V56SuperCoreTracker(data[V56_KEY])
+        self.v67 = V67DailyTracker(data[V67_KEY])
+        self.v70 = V70DailyTracker(data[V70_KEY])
 
         # Ricarica il merge prima della scrittura per mantenere record/pending monotoni.
         self.multichannel.load(data.get("multichannel_bd12_ed12_o2f12_v1"))
@@ -4157,6 +4579,8 @@ class MultiOnlyEngine:
             f"V52 MULTI LIVE: {len(self.v52.plays)} segnali | /v52\n"
             f"V55 INCROCI LIVE: {len(self.v55.plays)} segnali | /v55\n"
             f"V56 SUPER CORE LIVE: {len(self.v56.plays)} selezioni | /v56\n"
+            f"V67 DAILY {V67_MODE}: {len(self.v67.plays)} giornate | /v67\n"
+            f"V70 DAILY {V70_MODE}: {len(self.v70.plays)} giornate | /v70\n"
             f"V38 DAILY SHADOW: CONTROL {len([r for r in self.v38.plays if r.get('policy')=='CONTROL'])} coppie | ACTIVE {len([r for r in self.v38.plays if r.get('policy')=='ACTIVE'])} coppie | /v38\n"
             f"v20.7.1 forward base: {mc.v2071_started_from_key or '-'} | scan da fix {max(0, mc.scans-mc.v2071_scans_base)} | STD da fix {max(0, mc.signals-mc.v2071_signals_base)}\n"
             f"PRIME A start: {mc.prime_a_started_from_key or '-'}\n"
@@ -4199,6 +4623,8 @@ class MultiOnlyEngine:
             "• 🚀 V52 MULTI LIVE: tutti i segnali 80-86/38-39/60-61/02-09/71-78, senza limite al giorno, H1\n"
             "• 🎯 V38 DAILY SHADOW: CONTROL max6 / ACTIVE max8, A FAST+A2+V28, H1 e saldo giornaliero\n"
             "• 🏆 V56 SUPER CORE LIVE: primo V52/giorno + primo V28 ELITE/giorno, 2 H1 max, nessuna seconda puntata\n"
+            "• 🎯 V67 DAILY SHADOW: V66 alle 16:00; dopo MISS primo V52 successivo diverso, 1 H1\n"
+            "• 🔢 V70 DAILY SHADOW: prima ripetizione resto90 (12 draw) dopo 08:00; terna V69 e ambo V59 SEPARATI H1\n"
             "• C legacy shadow; B legacy congelato\n"
             f"• SUPER operativo solo A/A2 se support_sum≥{MULTI_SUPER_GATE}; TRIANGLE OFF shadow\n\n"
             "PAUSATI (state conservato): FOCUS, INCROCIO, CORE e tutti i legacy.\n\n"
@@ -4209,6 +4635,8 @@ class MultiOnlyEngine:
             "/v52 — V52 MULTI LIVE: segnali/HIT/MISS/saldo\n"
             "/v55 — V55 INCROCI LIVE: segnali/HIT/MISS/saldo\n"
             "/v56 — SUPER CORE LIVE: segnali scelti/HIT/MISS/saldo virtuale\n"
+            "/v67 — V66 16:00 e 2° V52 dopo MISS (SHADOW)\n"
+            "/v70 — V69 tripla somma + V59 ambo stesso concorso (SHADOW)\n"
             "/status — feed + state + statistiche\n"
             "/verificatutto — audit completo\n"
             "/menu — comandi"
@@ -4252,6 +4680,16 @@ async def cmd_v56(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, engine.v56.report(engine.multichannel.history))
 
 
+async def cmd_v67(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.v67.report(engine.multichannel.history))
+
+
+async def cmd_v70(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.v70.report(engine.multichannel.history))
+
+
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].menu_text())
 
@@ -4265,6 +4703,8 @@ async def setup_commands(app):
         BotCommand("v52", "V52 MULTI LIVE H1"),
         BotCommand("v55", "V55 incroci LIVE H1"),
         BotCommand("v56", "V56 SUPER CORE LIVE H1"),
+        BotCommand("v67", "V67 due ambi H1 condizionati SHADOW"),
+        BotCommand("v70", "V70 tripla+ambo somma H1 SHADOW"),
         BotCommand("status", "Stato MULTI + Q + 7/9 LIVE + state"),
         BotCommand("verificatutto", "Audit MULTI/PRIME/Q/7/9 LIVE"),
         BotCommand("menu", "Comandi attivi"),
@@ -4291,6 +4731,8 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         engine.v52.initialize(mc.history)
         engine.v55.initialize(mc.history)
         engine.v56.initialize(mc.history, engine.v52, engine.v28)
+        engine.v67.initialize(mc.history)
+        engine.v70.initialize(mc.history)
         # Warmup bootstrap: arma solo una previsione sulla prossima estrazione.
         await v27_notify_latest(engine, app, notify=notify)
         engine.save_state(git=True, force_git=True)
@@ -4310,8 +4752,10 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         v52_results = engine.v52.close_with_draw(r, previous_row, prev_time)
         v55_results = engine.v55.close_with_draw(r, previous_row)
         v56_results = engine.v56.close_with_draw(r, previous_row)
+        v67_results = engine.v67.close_with_draw(r, previous_row)
+        v70_results = engine.v70.close_with_draw(r, previous_row)
         events.extend(evs)
-        if v52_results or v55_results or v56_results:
+        if v52_results or v55_results or v56_results or v67_results or v70_results:
             # Gli esiti sono fissati sul disco prima di qualsiasi invio Telegram.
             engine.save_state(git=False)
         if notify and V52_LIVE_NOTIFY and v52_results:
@@ -4320,6 +4764,10 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
             await engine.tg(app, '\n\n'.join(v55_results))
         if notify and V56_LIVE_NOTIFY and v56_results:
             await engine.tg(app, '\n\n'.join(v56_results))
+        if notify and V67_NOTIFY and v67_results:
+            await engine.tg(app, '\n\n'.join(v67_results))
+        if notify and V70_NOTIFY and v70_results:
+            await engine.tg(app, '\n\n'.join(v70_results))
         if notify and V38_NOTIFY and v38_results:
             await engine.tg(app, '\n'.join(v38_results))
         if notify:
@@ -4338,13 +4786,17 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     v52_initialized = engine.v52.initialize(mc.history)
     v55_initialized = engine.v55.initialize(mc.history)
     v56_initialized = engine.v56.initialize(mc.history, engine.v52, engine.v28)
+    v67_initialized = engine.v67.initialize(mc.history)
+    v70_initialized = engine.v70.initialize(mc.history)
     sig = mc.arm() if mc.history else None
     v27_updated = await v27_notify_latest(engine, app, notify=notify)
     v38_messages = engine.v38.arm(mc.history, mc, engine.v28)
     v52_messages = engine.v52.arm(mc.history)
     v55_messages = engine.v55.arm(mc.history, engine.v52)
     v56_messages = engine.v56.arm(mc.history, engine.v52, engine.v28)
-    if v52_messages or v55_messages or v56_messages:
+    v67_messages = engine.v67.arm(mc.history, engine.v52)
+    v70_messages = engine.v70.arm(mc.history)
+    if v52_messages or v55_messages or v56_messages or v67_messages or v70_messages:
         # Salvataggio del doppio tracker prima di qualsiasi notifica LIVE.
         engine.save_state(git=False)
     if notify and V52_LIVE_NOTIFY and v52_messages:
@@ -4353,6 +4805,10 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         await engine.tg(app, '\n\n'.join(v55_messages))
     if notify and V56_LIVE_NOTIFY and v56_messages:
         await engine.tg(app, '\n\n'.join(v56_messages))
+    if notify and V67_NOTIFY and v67_messages:
+        await engine.tg(app, '\n\n'.join(v67_messages))
+    if notify and V70_NOTIFY and v70_messages:
+        await engine.tg(app, '\n\n'.join(v70_messages))
     if notify and V38_NOTIFY and v38_messages:
         await engine.tg(app, '\n\n'.join(v38_messages))
     if sig and notify and mc.should_notify_signal(sig):
@@ -4360,7 +4816,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         if msg:
             await engine.tg(app, msg)
 
-    if unseen or sig or events or v27_updated or v38_initialized or v38_messages or v52_initialized or v52_messages or v55_initialized or v55_messages or v56_initialized or v56_messages:
+    if unseen or sig or events or v27_updated or v38_initialized or v38_messages or v52_initialized or v52_messages or v55_initialized or v55_messages or v56_initialized or v56_messages or v67_initialized or v67_messages or v70_initialized or v70_messages:
         engine.last_draw_key = mc.history[-1]["key"] if mc.history else engine.last_draw_key
         engine.save_state(git=True)
 
@@ -4443,12 +4899,14 @@ async def startup(engine, app):
         "🚀 V52 MULTI LIVE: tutti gli ambi delle 5 regole, ripetizioni comprese, H1, /v52.\n"
         "🧬 V55 INCROCI LIVE: ambata H1 precedente + seconda coppia V52 entro 60 min, singolo incrocio H1, /v55.\n"
         "🏆 V56 SUPER CORE LIVE: primo V52/giorno + primo V28 ELITE/giorno; nessuna puntata duplicata, /v56.\n"
+        "🎯 V67 DAILY SHADOW: V66 alle 16:00, poi primo V52 diverso dopo MISS, /v67.\n"
+        "🔢 V70 DAILY SHADOW: primo resto90 ripetuto entro12 dopo 08:00 → terna V69 + ambo V59 H1 separati, /v70.\n"
         "🎯 V38 DAILY SHADOW: PRIME A FAST + A2 BASE1/BASE2 + V28, CONTROL max6, ACTIVE max8, /v38.\n"
         "💶 QUATERNA: 1€/colpo H1-H5, STOP al primo 2/4+; shadow fino H5.\n\n"
         "⏸️ FOCUS / INCROCIO / CORE / ENGINE / SOSIA / legacy: PAUSATI.\n"
         "✅ Il loro state viene conservato ma NON aggiornato.\n"
         "🚫 Nessun backfill QUATERNA/7/9/D/X; A/A2 invariati; C/B legacy preservati.\n\n"
-        "Comandi: /multi /v27 /v28 /v38 /v52 /v55 /v56 /status /verificatutto /menu"
+        "Comandi: /multi /v27 /v28 /v38 /v52 /v55 /v56 /v67 /v70 /status /verificatutto /menu"
     )
 
     if sig and mc.should_notify_signal(sig):
@@ -4855,7 +5313,30 @@ def run_self_test():
     assert prior.initialize([r0], _T52(), _T28())
     assert '2100-01-01|V28_ELITE' in prior.blocked
     assert '2100-01-01|V52_DAILY' in prior.blocked
-    print("SELF-TEST OK: v20.9.2 + V27 + V28 + V38 + V52 MULTI + V55 + V56 CORE LIVE + HARD LOCK")
+    # --- V70: somma 1009, tripla 19-71-72 e ambo 36-58 ---
+    v70_nums=[12,15,19,24,26,34,35,36,45,54,59,61,62,63,65,69,76,79,87,88]
+    v70_formula=V70DailyTracker.formula(v70_nums)
+    assert v70_formula and v70_formula['sum']==1009
+    assert v70_formula['last_digit']==9 and v70_formula['reduced']==19
+    assert v70_formula['ambo']==[36,58] and v70_formula['triplet']==[19,71,72]
+    assert V70DailyTracker.formula([1]*20) is None  # duplicati vietati
+    assert V70DailyTracker.formula([]) is None
+    v70_row={'day':'2100-01-01','key':'2100-01-01#100','draw_id':100,'time':'08:20','nums':v70_nums}
+    v70_future={'day':'2100-01-01','key':'2100-01-01#101','draw_id':101,'time':'08:25',
+                'nums':list(range(1,21))}
+    v70_tracker=V70DailyTracker({'start_key':'2100-01-01#001',
+        'plays':[{'day':'2100-01-01','origin_key':v70_row['key'],
+                  'target_key':v70_future['key'],'status':'PENDING',
+                  'ambo':[36,58],'triplet':[19,71,72]}]})
+    assert v70_tracker.close_with_draw(v70_future,v70_row)
+    assert v70_tracker.plays[0]['status']=='CLOSED'
+    assert v70_tracker.plays[0]['triplet_hits']==1
+    assert v70_tracker.plays[0]['ambo_hit'] is False
+    assert not v70_tracker.close_with_draw(v70_future,v70_row)  # duplicate ignored
+    snapshot=_merge_v70_state({'start_key':'2100-01-01#001','plays':[dict(v70_tracker.plays[0],status='PENDING')]},
+                              {'start_key':'2100-01-01#001','plays':v70_tracker.plays})
+    assert snapshot['plays'][0]['status']=='CLOSED'
+    print("SELF-TEST OK: v20.9.2 + V27 + V28 + V38 + V52 MULTI + V55 + V56 + V67 + V70 + HARD LOCK")
 
 
 # ============================================================
@@ -4883,6 +5364,8 @@ async def main():
     app.add_handler(CommandHandler("v52", cmd_v52))
     app.add_handler(CommandHandler("v55", cmd_v55))
     app.add_handler(CommandHandler("v56", cmd_v56))
+    app.add_handler(CommandHandler("v67", cmd_v67))
+    app.add_handler(CommandHandler("v70", cmd_v70))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("verificatutto", cmd_verificatutto))
     app.add_handler(CommandHandler("menu", cmd_menu))
