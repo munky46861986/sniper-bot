@@ -103,7 +103,7 @@ PERSIST_GIT_STATE = os.getenv("PERSIST_GIT_STATE", "1") != "0"
 GIT_COMMIT_MIN_SECONDS = int(os.getenv("GIT_COMMIT_MIN_SECONDS", "300"))
 PROCESSED_MAX = int(os.getenv("PROCESSED_MAX", "12000"))
 
-CODE_RELEASE = "v20.9.2+V27+V28+V38+V52-MULTI+V55-INCROCI+V56-CORE-LIVE+V67-DAILY-SHADOW+V70-DAILY-SHADOW"
+CODE_RELEASE = "v20.9.2+V27+V28+V38+V52-MULTI+V55-INCROCI+V56-CORE-LIVE+V67+V70+V72-DAILY-SHADOW"
 STATE_GUARD_SCHEMA = 2092
 STATE_HISTORY_RECOVERY_COMMITS = max(10, min(120, int(os.getenv("STATE_HISTORY_RECOVERY_COMMITS", "60"))))
 
@@ -900,6 +900,9 @@ def _merge_state_data(local_data, remote_data):
     merged_v70 = _merge_v70_state(local_data.get(V70_KEY), remote_data.get(V70_KEY))
     if merged_v70 is not None:
         base[V70_KEY] = merged_v70
+    merged_v72 = _merge_v72_state(local_data.get(V72_KEY), remote_data.get(V72_KEY))
+    if merged_v72 is not None:
+        base[V72_KEY] = merged_v72
     vals=[]; seen=set()
     for x in list(local_data.get("processed") or [])+list(remote_data.get("processed") or []):
         if isinstance(x,str) and x not in seen: seen.add(x); vals.append(x)
@@ -3864,6 +3867,146 @@ def _merge_v70_state(a,b):
             'rules_version':V70_RULES_VERSION}
 
 # ============================================================
+# V72 DAILY SHADOW — coppie distanza 5 entro stessa decina
+# Formula congelata dal test esplorativo V72. UN AMBO H1/GIORNO.
+# Ritardi cumulativi aggiornati soltanto da estrazioni osservate.
+# ============================================================
+V72_KEY = 'v72_decine_cross_max_delay_daily_shadow_v1'
+V72_ENABLED = os.getenv('V72_ENABLED', '1').lower() not in {'0','false','no','off'}
+V72_NOTIFY = os.getenv('V72_NOTIFY', '1').lower() not in {'0','false','no','off'}
+V72_RULES_VERSION = 'V72_SAME_DECADE_CROSS_MAX_SUM_DELAY_H1_V1'
+
+class V72DailyTracker:
+    STARTS = tuple(n for n in range(1,86) if n//10 == (n+5)//10)
+    def __init__(self,data=None):
+        d=data if isinstance(data,dict) else {}
+        self.start_key=str(d.get('start_key') or '')
+        self.blocked_days=set(d.get('blocked_days') or [])
+        self.plays=[dict(v) for v in (d.get('plays') or []) if isinstance(v,dict) and v.get('day')][-1200:]
+        self.last_seen={int(k):int(v) for k,v in (d.get('last_seen') or {}).items() if str(k).isdigit() and str(v).isdigit()}
+        self.index=int(d.get('index') or 0)
+        self.last_observed_key=str(d.get('last_observed_key') or '')
+        self.partial_history=bool(d.get('partial_history',True))
+    def dump(self):
+        return {'start_key':self.start_key,'blocked_days':sorted(self.blocked_days)[-1200:],
+                'plays':self.plays[-1200:], 'last_seen':{str(k):v for k,v in self.last_seen.items()},
+                'index':self.index,'last_observed_key':self.last_observed_key,
+                'partial_history':self.partial_history,'rules_version':V72_RULES_VERSION}
+    def observe(self,row):
+        key=str(row.get('key') or '')
+        if not key or (self.last_observed_key and order_key(key)<=order_key(self.last_observed_key)):
+            return False
+        nums=row.get('nums') or []
+        if len(nums)!=20 or len(set(nums))!=20 or not all(1<=int(n)<=90 for n in nums):return False
+        self.index+=1
+        for num in nums:self.last_seen[int(num)]=self.index
+        self.last_observed_key=key
+        return True
+    def initialize(self,history):
+        if self.start_key or not history:return False
+        # Bootstrap solo sullo storico disponibile, nessun replay di segnali.
+        for row in history:self.observe(row)
+        last=history[-1]
+        self.start_key=str(last.get('key') or '')
+        self.blocked_days.add(str(last.get('day') or ''))
+        return True
+    def candidate(self,nums):
+        if len(nums)!=20 or len(set(nums))!=20:return None
+        base=set(nums)
+        roots=[a for a in self.STARTS if a in base and (a+5) in base]
+        if len(roots)<2:return None
+        best=None
+        from itertools import combinations
+        for a,b in combinations(roots,2):
+            x=((a+b-1)%90)+1
+            y=((a+b+9)%90)+1
+            v=90-y;u=90-x
+            quartet=(x,y,v,u)
+            if min(quartet)<1 or len(set(quartet))!=4:continue
+            # Formula storica: al momento dell'origine, ritardi PRIMA
+            # dell'aggiornamento con i numeri della stessa estrazione.
+            score=sum(self.index-self.last_seen.get(n,-1) for n in quartet)
+            key=(-score,a,b)
+            if best is None or key<best[0]:best=(key,a,b,quartet,score)
+        if best is None:return None
+        _,a,b,quartet,score=best
+        return {'pairs':[[a,a+5],[b,b+5]],'quad':list(quartet),
+                'ambo':[quartet[0],quartet[2]],'score':score}
+    def arm(self,history,clock=None,check_freshness=True):
+        if not V72_ENABLED or not history:return []
+        if self.initialize(history):return []
+        last=history[-1];key=str(last.get('key') or '')
+        if not key or not self.start_key or order_key(key)<=order_key(self.start_key):return []
+        stamp=V52LiveTracker._draw_stamp(last);now=clock or now_dt()
+        if check_freshness and (stamp is None or not 0 <= (now-stamp).total_seconds()<290):return []
+        day=str(last.get('day') or '')
+        # Prima si genera, poi si osserva l'origine; stato causale.
+        if self.last_observed_key==key:return []
+        already=day in self.blocked_days or any(r.get('day')==day for r in self.plays)
+        calc=None if already else self.candidate(last.get('nums') or [])
+        self.observe(last)
+        if calc is None:return []
+        target=V52LiveTracker._next_expected_key(last)
+        if not target or target.split('#')[0]!=day:return []
+        item={'id':'V72|'+day,'day':day,'origin_key':key,'target_key':target,
+              'status':'PENDING','pairs':calc['pairs'],'quad':calc['quad'],
+              'ambo':calc['ambo'],'score':calc['score'],'hit':None,'gross':None}
+        self.plays.append(item);self.plays=self.plays[-1200:]
+        pairs=' + '.join(V67DailyTracker._pair_txt(p) for p in item['pairs'])
+        return [f'🎯 V72 SHADOW — AMBO CROSS H1\nOrigine {key} | coppie {pairs}\n'
+                f'Quaterna: {V67DailyTracker._pair_txt(item["quad"])}\n'
+                f'AMBO: {V67DailyTracker._pair_txt(item["ambo"])} | somma ritardi {item["score"]}\n'
+                f'Verifica al prossimo concorso {target}. 1 sola simulazione da €1; nessuna giocata automatica.']
+    def close_with_draw(self,newest,previous):
+        out=[];key=str(newest.get('key') or ''); kn=order_key(key)
+        if kn is None:return out
+        for r in self.plays:
+            if r.get('status')!='PENDING':continue
+            kt=order_key(r.get('target_key'))
+            if kt is None or kn<kt:continue
+            if key==r['target_key'] and previous and V52LiveTracker._consecutive(previous,newest):
+                nums=set(newest.get('nums') or [])
+                if len(nums)==20 and all(1<=int(n)<=90 for n in nums):
+                    hit=all(n in nums for n in r['ambo']);gross=14 if hit else 0
+                    r.update(status='CLOSED',result_key=key,hit=bool(hit),gross=gross)
+                    out.append(f'{"✅" if hit else "❌"} V72 AMBO H1 {V67DailyTracker._pair_txt(r["ambo"])} '
+                               f'| {"HIT" if hit else "MISS"} | €{gross-1:+d} virtuali')
+                    continue
+            r.update(status='MISSING',result_key=key)
+            out.append(f'⚠️ V72 H1 non verificabile per {r["target_key"]}; nessun HIT attribuito.')
+        return out
+    def report(self,history):
+        closed=[r for r in self.plays if r.get('status')=='CLOSED']
+        won=sum(r.get('hit') is True for r in closed)
+        day=str(history[-1].get('day')) if history else now_dt().date().isoformat()
+        today=next((r for r in self.plays if r.get('day')==day),None)
+        return ('🎯 V72 DAILY SHADOW — COPPIE NELLA STESSA DECINA\n'
+                f'Primo giorno attivo dopo installazione: {self.start_key or "-"}\n'
+                f'Segnali {len(self.plays)}, chiusi {len(closed)}, HIT {won}, '
+                f'netto ipotetico €{14*won-len(closed):+d}\n'
+                f'Ultima osservazione {self.last_observed_key or "-"}; ritardi da dati locali disponibili.\n'
+                f'Oggi: {today["status"]+" "+V67DailyTracker._pair_txt(today["ambo"]) if today else "nessun segnale"}\n'
+                'Un ambo H1 al giorno, quando esiste segnale; solo monitoraggio.')
+
+def _merge_v72_state(a,b):
+    aa=a if isinstance(a,dict) else {};bb=b if isinstance(b,dict) else {}
+    if not aa and not bb:return None
+    # Gli accumuli last_seen vanno presi dal ramo più avanzato.
+    newest=max((aa,bb),key=lambda d:(int(d.get('index') or 0),order_key(d.get('last_observed_key')) or (-1,-1)))
+    records={};rank={'PENDING':0,'MISSING':1,'CLOSED':2}
+    for src in (aa,bb):
+        for r in src.get('plays') or []:
+            if not isinstance(r,dict) or not r.get('day'):continue
+            old=records.get(r['day'])
+            if old is None or rank.get(r.get('status'),-1)>rank.get(old.get('status'),-1):records[r['day']]=dict(r)
+    merged=dict(newest)
+    merged['start_key']=_key_min(aa.get('start_key'),bb.get('start_key')) or ''
+    merged['blocked_days']=sorted(set(aa.get('blocked_days') or [])|set(bb.get('blocked_days') or []))[-1200:]
+    merged['plays']=sorted(records.values(),key=lambda r:r['day'])[-1200:]
+    merged['rules_version']=V72_RULES_VERSION
+    return merged
+
+# ============================================================
 # V27 ELITE + STANDARD — AUTO WARMUP / SOLO FORWARD
 # Stato aggiuntivo nello stesso JSON HARD LOCK, nessun reset legacy.
 # ============================================================
@@ -4379,6 +4522,7 @@ class MultiOnlyEngine:
         self.v56 = V56SuperCoreTracker()
         self.v67 = V67DailyTracker()
         self.v70 = V70DailyTracker()
+        self.v72 = V72DailyTracker()
         self.state_revision = 0
         self.state_load_info = {"loaded": False, "path": None, "reason": "not-run", "source": "-"}
         self.load_state()
@@ -4442,6 +4586,7 @@ class MultiOnlyEngine:
             self.v56 = V56SuperCoreTracker(data.get(V56_KEY))
             self.v67 = V67DailyTracker(data.get(V67_KEY))
             self.v70 = V70DailyTracker(data.get(V70_KEY))
+            self.v72 = V72DailyTracker(data.get(V72_KEY))
             self.state_revision = max(0, int(data.get("multi_state_revision", 0) or 0))
             self.processed = [str(x) for x in data.get("processed", []) if isinstance(x, str)][-PROCESSED_MAX:]
             self.processed_set = set(self.processed)
@@ -4495,6 +4640,7 @@ class MultiOnlyEngine:
         data[V56_KEY] = self.v56.dump()
         data[V67_KEY] = self.v67.dump()
         data[V70_KEY] = self.v70.dump()
+        data[V72_KEY] = self.v72.dump()
         data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_MULTI_V55_V56_CORE_LIVE_V67_DAILY_V70_SHADOW_v20.9.2_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
 
@@ -4530,6 +4676,7 @@ class MultiOnlyEngine:
         data[V56_KEY] = _merge_v56_state(data.get(V56_KEY), self.v56.dump())
         data[V67_KEY] = _merge_v67_state(data.get(V67_KEY), self.v67.dump())
         data[V70_KEY] = _merge_v70_state(data.get(V70_KEY), self.v70.dump())
+        data[V72_KEY] = _merge_v72_state(data.get(V72_KEY), self.v72.dump())
         self.v27 = V27Tracker(data[V27_KEY])
         self.v28 = V28Tracker(data[V28_KEY])
         self.v38 = V38Tracker(data[V38_KEY])
@@ -4538,6 +4685,7 @@ class MultiOnlyEngine:
         self.v56 = V56SuperCoreTracker(data[V56_KEY])
         self.v67 = V67DailyTracker(data[V67_KEY])
         self.v70 = V70DailyTracker(data[V70_KEY])
+        self.v72 = V72DailyTracker(data[V72_KEY])
 
         # Ricarica il merge prima della scrittura per mantenere record/pending monotoni.
         self.multichannel.load(data.get("multichannel_bd12_ed12_o2f12_v1"))
@@ -4581,6 +4729,7 @@ class MultiOnlyEngine:
             f"V56 SUPER CORE LIVE: {len(self.v56.plays)} selezioni | /v56\n"
             f"V67 DAILY {V67_MODE}: {len(self.v67.plays)} giornate | /v67\n"
             f"V70 DAILY {V70_MODE}: {len(self.v70.plays)} giornate | /v70\n"
+            f"V72 DAILY SHADOW: {len(self.v72.plays)} giornate | /v72\n"
             f"V38 DAILY SHADOW: CONTROL {len([r for r in self.v38.plays if r.get('policy')=='CONTROL'])} coppie | ACTIVE {len([r for r in self.v38.plays if r.get('policy')=='ACTIVE'])} coppie | /v38\n"
             f"v20.7.1 forward base: {mc.v2071_started_from_key or '-'} | scan da fix {max(0, mc.scans-mc.v2071_scans_base)} | STD da fix {max(0, mc.signals-mc.v2071_signals_base)}\n"
             f"PRIME A start: {mc.prime_a_started_from_key or '-'}\n"
@@ -4625,6 +4774,7 @@ class MultiOnlyEngine:
             "• 🏆 V56 SUPER CORE LIVE: primo V52/giorno + primo V28 ELITE/giorno, 2 H1 max, nessuna seconda puntata\n"
             "• 🎯 V67 DAILY SHADOW: V66 alle 16:00; dopo MISS primo V52 successivo diverso, 1 H1\n"
             "• 🔢 V70 DAILY SHADOW: prima ripetizione resto90 (12 draw) dopo 08:00; terna V69 e ambo V59 SEPARATI H1\n"
+            "• 🎯 V72 DAILY SHADOW: ambo CROSS da coppie nella stessa decina, 1 segnale giornaliero H1\n"
             "• C legacy shadow; B legacy congelato\n"
             f"• SUPER operativo solo A/A2 se support_sum≥{MULTI_SUPER_GATE}; TRIANGLE OFF shadow\n\n"
             "PAUSATI (state conservato): FOCUS, INCROCIO, CORE e tutti i legacy.\n\n"
@@ -4637,6 +4787,7 @@ class MultiOnlyEngine:
             "/v56 — SUPER CORE LIVE: segnali scelti/HIT/MISS/saldo virtuale\n"
             "/v67 — V66 16:00 e 2° V52 dopo MISS (SHADOW)\n"
             "/v70 — V69 tripla somma + V59 ambo stesso concorso (SHADOW)\n"
+            "/v72 — AMBO CROSS coppie stessa decina H1 (SHADOW)\n"
             "/status — feed + state + statistiche\n"
             "/verificatutto — audit completo\n"
             "/menu — comandi"
@@ -4690,6 +4841,11 @@ async def cmd_v70(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, engine.v70.report(engine.multichannel.history))
 
 
+async def cmd_v72(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine=context.application.bot_data["engine"]
+    await reply(update,engine.v72.report(engine.multichannel.history))
+
+
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].menu_text())
 
@@ -4705,6 +4861,7 @@ async def setup_commands(app):
         BotCommand("v56", "V56 SUPER CORE LIVE H1"),
         BotCommand("v67", "V67 due ambi H1 condizionati SHADOW"),
         BotCommand("v70", "V70 tripla+ambo somma H1 SHADOW"),
+        BotCommand("v72", "V72 ambo CROSS decine H1 SHADOW"),
         BotCommand("status", "Stato MULTI + Q + 7/9 LIVE + state"),
         BotCommand("verificatutto", "Audit MULTI/PRIME/Q/7/9 LIVE"),
         BotCommand("menu", "Comandi attivi"),
@@ -4733,6 +4890,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         engine.v56.initialize(mc.history, engine.v52, engine.v28)
         engine.v67.initialize(mc.history)
         engine.v70.initialize(mc.history)
+        engine.v72.initialize(mc.history)
         # Warmup bootstrap: arma solo una previsione sulla prossima estrazione.
         await v27_notify_latest(engine, app, notify=notify)
         engine.save_state(git=True, force_git=True)
@@ -4754,8 +4912,12 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         v56_results = engine.v56.close_with_draw(r, previous_row)
         v67_results = engine.v67.close_with_draw(r, previous_row)
         v70_results = engine.v70.close_with_draw(r, previous_row)
+        v72_results = engine.v72.close_with_draw(r, previous_row)
+        # Avanza l'indice dello storico V72 su ogni estrazione, anche nel catch-up.
+        if r is not unseen[-1]:
+            engine.v72.observe(r)
         events.extend(evs)
-        if v52_results or v55_results or v56_results or v67_results or v70_results:
+        if v52_results or v55_results or v56_results or v67_results or v70_results or v72_results:
             # Gli esiti sono fissati sul disco prima di qualsiasi invio Telegram.
             engine.save_state(git=False)
         if notify and V52_LIVE_NOTIFY and v52_results:
@@ -4768,6 +4930,8 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
             await engine.tg(app, '\n\n'.join(v67_results))
         if notify and V70_NOTIFY and v70_results:
             await engine.tg(app, '\n\n'.join(v70_results))
+        if notify and V72_NOTIFY and v72_results:
+            await engine.tg(app, '\n\n'.join(v72_results))
         if notify and V38_NOTIFY and v38_results:
             await engine.tg(app, '\n'.join(v38_results))
         if notify:
@@ -4788,6 +4952,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     v56_initialized = engine.v56.initialize(mc.history, engine.v52, engine.v28)
     v67_initialized = engine.v67.initialize(mc.history)
     v70_initialized = engine.v70.initialize(mc.history)
+    v72_initialized = engine.v72.initialize(mc.history)
     sig = mc.arm() if mc.history else None
     v27_updated = await v27_notify_latest(engine, app, notify=notify)
     v38_messages = engine.v38.arm(mc.history, mc, engine.v28)
@@ -4796,7 +4961,10 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     v56_messages = engine.v56.arm(mc.history, engine.v52, engine.v28)
     v67_messages = engine.v67.arm(mc.history, engine.v52)
     v70_messages = engine.v70.arm(mc.history)
-    if v52_messages or v55_messages or v56_messages or v67_messages or v70_messages:
+    v72_messages = engine.v72.arm(mc.history)
+    if mc.history and not v72_messages:
+        engine.v72.observe(mc.history[-1])
+    if v52_messages or v55_messages or v56_messages or v67_messages or v70_messages or v72_messages:
         # Salvataggio del doppio tracker prima di qualsiasi notifica LIVE.
         engine.save_state(git=False)
     if notify and V52_LIVE_NOTIFY and v52_messages:
@@ -4809,6 +4977,8 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         await engine.tg(app, '\n\n'.join(v67_messages))
     if notify and V70_NOTIFY and v70_messages:
         await engine.tg(app, '\n\n'.join(v70_messages))
+    if notify and V72_NOTIFY and v72_messages:
+        await engine.tg(app, '\n\n'.join(v72_messages))
     if notify and V38_NOTIFY and v38_messages:
         await engine.tg(app, '\n\n'.join(v38_messages))
     if sig and notify and mc.should_notify_signal(sig):
@@ -4816,7 +4986,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         if msg:
             await engine.tg(app, msg)
 
-    if unseen or sig or events or v27_updated or v38_initialized or v38_messages or v52_initialized or v52_messages or v55_initialized or v55_messages or v56_initialized or v56_messages or v67_initialized or v67_messages or v70_initialized or v70_messages:
+    if unseen or sig or events or v27_updated or v38_initialized or v38_messages or v52_initialized or v52_messages or v55_initialized or v55_messages or v56_initialized or v56_messages or v67_initialized or v67_messages or v70_initialized or v70_messages or v72_initialized or v72_messages:
         engine.last_draw_key = mc.history[-1]["key"] if mc.history else engine.last_draw_key
         engine.save_state(git=True)
 
@@ -4906,7 +5076,7 @@ async def startup(engine, app):
         "⏸️ FOCUS / INCROCIO / CORE / ENGINE / SOSIA / legacy: PAUSATI.\n"
         "✅ Il loro state viene conservato ma NON aggiornato.\n"
         "🚫 Nessun backfill QUATERNA/7/9/D/X; A/A2 invariati; C/B legacy preservati.\n\n"
-        "Comandi: /multi /v27 /v28 /v38 /v52 /v55 /v56 /v67 /v70 /status /verificatutto /menu"
+        "Comandi: /multi /v27 /v28 /v38 /v52 /v55 /v56 /v67 /v70 /v72 /status /verificatutto /menu"
     )
 
     if sig and mc.should_notify_signal(sig):
@@ -5366,6 +5536,7 @@ async def main():
     app.add_handler(CommandHandler("v56", cmd_v56))
     app.add_handler(CommandHandler("v67", cmd_v67))
     app.add_handler(CommandHandler("v70", cmd_v70))
+    app.add_handler(CommandHandler("v72", cmd_v72))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("verificatutto", cmd_verificatutto))
     app.add_handler(CommandHandler("menu", cmd_menu))
