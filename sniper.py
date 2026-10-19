@@ -903,6 +903,8 @@ def _merge_state_data(local_data, remote_data):
     merged_v72 = _merge_v72_state(local_data.get(V72_KEY), remote_data.get(V72_KEY))
     if merged_v72 is not None:
         base[V72_KEY] = merged_v72
+    merged_v114 = _merge_v114_state(local_data.get(V114_KEY), remote_data.get(V114_KEY))
+    if merged_v114 is not None: base[V114_KEY] = merged_v114
     vals=[]; seen=set()
     for x in list(local_data.get("processed") or [])+list(remote_data.get("processed") or []):
         if isinstance(x,str) and x not in seen: seen.add(x); vals.append(x)
@@ -4007,6 +4009,244 @@ def _merge_v72_state(a,b):
     return merged
 
 # ============================================================
+# V114 GENERATOR LIVE — monitor scientifico separato (SHADOW)
+# NOTA: +2 e' una trasformazione DIAGNOSTICA, NON l'RNG ufficiale.
+# Non effettua giocate, non altera V72/MULTI o altri segnali.
+# ============================================================
+V114_KEY = "v114_generator_live_monitor_v1"
+V114_ENABLED = os.getenv("V114_ENABLED", "1").lower() not in {"0", "false", "no", "off"}
+V114_NOTIFY = os.getenv("V114_NOTIFY", "1").lower() not in {"0", "false", "no", "off"}
+V114_NOTIFY_EVERY = max(1, int(os.getenv("V114_NOTIFY_EVERY", "1")))
+V114_PAIR_COUNT = 20 * 19  # 380 coppie ordinate di rango Oro1 / Oro2.
+
+
+class V114GeneratorLive:
+    """Test forward: proposta numeri Base (+2) e ranghi Oro meno osservati.
+
+    Lo stato conserva solo statistiche sufficienti. Al riavvio non si sommano
+    contatori provenienti da copie diverse dello stato (evita doppi conteggi).
+    """
+    def __init__(self, data=None):
+        d = data if isinstance(data, dict) else {}
+        self.start_key = str(d.get("start_key") or "")
+        self.last_seen_key = str(d.get("last_seen_key") or "")
+        src = d.get("rank_counts") or []
+        if isinstance(src, list) and len(src) == V114_PAIR_COUNT:
+            self.rank_counts = [max(0, int(x or 0)) for x in src]
+        else:
+            self.rank_counts = [0] * V114_PAIR_COUNT
+        self.boot_n = max(0, int(d.get("boot_n") or 0))
+        self.forward_n = max(0, int(d.get("forward_n") or 0))
+        self.base_tests = max(0, int(d.get("base_tests") or 0))
+        self.base_hit_sum = max(0, int(d.get("base_hit_sum") or 0))
+        self.oro_tests = max(0, int(d.get("oro_tests") or 0))
+        self.oro_hits = max(0, int(d.get("oro_hits") or 0))
+        self.pending = dict(d.get("pending")) if isinstance(d.get("pending"), dict) else None
+        self.last_result = dict(d.get("last_result")) if isinstance(d.get("last_result"), dict) else None
+        self.notify_counter = max(0, int(d.get("notify_counter") or 0))
+
+    @staticmethod
+    def _idx(r1, r2):
+        if not (1 <= r1 <= 20 and 1 <= r2 <= 20) or r1 == r2:
+            return None
+        return (r1 - 1) * 19 + (r2 - 1 - (1 if r2 > r1 else 0))
+
+    @staticmethod
+    def _pair_for_idx(i):
+        a, q = divmod(i, 19)
+        r1 = a + 1
+        r2 = q + 1 + (1 if q + 1 >= r1 else 0)
+        return r1, r2
+
+    @classmethod
+    def _ranks(cls, row):
+        try:
+            nums = [int(x) for x in row.get("nums") or []]
+            a, b = int(row.get("oro")), int(row.get("doppio_oro"))
+        except (ValueError, TypeError):
+            return None
+        if len(nums) != 20 or len(set(nums)) != 20 or not all(1 <= n <= 90 for n in nums):
+            return None
+        if a == b or a not in nums or b not in nums:
+            return None
+        ordered = sorted(nums)
+        return (ordered.index(a) + 1, ordered.index(b) + 1)
+
+    @staticmethod
+    def _forecast_base(nums):
+        try:
+            values = [int(x) for x in nums]
+        except (TypeError, ValueError):
+            return None
+        if len(values) != 20 or len(set(values)) != 20 or not all(1 <= n <= 90 for n in values):
+            return None
+        return sorted(((n + 1) % 90) + 1 for n in values)  # +2, modulo 90
+
+    def initialize(self, history):
+        if self.start_key or not history:
+            return False
+        valid = 0
+        for r in history:
+            ranks = self._ranks(r)
+            if ranks:
+                idx = self._idx(*ranks)
+                self.rank_counts[idx] += 1
+                valid += 1
+        self.boot_n = valid
+        self.start_key = str(history[-1].get("key") or "")
+        self.last_seen_key = self.start_key
+        # Non inventare retro-previsioni: il primo test H1 nasce dal live.
+        return True
+
+    def dump(self):
+        return {"start_key": self.start_key,
+                "last_seen_key": self.last_seen_key,
+                "rank_counts": self.rank_counts,
+                "boot_n": self.boot_n, "forward_n": self.forward_n,
+                "base_tests": self.base_tests, "base_hit_sum": self.base_hit_sum,
+                "oro_tests": self.oro_tests, "oro_hits": self.oro_hits,
+                "pending": self.pending, "last_result": self.last_result,
+                "notify_counter": self.notify_counter,
+                "rules_version": "V114_FIXED_PLUS2_AND_ORO_RANK_AUDIT_V1"}
+
+    def _least_seen_ranks(self):
+        ix = min(range(V114_PAIR_COUNT), key=lambda i: (self.rank_counts[i], i))
+        return self._pair_for_idx(ix)
+
+    def observe(self, row, previous=None):
+        """Scorre solo chiavi nuove, valuta PRIMA di aggiornare le frequenze."""
+        key = str(row.get("key") or "")
+        if not key or (self.last_seen_key and order_key(key) <= order_key(self.last_seen_key)):
+            return None
+        result = None
+        p = self.pending
+        if p:
+            target = p.get("target_key")
+            good = (key == target and previous is not None and
+                    V52LiveTracker._consecutive(previous, row) and
+                    self._ranks(row) is not None)
+            if good:
+                nums = set(int(n) for n in row["nums"])
+                observed_ranks = self._ranks(row)
+                nbase = len(nums.intersection(p.get("base_numbers") or []))
+                orook = tuple(p.get("oro_ranks") or []) == observed_ranks
+                self.base_tests += 1
+                self.base_hit_sum += nbase
+                self.oro_tests += 1
+                self.oro_hits += int(orook)
+                result = {"target": key, "base_hit": nbase,
+                          "oro_ranks_actual": list(observed_ranks), "oro_hit": bool(orook),
+                          "status": "VERIFICATO"}
+            else:
+                result = {"target": str(target), "status": "NON_VERIFICABILE",
+                          "cause": "concorso mancante/non consecutivo o dati Oro invalidi"}
+            self.pending = None
+            self.last_result = result
+        ranks = self._ranks(row)
+        if ranks:
+            self.rank_counts[self._idx(*ranks)] += 1
+            self.forward_n += 1
+        self.last_seen_key = key
+        return result
+
+    def arm(self, history, check_freshness=True, clock=None):
+        if not V114_ENABLED or not history:
+            return None
+        if not self.start_key:
+            self.initialize(history)
+        last = history[-1]
+        key = str(last.get("key") or "")
+        if not key or self.last_seen_key != key:
+            return None
+        if self.pending and self.pending.get("origin_key") == key:
+            return None
+        # Evita segnalazioni retroattive su dati vecchi dopo il riavvio.
+        stamp = V52LiveTracker._draw_stamp(last)
+        now = clock or now_dt()
+        if check_freshness and (stamp is None or not 0 <= (now-stamp).total_seconds() < 290):
+            return None
+        target = V52LiveTracker._next_expected_key(last)
+        predicted = self._forecast_base(last.get("nums") or [])
+        if not target or not predicted or not self._ranks(last):
+            return None
+        self.pending = {"origin_key": key, "target_key": target,
+                        "base_numbers": predicted, "oro_ranks": list(self._least_seen_ranks())}
+        return dict(self.pending)
+
+    def chi2_ratio(self):
+        n = sum(self.rank_counts)
+        if n == 0:
+            return None
+        expected = n / V114_PAIR_COUNT
+        chi = sum((v-expected)**2 / expected for v in self.rank_counts)
+        return chi / (V114_PAIR_COUNT - 1)
+
+    def report(self, history):
+        origin = str(history[-1].get("key") or "-") if history else "-"
+        d = self.pending
+        if d:
+            next_txt = (f'Next {d["target_key"]}: {" ".join(f"{x:02d}" for x in d["base_numbers"])}\n'
+                        f'Ipotesi ranghi Oro1/Oro2: {d["oro_ranks"][0]} / {d["oro_ranks"][1]}')
+        else:
+            next_txt = "Nessuna previsione H1 LIVE armata (in attesa di una nuova estrazione aggiornata)."
+        ratio = self.chi2_ratio()
+        last_txt = ""
+        if self.last_result:
+            z=self.last_result
+            last_txt = (f'Ultima verifica {z.get("target")}: {z.get("status")}' +
+                        (f' | Base {z.get("base_hit")}/20 | Oro {"OK" if z.get("oro_hit") else "NO"}'
+                         if z.get("status")=="VERIFICATO" else "") + "\n")
+        avg = self.base_hit_sum/self.base_tests if self.base_tests else 0
+        return ("🔬 V114 GENERATORE — MONITOR LIVE (SHADOW)\n"
+                f"Ultima estrazione: {origin} | ultima osservata: {self.last_seen_key or '-'}\n"
+                f"Campione Oro locale: {sum(self.rank_counts)} "
+                f"(bootstrap {self.boot_n}, nuove {self.forward_n})\n"
+                f"Dispersione coppie Oro / casuale: {ratio:.3f} (atteso ≈1; descrittivo, non un p-value)\n" if ratio is not None else
+                "🔬 V114 GENERATORE — MONITOR LIVE (SHADOW)\nDati insufficienti.\n") + (
+                f"Ventine +2 H1: {self.base_tests} test, media {avg:.3f}/20 (atteso casuale 4.444)\n"
+                f"Coppie ranghi Oro H1: {self.oro_hits}/{self.oro_tests} "
+                "(atteso casuale 1/380 per test)\n"
+                f"{last_txt}{next_txt}\n"
+                "ATTENZIONE: trasformazione +2 e ranghi meno frequenti NON sono il generatore ufficiale. "
+                "Nessuna giocata automatica.")
+
+    def live_message(self, result=None, armed=None):
+        self.notify_counter += 1
+        if self.notify_counter % V114_NOTIFY_EVERY != 0:
+            return None
+        lines = ["🔬 V114 GENERATORE — TEST LIVE SHADOW"]
+        if result:
+            if result.get("status") == "VERIFICATO":
+                lines.append(f'Verifica {result["target"]}: Base +2 {result["base_hit"]}/20; '
+                             f'Oro ranghi {result["oro_ranks_actual"]} '
+                             f'({"HIT" if result["oro_hit"] else "MISS"})')
+            else:
+                lines.append("Concorso precedente NON verificabile; nessun HIT attribuito.")
+        if armed:
+            lines.append(f'STIMA per {armed["target_key"]}: '
+                         + " ".join(f'{x:02d}' for x in armed["base_numbers"]))
+            lines.append('Ranghi Oro ipotizzati: '
+                         + '-'.join(map(str, armed['oro_ranks'])))
+        lines.append(f'Base H1 media {self.base_hit_sum/self.base_tests:.3f}/20 su '
+                     f'{self.base_tests} test (caso 4.444)' if self.base_tests else
+                     'Primo test in attesa del prossimo concorso.')
+        lines.append('⚠️ Simulazione sperimentale, non algoritmo ufficiale; nessuna giocata.')
+        return "\n".join(lines)
+
+
+def _merge_v114_state(a, b):
+    # NON sommare contatori: local, remote e hardlock contengono gli stessi draw.
+    aa = a if isinstance(a, dict) else {}
+    bb = b if isinstance(b, dict) else {}
+    if not aa: return dict(bb) if bb else None
+    if not bb: return dict(aa)
+    def progress(x):
+        return (order_key(x.get('last_seen_key')) or (-1,-1),
+                int(x.get('base_tests') or 0), int(x.get('forward_n') or 0))
+    return dict(max((aa, bb), key=progress))
+
+
+# ============================================================
 # V27 ELITE + STANDARD — AUTO WARMUP / SOLO FORWARD
 # Stato aggiuntivo nello stesso JSON HARD LOCK, nessun reset legacy.
 # ============================================================
@@ -4523,6 +4763,7 @@ class MultiOnlyEngine:
         self.v67 = V67DailyTracker()
         self.v70 = V70DailyTracker()
         self.v72 = V72DailyTracker()
+        self.v114 = V114GeneratorLive()
         self.state_revision = 0
         self.state_load_info = {"loaded": False, "path": None, "reason": "not-run", "source": "-"}
         self.load_state()
@@ -4587,6 +4828,7 @@ class MultiOnlyEngine:
             self.v67 = V67DailyTracker(data.get(V67_KEY))
             self.v70 = V70DailyTracker(data.get(V70_KEY))
             self.v72 = V72DailyTracker(data.get(V72_KEY))
+            self.v114 = V114GeneratorLive(data.get(V114_KEY))
             self.state_revision = max(0, int(data.get("multi_state_revision", 0) or 0))
             self.processed = [str(x) for x in data.get("processed", []) if isinstance(x, str)][-PROCESSED_MAX:]
             self.processed_set = set(self.processed)
@@ -4641,6 +4883,7 @@ class MultiOnlyEngine:
         data[V67_KEY] = self.v67.dump()
         data[V70_KEY] = self.v70.dump()
         data[V72_KEY] = self.v72.dump()
+        data[V114_KEY] = self.v114.dump()
         data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_MULTI_V55_V56_CORE_LIVE_V67_DAILY_V70_SHADOW_v20.9.2_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
 
@@ -4677,6 +4920,7 @@ class MultiOnlyEngine:
         data[V67_KEY] = _merge_v67_state(data.get(V67_KEY), self.v67.dump())
         data[V70_KEY] = _merge_v70_state(data.get(V70_KEY), self.v70.dump())
         data[V72_KEY] = _merge_v72_state(data.get(V72_KEY), self.v72.dump())
+        data[V114_KEY] = _merge_v114_state(data.get(V114_KEY), self.v114.dump())
         self.v27 = V27Tracker(data[V27_KEY])
         self.v28 = V28Tracker(data[V28_KEY])
         self.v38 = V38Tracker(data[V38_KEY])
@@ -4686,6 +4930,7 @@ class MultiOnlyEngine:
         self.v67 = V67DailyTracker(data[V67_KEY])
         self.v70 = V70DailyTracker(data[V70_KEY])
         self.v72 = V72DailyTracker(data[V72_KEY])
+        self.v114 = V114GeneratorLive(data[V114_KEY])
 
         # Ricarica il merge prima della scrittura per mantenere record/pending monotoni.
         self.multichannel.load(data.get("multichannel_bd12_ed12_o2f12_v1"))
@@ -4730,6 +4975,7 @@ class MultiOnlyEngine:
             f"V67 DAILY {V67_MODE}: {len(self.v67.plays)} giornate | /v67\n"
             f"V70 DAILY {V70_MODE}: {len(self.v70.plays)} giornate | /v70\n"
             f"V72 DAILY SHADOW: {len(self.v72.plays)} giornate | /v72\n"
+            f"V114 GENERATORE LIVE: {self.v114.base_tests} test H1 | /v114\n"
             f"V38 DAILY SHADOW: CONTROL {len([r for r in self.v38.plays if r.get('policy')=='CONTROL'])} coppie | ACTIVE {len([r for r in self.v38.plays if r.get('policy')=='ACTIVE'])} coppie | /v38\n"
             f"v20.7.1 forward base: {mc.v2071_started_from_key or '-'} | scan da fix {max(0, mc.scans-mc.v2071_scans_base)} | STD da fix {max(0, mc.signals-mc.v2071_signals_base)}\n"
             f"PRIME A start: {mc.prime_a_started_from_key or '-'}\n"
@@ -4775,6 +5021,7 @@ class MultiOnlyEngine:
             "• 🎯 V67 DAILY SHADOW: V66 alle 16:00; dopo MISS primo V52 successivo diverso, 1 H1\n"
             "• 🔢 V70 DAILY SHADOW: prima ripetizione resto90 (12 draw) dopo 08:00; terna V69 e ambo V59 SEPARATI H1\n"
             "• 🎯 V72 DAILY SHADOW: ambo CROSS da coppie nella stessa decina, 1 segnale giornaliero H1\n"
+            "• 🔬 V114 GENERATORE LIVE: ipotesi Base +2, controllo posizioni Oro; solo SHADOW\n"
             "• C legacy shadow; B legacy congelato\n"
             f"• SUPER operativo solo A/A2 se support_sum≥{MULTI_SUPER_GATE}; TRIANGLE OFF shadow\n\n"
             "PAUSATI (state conservato): FOCUS, INCROCIO, CORE e tutti i legacy.\n\n"
@@ -4788,6 +5035,7 @@ class MultiOnlyEngine:
             "/v67 — V66 16:00 e 2° V52 dopo MISS (SHADOW)\n"
             "/v70 — V69 tripla somma + V59 ambo stesso concorso (SHADOW)\n"
             "/v72 — AMBO CROSS coppie stessa decina H1 (SHADOW)\n"
+            "/v114 — Monitor LIVE generatore, esiti H1 e coppie Oro\n"
             "/status — feed + state + statistiche\n"
             "/verificatutto — audit completo\n"
             "/menu — comandi"
@@ -4846,6 +5094,11 @@ async def cmd_v72(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update,engine.v72.report(engine.multichannel.history))
 
 
+async def cmd_v114(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.v114.report(engine.multichannel.history))
+
+
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].menu_text())
 
@@ -4862,6 +5115,7 @@ async def setup_commands(app):
         BotCommand("v67", "V67 due ambi H1 condizionati SHADOW"),
         BotCommand("v70", "V70 tripla+ambo somma H1 SHADOW"),
         BotCommand("v72", "V72 ambo CROSS decine H1 SHADOW"),
+        BotCommand("v114", "V114 monitor generatore LIVE SHADOW"),
         BotCommand("status", "Stato MULTI + Q + 7/9 LIVE + state"),
         BotCommand("verificatutto", "Audit MULTI/PRIME/Q/7/9 LIVE"),
         BotCommand("menu", "Comandi attivi"),
@@ -4875,6 +5129,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
 
     mc = engine.multichannel
     events = []
+    v114_result_latest = None
 
     if bootstrap_if_empty and not mc.history:
         mc.bootstrap(rows)
@@ -4891,6 +5146,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         engine.v67.initialize(mc.history)
         engine.v70.initialize(mc.history)
         engine.v72.initialize(mc.history)
+        engine.v114.initialize(mc.history)
         # Warmup bootstrap: arma solo una previsione sulla prossima estrazione.
         await v27_notify_latest(engine, app, notify=notify)
         engine.save_state(git=True, force_git=True)
@@ -4913,6 +5169,9 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         v67_results = engine.v67.close_with_draw(r, previous_row)
         v70_results = engine.v70.close_with_draw(r, previous_row)
         v72_results = engine.v72.close_with_draw(r, previous_row)
+        v114_result = engine.v114.observe(r, previous_row) if V114_ENABLED else None
+        if r is unseen[-1]:
+            v114_result_latest = v114_result
         # Avanza l'indice dello storico V72 su ogni estrazione, anche nel catch-up.
         if r is not unseen[-1]:
             engine.v72.observe(r)
@@ -4953,6 +5212,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     v67_initialized = engine.v67.initialize(mc.history)
     v70_initialized = engine.v70.initialize(mc.history)
     v72_initialized = engine.v72.initialize(mc.history)
+    v114_initialized = engine.v114.initialize(mc.history) if V114_ENABLED else False
     sig = mc.arm() if mc.history else None
     v27_updated = await v27_notify_latest(engine, app, notify=notify)
     v38_messages = engine.v38.arm(mc.history, mc, engine.v28)
@@ -4962,9 +5222,10 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     v67_messages = engine.v67.arm(mc.history, engine.v52)
     v70_messages = engine.v70.arm(mc.history)
     v72_messages = engine.v72.arm(mc.history)
+    v114_armed = engine.v114.arm(mc.history) if V114_ENABLED else None
     if mc.history and not v72_messages:
         engine.v72.observe(mc.history[-1])
-    if v52_messages or v55_messages or v56_messages or v67_messages or v70_messages or v72_messages:
+    if v52_messages or v55_messages or v56_messages or v67_messages or v70_messages or v72_messages or v114_armed or v114_result_latest:
         # Salvataggio del doppio tracker prima di qualsiasi notifica LIVE.
         engine.save_state(git=False)
     if notify and V52_LIVE_NOTIFY and v52_messages:
@@ -4979,6 +5240,9 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         await engine.tg(app, '\n\n'.join(v70_messages))
     if notify and V72_NOTIFY and v72_messages:
         await engine.tg(app, '\n\n'.join(v72_messages))
+    if notify and V114_NOTIFY and (v114_armed or v114_result_latest):
+        v114_msg = engine.v114.live_message(v114_result_latest, v114_armed)
+        if v114_msg: await engine.tg(app, v114_msg)
     if notify and V38_NOTIFY and v38_messages:
         await engine.tg(app, '\n\n'.join(v38_messages))
     if sig and notify and mc.should_notify_signal(sig):
@@ -4986,7 +5250,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         if msg:
             await engine.tg(app, msg)
 
-    if unseen or sig or events or v27_updated or v38_initialized or v38_messages or v52_initialized or v52_messages or v55_initialized or v55_messages or v56_initialized or v56_messages or v67_initialized or v67_messages or v70_initialized or v70_messages or v72_initialized or v72_messages:
+    if unseen or sig or events or v27_updated or v38_initialized or v38_messages or v52_initialized or v52_messages or v55_initialized or v55_messages or v56_initialized or v56_messages or v67_initialized or v67_messages or v70_initialized or v70_messages or v72_initialized or v72_messages or v114_initialized or v114_armed or v114_result_latest:
         engine.last_draw_key = mc.history[-1]["key"] if mc.history else engine.last_draw_key
         engine.save_state(git=True)
 
@@ -5022,6 +5286,9 @@ async def startup(engine, app):
             previous = str(mc.history[-1]['key']) if mc.history else None
             prev_time = str(mc.history[-1].get('time') or '') if mc.history else None
             mc.ingest(r)
+            if V114_ENABLED and engine.v114.start_key:
+                prev_v114 = mc.history[-2] if len(mc.history) >= 2 else None
+                engine.v114.observe(r, prev_v114)
             engine.v38.close_with_draw(r, previous, prev_time)  # recupera SOLO l'esito di pending veri
             prevrow = mc.history[-2] if len(mc.history)>=2 else None
             engine.v52.close_with_draw(r, prevrow, prev_time)
@@ -5040,9 +5307,17 @@ async def startup(engine, app):
     engine.v52.initialize(mc.history)
     engine.v55.initialize(mc.history)
     engine.v56.initialize(mc.history, engine.v52, engine.v28)
+    if V114_ENABLED:
+        engine.v114.initialize(mc.history)
     sig = mc.arm() if mc.history else None
     await v27_notify_latest(engine, app, notify=True)
     v38_messages = engine.v38.arm(mc.history, mc, engine.v28)
+    # Al riavvio V114 si arma solo se l'ultimo concorso e' recente.
+    if V114_ENABLED:
+        v114_start_arm = engine.v114.arm(mc.history)
+        if V114_NOTIFY and v114_start_arm:
+            message = engine.v114.live_message(armed=v114_start_arm)
+            if message: await engine.tg(app, message)
     if V38_NOTIFY and v38_messages:
         await engine.tg(app, '\n\n'.join(v38_messages))
     engine.last_draw_key = mc.history[-1]["key"] if mc.history else engine.last_draw_key
@@ -5506,7 +5781,22 @@ def run_self_test():
     snapshot=_merge_v70_state({'start_key':'2100-01-01#001','plays':[dict(v70_tracker.plays[0],status='PENDING')]},
                               {'start_key':'2100-01-01#001','plays':v70_tracker.plays})
     assert snapshot['plays'][0]['status']=='CLOSED'
-    print("SELF-TEST OK: v20.9.2 + V27 + V28 + V38 + V52 MULTI + V55 + V56 + V67 + V70 + HARD LOCK")
+    # V114 indipendente dal bot LIVE: verifica previsione H1 +2, rango Oro e anti-duplicato.
+    vi = V114GeneratorLive()
+    a = {'key': '2100-02-01#010', 'day': '2100-02-01', 'draw_id': 10,
+         'time': '00:50', 'nums': list(range(1, 21)), 'oro': 1, 'doppio_oro': 2}
+    b = {'key': '2100-02-01#011', 'day': '2100-02-01', 'draw_id': 11,
+         'time': '00:55', 'nums': list(range(3, 23)), 'oro': 3, 'doppio_oro': 4}
+    assert vi.initialize([a])
+    armed = vi.arm([a], check_freshness=False)
+    assert armed['base_numbers'] == list(range(3,23))
+    result = vi.observe(b,a)
+    assert result['status']=='VERIFICATO' and result['base_hit']==20
+    assert vi.observe(b,a) is None
+    assert vi.base_tests==1 and vi.forward_n==1
+    dump = vi.dump()
+    assert _merge_v114_state(dump,dump)['base_tests']==1
+    print("SELF-TEST OK: v20.9.2 + V27 + V28 + V38 + V52 MULTI + V55 + V56 + V67 + V70 + V114 + HARD LOCK")
 
 
 # ============================================================
@@ -5537,6 +5827,7 @@ async def main():
     app.add_handler(CommandHandler("v67", cmd_v67))
     app.add_handler(CommandHandler("v70", cmd_v70))
     app.add_handler(CommandHandler("v72", cmd_v72))
+    app.add_handler(CommandHandler("v114", cmd_v114))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("verificatutto", cmd_verificatutto))
     app.add_handler(CommandHandler("menu", cmd_menu))
