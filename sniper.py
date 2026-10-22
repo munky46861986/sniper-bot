@@ -905,6 +905,8 @@ def _merge_state_data(local_data, remote_data):
         base[V72_KEY] = merged_v72
     merged_v114 = _merge_v114_state(local_data.get(V114_KEY), remote_data.get(V114_KEY))
     if merged_v114 is not None: base[V114_KEY] = merged_v114
+    merged_v121 = _merge_v121_state(local_data.get(V121_KEY), remote_data.get(V121_KEY))
+    if merged_v121 is not None: base[V121_KEY] = merged_v121
     vals=[]; seen=set()
     for x in list(local_data.get("processed") or [])+list(remote_data.get("processed") or []):
         if isinstance(x,str) and x not in seen: seen.add(x); vals.append(x)
@@ -4247,6 +4249,222 @@ def _merge_v114_state(a, b):
 
 
 # ============================================================
+# V121 NONLINEAR BASE — SOLO LIVE SHADOW (NON PIAZZA GIOCATE)
+# Modello congelato sul 2025. Il file del modello e' indispensabile.
+# In assenza di LightGBM o del modello, il resto del bot funziona senza V121.
+# ============================================================
+V121_KEY = "v121_nonlinear_base_shadow_forward_v1"
+V121_ENABLED = os.getenv("V121_ENABLED", "1").lower() not in {"0", "false", "no", "off"}
+V121_NOTIFY = os.getenv("V121_NOTIFY", "1").lower() not in {"0", "false", "no", "off"}
+V121_MODEL_FILE = os.getenv("V121_MODEL_FILE", os.path.join(BASE_DIR, "V121_MODELLO_NONLINEARE_2025.txt"))
+_V121_MODEL_CACHE = None
+_V121_FEATURE_NAMES = (
+    ["candidate_norm", "candidate_sin", "candidate_cos", "draw_phase_sin", "draw_phase_cos",
+     "draw_mod12", "dow_sin", "dow_cos", "base_lag0", "base_lag1", "base_lag2",
+     "gap", "freq5", "freq20", "freq80", "freq288", "prevday_same_time", "prevday_available"]
+    + [f"base_shift_{d:+d}" for d in (1,-1,2,-2,3,-3,5,-5,10,-10)]
+)
+
+
+def v121_predict(history):
+    """Restituisce la previsione H1 causale della Base 20, senza usare il concorso futuro.
+
+    Riproduce le 28 feature congelate dello studio V121; le ultime 288 estrazioni
+    sono sufficienti per frequenze, ultimi tre lag e ritardi troncati a 255.
+    L'eventuale stessa estrazione del giorno precedente e' cercata nello storico.
+    """
+    global _V121_MODEL_CACHE
+    if len(history) < 288:
+        raise ValueError("V121 richiede almeno 288 estrazioni nello storico")
+    try:
+        import numpy as np
+        import lightgbm as lgb
+    except ImportError as exc:
+        raise RuntimeError("Dipendenze V121 mancanti: aggiungere numpy e lightgbm a requirements.txt") from exc
+    if not os.path.isfile(V121_MODEL_FILE):
+        raise FileNotFoundError("Modello V121 non trovato: " + V121_MODEL_FILE)
+    if _V121_MODEL_CACHE is None:
+        _V121_MODEL_CACHE = lgb.Booster(model_file=V121_MODEL_FILE)
+        if _V121_MODEL_CACHE.num_feature() != len(_V121_FEATURE_NAMES):
+            raise ValueError("Modello V121 incompatibile con le 28 feature")
+    rows = list(history)
+    if not (V52LiveTracker._consecutive(rows[-3], rows[-2]) and
+            V52LiveTracker._consecutive(rows[-2], rows[-1])):
+        raise ValueError("Le tre estrazioni Base recenti non sono consecutive")
+    B = np.zeros((len(rows),90),dtype=np.uint8)
+    for i,r in enumerate(rows):
+        nums = [int(n) for n in r.get("nums") or []]
+        if len(nums)!=20 or len(set(nums))!=20 or not all(1<=n<=90 for n in nums):
+            raise ValueError("V121: dati Base non validi nello storico alla riga " + str(i))
+        B[i,np.asarray(nums,dtype=np.int16)-1]=1
+    now=rows[-1]
+    day = str(now.get("day") or str(now.get("key", "")).split("#")[0])
+    draw = int(now.get("draw_id") or str(now.get("key", "")).split("#")[-1])
+    from datetime import date, timedelta
+    wd=date.fromisoformat(day).weekday()
+    prev_day=(date.fromisoformat(day)-timedelta(days=1)).isoformat()
+    prev_key=f"{prev_day}#{draw:03d}"
+    prevrow=next((r for r in reversed(rows) if r.get("key")==prev_key),None)
+    pday=np.zeros(90,dtype=np.uint8)
+    if prevrow:
+        pday[np.asarray([int(n) for n in prevrow.get('nums') or []],dtype=np.int16)-1]=1
+    gap=np.full(90,255,dtype=np.float32)
+    # Il metodo di training limita i ritardi a 255, anche per i numeri mai comparsi.
+    for offset,base in enumerate(B[::-1]):
+        need=(gap==255)&(base!=0)
+        gap[need]=min(offset,255)
+        if offset>=255:
+            break
+    X=np.zeros((90,28),dtype=np.float32)
+    n=np.arange(1,91,dtype=np.float32)
+    X[:,0]=n/90
+    X[:,1]=np.sin(2*np.pi*n/90); X[:,2]=np.cos(2*np.pi*n/90)
+    X[:,3]=np.sin(2*np.pi*draw/288); X[:,4]=np.cos(2*np.pi*draw/288)
+    X[:,5]=(draw%12)/12
+    X[:,6]=np.sin(2*np.pi*wd/7);X[:,7]=np.cos(2*np.pi*wd/7)
+    X[:,8]=B[-1]; X[:,9]=B[-2];X[:,10]=B[-3]
+    X[:,11]=gap/255
+    for offset,w in enumerate((5,20,80,288)):
+        X[:,12+offset]=B[-w:].sum(axis=0)/w
+    X[:,16]=pday;X[:,17]=1 if prevrow else 0
+    for offset,shift in enumerate((1,-1,2,-2,3,-3,5,-5,10,-10)):
+        X[:,18+offset]=np.roll(B[-1],shift)
+    # Tie-break deterministico: esattamente lo stesso argsort stable dello studio.
+    scores=np.asarray(_V121_MODEL_CACHE.predict(X,num_threads=2),dtype=np.float32)
+    if scores.shape!=(90,) or not np.isfinite(scores).all():
+        raise ValueError("V121: punteggi modello non validi")
+    idx=np.argsort(-scores,kind="stable")[:20]
+    return sorted((int(i)+1) for i in idx)
+
+
+class V121LiveShadow:
+    def __init__(self, data=None):
+        d=data if isinstance(data,dict) else {}
+        self.start_key=str(d.get('start_key') or '')
+        self.last_seen_key=str(d.get('last_seen_key') or '')
+        self.tests=max(0,int(d.get('tests') or 0))
+        self.hit_sum=max(0,int(d.get('hit_sum') or 0))
+        self.v114_hit_sum=max(0,int(d.get('v114_hit_sum') or 0))
+        self.n7=max(0,int(d.get('n7') or 0));self.n8=max(0,int(d.get('n8') or 0))
+        self.n9=max(0,int(d.get('n9') or 0));self.n10=max(0,int(d.get('n10') or 0))
+        self.pending=dict(d['pending']) if isinstance(d.get('pending'),dict) else None
+        self.last_result=dict(d['last_result']) if isinstance(d.get('last_result'),dict) else None
+        self.last_error=str(d.get('last_error') or '')[:240]
+
+    def initialize(self,history):
+        if self.start_key or not history:return False
+        self.start_key=str(history[-1].get('key') or '')
+        self.last_seen_key=self.start_key
+        return True
+
+    def dump(self):
+        return dict(start_key=self.start_key,last_seen_key=self.last_seen_key,
+                    tests=self.tests,hit_sum=self.hit_sum,v114_hit_sum=self.v114_hit_sum,
+                    n7=self.n7,n8=self.n8,n9=self.n9,n10=self.n10,
+                    pending=self.pending,last_result=self.last_result,last_error=self.last_error,
+                    rules_version='V121_LGBM_FROZEN_2025_NO_BETS')
+
+    def observe(self,row,previous=None):
+        key=str(row.get('key') or '')
+        if not key or (self.last_seen_key and order_key(key)<=order_key(self.last_seen_key)):
+            return None
+        result=None
+        if self.pending:
+            p=self.pending
+            good=(key==p.get('target_key') and previous is not None and
+                  V52LiveTracker._consecutive(previous,row))
+            if good:
+                actual={int(n) for n in row.get('nums') or []}
+                valid=len(actual)==20 and all(1<=n<=90 for n in actual)
+                good=valid
+            if good:
+                h=len(actual.intersection(p.get('base_numbers') or []))
+                h114=len(actual.intersection(p.get('v114_numbers') or []))
+                self.tests+=1;self.hit_sum+=h;self.v114_hit_sum+=h114
+                self.n7+=int(h>=7);self.n8+=int(h>=8)
+                self.n9+=int(h>=9);self.n10+=int(h>=10)
+                result=dict(status='VERIFICATO',target=key,base_hit=h,v114_hit=h114,
+                            diff=h-h114)
+            else:
+                result=dict(status='NON_VERIFICABILE',target=str(p.get('target_key')))
+            self.pending=None;self.last_result=result
+        self.last_seen_key=key
+        return result
+
+    def arm(self,history,check_freshness=True,clock=None):
+        if not V121_ENABLED or not history:return None
+        if not self.start_key:self.initialize(history)
+        last=history[-1];key=str(last.get('key') or '')
+        if self.last_seen_key!=key:return None
+        if self.pending and self.pending.get('origin_key')==key:return None
+        stamp=V52LiveTracker._draw_stamp(last)
+        now=clock or now_dt()
+        if check_freshness and (stamp is None or not 0<=(now-stamp).total_seconds()<290):
+            return None
+        target=V52LiveTracker._next_expected_key(last)
+        if not target:return None
+        try:
+            nums=v121_predict(history)
+            other=V114GeneratorLive._forecast_base(last.get('nums') or [])
+            if len(nums)!=20 or other is None:raise ValueError('Ventina V121 non valida')
+            self.last_error=''
+        except Exception as exc:
+            err=f'{type(exc).__name__}: {exc}'[:240]
+            if err!=self.last_error:
+                console_log('V121 SHADOW MODEL WARNING | '+err)
+            self.last_error=err
+            return None
+        self.pending=dict(origin_key=key,target_key=target,base_numbers=nums,v114_numbers=other)
+        return dict(self.pending)
+
+    def report(self,history):
+        pending=self.pending
+        mean=self.hit_sum/self.tests if self.tests else 0.0
+        base=self.v114_hit_sum/self.tests if self.tests else 0.0
+        lines=['🧠 V121 — NONLINEARE LIVE SHADOW',
+               f'Stato: {"ATTIVA" if V121_ENABLED else "DISABILITATA"} | Modello: {"PRESENTE" if os.path.isfile(V121_MODEL_FILE) else "MANCANTE"}',
+               f'Test H1: {self.tests} | HIT medi V121: {mean:.3f}/20 | V114 sugli stessi: {base:.3f}/20',
+               f'Differenza numeri: {self.hit_sum-self.v114_hit_sum:+d} | >=7: {self.n7} | >=8: {self.n8} | >=9: {self.n9} | >=10: {self.n10}']
+        if self.last_result:
+            r=self.last_result
+            lines.append('Ultimo esito: '+str(r.get('target'))+' '+str(r.get('status'))+' | HIT '+str(r.get('base_hit','-'))+'/20')
+        if pending:
+            lines.append('PREVISIONE '+str(pending['target_key'])+': '+' '.join(f'{x:02d}' for x in pending['base_numbers']))
+            lines.append('V114 +2: '+' '.join(f'{x:02d}' for x in pending['v114_numbers']))
+        else:
+            lines.append('Nessuna previsione H1 in attesa: serve un concorso fresco e uno storico sufficiente.')
+        if self.last_error:lines.append('Diagnostica: '+self.last_error)
+        lines.append('SOLO SHADOW: previsione sperimentale, nessuna probabilita di vincita dimostrata e nessuna giocata automatica.')
+        return '\n'.join(lines)
+
+    def live_message(self,result=None,armed=None):
+        lines=['🧠 V121 NONLINEARE — TEST LIVE SHADOW']
+        if result:
+            if result.get('status')=='VERIFICATO':
+                lines.append(f'Verifica {result["target"]}: V121 {result["base_hit"]}/20 | V114 +2 {result["v114_hit"]}/20 (scarto {result["diff"]:+d})')
+            else:
+                lines.append('Verifica precedente non disponibile: nessun HIT attribuito.')
+        if armed:
+            lines.append('STIMA per '+armed['target_key']+': '+' '.join(f'{n:02d}' for n in armed['base_numbers']))
+        if self.tests:
+            lines.append(f'Medie sugli stessi {self.tests} concorsi: V121 {self.hit_sum/self.tests:.3f}/20 | V114 {self.v114_hit_sum/self.tests:.3f}/20')
+            lines.append(f'7+/8+/9+/10+: {self.n7}/{self.n8}/{self.n9}/{self.n10}')
+        lines.append('⚠️ Modello congelato 2025, solo verifica H1, nessuna giocata automatica.')
+        return '\n'.join(lines) if result or armed else None
+
+
+def _merge_v121_state(a,b):
+    aa=a if isinstance(a,dict) else {};bb=b if isinstance(b,dict) else {}
+    if not aa:return dict(bb) if bb else None
+    if not bb:return dict(aa)
+    def progress(d):
+        return (order_key(d.get('last_seen_key')) or (-1,-1),
+                int(d.get('tests') or 0),int(d.get('hit_sum') or 0))
+    # I contatori non si sommano mai durante il merge di snapshot dello stesso runner.
+    return dict(max((aa,bb),key=progress))
+
+
+# ============================================================
 # V27 ELITE + STANDARD — AUTO WARMUP / SOLO FORWARD
 # Stato aggiuntivo nello stesso JSON HARD LOCK, nessun reset legacy.
 # ============================================================
@@ -4764,6 +4982,7 @@ class MultiOnlyEngine:
         self.v70 = V70DailyTracker()
         self.v72 = V72DailyTracker()
         self.v114 = V114GeneratorLive()
+        self.v121 = V121LiveShadow()
         self.state_revision = 0
         self.state_load_info = {"loaded": False, "path": None, "reason": "not-run", "source": "-"}
         self.load_state()
@@ -4829,6 +5048,7 @@ class MultiOnlyEngine:
             self.v70 = V70DailyTracker(data.get(V70_KEY))
             self.v72 = V72DailyTracker(data.get(V72_KEY))
             self.v114 = V114GeneratorLive(data.get(V114_KEY))
+            self.v121 = V121LiveShadow(data.get(V121_KEY))
             self.state_revision = max(0, int(data.get("multi_state_revision", 0) or 0))
             self.processed = [str(x) for x in data.get("processed", []) if isinstance(x, str)][-PROCESSED_MAX:]
             self.processed_set = set(self.processed)
@@ -4884,6 +5104,7 @@ class MultiOnlyEngine:
         data[V70_KEY] = self.v70.dump()
         data[V72_KEY] = self.v72.dump()
         data[V114_KEY] = self.v114.dump()
+        data[V121_KEY] = self.v121.dump()
         data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_MULTI_V55_V56_CORE_LIVE_V67_DAILY_V70_SHADOW_v20.9.2_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
 
@@ -4921,6 +5142,7 @@ class MultiOnlyEngine:
         data[V70_KEY] = _merge_v70_state(data.get(V70_KEY), self.v70.dump())
         data[V72_KEY] = _merge_v72_state(data.get(V72_KEY), self.v72.dump())
         data[V114_KEY] = _merge_v114_state(data.get(V114_KEY), self.v114.dump())
+        data[V121_KEY] = _merge_v121_state(data.get(V121_KEY), self.v121.dump())
         self.v27 = V27Tracker(data[V27_KEY])
         self.v28 = V28Tracker(data[V28_KEY])
         self.v38 = V38Tracker(data[V38_KEY])
@@ -4931,6 +5153,7 @@ class MultiOnlyEngine:
         self.v70 = V70DailyTracker(data[V70_KEY])
         self.v72 = V72DailyTracker(data[V72_KEY])
         self.v114 = V114GeneratorLive(data[V114_KEY])
+        self.v121 = V121LiveShadow(data[V121_KEY])
 
         # Ricarica il merge prima della scrittura per mantenere record/pending monotoni.
         self.multichannel.load(data.get("multichannel_bd12_ed12_o2f12_v1"))
@@ -4976,6 +5199,7 @@ class MultiOnlyEngine:
             f"V70 DAILY {V70_MODE}: {len(self.v70.plays)} giornate | /v70\n"
             f"V72 DAILY SHADOW: {len(self.v72.plays)} giornate | /v72\n"
             f"V114 GENERATORE LIVE: {self.v114.base_tests} test H1 | /v114\n"
+            f"V121 NONLINEARE SHADOW: {self.v121.tests} test H1 | /v121\n"
             f"V38 DAILY SHADOW: CONTROL {len([r for r in self.v38.plays if r.get('policy')=='CONTROL'])} coppie | ACTIVE {len([r for r in self.v38.plays if r.get('policy')=='ACTIVE'])} coppie | /v38\n"
             f"v20.7.1 forward base: {mc.v2071_started_from_key or '-'} | scan da fix {max(0, mc.scans-mc.v2071_scans_base)} | STD da fix {max(0, mc.signals-mc.v2071_signals_base)}\n"
             f"PRIME A start: {mc.prime_a_started_from_key or '-'}\n"
@@ -5022,6 +5246,7 @@ class MultiOnlyEngine:
             "• 🔢 V70 DAILY SHADOW: prima ripetizione resto90 (12 draw) dopo 08:00; terna V69 e ambo V59 SEPARATI H1\n"
             "• 🎯 V72 DAILY SHADOW: ambo CROSS da coppie nella stessa decina, 1 segnale giornaliero H1\n"
             "• 🔬 V114 GENERATORE LIVE: ipotesi Base +2, controllo posizioni Oro; solo SHADOW\n"
+            "• 🧠 V121 NONLINEARE LIVE SHADOW: ventina Base 20 + verifica HIT rispetto V114\n"
             "• C legacy shadow; B legacy congelato\n"
             f"• SUPER operativo solo A/A2 se support_sum≥{MULTI_SUPER_GATE}; TRIANGLE OFF shadow\n\n"
             "PAUSATI (state conservato): FOCUS, INCROCIO, CORE e tutti i legacy.\n\n"
@@ -5036,6 +5261,7 @@ class MultiOnlyEngine:
             "/v70 — V69 tripla somma + V59 ambo stesso concorso (SHADOW)\n"
             "/v72 — AMBO CROSS coppie stessa decina H1 (SHADOW)\n"
             "/v114 — Monitor LIVE generatore, esiti H1 e coppie Oro\n"
+            "/v121 — Ventina V121, verifica H1 e confronto V114\n"
             "/status — feed + state + statistiche\n"
             "/verificatutto — audit completo\n"
             "/menu — comandi"
@@ -5099,6 +5325,11 @@ async def cmd_v114(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, engine.v114.report(engine.multichannel.history))
 
 
+async def cmd_v121(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine = context.application.bot_data["engine"]
+    await reply(update, engine.v121.report(engine.multichannel.history))
+
+
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].menu_text())
 
@@ -5116,6 +5347,7 @@ async def setup_commands(app):
         BotCommand("v70", "V70 tripla+ambo somma H1 SHADOW"),
         BotCommand("v72", "V72 ambo CROSS decine H1 SHADOW"),
         BotCommand("v114", "V114 monitor generatore LIVE SHADOW"),
+        BotCommand("v121", "V121 generatore non lineare SHADOW"),
         BotCommand("status", "Stato MULTI + Q + 7/9 LIVE + state"),
         BotCommand("verificatutto", "Audit MULTI/PRIME/Q/7/9 LIVE"),
         BotCommand("menu", "Comandi attivi"),
@@ -5130,6 +5362,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     mc = engine.multichannel
     events = []
     v114_result_latest = None
+    v121_result_latest = None
 
     if bootstrap_if_empty and not mc.history:
         mc.bootstrap(rows)
@@ -5147,6 +5380,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         engine.v70.initialize(mc.history)
         engine.v72.initialize(mc.history)
         engine.v114.initialize(mc.history)
+        engine.v121.initialize(mc.history)
         # Warmup bootstrap: arma solo una previsione sulla prossima estrazione.
         await v27_notify_latest(engine, app, notify=notify)
         engine.save_state(git=True, force_git=True)
@@ -5170,8 +5404,10 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         v70_results = engine.v70.close_with_draw(r, previous_row)
         v72_results = engine.v72.close_with_draw(r, previous_row)
         v114_result = engine.v114.observe(r, previous_row) if V114_ENABLED else None
+        v121_result = engine.v121.observe(r, previous_row) if V121_ENABLED else None
         if r is unseen[-1]:
             v114_result_latest = v114_result
+            v121_result_latest = v121_result
         # Avanza l'indice dello storico V72 su ogni estrazione, anche nel catch-up.
         if r is not unseen[-1]:
             engine.v72.observe(r)
@@ -5213,6 +5449,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     v70_initialized = engine.v70.initialize(mc.history)
     v72_initialized = engine.v72.initialize(mc.history)
     v114_initialized = engine.v114.initialize(mc.history) if V114_ENABLED else False
+    v121_initialized = engine.v121.initialize(mc.history) if V121_ENABLED else False
     sig = mc.arm() if mc.history else None
     v27_updated = await v27_notify_latest(engine, app, notify=notify)
     v38_messages = engine.v38.arm(mc.history, mc, engine.v28)
@@ -5223,9 +5460,10 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     v70_messages = engine.v70.arm(mc.history)
     v72_messages = engine.v72.arm(mc.history)
     v114_armed = engine.v114.arm(mc.history) if V114_ENABLED else None
+    v121_armed = engine.v121.arm(mc.history) if V121_ENABLED else None
     if mc.history and not v72_messages:
         engine.v72.observe(mc.history[-1])
-    if v52_messages or v55_messages or v56_messages or v67_messages or v70_messages or v72_messages or v114_armed or v114_result_latest:
+    if v52_messages or v55_messages or v56_messages or v67_messages or v70_messages or v72_messages or v114_armed or v114_result_latest or v121_armed or v121_result_latest:
         # Salvataggio del doppio tracker prima di qualsiasi notifica LIVE.
         engine.save_state(git=False)
     if notify and V52_LIVE_NOTIFY and v52_messages:
@@ -5243,6 +5481,9 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
     if notify and V114_NOTIFY and (v114_armed or v114_result_latest):
         v114_msg = engine.v114.live_message(v114_result_latest, v114_armed)
         if v114_msg: await engine.tg(app, v114_msg)
+    if notify and V121_NOTIFY and (v121_armed or v121_result_latest):
+        v121_msg = engine.v121.live_message(v121_result_latest, v121_armed)
+        if v121_msg: await engine.tg(app, v121_msg)
     if notify and V38_NOTIFY and v38_messages:
         await engine.tg(app, '\n\n'.join(v38_messages))
     if sig and notify and mc.should_notify_signal(sig):
@@ -5250,7 +5491,7 @@ async def sync_multichannel(engine, app, notify=True, bootstrap_if_empty=False, 
         if msg:
             await engine.tg(app, msg)
 
-    if unseen or sig or events or v27_updated or v38_initialized or v38_messages or v52_initialized or v52_messages or v55_initialized or v55_messages or v56_initialized or v56_messages or v67_initialized or v67_messages or v70_initialized or v70_messages or v72_initialized or v72_messages or v114_initialized or v114_armed or v114_result_latest:
+    if unseen or sig or events or v27_updated or v38_initialized or v38_messages or v52_initialized or v52_messages or v55_initialized or v55_messages or v56_initialized or v56_messages or v67_initialized or v67_messages or v70_initialized or v70_messages or v72_initialized or v72_messages or v114_initialized or v114_armed or v114_result_latest or v121_armed or v121_result_latest:
         engine.last_draw_key = mc.history[-1]["key"] if mc.history else engine.last_draw_key
         engine.save_state(git=True)
 
@@ -5289,6 +5530,9 @@ async def startup(engine, app):
             if V114_ENABLED and engine.v114.start_key:
                 prev_v114 = mc.history[-2] if len(mc.history) >= 2 else None
                 engine.v114.observe(r, prev_v114)
+            if V121_ENABLED and engine.v121.start_key:
+                prev_v121 = mc.history[-2] if len(mc.history)>=2 else None
+                engine.v121.observe(r, prev_v121)
             engine.v38.close_with_draw(r, previous, prev_time)  # recupera SOLO l'esito di pending veri
             prevrow = mc.history[-2] if len(mc.history)>=2 else None
             engine.v52.close_with_draw(r, prevrow, prev_time)
@@ -5309,6 +5553,8 @@ async def startup(engine, app):
     engine.v56.initialize(mc.history, engine.v52, engine.v28)
     if V114_ENABLED:
         engine.v114.initialize(mc.history)
+    if V121_ENABLED:
+        engine.v121.initialize(mc.history)
     sig = mc.arm() if mc.history else None
     await v27_notify_latest(engine, app, notify=True)
     v38_messages = engine.v38.arm(mc.history, mc, engine.v28)
@@ -5318,6 +5564,11 @@ async def startup(engine, app):
         if V114_NOTIFY and v114_start_arm:
             message = engine.v114.live_message(armed=v114_start_arm)
             if message: await engine.tg(app, message)
+    if V121_ENABLED:
+        v121_start_arm = engine.v121.arm(mc.history)
+        if V121_NOTIFY and v121_start_arm:
+            msg = engine.v121.live_message(armed=v121_start_arm)
+            if msg: await engine.tg(app, msg)
     if V38_NOTIFY and v38_messages:
         await engine.tg(app, '\n\n'.join(v38_messages))
     engine.last_draw_key = mc.history[-1]["key"] if mc.history else engine.last_draw_key
@@ -5351,7 +5602,7 @@ async def startup(engine, app):
         "⏸️ FOCUS / INCROCIO / CORE / ENGINE / SOSIA / legacy: PAUSATI.\n"
         "✅ Il loro state viene conservato ma NON aggiornato.\n"
         "🚫 Nessun backfill QUATERNA/7/9/D/X; A/A2 invariati; C/B legacy preservati.\n\n"
-        "Comandi: /multi /v27 /v28 /v38 /v52 /v55 /v56 /v67 /v70 /v72 /status /verificatutto /menu"
+        "Comandi: /multi /v27 /v28 /v38 /v52 /v55 /v56 /v67 /v70 /v72 /v114 /v121 /status /verificatutto /menu"
     )
 
     if sig and mc.should_notify_signal(sig):
@@ -5796,7 +6047,7 @@ def run_self_test():
     assert vi.base_tests==1 and vi.forward_n==1
     dump = vi.dump()
     assert _merge_v114_state(dump,dump)['base_tests']==1
-    print("SELF-TEST OK: v20.9.2 + V27 + V28 + V38 + V52 MULTI + V55 + V56 + V67 + V70 + V114 + HARD LOCK")
+    print("SELF-TEST OK: v20.9.2 + V27 + V28 + V38 + V52 MULTI + V55 + V56 + V67 + V70 + V114 + V121 + HARD LOCK")
 
 
 # ============================================================
@@ -5828,6 +6079,7 @@ async def main():
     app.add_handler(CommandHandler("v70", cmd_v70))
     app.add_handler(CommandHandler("v72", cmd_v72))
     app.add_handler(CommandHandler("v114", cmd_v114))
+    app.add_handler(CommandHandler("v121", cmd_v121))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("verificatutto", cmd_verificatutto))
     app.add_handler(CommandHandler("menu", cmd_menu))
