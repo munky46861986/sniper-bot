@@ -1,14 +1,16 @@
-"""V167: acquisizione ordine API 10eLotto e due backtest SHADOW.
+"""V169: acquisizione ordine API 10eLotto e due backtest SHADOW.
 
 Isolato dai predittori V114/V121, non effettua giocate e non ha token.
 ATTENZIONE: l'ordine API non è ancora stato validato contro l'animazione My Lotteries.
 Il feed deriva dal servizio di pagina Eurobet; può negare le richieste dirette.
+V169 prova una sessione HTTP e una diagnostica limitata quando si verifica HTTP 500.
 """
 from __future__ import annotations
 
 import csv
 import io
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -20,14 +22,45 @@ SITE_URL = 'https://www.eurobet.it/it/lotterie/10elotto'
 STATE_KEY = 'v167_visual_api_shadow'
 MAX_RECORDS = 3000
 AMBO_PRIZE = 14.0   # premio nominale riferito alla simulazione, senza Oro/Extra
+# V169: i GET browser normalmente NON inviano un Origin cross-site artificiale.
+# Prima della richiesta API, se necessario, inizializziamo una sessione HTTP.
+# Non imitiamo un login e non inviamo credenziali né richieste di gioco.
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'Accept': 'application/json,text/plain,*/*',
     'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.6',
-    'Referer': SITE_URL,
-    'Origin': 'https://www.eurobet.it',
     'Cache-Control': 'no-cache',
 }
+SHOWCASE_ORIGIN = 'https://showcase.giocodellotto.it'
+SHOWCASE_BOOTSTRAP = SHOWCASE_ORIGIN + '/del/serviziFE/jsonrest/10elotto/get10eLottoHH.json'
+
+# Mantiene eventuali cookie di sola navigazione tra i vari cicli dello stesso runner.
+_HTTP_SESSION = None
+_RETRY_NOT_BEFORE = 0.0
+_CACHED_API_ERROR = ''
+
+
+def _session():
+    global _HTTP_SESSION
+    if _HTTP_SESSION is None:
+        _HTTP_SESSION = requests.Session()
+        _HTTP_SESSION.headers.update(HEADERS)
+    return _HTTP_SESSION
+
+
+def _get_response(sess, url, timeout, referer):
+    return sess.get(url, headers={'Referer': referer}, timeout=timeout, allow_redirects=True)
+
+
+def _parse_result_response(response):
+    try:
+        payload = response.json()
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError('API HTTP 200 senza JSON valido') from exc
+    entries = payload.get('raccolteFrequenti') if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        raise RuntimeError('JSON API privo della lista raccolteFrequenti')
+    return [r for x in entries if (r := normalize_entry(x)) is not None]
 
 
 def _int(v):
@@ -80,19 +113,68 @@ def normalize_entry(entry):
 
 
 def fetch_recent_draws(timeout=16):
-    """HTTP puro (NON Chrome). Se il sito richiede JS/cookie, segnala errore senza fermare il bot."""
-    resp = requests.get(API_URL, headers=HEADERS, timeout=timeout, allow_redirects=False)
-    if resp.status_code != 200:
-        raise RuntimeError('API HTTP ' + str(resp.status_code) + ' (potrebbe richiedere sessione browser)')
+    """V169. Prova GET read-only e inizializzazione sessione se l'API risponde 500.
+
+    L'HTTP 500 non dimostra che manchino cookie: può essere un problema di
+    backend, metodo, rete o di limitazioni dell'hosting. Non aggira blocchi.
+    Retry al massimo ogni V169_API_BACKOFF_SECONDS quando fallisce.
+    Nessuna eccezione di questa funzione può arrestare il bot principale,
+    perché l'invocazione è isolata nel task v167_poll_loop di sniper.py.
+    """
+    global _RETRY_NOT_BEFORE, _CACHED_API_ERROR
+    now=time.monotonic()
+    if now < _RETRY_NOT_BEFORE:
+        raise RuntimeError((_CACHED_API_ERROR or 'Sorgente API non disponibile')+
+                           ' | prossimo tentativo tra '+str(int(_RETRY_NOT_BEFORE-now)+1)+'s')
+    sess=_session()
+    sec=max(4.0,min(12.0,float(timeout)))
+    statuses=[]
+    attempts=(
+        ('GET diretto', SITE_URL),
+        ('GET dopo bootstrap Eurobet', SHOWCASE_ORIGIN+'/'),
+        ('GET dopo bootstrap showcase', SITE_URL),
+    )
+    for idx,(label,referer) in enumerate(attempts):
+        if idx==1:
+            # GET di navigazione: solo cookies pubblici, non login.
+            try:
+                landing=sess.get(SITE_URL,timeout=sec,allow_redirects=True)
+                statuses.append('landing='+str(landing.status_code))
+            except requests.RequestException as exc:
+                statuses.append('landing='+type(exc).__name__)
+        if idx==2:
+            try:
+                boot=_get_response(sess,SHOWCASE_BOOTSTRAP,sec,SHOWCASE_ORIGIN+'/')
+                statuses.append('bootstrap='+str(boot.status_code))
+            except requests.RequestException as exc:
+                statuses.append('bootstrap='+type(exc).__name__)
+        try:
+            response=_get_response(sess,API_URL,sec,referer)
+        except requests.RequestException as exc:
+            statuses.append(label+'='+type(exc).__name__)
+            continue
+        statuses.append(label+'='+str(response.status_code))
+        if response.status_code==200:
+            try:
+                results=_parse_result_response(response)
+            except RuntimeError as exc:
+                statuses.append('JSON='+str(exc)[:70])
+                continue
+            _RETRY_NOT_BEFORE=0.0
+            _CACHED_API_ERROR=''
+            return results  # [] è normale quando l'estrazione è in corso.
+        # Se il server applica un divieto esplicito, evitiamo altri tentativi.
+        if response.status_code in (401,403,429):
+            break
+    detail='; '.join(statuses)[-420:]
+    error='Sorgente ordine API non disponibile: '+detail
+    _CACHED_API_ERROR=error
     try:
-        payload = resp.json()
-    except ValueError as exc:
-        raise RuntimeError('La risposta non e\' JSON') from exc
-    entries = payload.get('raccolteFrequenti') if isinstance(payload, dict) else None
-    if not isinstance(entries, list):
-        raise RuntimeError('Il JSON non contiene raccolteFrequenti')
-    results = [r for x in entries if (r := normalize_entry(x)) is not None]
-    return results
+        backoff=int(os.getenv('V169_API_BACKOFF_SECONDS','300'))
+    except (ValueError,TypeError):
+        backoff=300
+    _RETRY_NOT_BEFORE=time.monotonic()+max(120,min(3600,backoff))
+    raise RuntimeError(error)
 
 
 def _valid_row(r):
@@ -195,7 +277,7 @@ class VisualOrderShadow:
     def report(self):
         rows=sorted(self.records,key=lambda r:int(r['ts_ms']))
         latest=rows[-1] if rows else None
-        lines=['🔬 V167 — ORDINE API, MODALITA\' SHADOW',
+        lines=['🔬 V169 — ORDINE API, MODALITA\' SHADOW',
                '⚠️ Ordine NON ancora confrontato con My Lotteries',
                f'Estr. salvate: {len(rows)} | discordie: {len(self._data["conflicts"])}']
         if latest:
@@ -208,7 +290,7 @@ class VisualOrderShadow:
 
     def stats_report(self):
         r=self._outcomes()
-        lines=['📊 V167 — CONFRONTO AMBI VIRTUALI',
+        lines=['📊 V169 — CONFRONTO AMBI VIRTUALI',
                '⚠️ Ordine API NON validato; nessuna giocata automatica',
                'H1: prima estrazione dopo la seconda quinta.',
                'H3 = terzo concorso dopo il quinto API di origine.']
