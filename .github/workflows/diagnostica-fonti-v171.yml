@@ -1,0 +1,26 @@
+name: V171 Diagnostica Fonti 10eLotto (SOLO LETTURA)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  analizza-fonti:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Dipendenza diagnostica
+        run: python -m pip install 'requests>=2.31,<3'
+      - name: Test fonti pubbliche
+        run: python diagnostica_v171.py --output risultati_v171
+      - name: Archivia rapporti
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V171-risultati-fonti
+          path: risultati_v171/
+          if-no-files-found: warn
+          retention-days: 7
