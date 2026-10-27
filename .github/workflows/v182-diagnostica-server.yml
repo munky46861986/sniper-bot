@@ -1,0 +1,37 @@
+name: V182 Diagnostica browser pubblico (solo lettura)
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Pagina WEB pubblica da verificare (non l’app Android)'
+        required: true
+        default: 'https://mylotteries.it/10elotto-estrazioni-e-archivio.html'
+      seconds_between_samples:
+        description: 'Secondi fra gli screenshot'
+        required: true
+        default: '65'
+jobs:
+  public-page-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install only Python binding (no browser download)
+        run: pip install playwright==1.58.0
+      - name: Check public webpage
+        env:
+          URL_INPUT: ${{ inputs.url }}
+          DELAY_INPUT: ${{ inputs.seconds_between_samples }}
+        run: python diagnostica_v182.py --url "$URL_INPUT" --delay "$DELAY_INPUT" --output v182_output
+      - name: Save evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V182-evidenze-browser
+          path: v182_output/
+          if-no-files-found: warn
