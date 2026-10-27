@@ -56,6 +56,7 @@ import requests
 from bs4 import BeautifulSoup
 from telegram import BotCommand, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from visual_order_v167 import VisualOrderShadow, fetch_recent_draws, merge_visual_states, STATE_KEY as V167_STATE_KEY
 
 try:
     import fcntl
@@ -105,6 +106,13 @@ PROCESSED_MAX = int(os.getenv("PROCESSED_MAX", "12000"))
 
 CODE_RELEASE = "v20.9.2+V27+V28+V38+V52-MULTI+V55-INCROCI+V56-CORE-LIVE+V67+V70+V72-DAILY-SHADOW"
 STATE_GUARD_SCHEMA = 2092
+# V168 SHADOW PAUSE - SAFE SWITCHES
+# Default: nessun NUOVO segnale operativo per Q/7/9/DW.
+# V168_ENABLE_* = 1 riabilita' solo dopo scelta esplicita dell'utente.
+V168_PAUSE_QUAD = os.getenv("V168_ENABLE_QUAD", "0") != "1"
+V168_PAUSE_SETTINA = os.getenv("V168_ENABLE_SETTINA", "0") != "1"
+V168_PAUSE_NOVINA = os.getenv("V168_ENABLE_NOVINA", "0") != "1"
+V168_PAUSE_D_WIDE = os.getenv("V168_ENABLE_D_WIDE", "0") != "1"
 STATE_HISTORY_RECOVERY_COMMITS = max(10, min(120, int(os.getenv("STATE_HISTORY_RECOVERY_COMMITS", "60"))))
 
 MULTI_VERSION = 1  # compatibile con state v20.2/v20.3
@@ -915,6 +923,7 @@ def _merge_state_data(local_data, remote_data):
     base["multi_state_revision"]=max(int(local_data.get("multi_state_revision",0) or 0),int(remote_data.get("multi_state_revision",0) or 0))
     ss=[x for x in (local_data.get("saved_at"),remote_data.get("saved_at")) if isinstance(x,str) and x]
     if ss: base["saved_at"]=max(ss)
+    base[V167_STATE_KEY] = merge_visual_states(local_data.get(V167_STATE_KEY), remote_data.get(V167_STATE_KEY))
     return base,"MERGED_LOCAL_REMOTE"
 
 
@@ -1791,6 +1800,7 @@ class MultiPrimeV1:
             "consensus":int(plan.get("consensus",2) or 2),
             "age":0, "closed":False,
             "operational_stopped":False, "stop_age":None, "stop_match":None,
+            "shadow_only": bool(V168_PAUSE_QUAD), "sim_cost":0.0, "sim_payout":0.0, "sim_stop_age":None,
             "cost":0.0, "payout":0.0,
             "max_shadow_match":0, "first2_colpo":None, "first3_colpo":None, "first4_colpo":None,
             "bd_rank":bd_rank, "o2_rank":o2_rank,
@@ -1902,6 +1912,8 @@ class MultiPrimeV1:
             "operational_horizon":max(1,min(MULTI_HORIZON,int(plan.get("operational_horizon",MULTI_HORIZON) or MULTI_HORIZON))),
             "support_sum":int(plan.get("support_sum",0) or 0),
             "age":0,"closed":False,"operational_stopped":False,"stop_age":None,"stop_match":None,
+            "shadow_only":bool((size==7 and V168_PAUSE_SETTINA) or (size==9 and V168_PAUSE_NOVINA)),
+            "sim_cost":0.0,"sim_payout":0.0,"sim_stop_age":None,
             "cost":0.0,"payout":0.0,"max_shadow_payout":0.0,"max_shadow_match":0,
             "bd_rank":bd_rank,"o2_rank":o2_rank,"created_at":now_txt(),
         }
@@ -2037,7 +2049,14 @@ class MultiPrimeV1:
             if matches>=4 and q.get("first4_colpo") is None: q["first4_colpo"]=age
 
             op_stop_now=False
-            if not bool(q.get("operational_stopped")):
+            if bool(q.get("shadow_only")):
+                # V168: simula STOP/prize, ma costo/premio operativo restano 0.
+                if q.get("sim_stop_age") is None:
+                    q["sim_cost"]=float(q.get("sim_cost",0.0) or 0.0)+QUAD_STAKE_PER_COLPO
+                    if matches>=2:
+                        q["sim_stop_age"]=age
+                        q["sim_payout"]={2:QUAD_PRIZE_2,3:QUAD_PRIZE_3,4:QUAD_PRIZE_4}.get(matches,0.0)
+            elif not bool(q.get("operational_stopped")):
                 q["cost"]=float(q.get("cost",0.0) or 0.0)+QUAD_STAKE_PER_COLPO
                 if matches>=2:
                     q["operational_stopped"]=True
@@ -2048,7 +2067,7 @@ class MultiPrimeV1:
                     events.append({"kind":"quad_stop","row":dict(q),"matches":matches,"closed":age>=MULTI_HORIZON})
 
             # Shadow: anche dopo STOP continuiamo fino a H5 per sapere se sarebbe migliorata.
-            if bool(q.get("operational_stopped")) and matches>=3 and matches>prev_max and not op_stop_now:
+            if (not q.get("shadow_only")) and bool(q.get("operational_stopped")) and matches>=3 and matches>prev_max and not op_stop_now:
                 events.append({"kind":"quad_shadow_upgrade","row":dict(q),"matches":matches,"closed":age>=MULTI_HORIZON})
 
             close=age>=MULTI_HORIZON
@@ -2058,7 +2077,7 @@ class MultiPrimeV1:
                 self.quad_records.append(q)
                 self.quad_records=self.quad_records[-MULTI_QUAD_RECORD_MAX:]
                 self.last_quad_result=dict(q)
-                if not bool(q.get("operational_stopped")):
+                if not bool(q.get("operational_stopped")) and not bool(q.get("shadow_only")):
                     events.append({"kind":"quad_stop","row":dict(q),"matches":0,"closed":True,"no_hit":True})
             else:
                 qremain.append(q)
@@ -2078,7 +2097,15 @@ class MultiPrimeV1:
             if prize>prev_best:
                 q["max_shadow_payout"]=prize; q["max_shadow_match"]=matches; q["max_shadow_age"]=age
             op_stop_now=False
-            if not bool(q.get("operational_stopped")):
+            if bool(q.get("shadow_only")):
+                # Nuovi 7/9: solo costo/premio SIMULATI fino allo STOP, nessun evento operativo.
+                if q.get("sim_stop_age") is None and age <= op_horizon:
+                    q["sim_cost"]=float(q.get("sim_cost",0.0) or 0.0)+BIG_STAKE_PER_COLPO
+                    if prize>0:
+                        q["sim_stop_age"]=age; q["sim_payout"]=prize
+                if q.get("sim_stop_age") is None and age >= op_horizon:
+                    q["sim_stop_age"]=age; q["sim_payout"]=0.0
+            elif not bool(q.get("operational_stopped")):
                 if age <= op_horizon:
                     q["cost"]=float(q.get("cost",0.0) or 0.0)+BIG_STAKE_PER_COLPO
                     if prize>0:
@@ -2089,14 +2116,14 @@ class MultiPrimeV1:
                     q["operational_stopped"]=True; q["stop_age"]=age; q["stop_match"]=None; q["payout"]=0.0
                     op_stop_now=True
                     events.append({"kind":"big_stop","row":dict(q),"matches":matches,"prize":0.0,"closed":age>=MULTI_HORIZON,"no_hit":True})
-            if bool(q.get("operational_stopped")) and prize>float(q.get("payout",0.0) or 0.0) and prize>prev_best and not op_stop_now:
+            if not bool(q.get("shadow_only")) and bool(q.get("operational_stopped")) and prize>float(q.get("payout",0.0) or 0.0) and prize>prev_best and not op_stop_now:
                 events.append({"kind":"big_shadow_upgrade","row":dict(q),"matches":matches,"prize":prize,"closed":age>=MULTI_HORIZON})
             close=age>=MULTI_HORIZON
             if close:
                 q["closed"]=True; q["closed_key"]=r["key"]
                 self.big_records.append(q); self.big_records=self.big_records[-MULTI_BIG_RECORD_MAX:]
                 self.last_big_result=dict(q)
-                if not bool(q.get("operational_stopped")):
+                if not bool(q.get("operational_stopped")) and not bool(q.get("shadow_only")):
                     q["operational_stopped"]=True; q["stop_age"]=age; q["stop_match"]=None; q["payout"]=0.0
                     events.append({"kind":"big_stop","row":dict(q),"matches":matches,"prize":0.0,"closed":True,"no_hit":True})
             else:
@@ -2282,11 +2309,11 @@ class MultiPrimeV1:
             return True
         if sig.get("prime_a2_numbers") and NOTIFY_PRIME_A2_SIGNAL:
             return True
-        if (sig.get("prime_d_elite_numbers") or sig.get("prime_d_wide_numbers")) and NOTIFY_PRIME_D_SIGNAL:
+        if (sig.get("prime_d_elite_numbers") or (sig.get("prime_d_wide_numbers") and not V168_PAUSE_D_WIDE)) and NOTIFY_PRIME_D_SIGNAL:
             return True
-        if sig.get("quad_plans") and NOTIFY_QUAD_SIGNAL:
+        if any(not q.get("shadow_only") for q in sig.get("quad_plans") or []) and NOTIFY_QUAD_SIGNAL:
             return True
-        if sig.get("big_plans") and NOTIFY_BIG_SIGNAL:
+        if any(not b.get("shadow_only") for b in sig.get("big_plans") or []) and NOTIFY_BIG_SIGNAL:
             return True
         # C/X e STANDARD restano shadow; B non genera nuovi segnali.
         return NOTIFY_STANDARD_SIGNAL
@@ -2330,7 +2357,7 @@ class MultiPrimeV1:
             ]
         if dw_nums:
             lines += [
-                "", "🔥 PRIME D WIDE — AMBATA OPERATIVA",
+                "", "👁️ PRIME D WIDE — SOLO SHADOW (PAUSA V168)" if V168_PAUSE_D_WIDE else "🔥 PRIME D WIDE — AMBATA OPERATIVA",
                 f"🎯 D-WIDE H1: {' '.join(f'{n:02d}' for n in sorted(dw_nums))}",
                 "Gate D-WIDE: BD rank 5-8 + ora >16:00 + intersezione unica",
             ]
@@ -2387,7 +2414,7 @@ class MultiPrimeV1:
                 qq=[int(x) for x in q.get("quartet",[])]
                 icon="💎" if str(q.get("quad_level"))=="ELITE" else "🔷"
                 lines.append(f"{icon} Q-{q.get('quad_level')} {'-'.join(f'{x:02d}' for x in qq)} | consenso {q.get('consensus')}/3 | Jmin={float(q.get('min_jaccard',0)):.3f}")
-                lines.append("   💶 1€/colpo H1-H5 | STOP al primo 2/4 o meglio | shadow continua fino H5")
+                lines.append("   👁️ PAUSA V168: solo verifica virtuale H1-H5, nessuna puntata" if q.get("shadow_only") else "   💶 1€/colpo H1-H5 | STOP al primo 2/4 o meglio | shadow continua fino H5")
 
         bplans=list(sig.get("big_plans") or [])
         if bplans:
@@ -2395,6 +2422,9 @@ class MultiPrimeV1:
             for b in bplans:
                 nums=[int(x) for x in b.get("numbers",[])]
                 size=int(b.get("system_size",0) or 0)
+                if b.get("shadow_only"):
+                    lines.append("👁️ PAUSA V168: "+str(size)+" numeri in prova H1-H5, nessuna puntata")
+                    continue
                 if size==7:
                     lines.append(f"🎯 SETTINA PROFIT FAST {'-'.join(f'{x:02d}' for x in nums)} | {b.get('selector')} | origine {b.get('tier')}")
                     lines.append(f"   Gate FAST: support_sum={int(b.get('support_sum',0) or 0)} | operativo H1-H{int(b.get('operational_horizon',SETTINA_FAST_HORIZON) or SETTINA_FAST_HORIZON)}")
@@ -2523,7 +2553,7 @@ class MultiPrimeV1:
         elif tier == "DE":
             title = "💠 MULTI PRIME D ELITE — ESITO AMBATA"
         elif tier == "DW":
-            title = "🔥 MULTI PRIME D WIDE — ESITO AMBATA"
+            title = "👁️ MULTI PRIME D WIDE — ESITO SHADOW" if V168_PAUSE_D_WIDE else "🔥 MULTI PRIME D WIDE — ESITO AMBATA"
         elif tier == "B":
             title = "🟠 MULTI PRIME B LEGACY — ESITO AMBATA"
         elif tier == "C":
@@ -2570,8 +2600,8 @@ class MultiPrimeV1:
             if slot == "TRIANGLE_OFF":
                 return bool(ev.get("hit_now")) and NOTIFY_TRIANGLE_OFF_HIT
         elif tier in {"DE", "DW"}:
-            # D è operativo SOLO come ambata; tutti gli ambi restano shadow.
-            return kind == "ambata" and NOTIFY_PRIME_D_RESULT
+            # In V168 D-WIDE e' solo shadow; D-ELITE invariato.
+            return kind == "ambata" and NOTIFY_PRIME_D_RESULT and (tier == "DE" or not V168_PAUSE_D_WIDE)
         elif tier == "B":
             # Solo eventuali pending legacy già nati in v20.5.
             return kind == "ambata" and NOTIFY_PRIME_B_RESULT
@@ -2669,9 +2699,27 @@ class MultiPrimeV1:
         pam = sum(1 for r in self.ambo_pending if self._tier_from_obj(r) == tier)
         return pa, pam
 
+    def pause_shadow_text(self):
+        """Only V168-created simulated rows; legacy cost/ROI remains untouched."""
+        lines=["⏸️ V168 — PAUSA OPERATIVA / SHADOW",
+               f"QUATERNA pausa: {V168_PAUSE_QUAD} | SETTINA: {V168_PAUSE_SETTINA} | NOVINA: {V168_PAUSE_NOVINA} | D WIDE: {V168_PAUSE_D_WIDE}",
+               "Nessuna giocata automatica. Saldi simulati, non vincite reali."]
+        for title, closed, pending in (
+            ("QUATERNA", self.quad_records, self.quad_pending),
+            ("SETTINA", [x for x in self.big_records if int(x.get('system_size',0) or 0)==7],
+                         [x for x in self.big_pending if int(x.get('system_size',0) or 0)==7]),
+            ("NOVINA", [x for x in self.big_records if int(x.get('system_size',0) or 0)==9],
+                        [x for x in self.big_pending if int(x.get('system_size',0) or 0)==9])):
+            rows=[x for x in closed if x.get('shadow_only')]
+            wait=sum(1 for x in pending if x.get('shadow_only'))
+            cost=sum(float(x.get('sim_cost',0) or 0) for x in rows)
+            prize=sum(float(x.get('sim_payout',0) or 0) for x in rows)
+            lines.append(f"{title} SHADOW: {len(rows)} chiusi, {wait} pending | costo virtuale €{cost:.0f} premi €{prize:.0f} saldo €{prize-cost:+.0f}")
+        return "\n".join(lines)
+
     def _big_stats(self, size, strategy=None):
         size=int(size)
-        rows=[r for r in self.big_records if int(r.get("system_size",0) or 0)==size]
+        rows=[r for r in self.big_records if int(r.get("system_size",0) or 0)==size and not r.get("shadow_only")]
         if strategy is not None:
             rows=[r for r in rows if str(r.get("strategy") or "").upper()==str(strategy).upper()]
         cost=sum(float(r.get("cost",0) or 0) for r in rows)
@@ -2688,7 +2736,7 @@ class MultiPrimeV1:
         return {"n":len(rows),"cost":cost,"payout":payout,"roi":roi,"dist":dist,"miss":miss,"big400":big400,"shadow400":shbig}
 
     def _quad_stats(self, elite_only=False):
-        rows=[r for r in self.quad_records if (not elite_only or str(r.get("quad_level") or "").upper()=="ELITE")]
+        rows=[r for r in self.quad_records if (not r.get("shadow_only")) and (not elite_only or str(r.get("quad_level") or "").upper()=="ELITE")]
         n=len(rows)
         cost=sum(float(r.get("cost",0.0) or 0.0) for r in rows)
         payout=sum(float(r.get("payout",0.0) or 0.0) for r in rows)
@@ -2748,7 +2796,7 @@ class MultiPrimeV1:
         b9pending=sum(1 for r in self.big_pending if int(r.get("system_size",0) or 0)==9)
 
         lines = [
-            "🧪 MULTI PRIME A + A2 + D + QUATERNA + SETTINA FAST + NOVINA — v20.9.2",
+            "🧪 MULTI PRIME A + A2 + D + QUATERNA/7/9 — v20.9.2 + V168 PAUSA",
             "STANDARD shadow: BD12 ∩ ED12 ∩ O2F12",
             f"🔥 A: BD11-12 + O2 {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX} | 💎 A2: BD11-12 + O2 {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + fascia Elite",
             "💠 D-ELITE: BD1-4 | 🔥 D-WIDE: BD5-8 | entrambi >16:00 + intersezione unica",
@@ -2786,7 +2834,7 @@ class MultiPrimeV1:
             f"Q-PLUS stop: 2/4 {qplus['s2']} | 3/4 {qplus['s3']} | 4/4 {qplus['s4']} | MISS {qplus['miss']} | shadow H5 ≥3/4 {qplus['sh3']} | 4/4 {qplus['sh4']}",
             f"💎 Q-ELITE chiuse {qelite['n']} | costo €{qelite['cost']:.0f} | premi €{qelite['payout']:.0f} | ROI {qelite['roi']:.1f}%",
             f"Q-ELITE stop: 2/4 {qelite['s2']} | 3/4 {qelite['s3']} | 4/4 {qelite['s4']} | MISS {qelite['miss']} | shadow H5 ≥3/4 {qelite['sh3']} | 4/4 {qelite['sh4']}",
-            "💶 Regola live Q: 1€/colpo, STOP al primo 2/4+; tracking shadow continua fino H5.",
+            "⏸️ Nuove QUATERNE V168 solo SHADOW, nessuna puntata; vecchi ROI preservati.",
             "",
             f"🎯 SETTINA PROFIT FAST — start {self.big7_fast_started_from_key or '-'} | create {self.big7_fast_signals} | pending {b7pending} | chiuse {b7['n']}",
             "Gate: A2 O2rank=3 + support6≥7 | DE BDrank1-3 + O2rank10-12 | operativo H1-H2",
@@ -2795,7 +2843,7 @@ class MultiPrimeV1:
             f"💥 NOVINA LIVE — start {self.big_started_from_key or '-'} | create {self.big9_signals} | pending {b9pending} | chiuse {b9['n']}",
             f"NOVINA costo €{b9['cost']:.0f} | premi €{b9['payout']:.0f} | ROI {b9['roi']:.1f}% | 0/9 {b9['dist'].get(0,0)} | 5/9 {b9['dist'].get(5,0)} | 6/9 {b9['dist'].get(6,0)} | 7/9 {b9['dist'].get(7,0)} | 8/9 {b9['dist'].get(8,0)} | 9/9 {b9['dist'].get(9,0)} | MISS {b9['miss']}",
             f"NOVINA BIG≥€400 operativi {b9['big400']} | shadow H5 ≥€400 {b9['shadow400']}",
-            "💶 Regola LIVE: SETTINA FAST H1-H2; NOVINA H1-H5; STOP al primo premio ufficiale; shadow continua fino H5.",
+            "⏸️ V168: NUOVE Q/7/9 solo SHADOW. Le regole operative restano consultabili per lo storico precedente.",
             "Baseline: ambata H1 22.22% | ambo H1 ≈4.74% | ambo H5 ≈21.57%.",
             "⏸️ FOCUS / INCROCIO / CORE / legacy: PAUSATI; state conservato.",
         ]
@@ -4983,6 +5031,7 @@ class MultiOnlyEngine:
         self.v72 = V72DailyTracker()
         self.v114 = V114GeneratorLive()
         self.v121 = V121LiveShadow()
+        self.visual_shadow = VisualOrderShadow()  # V167 - indipendente
         self.state_revision = 0
         self.state_load_info = {"loaded": False, "path": None, "reason": "not-run", "source": "-"}
         self.load_state()
@@ -5038,6 +5087,7 @@ class MultiOnlyEngine:
             local_path = STATE_FILE
 
             self.raw_state = data
+            self.visual_shadow.load(data.get(V167_STATE_KEY))
             self.v27 = V27Tracker(data.get(V27_KEY))
             self.v28 = V28Tracker(data.get(V28_KEY))
             self.v38 = V38Tracker(data.get(V38_KEY))
@@ -5105,6 +5155,7 @@ class MultiOnlyEngine:
         data[V72_KEY] = self.v72.dump()
         data[V114_KEY] = self.v114.dump()
         data[V121_KEY] = self.v121.dump()
+        data[V167_STATE_KEY] = merge_visual_states(data.get(V167_STATE_KEY), self.visual_shadow.dump())
         data["active_mode"] = "MULTI_PRIME_A_A2_D_X_QUAD_FAST7_9_V52_MULTI_V55_V56_CORE_LIVE_V67_DAILY_V70_SHADOW_v20.9.2_HARD_LOCK"
         data["state_guard_schema"] = STATE_GUARD_SCHEMA
 
@@ -5143,6 +5194,7 @@ class MultiOnlyEngine:
         data[V72_KEY] = _merge_v72_state(data.get(V72_KEY), self.v72.dump())
         data[V114_KEY] = _merge_v114_state(data.get(V114_KEY), self.v114.dump())
         data[V121_KEY] = _merge_v121_state(data.get(V121_KEY), self.v121.dump())
+        data[V167_STATE_KEY] = merge_visual_states(data.get(V167_STATE_KEY), self.visual_shadow.dump())
         self.v27 = V27Tracker(data[V27_KEY])
         self.v28 = V28Tracker(data[V28_KEY])
         self.v38 = V38Tracker(data[V38_KEY])
@@ -5165,6 +5217,7 @@ class MultiOnlyEngine:
         atomic_write_json(STATE_FILE, data)
         atomic_write_json(STATE_HARDLOCK_FILE, data)
         self.raw_state = data
+        self.visual_shadow.load(data.get(V167_STATE_KEY))
         if git:
             st = git_commit_state_if_needed(force=force_git)
             if not st.get("ok", False):
@@ -5213,7 +5266,8 @@ class MultiOnlyEngine:
             f"QUATERNA v20.8 start: {mc.quad_started_from_key or '-'}\n"
             f"SISTEMI 7/9 base start: {mc.big_started_from_key or '-'}\n"
             f"SETTINA PROFIT FAST v20.9.2 start: {mc.big7_fast_started_from_key or '-'}\n\n"
-            "✅ Attivo: MULTI + PRIME A + A2 + D ELITE/WIDE + QUATERNA PLUS/ELITE + SETTINA PROFIT FAST + NOVINA LIVE; X/C shadow\n"
+            "✅ ATTIVO: PRIME A/A2, D ELITE, V114/V121 SHADOW e metodi legacy invariati\n"
+            "⏸️ PAUSA OPERATIVA V168: D-WIDE, QUATERNA, SETTINA, NOVINA; simulazioni conservate\n"
             "🎯 V27 ambata ELITE+STANDARD H1 | 🔗 V28 ambo H1 collegato a V27.\n"
             "🟠 PRIME B: congelato, solo eventuali pending legacy.\n"
             "⏸️ FOCUS / INCROCIO / CORE / legacy: congelati nello state.\n\n"
@@ -5223,20 +5277,20 @@ class MultiOnlyEngine:
     @staticmethod
     def menu_text():
         return (
-            "🎯 10eLOTTO v20.9.2 — MULTI PRIME + QUATERNA + SETTINA PROFIT FAST + NOVINA — HARD LOCK\n\n"
+            "🎯 10eLOTTO V168 — HARD LOCK + ORDINE API + PAUSA OPERATIVA\n\n"
             "ATTIVO:\n"
             "• STANDARD BD12∩ED12∩O2F12 shadow/control\n"
             f"• 🔥 PRIME A: BD11-12 + O2 rank {PRIME_A_O2_RANK_MIN}-{PRIME_A_O2_RANK_MAX}\n"
             f"• 💎 PRIME A2: BD11-12 + O2 rank {PRIME_A2_O2_RANK_MIN}-{PRIME_A2_O2_RANK_MAX} + fascia Elite\n"
             "• 💠 D ELITE: BD1-4 + >16:00 + intersezione unica\n"
-            "• 🔥 D WIDE: BD5-8 + >16:00 + intersezione unica\n"
+            "• 👁️ D WIDE: BD5-8 + >16:00 — IN PAUSA, solo shadow\n"
             "• 🧬 X ULTRA: D + ED9-12 + >17:00 + Extra margin13≥1 — SHADOW\n"
             "• D: ambata operativa; tutti gli ambi D shadow\n"
-            "• 🔷 QUATERNA PLUS: A2+D ELITE, consenso MAX-MIN Jaccard900 TOP10/11/12 ≥2/3\n"
-            "• 💎 QUATERNA ELITE: stessa quaterna scelta da TOP10=TOP11=TOP12\n"
-            "• 💶 Q: 1€/colpo, STOP al primo 2/4+, shadow fino H5\n"
-            "• 🎯 SETTINA PROFIT FAST: gate A2/DE selettivi, COOC900; 1€/colpo H1-H2, H3-H5 shadow\n"
-            "• 💥 NOVINA LIVE: A2+D ELITE+D WIDE, M+8 O2F12 Jaccard900; 1€/colpo, STOP al primo premio\n"
+            "• ⏸️ QUATERNA PLUS/ELITE: SOLO SHADOW; consenso Jaccard900 invariato\n"
+            "• 👁️ Q ELITE: conserva tracking H1-H5 senza nuovi segnali di puntata\n"
+            "• ⏸️ Q: STOP simulato fino a H5, vecchi premi e costi preservati\n"
+            "• ⏸️ SETTINA FAST: gate invariati, NUOVE SELEZIONI SOLO SHADOW\n"
+            "• ⏸️ NOVINA: M+8 O2F12 Jaccard900, SOLO SHADOW, nessuna puntata\n"
             "• 🎯 V27 ELITE+STANDARD: ambata H1, warmup 900\n"
             "• 🔗 V28 ELITE+STANDARD: ambo H1, partner momentum Base20-320, €1/ambo\n"
             "• 🚀 V52 MULTI LIVE: tutti i segnali 80-86/38-39/60-61/02-09/71-78, senza limite al giorno, H1\n"
@@ -5249,8 +5303,10 @@ class MultiOnlyEngine:
             "• 🧠 V121 NONLINEARE LIVE SHADOW: ventina Base 20 + verifica HIT rispetto V114\n"
             "• C legacy shadow; B legacy congelato\n"
             f"• SUPER operativo solo A/A2 se support_sum≥{MULTI_SUPER_GATE}; TRIANGLE OFF shadow\n\n"
+            "PAUSATI OPERATIVI: QUATERNA, SETTINA, NOVINA, D WIDE; prove shadow senza puntate.\n"
             "PAUSATI (state conservato): FOCUS, INCROCIO, CORE e tutti i legacy.\n\n"
-            "/multi — statistiche complete A/A2/D/X + QUATERNA + 7/9 LIVE\n"
+            "/multi — statistiche complete A/A2/D/X + QUATERNA + 7/9\n"
+            "/pausestato — saldi SHADOW separati Q/7/9 e pause attive\n"
             "/v27 — report ambata ELITE e STANDARD\n"
             "/v28 — report ambo H1 ELITE e STANDARD\n"
             "/v38 — simulazione giornaliera ambi CONTROL/ACTIVE\n"
@@ -5334,6 +5390,54 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply(update, context.application.bot_data["engine"].menu_text())
 
 
+
+# ============================= V167 ORDINE API — SOLO SHADOW =============================
+async def cmd_pausestato(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    engine=context.application.bot_data["engine"]
+    await reply(update, engine.multichannel.pause_shadow_text())
+
+async def cmd_ordineapi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].visual_shadow.report())
+
+async def cmd_ambiapi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await reply(update, context.application.bot_data["engine"].visual_shadow.stats_report())
+
+async def cmd_ordinecsv(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    import io
+    if update and update.message:
+        engine=context.application.bot_data["engine"]
+        buffer=io.BytesIO(engine.visual_shadow.export_csv().encode('utf-8-sig'))
+        buffer.name='V167_ordine_api.csv'
+        await update.message.reply_document(document=buffer, filename=buffer.name)
+
+async def v167_poll_loop(engine):
+    """La cattura non puo' fermare il bot esistente, anche se l'API non e' accessibile."""
+    if str(os.getenv('V167_API_ENABLED','1')).lower() in {'0','false','off','no'}:
+        console_log('V167 API disattivata con V167_API_ENABLED=0')
+        return
+    seconds=max(60,int(os.getenv('V167_API_POLL_SECONDS','75')))
+    last_error=''
+    last_error_time=0.0
+    while True:
+        try:
+            batch=await asyncio.to_thread(fetch_recent_draws)
+            count=engine.visual_shadow.ingest(batch)
+            if count:
+                console_log(f'V167 ORDINE API: registrate {count} nuove estrazioni (totale {len(engine.visual_shadow.records)})')
+                engine.save_state(git=True)
+            if batch: last_error=''
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            engine.visual_shadow.error(exc)
+            msg=f'{type(exc).__name__}: {str(exc)[:150]}'
+            if msg!=last_error or time.time()-last_error_time>900:
+                console_log('V167 non disponibile (bot originale continua): '+msg)
+                last_error=msg
+                last_error_time=time.time()
+        await asyncio.sleep(seconds)
+# ============================= FINE V167 ==============================================
+
 async def setup_commands(app):
     await app.bot.set_my_commands([
         BotCommand("multi", "MULTI + PRIME + Q + 7/9 LIVE"),
@@ -5351,6 +5455,10 @@ async def setup_commands(app):
         BotCommand("status", "Stato MULTI + Q + 7/9 LIVE + state"),
         BotCommand("verificatutto", "Audit MULTI/PRIME/Q/7/9 LIVE"),
         BotCommand("menu", "Comandi attivi"),
+        BotCommand("pausestato", "Pause attive, saldi SHADOW V168"),
+        BotCommand("ordineapi", "20 numeri ordine API (shadow)"),
+        BotCommand("ambiapi", "Confronto ambi H1 / H3 (shadow)"),
+        BotCommand("ordinecsv", "Esporta estrazioni API in CSV"),
     ])
 
 
@@ -5864,6 +5972,8 @@ def run_self_test():
     mq=_selftest_seed_mc(); mq.ensure_v2071_forward_base(); mq.ensure_quad_forward_base()
     qp={"quartet":[1,2,3,4],"quad_level":"ELITE","consensus":3,"min_jaccard":0.1,"mean_jaccard":0.2,"min_cooc":1,"window":900,"picks":[]}
     mq._arm_quad(mq.history[-1]["key"],1,qp,"A2",11,3)
+    assert mq.quad_pending[0].get("shadow_only") == bool(V168_PAUSE_QUAD)
+    mq.quad_pending[0]["shadow_only"] = False  # legacy regression test
     rr=dict(mq.history[-1]); rr["key"]="2100-01-01#001"; rr["day"]="2100-01-01"; rr["draw_id"]=1; rr["nums"]=[1,2]+[n for n in range(5,23)]; rr["oro"]=1; rr["doppio_oro"]=2
     evq=mq.advance(rr); assert any(e.get("kind")=="quad_stop" and int(e.get("matches",0))==2 for e in evq)
     assert mq.quad_pending and mq.quad_pending[0].get("operational_stopped") and float(mq.quad_pending[0].get("payout",0))==1.0
@@ -5872,6 +5982,8 @@ def run_self_test():
     # SETTINA: 0/7 è già premio €1 e deve chiudere operativo a H1.
     p7={"system_size":7,"numbers":[1,2,3,4,5,6,7],"selector":"COOC900","scores":[],"window":900}
     mb._arm_big(mb.history[-1]["key"],1,p7,"A2",11,3)
+    assert mb.big_pending[0].get("shadow_only") == bool(V168_PAUSE_SETTINA)
+    mb.big_pending[0]["shadow_only"] = False  # legacy regression test
     r7=dict(mb.history[-1]); r7["key"]="2100-01-02#001"; r7["day"]="2100-01-02"; r7["draw_id"]=1
     r7["nums"]=[n for n in range(20,40)]; r7["oro"]=20; r7["doppio_oro"]=21
     e7=mb.advance(r7); assert any(e.get("kind")=="big_stop" and int(e.get("matches",-1))==0 and float(e.get("prize",0))==1.0 for e in e7), e7
@@ -5879,6 +5991,8 @@ def run_self_test():
     # NOVINA: 7/9 = €400 e stop.
     p9={"system_size":9,"numbers":[1,2,3,4,5,6,7,8,9],"selector":"JACCARD900_M","scores":[],"window":900}
     mb._arm_big(mb.history[-1]["key"],1,p9,"DE",3,8)
+    assert mb.big_pending[-1].get("shadow_only") == bool(V168_PAUSE_NOVINA)
+    mb.big_pending[-1]["shadow_only"] = False  # legacy regression test
     r9=dict(mb.history[-1]); r9["key"]="2100-01-02#002"; r9["day"]="2100-01-02"; r9["draw_id"]=2
     r9["nums"]=[1,2,3,4,5,6,7]+[n for n in range(20,33)]; r9["oro"]=1; r9["doppio_oro"]=2
     e9=mb.advance(r9); assert any(e.get("kind")=="big_stop" and int(e.get("matches",-1))==7 and float(e.get("prize",0))==400.0 for e in e9), e9
@@ -6083,15 +6197,25 @@ async def main():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("verificatutto", cmd_verificatutto))
     app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("pausestato", cmd_pausestato))
+    app.add_handler(CommandHandler("ordineapi", cmd_ordineapi))
+    app.add_handler(CommandHandler("ambiapi", cmd_ambiapi))
+    app.add_handler(CommandHandler("ordinecsv", cmd_ordinecsv))
 
     await app.initialize()
     await app.start()
     await setup_commands(app)
     await app.updater.start_polling(drop_pending_updates=True)
+    v167_task=asyncio.create_task(v167_poll_loop(engine), name="v167_order_api")
     try:
         await startup_until_ready(engine, app)
         await live_loop(engine, app)
     finally:
+        v167_task.cancel()
+        try:
+            await v167_task
+        except asyncio.CancelledError:
+            pass
         try:
             engine.save_state(git=True, force_git=True)
         except Exception:
