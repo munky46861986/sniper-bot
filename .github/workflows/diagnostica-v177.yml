@@ -1,0 +1,27 @@
+name: V177 Verifica endpoint pubblici 10eLotto
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install requests
+        run: python -m pip install requests
+      - name: Esegui V177 (solo GET pubblici)
+        run: python diagnostica_v177.py
+      - name: Salva report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V177-risultati
+          path: risultati_v177/
+          if-no-files-found: warn
