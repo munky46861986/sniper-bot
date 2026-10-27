@@ -8,6 +8,7 @@ import asyncio
 import csv
 import json
 import re
+import shutil
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,7 +66,18 @@ async def main(args):
         print(msg,flush=True);events.append(msg)
 
     async with async_playwright() as p:
-        browser=await p.chromium.launch(headless=True,args=['--no-sandbox'])
+        # Use the Chrome/Chromium executable already on GitHub runners if present.
+        # Fallback to the Playwright-managed Chromium installed by the workflow.
+        system_browser = next((shutil.which(cmd) for cmd in
+            ('google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser')
+            if shutil.which(cmd)), None)
+        launch_options = {'headless': True, 'args': ['--no-sandbox']}
+        if system_browser:
+            launch_options['executable_path'] = system_browser
+            log(f'Browser sistema trovato: {system_browser}')
+        else:
+            log('Browser di sistema non trovato: uso Chromium Playwright')
+        browser=await p.chromium.launch(**launch_options)
         for name,url in SOURCES.items():
             context=await browser.new_context(locale='it-IT', service_workers='block')
             page=await context.new_page()
