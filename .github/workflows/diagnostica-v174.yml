@@ -1,0 +1,24 @@
+name: V174 Verifica fonti app Android (solo lettura)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnostica-v174:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Esegui V174 senza dipendenze esterne
+        run: python diagnostica_v174.py --output risultati_v174
+      - name: Conserva risultati anche in caso di errore
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V174-risultati-app
+          path: risultati_v174/
+          if-no-files-found: warn
+          retention-days: 7
