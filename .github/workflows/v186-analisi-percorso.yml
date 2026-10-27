@@ -1,5 +1,11 @@
 name: V186 Analisi percorso diretta My Lotteries
 on:
+  push:
+    branches:
+      - diagnostica/v186-app-route
+    paths:
+      - diagnostica_v186.py
+      - .github/workflows/v186-analisi-percorso.yml
   workflow_dispatch:
 permissions:
   contents: read
