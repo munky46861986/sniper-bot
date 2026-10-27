@@ -1,0 +1,36 @@
+name: V172.1 Diagnostica Rete 10eLotto (SOLO LETTURA)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  analizza-rete:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Installa solo libreria Python
+        run: |
+          python -m pip install 'playwright>=1.50,<2'
+      - name: Individua browser e installa fallback se necessario
+        shell: bash
+        run: |
+          if command -v google-chrome >/dev/null || command -v google-chrome-stable >/dev/null || command -v chromium >/dev/null || command -v chromium-browser >/dev/null; then
+            echo 'Browser di sistema rilevato: non installo altro.'
+          else
+            echo 'Nessun browser di sistema: installo Chromium Playwright senza apt.'
+            python -m playwright install chromium
+          fi
+      - name: Esegui V172.1
+        run: python diagnostica_rete_v172.py --output risultati_v172 --observe-seconds 12
+      - name: Conserva risultati anche in caso di errore
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V172-1-risultati-rete
+          path: risultati_v172/
+          if-no-files-found: warn
+          retention-days: 7
