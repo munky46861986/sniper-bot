@@ -1,0 +1,28 @@
+name: V172 Diagnostica Rete 10eLotto (SOLO LETTURA)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  analizza-rete:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Installa browser diagnostico
+        run: |
+          python -m pip install 'playwright>=1.50,<2'
+          python -m playwright install --with-deps chromium
+      - name: Esegui V172
+        run: python diagnostica_rete_v172.py --output risultati_v172 --observe-seconds 18
+      - name: Conserva risultati anche in caso di errore
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V172-risultati-rete
+          path: risultati_v172/
+          if-no-files-found: warn
+          retention-days: 7
