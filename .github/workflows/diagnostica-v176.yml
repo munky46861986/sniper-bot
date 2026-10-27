@@ -1,0 +1,25 @@
+name: V176 Analisi statica JavaScript My Lotteries
+on:
+  workflow_dispatch:
+jobs:
+  analisi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Analizza APK e JavaScript (senza avviare app)
+        run: python diagnostica_v176.py
+      - name: Salva diagnostica anche in caso di errore
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V176-risultati
+          path: risultati_v176/
+          if-no-files-found: warn
