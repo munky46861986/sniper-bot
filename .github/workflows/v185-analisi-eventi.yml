@@ -1,0 +1,23 @@
+name: V185 Analisi eventi My Lotteries (solo lettura)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  v185:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Esegui analisi statica V185
+        run: python diagnostica_v185.py
+      - name: Salva risultati V185
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V185-risultati
+          path: v185_risultati/
+          if-no-files-found: warn
