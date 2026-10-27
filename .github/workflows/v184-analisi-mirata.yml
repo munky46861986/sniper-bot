@@ -1,0 +1,23 @@
+name: V184 Analisi mirata JS My Lotteries
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  analisi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Analizza due JS pubblici dell'APK
+        run: python diagnostica_v184.py
+      - name: Salva report anche in caso di errore
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V184-risultati
+          path: v184_risultati/
+          if-no-files-found: warn
