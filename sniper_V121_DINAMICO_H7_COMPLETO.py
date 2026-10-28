@@ -4723,7 +4723,7 @@ class V121LiveShadow:
         if evt.get("kind") == "HIT7":
             lines.append(f"✅ Almeno 7 numeri al controllo H{evt['h']}: ciclo concluso. "
                          "Dalla prossima previsione riparte H1.")
-            lines += self._zone_summary()[1:5]
+            lines += self._zone_summary()[1:]
         return lines
 
     def report(self, history):
@@ -4790,8 +4790,12 @@ def _merge_v121_state(a,b):
     if not aa:return dict(bb) if bb else None
     if not bb:return dict(aa)
     def progress(d):
+        zone = d.get("zone_monitor") if isinstance(d.get("zone_monitor"), dict) else {}
+        # In equal-H1 snapshots prefer the state that includes the new
+        # V121 zone checks and learned statistics; never sum duplicate snapshots.
         return (order_key(d.get('last_seen_key')) or (-1,-1),
-                int(d.get('tests') or 0),int(d.get('hit_sum') or 0))
+                int(d.get('tests') or 0),int(d.get('hit_sum') or 0),
+                int(zone.get("checks") or 0),int(zone.get("successes") or 0))
     # I contatori non si sommano mai durante il merge di snapshot dello stesso runner.
     return dict(max((aa,bb),key=progress))
 
