@@ -4632,6 +4632,10 @@ class V121LiveShadow:
                               target=str(p.get("target_key")))
             self.pending = None
             self.last_result = result
+        elif self.zone_run.get("step", 0) > 0:
+            # No armed H1 for this draw: the consecutive-verification
+            # sequence is broken. Never pretend this was another verified H.
+            self._zone_reset_gap("Previsione H1 assente alla verifica " + key)
         self.last_seen_key = key
         return result
 
