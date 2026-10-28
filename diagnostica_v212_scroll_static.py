@@ -49,3 +49,25 @@ for x in matches[:130]:
     lines.append("```")
 (OUT/"scroll_sources.md").write_text("\n".join(lines),encoding="utf-8")
 print(json.dumps({k:v for k,v in report.items() if k!="matches"},ensure_ascii=False,indent=2))
+
+# Second pass: short, targeted neighborhoods for the Home card's ordinary UI controls.
+with zipfile.ZipFile(APK) as z:
+    sources={}
+    for name in ("assets/www/main.79046245.js","assets/www/main.c6798567.css"):
+        sources[name]=z.read(name).decode("utf-8",errors="replace")
+patterns=("new-app-container","homeCardsOpened","isCollapsed",
+          "toggleCard","estrazione_diecielotto","estrazione10elotto",
+          "deferScrollToHash","preventScrolling","collapsed:!0")
+detail=["# V212 — Contesto specifico dei controlli Home","Solo estratti statici limitati dall'APK verificato.",""]
+for name,source in sources.items():
+    for term in patterns:
+        hits=list(re.finditer(re.escape(term),source,re.IGNORECASE))
+        for hit in hits[:(5 if name.endswith(".js") else 8)]:
+            before=max(0,hit.start()-420)
+            after=min(len(source),hit.end()+520)
+            detail.append(f"## {name} — {term}, offset {hit.start()}")
+            detail.append("```text")
+            detail.append(source[before:after].replace("```","` ` `"))
+            detail.append("```")
+(OUT/"home_card_context.md").write_text("\n".join(detail),encoding="utf-8")
+print("V212 targeted context sections:",sum(line.startswith("## ") for line in detail))
