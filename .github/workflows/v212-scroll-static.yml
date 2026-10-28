@@ -1,0 +1,33 @@
+name: V212 APK Home scroll static diagnostics
+on:
+  push:
+    branches:
+      - diagnostica/v186-app-route
+    paths:
+      - diagnostica_v212_scroll_static.py
+      - .github/workflows/v212-scroll-static.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate Python
+        run: python -m py_compile diagnostica_v212_scroll_static.py
+      - name: Download and verify public APK
+        run: python diagnostica_v194_apk_check.py
+      - name: Analyze Home scroll sources
+        run: python diagnostica_v212_scroll_static.py
+      - name: Save V212 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V212-home-scroll-static
+          path: v212_risultati/
+          retention-days: 7
