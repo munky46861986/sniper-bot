@@ -70,6 +70,18 @@ if code==0:
    log("page_down",index=i,exit=rc,error=err)
    time.sleep(3)
    snap("after_page_down_"+str(i))
+  # Un solo esperimento alternativo: focus da tastiera/accessibilita', non altri swipe.
+  for i in range(1,9):
+   rc,_,err=shell("shell","input","keyevent","61")  # KEYCODE_TAB
+   log("focus_tab",index=i,exit=rc,error=err)
+   time.sleep(0.7)
+  snap("after_eight_tabs")
+  for i in range(1,5):
+   rc,_,err=shell("shell","input","keyevent","20")  # KEYCODE_DPAD_DOWN
+   log("focus_dpad_down",index=i,exit=rc,error=err)
+   time.sleep(0.8)
+  snap("after_dpad_down")
+  # Nessun ENTER: puo' attivare pulsanti di acquisto.
  else:log("stop",reason="privacy_decline_not_found")
 (OUT/"report.json").write_text(json.dumps({
  "version":211,"verified_10elotto_original_order":False,
