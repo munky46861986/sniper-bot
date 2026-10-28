@@ -1,0 +1,36 @@
+name: V121 complete dynamic H7/H8 isolated tests
+on:
+  push:
+    branches:
+      - diagnostica/v186-app-route
+    paths:
+      - sniper_V121_DINAMICO_H7_COMPLETO.py
+      - test_v121_dynamic_h7.py
+      - .github/workflows/test-v121-dynamic-h7.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install read-only dependencies
+        run: python -m pip install numpy lightgbm requests beautifulsoup4 python-telegram-bot
+      - name: Validate full file without running bot
+        run: python -m py_compile sniper_V121_DINAMICO_H7_COMPLETO.py test_v121_dynamic_h7.py
+      - name: Test dynamic H7/H8 and persistence
+        run: python test_v121_dynamic_h7.py
+      - name: Export complete code and tests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V121-DINAMICO-H7-CODICE-COMPLETO
+          path: |
+            sniper_V121_DINAMICO_H7_COMPLETO.py
+            test_v121_dynamic_h7.py
+          retention-days: 7
