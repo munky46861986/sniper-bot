@@ -64,7 +64,7 @@ if code==0:
       output=ans.decode(errors="replace")[-350:],error=err[:150])
   time.sleep(7);snap("after_link_7s")
   time.sleep(20);snap("after_link_27s")
- else:log("stop","reason":"privacy_decline_not_found")
+ else:log("stop",reason="privacy_decline_not_found")
 (OUT/"report.json").write_text(json.dumps({
  "version":211,"verified_10elotto_original_order":False,
  "registered_app_link_tested":URL,"events":events},ensure_ascii=False,indent=2),encoding="utf8")
