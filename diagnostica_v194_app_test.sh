@@ -35,6 +35,10 @@ echo "launch_exit: $?" >>"$REPORT"
 sleep 5
 adb shell input tap 230 251
 echo "Clicked Continue without accepting optional cookies (screenshot-verified coordinates)." >>"$REPORT"
+# Standard BACK key, analogous to user leaving a modal; not a bypass of authentication.
+sleep 6
+adb shell input keyevent 4
+echo "Pressed standard Android BACK to test navigation after rejecting optional cookies." >>"$REPORT"
 sleep 8
 for i in 0 1 2; do
   if [[ "$i" != 0 ]]; then sleep 25; else sleep 15; fi
