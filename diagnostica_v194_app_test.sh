@@ -30,6 +30,12 @@ fi
 echo "package: $PKG" >> "$REPORT"
 adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >>"$REPORT" 2>&1
 echo "launch_exit: $?" >>"$REPORT"
+# The first screenshot of V194 confirmed the optional privacy notice.
+# Press its explicitly offered decline option; do not accept analytics or profiling.
+sleep 5
+adb shell input tap 230 251
+echo "Clicked Continue without accepting optional cookies (screenshot-verified coordinates)." >>"$REPORT"
+sleep 8
 for i in 0 1 2; do
   if [[ "$i" != 0 ]]; then sleep 25; else sleep 15; fi
   adb exec-out screencap -p >"v194_risultati/screen_$i.png" 2>/dev/null
