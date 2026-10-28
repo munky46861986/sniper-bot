@@ -1,0 +1,27 @@
+name: V190 Audit APK My Lotteries
+on:
+  push:
+    branches:
+      - diagnostica/v186-app-route
+    paths:
+      - diagnostica_v190_run.py
+      - .github/workflows/v190-audit-apk.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Esegui audit statico
+        run: python diagnostica_v190_run.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: V190-risultati
+          path: v190_risultati/
