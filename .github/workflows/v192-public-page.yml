@@ -1,0 +1,29 @@
+name: V192 Pagina pubblica 10eLotto
+on:
+  push:
+    branches:
+      - diagnostica/v186-app-route
+    paths:
+      - diagnostica_v192_pubblica.py
+      - .github/workflows/v192-public-page.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install browser Python adapter
+        run: pip install playwright==1.58.0
+      - name: Inspect only public Lotto Italia webpage
+        run: python diagnostica_v192_pubblica.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: V192-risultati
+          path: v192_risultati/
