@@ -1,0 +1,27 @@
+name: V191 Confronto lettura pubblica 10eLotto
+on:
+  push:
+    branches:
+      - diagnostica/v186-app-route
+    paths:
+      - diagnostica_v191.py
+      - .github/workflows/v191-one-shot.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Esegui confronto
+        run: python diagnostica_v191.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: V191-risultati
+          path: v191_risultati/
