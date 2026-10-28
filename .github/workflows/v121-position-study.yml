@@ -1,0 +1,33 @@
+name: V121 positional 9-draw historical study
+on:
+  push:
+    branches:
+      - diagnostica/v186-app-route
+    paths:
+      - diagnostica_v121_position_backtest.py
+      - .github/workflows/v121-position-study.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install V121 read-only dependencies
+        run: python -m pip install numpy lightgbm requests beautifulsoup4 python-telegram-bot
+      - name: Validate analysis script
+        run: python -m py_compile diagnostica_v121_position_backtest.py
+      - name: Run historical model without Telegram or bets
+        run: python diagnostica_v121_position_backtest.py
+      - name: Save position study
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V121-position-study
+          path: v121_positional_results/
+          retention-days: 7
