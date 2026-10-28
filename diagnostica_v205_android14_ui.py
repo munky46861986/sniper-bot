@@ -57,7 +57,7 @@ if c==0:
     adb("shell","monkey","-p","it.lottomatica.lotto","-c","android.intent.category.LAUNCHER","1")
     time.sleep(15)
     nodes=ss("system_permission")
-    if click(nodes,"Don't allow") or click(nodes,"Non consentire"):
+    if click(nodes,"Don’t allow") or click(nodes,"Don\'t allow") or click(nodes,"Non consentire"):
         event("notifications_declined")
         time.sleep(12)
     nodes=ss("privacy")
