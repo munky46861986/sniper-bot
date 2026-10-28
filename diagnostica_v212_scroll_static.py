@@ -71,3 +71,31 @@ for name,source in sources.items():
             detail.append("```")
 (OUT/"home_card_context.md").write_text("\n".join(detail),encoding="utf-8")
 print("V212 targeted context sections:",sum(line.startswith("## ") for line in detail))
+
+# V212c: independent, static tracing of the 10eLotto public CTA's internal target.
+traces=[]
+targets=("estrazione5minuti","estrazioniFai","btn_seelive","OPENSECTION",
+         "ESTRAZIONEFREQUENTE-GET-CURRENT-EXTRACTION","numberToExtract")
+with zipfile.ZipFile(APK) as z:
+    for filename in names:
+        if not filename.endswith(".js"): continue
+        source=z.read(filename).decode("utf-8",errors="replace")
+        for term in targets:
+            hits=list(re.finditer(re.escape(term),source,re.IGNORECASE))
+            for hit in hits[:(18 if filename.endswith("main.79046245.js") else 4)]:
+                traces.append({"file":filename,"term":term,"offset":hit.start(),
+                               "context":source[max(0,hit.start()-310):
+                                                min(len(source),hit.end()+440)].replace("\n"," ")})
+(OUT/"cta_route_traces.json").write_text(
+    json.dumps({"version":"212c","traces":traces},ensure_ascii=False,indent=2),encoding="utf8")
+render=["# V212c — destinazione interna del pulsante pubblico 10eLotto",
+        "Solo analisi statica dell'APK ufficiale già verificato.",
+        "Nessuna interazione con il servizio o l'account utente.",
+        ""]
+for t in traces[:170]:
+    render += [f'## {t["term"]} — {t["file"]} @ {t["offset"]}',
+               "```text",t["context"].replace("```","` ` `"),"```"]
+(OUT/"cta_route_traces.md").write_text("\n".join(render),encoding="utf8")
+print(json.dumps({"cta_target_traces":len(traces),
+                  "matching_files":sorted({t["file"] for t in traces})},
+                 ensure_ascii=False))
