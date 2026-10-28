@@ -98,3 +98,33 @@ print("PASS missing draw resets gate")
 p=bot._merge_v121_state(saved,saved)
 assert p["tests"]==10 and p["zone_monitor"]["checks"]==3
 print("ALL TESTS PASS")
+
+
+# Verify the *real V121.arm()* calls the predictor again for every new draw.
+# Replace the costly ML predictor only in this isolated synthetic test.
+old_predict=bot.v121_predict
+old_other=bot.V114GeneratorLive._forecast_base
+try:
+    forecast_calls=[]
+    def artificial_prediction(history):
+        draw_id=int(history[-1]["draw_id"])
+        forecast_calls.append(draw_id)
+        return list(range(draw_id%40+1, draw_id%40+21))
+    bot.v121_predict=artificial_prediction
+    bot.V114GeneratorLive._forecast_base=staticmethod(lambda numbers: list(range(1,21)))
+    eng=Z()
+    prev=make_row(80)
+    eng.initialize([prev])
+    first=eng.arm([prev],check_freshness=False)
+    assert first and first["origin_key"]==prev["key"]
+    actual=make_row(81)
+    one=eng.observe(actual,prev)
+    assert one["status"]=="VERIFICATO"
+    second=eng.arm([prev,actual],check_freshness=False)
+    assert second and second["origin_key"]==actual["key"]
+    assert forecast_calls==[80,81],forecast_calls
+    assert first["base_numbers"]!=second["base_numbers"],(first,second)
+finally:
+    bot.v121_predict=old_predict
+    bot.V114GeneratorLive._forecast_base=old_other
+print("PASS actual V121.arm recalculates using the immediately previous draw")
