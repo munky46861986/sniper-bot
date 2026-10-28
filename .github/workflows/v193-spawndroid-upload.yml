@@ -1,0 +1,24 @@
+name: V193 Upload APK via GitHub to SpawnDroid
+on:
+  push:
+    branches:
+      - diagnostica/v186-app-route
+    paths:
+      - .github/workflows/v193-spawndroid-upload.yml
+      - diagnostica_v193_spawndroid_upload.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      SPAWNDROID_UPLOAD_KEY_V193: ${{ secrets.SPAWNDROID_UPLOAD_KEY_V193 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Upload only if authorized by an upload-scoped repository secret
+        run: python diagnostica_v193_spawndroid_upload.py
