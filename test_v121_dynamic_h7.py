@@ -128,3 +128,28 @@ finally:
     bot.v121_predict=old_predict
     bot.V114GeneratorLive._forecast_base=old_other
 print("PASS actual V121.arm recalculates using the immediately previous draw")
+
+
+# If a draw arrives without an H1 forecast, the H7/H8 streak must be reset.
+no_prediction=Z()
+prior=make_row(120)
+no_prediction.initialize([prior])
+for d in range(121,125):
+    curr=make_row(d)
+    no_prediction.pending=dict(origin_key=prior["key"],target_key=curr["key"],
+                               base_numbers=list(range(1,21)),
+                               v114_numbers=list(range(1,21)))
+    no_prediction.observe(curr,prior)
+    prior=curr
+assert no_prediction.zone_run["step"]==4
+skip=make_row(125)
+assert no_prediction.observe(skip,prior) is None
+assert no_prediction.zone_run["step"]==0 and no_prediction.zone_aborted==1
+print("PASS missing forecast resets the consecutive H counter")
+
+# Old V121 snapshot with same H1 progress cannot overwrite newer learned-zone data.
+old_snapshot=dict(saved)
+old_snapshot.pop("zone_monitor",None)
+merged=bot._merge_v121_state(old_snapshot,saved)
+assert merged.get("zone_monitor",{}).get("checks")==3,merged.get("zone_monitor")
+print("PASS V121 state merge preserves latest learned statistics")
