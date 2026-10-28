@@ -60,8 +60,17 @@ if code==0:
  nodes=snap("initial")
  if tap_node(nodes,"Continua senza accettare"):
   time.sleep(16); nodes=snap("after_decline")
-  if tap_node(nodes,"Fine"):
-   time.sleep(6); nodes=snap("after_intro")
+  finished=tap_node(nodes,"Fine")
+  if not finished:
+   # The V198 screenshot showed the tutorial and its visible "Fine" at [211,456][240,471],
+   # while Android WebView's accessibility tree was temporarily empty.
+   adb("shell","input","tap","225","463")
+   record("tap_screen_verified_fine",xy=[225,463])
+   finished=True
+  if finished:
+   time.sleep(12); nodes=snap("after_intro")
+   if not any(n["text"]=="10eLotto" for n in nodes):
+    time.sleep(8);nodes=snap("after_intro_retry")
    if tap_node(nodes,"10eLotto",preferred_top=580):
     time.sleep(8);nodes=snap("10elotto_tab")
     for attempt in range(3):
