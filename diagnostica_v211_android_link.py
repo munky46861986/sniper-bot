@@ -6,7 +6,7 @@ mylotteries.it + /estrazioni prefix in AndroidManifest.xml).
 No blocked API requests, hidden-component invocation, gambling, authentication,
 browser injection, or data collection. Only inspect what the official app shows.
 """
-import json,re,subprocess,time,xml.etree.ElementTree as ET
+import json,re,subprocess,time,hashlib,xml.etree.ElementTree as ET
 from datetime import datetime,timezone
 from pathlib import Path
 OUT=Path("v211_risultati");OUT.mkdir(exist_ok=True)
@@ -23,6 +23,7 @@ def shell(*args,timeout=40):
 def snap(name):
  code,b,err=shell("exec-out","screencap","-p",timeout=25)
  if code==0:(OUT/(name+".png")).write_bytes(b)
+ digest=hashlib.sha256(b).hexdigest() if code==0 else None
  shell("shell","uiautomator","dump","/sdcard/v211.xml",timeout=32)
  shell("pull","/sdcard/v211.xml",str(OUT/(name+".xml")),timeout=32)
  txt=[]
@@ -31,7 +32,7 @@ def snap(name):
    t=n.attrib.get("text","").strip()
    if t and n.attrib.get("bounds") not in ("","[0,0][0,0]"):txt.append(t[:70])
  except Exception:pass
- log("snapshot",step=name,bytes=len(b),ui_texts=txt[:24])
+ log("snapshot",step=name,bytes=len(b),sha256=digest,ui_texts=txt[:24])
  return txt
 def click(label,path):
  try:
@@ -64,6 +65,11 @@ if code==0:
       output=ans.decode(errors="replace")[-350:],error=err[:150])
   time.sleep(7);snap("after_link_7s")
   time.sleep(20);snap("after_link_27s")
+  for i in range(1,4):
+   rc,_,err=shell("shell","input","keyevent","93")  # KEYCODE_PAGE_DOWN: ordinary navigation
+   log("page_down",index=i,exit=rc,error=err)
+   time.sleep(3)
+   snap("after_page_down_"+str(i))
  else:log("stop",reason="privacy_decline_not_found")
 (OUT/"report.json").write_text(json.dumps({
  "version":211,"verified_10elotto_original_order":False,
