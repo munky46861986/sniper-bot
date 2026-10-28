@@ -1,0 +1,45 @@
+name: V198 10eLotto Android navigation
+on:
+  push:
+    branches:
+      - diagnostica/v186-app-route
+    paths:
+      - diagnostica_v198_navigazione.py
+      - .github/workflows/v198-10elotto-navigazione.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  navigate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 23
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Get verified APK
+        id: apk
+        run: python diagnostica_v194_apk_check.py
+      - name: Enable KVM
+        if: steps.apk.outputs.can_emulate == 'true'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Open 10eLotto using normal UI
+        if: steps.apk.outputs.can_emulate == 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: python diagnostica_v198_navigazione.py
+      - name: Save screenshots and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V198-navigation
+          path: v198_risultati/
+          retention-days: 2
