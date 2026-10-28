@@ -4386,119 +4386,407 @@ def v121_predict(history):
 
 
 class V121LiveShadow:
-    def __init__(self, data=None):
-        d=data if isinstance(data,dict) else {}
-        self.start_key=str(d.get('start_key') or '')
-        self.last_seen_key=str(d.get('last_seen_key') or '')
-        self.tests=max(0,int(d.get('tests') or 0))
-        self.hit_sum=max(0,int(d.get('hit_sum') or 0))
-        self.v114_hit_sum=max(0,int(d.get('v114_hit_sum') or 0))
-        self.n7=max(0,int(d.get('n7') or 0));self.n8=max(0,int(d.get('n8') or 0))
-        self.n9=max(0,int(d.get('n9') or 0));self.n10=max(0,int(d.get('n10') or 0))
-        self.pending=dict(d['pending']) if isinstance(d.get('pending'),dict) else None
-        self.last_result=dict(d['last_result']) if isinstance(d.get('last_result'),dict) else None
-        self.last_error=str(d.get('last_error') or '')[:240]
+    """V121 H1 invariato + studio DINAMICO da H7/H8 fino al primo risultato 7+.
 
-    def initialize(self,history):
-        if self.start_key or not history:return False
-        self.start_key=str(history[-1].get('key') or '')
-        self.last_seen_key=self.start_key
+    Ogni nuovo concorso: si confronta una previsione H1 FRESCA, calcolata
+    dal draw immediatamente precedente. Non si blocca mai una ventina.
+    L'apprendimento e' descrittivo e non cambia il modello congelato.
+    """
+    _ZONES = ("BASSA_01_30", "MEDIA_31_60", "ALTA_61_90")
+    _POSITIONS = ("PRIMI_7", "CENTRO_7", "ULTIMI_6")
+
+    @staticmethod
+    def _gate():
+        try:
+            g = int(os.getenv("V121_ZONE_START_H", "7"))
+            return g if g in (7, 8) else 7
+        except (TypeError, ValueError):
+            return 7
+
+    @staticmethod
+    def _fresh_bucket():
+        return dict(exposed=0, hits=0, win_exposed=0, win_hits=0)
+
+    @staticmethod
+    def _valid20(numbers):
+        try:
+            x = [int(v) for v in numbers]
+        except (ValueError, TypeError):
+            return None
+        return x if len(x) == 20 and len(set(x)) == 20 and all(1 <= n <= 90 for n in x) else None
+
+    @classmethod
+    def _value_zone(cls, number):
+        return cls._ZONES[0 if number <= 30 else 1 if number <= 60 else 2]
+
+    @classmethod
+    def _position_zone(cls, index):
+        return cls._POSITIONS[0 if index < 7 else 1 if index < 14 else 2]
+
+    def __init__(self, data=None):
+        d = data if isinstance(data, dict) else {}
+        self.start_key = str(d.get("start_key") or "")
+        self.last_seen_key = str(d.get("last_seen_key") or "")
+        self.tests = max(0, int(d.get("tests") or 0))
+        self.hit_sum = max(0, int(d.get("hit_sum") or 0))
+        self.v114_hit_sum = max(0, int(d.get("v114_hit_sum") or 0))
+        self.n7 = max(0, int(d.get("n7") or 0))
+        self.n8 = max(0, int(d.get("n8") or 0))
+        self.n9 = max(0, int(d.get("n9") or 0))
+        self.n10 = max(0, int(d.get("n10") or 0))
+        self.pending = dict(d["pending"]) if isinstance(d.get("pending"), dict) else None
+        self.last_result = dict(d["last_result"]) if isinstance(d.get("last_result"), dict) else None
+        self.last_error = str(d.get("last_error") or "")[:240]
+
+        # Solo nuovo monitor V121, persistente nella STESSA chiave V121 dello state.
+        # Migrazione indolore: vecchi state senza zone partono da H1 al prossimo esito.
+        z = d.get("zone_monitor") if isinstance(d.get("zone_monitor"), dict) else {}
+        self.zone_run = dict(z.get("run") or {})
+        self.zone_run.setdefault("origin_key", "")
+        self.zone_run["step"] = max(0, int(self.zone_run.get("step") or 0))
+        self.zone_run["gate"] = int(self.zone_run.get("gate") or self._gate())
+        if self.zone_run["gate"] not in (7, 8):
+            self.zone_run["gate"] = self._gate()
+        self.zone_checks = max(0, int(z.get("checks") or 0))
+        self.zone_successes = max(0, int(z.get("successes") or 0))
+        self.zone_aborted = max(0, int(z.get("aborted") or 0))
+        self.zone_total_wait = max(0, int(z.get("total_wait") or 0))
+        self.zone_longest_wait = max(0, int(z.get("longest_wait") or 0))
+        self.zone_values = {k: self._fresh_bucket() for k in self._ZONES}
+        self.zone_positions = {k: self._fresh_bucket() for k in self._POSITIONS}
+        for table, saved in ((self.zone_values, z.get("values")),
+                             (self.zone_positions, z.get("positions"))):
+            if isinstance(saved, dict):
+                for name in table:
+                    v = saved.get(name) if isinstance(saved.get(name), dict) else {}
+                    for field in table[name]:
+                        table[name][field] = max(0, int(v.get(field) or 0))
+        self.zone_numbers = {}
+        for k, v in (z.get("numbers") or {}).items():
+            if str(k).isdigit() and 1 <= int(k) <= 90 and isinstance(v, dict):
+                self.zone_numbers[str(int(k))] = {
+                    "exposed": max(0, int(v.get("exposed") or 0)),
+                    "hits": max(0, int(v.get("hits") or 0))}
+        self.zone_closed = [dict(v) for v in (z.get("closed") or [])
+                            if isinstance(v, dict)][-100:]
+        self.zone_recent = [dict(v) for v in (z.get("recent") or [])
+                            if isinstance(v, dict)][-150:]
+        self.zone_last = dict(z["last"]) if isinstance(z.get("last"), dict) else None
+
+    def initialize(self, history):
+        if self.start_key or not history:
+            return False
+        self.start_key = str(history[-1].get("key") or "")
+        self.last_seen_key = self.start_key
         return True
 
     def dump(self):
-        return dict(start_key=self.start_key,last_seen_key=self.last_seen_key,
-                    tests=self.tests,hit_sum=self.hit_sum,v114_hit_sum=self.v114_hit_sum,
-                    n7=self.n7,n8=self.n8,n9=self.n9,n10=self.n10,
-                    pending=self.pending,last_result=self.last_result,last_error=self.last_error,
-                    rules_version='V121_LGBM_FROZEN_2025_NO_BETS')
+        return dict(
+            start_key=self.start_key, last_seen_key=self.last_seen_key,
+            tests=self.tests, hit_sum=self.hit_sum,
+            v114_hit_sum=self.v114_hit_sum, n7=self.n7, n8=self.n8,
+            n9=self.n9, n10=self.n10, pending=self.pending,
+            last_result=self.last_result, last_error=self.last_error,
+            rules_version="V121_LGBM_FROZEN_2025_H1_PLUS_DYNAMIC_H7H8_ZONES_NO_BETS",
+            zone_monitor=dict(
+                version="V121_DYNAMIC_FORECAST_AT_EVERY_DRAW_H7H8_V1",
+                run=self.zone_run, checks=self.zone_checks,
+                successes=self.zone_successes, aborted=self.zone_aborted,
+                total_wait=self.zone_total_wait,
+                longest_wait=self.zone_longest_wait,
+                values=self.zone_values, positions=self.zone_positions,
+                numbers=self.zone_numbers,
+                closed=self.zone_closed[-100:],
+                recent=self.zone_recent[-150:],
+                last=self.zone_last))
 
-    def observe(self,row,previous=None):
-        key=str(row.get('key') or '')
-        if not key or (self.last_seen_key and order_key(key)<=order_key(self.last_seen_key)):
-            return None
-        result=None
-        if self.pending:
-            p=self.pending
-            good=(key==p.get('target_key') and previous is not None and
-                  V52LiveTracker._consecutive(previous,row))
-            if good:
-                actual={int(n) for n in row.get('nums') or []}
-                valid=len(actual)==20 and all(1<=n<=90 for n in actual)
-                good=valid
-            if good:
-                h=len(actual.intersection(p.get('base_numbers') or []))
-                h114=len(actual.intersection(p.get('v114_numbers') or []))
-                self.tests+=1;self.hit_sum+=h;self.v114_hit_sum+=h114
-                self.n7+=int(h>=7);self.n8+=int(h>=8)
-                self.n9+=int(h>=9);self.n10+=int(h>=10)
-                result=dict(status='VERIFICATO',target=key,base_hit=h,v114_hit=h114,
-                            diff=h-h114)
-            else:
-                result=dict(status='NON_VERIFICABILE',target=str(p.get('target_key')))
-            self.pending=None;self.last_result=result
-        self.last_seen_key=key
+    def _zone_leaders(self, table, minimum=50):
+        """Smoothed hit rate; exposure-normalized, not a future probability."""
+        result = []
+        prior = 40.0
+        for label, b in table.items():
+            ex, hit = b["exposed"], b["hits"]
+            if ex >= minimum:
+                estimate = (hit + prior * (20.0/90.0)) / (ex + prior)
+                result.append((estimate, label, hit, ex))
+        return sorted(result, reverse=True)
+
+    def _number_leaders(self, count=7):
+        leaders = []
+        prior = 30.0
+        for key, row in self.zone_numbers.items():
+            ex, hit = row["exposed"], row["hits"]
+            if ex < 10:
+                continue
+            estimate = (hit + prior * (20.0/90.0)) / (ex + prior)
+            leaders.append((estimate, ex, int(key), hit))
+        leaders.sort(key=lambda t: (-t[0], -t[1], t[2]))
+        return leaders[:count]
+
+    def _zone_on_verified_h1(self, p, key, actual, forecast):
+        """ONE new H1 per verified draw, always comparing that draw's fresh forecast.
+
+        H=1..6 (or H=1..7) only advances the counter.
+        H>=7/8 records zones, continues until 7+ and then resets.
+        """
+        run = self.zone_run
+        if not run.get("origin_key"):
+            run["origin_key"] = str(p.get("origin_key") or key)
+            run["gate"] = self._gate()
+            run["step"] = 0
+        run["step"] = int(run.get("step") or 0) + 1
+        h = run["step"]
+        gate = int(run["gate"])
+        hit_numbers = sorted(set(forecast).intersection(actual))
+        n_hits = len(hit_numbers)
+        result = dict(kind="PRE_GATE" if h < gate else "CHECK",
+                      h=h, gate=gate, target=key, hits=n_hits,
+                      origin_key=run["origin_key"],
+                      matched=hit_numbers)
+        if h < gate:
+            self.zone_last = result
+            return result
+
+        self.zone_checks += 1
+        win = n_hits >= 7
+        value_hits = {name: [] for name in self._ZONES}
+        position_hits = {name: [] for name in self._POSITIONS}
+        actual_set = set(actual)
+
+        # IMPORTANT: list sorted anew at EVERY H1. No frozen 20 numbers.
+        for i, n in enumerate(sorted(forecast)):
+            found = n in actual_set
+            value = self._value_zone(n)
+            position = self._position_zone(i)
+            if found:
+                value_hits[value].append(n)
+                position_hits[position].append(n)
+            for table, label in ((self.zone_values, value),
+                                 (self.zone_positions, position)):
+                table[label]["exposed"] += 1
+                table[label]["hits"] += int(found)
+                if win:
+                    table[label]["win_exposed"] += 1
+                    table[label]["win_hits"] += int(found)
+            number_stat = self.zone_numbers.setdefault(str(n),
+                                                         dict(exposed=0, hits=0))
+            number_stat["exposed"] += 1
+            number_stat["hits"] += int(found)
+
+        result["values"] = {name: len(nums) for name, nums in value_hits.items()}
+        result["positions"] = {name: len(nums) for name, nums in position_hits.items()}
+        result["forecast"] = list(forecast)
+        result["kind"] = "HIT7" if win else "CHECK"
+        self.zone_last = dict(result)
+        self.zone_recent.append(dict(result))
+        self.zone_recent = self.zone_recent[-150:]
+
+        if win:
+            self.zone_successes += 1
+            self.zone_total_wait += h
+            self.zone_longest_wait = max(self.zone_longest_wait, h)
+            self.zone_closed.append(dict(result))
+            self.zone_closed = self.zone_closed[-100:]
+            # La prossima verifica H1 torna a H1 con una NUOVA previsione.
+            self.zone_run = dict(origin_key="", step=0, gate=self._gate())
         return result
 
-    def arm(self,history,check_freshness=True,clock=None):
-        if not V121_ENABLED or not history:return None
-        if not self.start_key:self.initialize(history)
-        last=history[-1];key=str(last.get('key') or '')
-        if self.last_seen_key!=key:return None
-        if self.pending and self.pending.get('origin_key')==key:return None
-        stamp=V52LiveTracker._draw_stamp(last)
-        now=clock or now_dt()
-        if check_freshness and (stamp is None or not 0<=(now-stamp).total_seconds()<290):
+    def _zone_reset_gap(self, why):
+        self.zone_aborted += int(self.zone_run.get("step", 0) > 0)
+        self.zone_run = dict(origin_key="", step=0, gate=self._gate())
+        self.zone_last = dict(kind="GAP", reason=str(why)[:160])
+
+    def observe(self, row, previous=None):
+        key = str(row.get("key") or "")
+        if not key or (self.last_seen_key and
+                       order_key(key) <= order_key(self.last_seen_key)):
             return None
-        target=V52LiveTracker._next_expected_key(last)
-        if not target:return None
+        result = None
+        if self.pending:
+            p = self.pending
+            good = (key == p.get("target_key") and previous is not None and
+                    V52LiveTracker._consecutive(previous, row))
+            if good:
+                actual = self._valid20(row.get("nums") or [])
+                forecast = self._valid20(p.get("base_numbers") or [])
+                other = self._valid20(p.get("v114_numbers") or [])
+                good = actual is not None and forecast is not None and other is not None
+            if good:
+                actual_set = set(actual)
+                h = len(actual_set.intersection(forecast))
+                h114 = len(actual_set.intersection(other))
+                self.tests += 1
+                self.hit_sum += h
+                self.v114_hit_sum += h114
+                self.n7 += int(h >= 7)
+                self.n8 += int(h >= 8)
+                self.n9 += int(h >= 9)
+                self.n10 += int(h >= 10)
+                result = dict(status="VERIFICATO", target=key,
+                              base_hit=h, v114_hit=h114, diff=h-h114)
+                result["zone"] = self._zone_on_verified_h1(
+                    p, key, actual, forecast)
+            else:
+                self._zone_reset_gap(f"H1 mancante o non consecutivo a {key}")
+                result = dict(status="NON_VERIFICABILE",
+                              target=str(p.get("target_key")))
+            self.pending = None
+            self.last_result = result
+        elif self.zone_run.get("step", 0) > 0:
+            # No armed H1 for this draw: the consecutive-verification
+            # sequence is broken. Never pretend this was another verified H.
+            self._zone_reset_gap("Previsione H1 assente alla verifica " + key)
+        self.last_seen_key = key
+        return result
+
+    def arm(self, history, check_freshness=True, clock=None):
+        """Original forecast H1 recalculated EVERY draw (unchanged)."""
+        if not V121_ENABLED or not history:
+            return None
+        if not self.start_key:
+            self.initialize(history)
+        last = history[-1]
+        key = str(last.get("key") or "")
+        if self.last_seen_key != key:
+            return None
+        if self.pending and self.pending.get("origin_key") == key:
+            return None
+        stamp = V52LiveTracker._draw_stamp(last)
+        now = clock or now_dt()
+        if check_freshness and (stamp is None or not
+                                 0 <= (now-stamp).total_seconds() < 290):
+            return None
+        target = V52LiveTracker._next_expected_key(last)
+        if not target:
+            return None
         try:
-            nums=v121_predict(history)
-            other=V114GeneratorLive._forecast_base(last.get('nums') or [])
-            if len(nums)!=20 or other is None:raise ValueError('Ventina V121 non valida')
-            self.last_error=''
+            nums = v121_predict(history)
+            other = V114GeneratorLive._forecast_base(last.get("nums") or [])
+            if len(nums) != 20 or other is None:
+                raise ValueError("Ventina V121 non valida")
+            self.last_error = ""
         except Exception as exc:
-            err=f'{type(exc).__name__}: {exc}'[:240]
-            if err!=self.last_error:
-                console_log('V121 SHADOW MODEL WARNING | '+err)
-            self.last_error=err
+            err = f"{type(exc).__name__}: {exc}"[:240]
+            if err != self.last_error:
+                console_log("V121 SHADOW MODEL WARNING | " + err)
+            self.last_error = err
             return None
-        self.pending=dict(origin_key=key,target_key=target,base_numbers=nums,v114_numbers=other)
+        self.pending = dict(origin_key=key, target_key=target,
+                            base_numbers=nums, v114_numbers=other)
         return dict(self.pending)
 
-    def report(self,history):
-        pending=self.pending
-        mean=self.hit_sum/self.tests if self.tests else 0.0
-        base=self.v114_hit_sum/self.tests if self.tests else 0.0
-        lines=['🧠 V121 — NONLINEARE LIVE SHADOW',
-               f'Stato: {"ATTIVA" if V121_ENABLED else "DISABILITATA"} | Modello: {"PRESENTE" if os.path.isfile(V121_MODEL_FILE) else "MANCANTE"}',
-               f'Test H1: {self.tests} | HIT medi V121: {mean:.3f}/20 | V114 sugli stessi: {base:.3f}/20',
-               f'Differenza numeri: {self.hit_sum-self.v114_hit_sum:+d} | >=7: {self.n7} | >=8: {self.n8} | >=9: {self.n9} | >=10: {self.n10}']
-        if self.last_result:
-            r=self.last_result
-            lines.append('Ultimo esito: '+str(r.get('target'))+' '+str(r.get('status'))+' | HIT '+str(r.get('base_hit','-'))+'/20')
-        if pending:
-            lines.append('PREVISIONE '+str(pending['target_key'])+': '+' '.join(f'{x:02d}' for x in pending['base_numbers']))
-            lines.append('V114 +2: '+' '.join(f'{x:02d}' for x in pending['v114_numbers']))
+    def _zone_summary(self):
+        lines = []
+        run = self.zone_run
+        if run.get("step", 0) > 0:
+            lines.append(f"🔎 DINAMICO: H{run['step']} | controllo zone da H{run['gate']} "
+                         "(ventina nuova ad ogni estrazione)")
         else:
-            lines.append('Nessuna previsione H1 in attesa: serve un concorso fresco e uno storico sufficiente.')
-        if self.last_error:lines.append('Diagnostica: '+self.last_error)
-        lines.append('SOLO SHADOW: previsione sperimentale, nessuna probabilita di vincita dimostrata e nessuna giocata automatica.')
-        return '\n'.join(lines)
+            lines.append(f"🔎 DINAMICO: attesa primo H1 del nuovo ciclo, gate H{self._gate()}")
+        lines.append(f"Cicli 7+ chiusi: {self.zone_successes} | "
+                     f"controlli da H7/H8: {self.zone_checks} | "
+                     f"interrotti per dati mancanti: {self.zone_aborted}")
+        for title, table in (("Numero 01-30/31-60/61-90", self.zone_values),
+                             ("Posizione nella lista", self.zone_positions)):
+            chunks = []
+            for name, z in table.items():
+                rate = f"{100*z['hits']/z['exposed']:.1f}%" if z["exposed"] else "n.d."
+                chunks.append(f"{name.split('_')[0]} {rate} ({z['hits']}/{z['exposed']})")
+            lines.append(title + ": " + " | ".join(chunks))
+            leader = self._zone_leaders(table)
+            if leader:
+                lines.append("Più frequente finora: " + leader[0][1] +
+                             f" ({100*leader[0][0]:.1f}% smussato, NON una previsione)")
+        top = self._number_leaders()
+        if top:
+            lines.append("Numeri V121 più frequenti negli esiti osservati: " +
+                         " ".join(f"{n:02d}:{100*q:.1f}%[{ex}]"
+                                  for q,ex,n,_ in top))
+        if self.zone_successes:
+            lines.append(f"Attesa media dei cicli conclusi: "
+                         f"{self.zone_total_wait/self.zone_successes:.1f} concorsi "
+                         f"dal riavvio del conteggio (max {self.zone_longest_wait})")
+        return lines
 
-    def live_message(self,result=None,armed=None):
-        lines=['🧠 V121 NONLINEARE — TEST LIVE SHADOW']
+    def _format_zone_event(self, evt):
+        if not isinstance(evt, dict):
+            return []
+        if evt.get("kind") == "GAP":
+            return ["⚠️ V121 ZONE: sequenza non verificabile, conteggio H azzerato."]
+        if evt.get("kind") == "PRE_GATE":
+            return [f"📊 V121 DINAMICO H{evt['h']}/{evt['gate']}: "
+                    "si aggiorna la previsione ogni 5 minuti; controllo zone non ancora avviato."]
+        lines = [f"📊 V121 DINAMICO H{evt['h']} | "
+                 f"{evt['hits']}/20 sulla NUOVA ventina | gate H{evt['gate']}"]
+        lines.append("Numeri presenti: " +
+                     (" ".join(f"{x:02d}" for x in evt.get("matched", [])) or "-"))
+        lines.append("Zone valore: " + " | ".join(
+            f"{name.split('_')[0]} {v}" for name, v in evt["values"].items()))
+        lines.append("Zone posizione: " + " | ".join(
+            f"{name.split('_')[0]} {v}" for name, v in evt["positions"].items()))
+        if evt.get("kind") == "HIT7":
+            lines.append(f"✅ Almeno 7 numeri al controllo H{evt['h']}: ciclo concluso. "
+                         "Dalla prossima previsione riparte H1.")
+            lines += self._zone_summary()[1:]
+        return lines
+
+    def report(self, history):
+        pending = self.pending
+        mean = self.hit_sum/self.tests if self.tests else 0.0
+        base = self.v114_hit_sum/self.tests if self.tests else 0.0
+        lines = ["🧠 V121 — NONLINEARE LIVE SHADOW",
+                 f"Stato: {'ATTIVA' if V121_ENABLED else 'DISABILITATA'} | "
+                 f"Modello: {'PRESENTE' if os.path.isfile(V121_MODEL_FILE) else 'MANCANTE'}",
+                 f"Test H1: {self.tests} | HIT medi V121: {mean:.3f}/20 | "
+                 f"V114 sugli stessi: {base:.3f}/20",
+                 f"Differenza numeri: {self.hit_sum-self.v114_hit_sum:+d} | "
+                 f">=7: {self.n7} | >=8: {self.n8} | "
+                 f">=9: {self.n9} | >=10: {self.n10}"]
+        if self.last_result:
+            r = self.last_result
+            lines.append("Ultimo esito: " + str(r.get("target")) + " " +
+                         str(r.get("status")) + " | HIT " +
+                         str(r.get("base_hit", "-")) + "/20")
+        if pending:
+            lines.append("PREVISIONE " + str(pending["target_key"]) + ": " +
+                         " ".join(f"{x:02d}" for x in pending["base_numbers"]))
+            lines.append("V114 +2: " +
+                         " ".join(f"{x:02d}" for x in pending["v114_numbers"]))
+        else:
+            lines.append("Nessuna previsione H1 in attesa: serve un concorso fresco "
+                         "e uno storico sufficiente.")
+        lines += self._zone_summary()
+        if self.last_error:
+            lines.append("Diagnostica: " + self.last_error)
+        lines.append("SOLO SHADOW: apprendimento descrittivo. Nessuna previsione "
+                     "garantita, nessuna giocata automatica.")
+        return "\n".join(lines)
+
+    def live_message(self, result=None, armed=None):
+        lines = ["🧠 V121 NONLINEARE — TEST LIVE SHADOW"]
         if result:
-            if result.get('status')=='VERIFICATO':
-                lines.append(f'Verifica {result["target"]}: V121 {result["base_hit"]}/20 | V114 +2 {result["v114_hit"]}/20 (scarto {result["diff"]:+d})')
+            if result.get("status") == "VERIFICATO":
+                lines.append(f"Verifica {result['target']}: V121 {result['base_hit']}/20 "
+                             f"| V114 +2 {result['v114_hit']}/20 "
+                             f"(scarto {result['diff']:+d})")
+                lines += self._format_zone_event(result.get("zone"))
             else:
-                lines.append('Verifica precedente non disponibile: nessun HIT attribuito.')
+                lines.append("Verifica precedente non disponibile: nessun HIT attribuito.")
         if armed:
-            lines.append('STIMA per '+armed['target_key']+': '+' '.join(f'{n:02d}' for n in armed['base_numbers']))
+            lines.append("STIMA per " + armed["target_key"] + ": " +
+                         " ".join(f"{n:02d}" for n in armed["base_numbers"]))
         if self.tests:
-            lines.append(f'Medie sugli stessi {self.tests} concorsi: V121 {self.hit_sum/self.tests:.3f}/20 | V114 {self.v114_hit_sum/self.tests:.3f}/20')
-            lines.append(f'7+/8+/9+/10+: {self.n7}/{self.n8}/{self.n9}/{self.n10}')
-        lines.append('⚠️ Modello congelato 2025, solo verifica H1, nessuna giocata automatica.')
-        return '\n'.join(lines) if result or armed else None
+            lines.append(f"Medie sugli stessi {self.tests} concorsi: "
+                         f"V121 {self.hit_sum/self.tests:.3f}/20 | "
+                         f"V114 {self.v114_hit_sum/self.tests:.3f}/20")
+            lines.append(f"7+/8+/9+/10+: {self.n7}/{self.n8}/{self.n9}/{self.n10}")
+        if self.zone_successes:
+            lines.append(f"Zone dinamiche: {self.zone_successes} cicli 7+ conclusi | "
+                         f"media {self.zone_total_wait/self.zone_successes:.1f} "
+                         "estrazioni, partenza controllo a H7/H8")
+        lines.append("⚠️ Modello congelato 2025; solo verifica sperimentale, "
+                     "nessuna giocata automatica.")
+        return "\n".join(lines) if result or armed else None
 
 
 def _merge_v121_state(a,b):
@@ -4506,8 +4794,12 @@ def _merge_v121_state(a,b):
     if not aa:return dict(bb) if bb else None
     if not bb:return dict(aa)
     def progress(d):
+        zone = d.get("zone_monitor") if isinstance(d.get("zone_monitor"), dict) else {}
+        # In equal-H1 snapshots prefer the state that includes the new
+        # V121 zone checks and learned statistics; never sum duplicate snapshots.
         return (order_key(d.get('last_seen_key')) or (-1,-1),
-                int(d.get('tests') or 0),int(d.get('hit_sum') or 0))
+                int(d.get('tests') or 0),int(d.get('hit_sum') or 0),
+                int(zone.get("checks") or 0),int(zone.get("successes") or 0))
     # I contatori non si sommano mai durante il merge di snapshot dello stesso runner.
     return dict(max((aa,bb),key=progress))
 
