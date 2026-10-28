@@ -1,0 +1,47 @@
+name: V213 My Lotteries Home focus navigation
+on:
+  push:
+    branches:
+      - diagnostica/v186-app-route
+    paths:
+      - diagnostica_v213_focus_home.py
+      - .github/workflows/v213-focus-home.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate V213 syntax
+        run: python -m py_compile diagnostica_v213_focus_home.py
+      - name: Download and verify public APK
+        id: apk
+        run: python diagnostica_v194_apk_check.py
+      - name: Enable Android emulator
+        if: steps.apk.outputs.can_emulate == 'true'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Traverse Home via normal keyboard focus
+        if: steps.apk.outputs.can_emulate == 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 31
+          target: google_apis
+          arch: x86_64
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: python diagnostica_v213_focus_home.py
+      - name: Save V213 screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V213-focus-navigation
+          path: v213_risultati/
+          retention-days: 3
