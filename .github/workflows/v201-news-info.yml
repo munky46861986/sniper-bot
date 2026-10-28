@@ -1,0 +1,45 @@
+name: V201 News info Android navigation
+on:
+  push:
+    branches:
+      - diagnostica/v186-app-route
+    paths:
+      - diagnostica_v201_nav.py
+      - .github/workflows/v201-news-info.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 23
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download original APK and verify it
+        id: apk
+        run: python diagnostica_v194_apk_check.py
+      - name: Enable KVM
+        if: steps.apk.outputs.can_emulate == 'true'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Inspect News and Info navigation in Android
+        if: steps.apk.outputs.can_emulate == 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: python diagnostica_v201_nav.py
+      - name: Save screenshots and accessibility data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: V201-news-nav
+          path: v201_risultati/
+          retention-days: 2
