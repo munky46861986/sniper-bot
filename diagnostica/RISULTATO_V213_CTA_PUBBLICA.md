@@ -29,3 +29,19 @@ La V213 non ha cliccato il pulsante 10eLotto, non ha aperto la diretta e non ha 
 Per ulteriore diagnosi non interattiva è stata avviata una nuova esecuzione del workflow statico V212 per tracciare la destinazione `estrazione5minuti`. Nessuna autenticazione, acquisto, richiesta a un servizio protetto o spesa.
 
 **Non modificati** `main`, `sniper.py`, Superambo3, V114, V121, HARD LOCK o GOLD MASTER.
+
+## Verifica aggiuntiva: gestione della rotta nel codice (V212c)
+Il [run statico 40685121409](https://github.com/munky46861986/sniper-bot/actions/runs/40685121409) è **completato con successo**, e ha prodotto l'artifact `V212-home-scroll-static` id `12814821118`, comprendente `cta_route_traces.json` e `cta_route_traces.md`. L'APK analizzato è lo stesso con SHA verificato.
+
+Sono stati confermati i passaggi ordinari nel bundle `assets/www/main.79046245.js`:
+
+```text
+pulsante blu 10eLotto «Segui l'estrazione»
+ -> e.homeComponent.open("estrazione5minuti")  (~652522 o ~655548)
+ -> this.$ActionsService.execAction(Rt.kl.OPENSECTION,{target:e}) (~699688)
+ -> this.$BUS.$emit("OPEN-DEEP-LINK", t.target, t.query) (~568506)
+```
+
+La stessa sezione contiene anche un pulsante alternativo `Guarda la diretta Live Show` che, in specifiche condizioni di streaming, invoca `toggleCollapse()` (non `estrazione5minuti`). Non confondere le due azioni.
+
+**Conseguenza:** è stata trovata la catena applicativa interna associata al pulsante pubblico, ma **non** un URL pubblico verificato. Non è stata aperta la diretta e non è stato raccolto alcun ordine originale di venti numeri. Il passo interattivo rimane non effettuato: l'automatismo V214 è stato bloccato dai controlli del collegamento GitHub.
