@@ -4394,6 +4394,10 @@ class V121LiveShadow:
     """
     _ZONES = ("BASSA_01_30", "MEDIA_31_60", "ALTA_61_90")
     _POSITIONS = ("PRIMI_7", "CENTRO_7", "ULTIMI_6")
+    # Posizioni V121 nella ventina ASCENDENTE, non numeri fissi e
+    # non ordine delle palline estratte. 5 numeri = 10 coppie possibili.
+    _FOCUS_POSITIONS = (4, 9, 13, 14, 16)
+    _FOCUS_PAIRS = tuple(combinations(_FOCUS_POSITIONS, 2))
 
     @staticmethod
     def _gate():
@@ -4473,6 +4477,28 @@ class V121LiveShadow:
                             if isinstance(v, dict)][-150:]
         self.zone_last = dict(z["last"]) if isinstance(z.get("last"), dict) else None
 
+        # Nuovo studio: SOLO al primo H1 con >=7 dopo il gate H7/H8.
+        # Compatibile con gli state V121 precedenti: parte da zero senza
+        # alterare i vecchi contatori, né simulare retroattivamente dati.
+        f = z.get("focus_5") if isinstance(z.get("focus_5"), dict) else {}
+        self.focus_events = max(0, int(f.get("events") or 0))
+        self.focus_numbers_hit = max(0, int(f.get("numbers_hit") or 0))
+        self.focus_pairs_hit = max(0, int(f.get("pairs_hit") or 0))
+        self.focus_hit_distribution = {
+            str(k): max(0, int((f.get("hit_distribution") or {}).get(str(k)) or 0))
+            for k in range(6)}
+        pos_saved = f.get("position_hit") if isinstance(f.get("position_hit"), dict) else {}
+        pair_saved = f.get("pair_hit") if isinstance(f.get("pair_hit"), dict) else {}
+        self.focus_position_hit = {
+            str(k): max(0, int(pos_saved.get(str(k)) or 0))
+            for k in self._FOCUS_POSITIONS}
+        self.focus_pair_hit = {
+            f"{a:02d}-{b:02d}": max(0, int(pair_saved.get(f"{a:02d}-{b:02d}") or 0))
+            for a,b in self._FOCUS_PAIRS}
+        self.focus_recent = [dict(rec) for rec in (f.get("recent") or [])
+                             if isinstance(rec, dict)][-100:]
+        self.focus_last = dict(f["last"]) if isinstance(f.get("last"), dict) else None
+
     def initialize(self, history):
         if self.start_key or not history:
             return False
@@ -4498,7 +4524,78 @@ class V121LiveShadow:
                 numbers=self.zone_numbers,
                 closed=self.zone_closed[-100:],
                 recent=self.zone_recent[-150:],
-                last=self.zone_last))
+                last=self.zone_last,
+                focus_5=dict(
+                    version="V121_POS_4_9_13_14_16_SEVEN_PLUS_SHADOW_V1",
+                    positions=list(self._FOCUS_POSITIONS),
+                    events=self.focus_events,
+                    numbers_hit=self.focus_numbers_hit,
+                    pairs_hit=self.focus_pairs_hit,
+                    hit_distribution=self.focus_hit_distribution,
+                    position_hit=self.focus_position_hit,
+                    pair_hit=self.focus_pair_hit,
+                    recent=self.focus_recent[-100:], last=self.focus_last)))
+
+    def _focus_on_seven(self, key, h, forecast, actual_set):
+        """Only completed cycles: recompute which of five fixed RANK positions hit.
+
+        The actual 5 numbers change every draw with v121_predict().
+        Simulate all 10 possible pairs: a pair wins iff BOTH members are
+        in the same real draw. Does not place any bet or estimate winnings.
+        """
+        predicted = sorted(forecast)
+        five = [(pos, predicted[pos - 1]) for pos in self._FOCUS_POSITIONS]
+        present = [(pos, n) for pos, n in five if n in actual_set]
+        present_positions = {pos for pos, _ in present}
+        winning_pairs = [
+            dict(posizioni=[a, b], numeri=[predicted[a - 1], predicted[b - 1]])
+            for a,b in self._FOCUS_PAIRS
+            if a in present_positions and b in present_positions
+        ]
+        hit_count = len(present)
+        # Invariant: count of successful pairs = combinations(hit_count, 2).
+        assert len(winning_pairs) == hit_count * (hit_count - 1) // 2
+        event = dict(
+            target=key, h=int(h), selected=[dict(posizione=pos, numero=n,
+                                                uscito=(pos in present_positions))
+                                             for pos,n in five],
+            hit_numbers=[n for pos,n in present],
+            hit_positions=[pos for pos,n in present],
+            hit_count=hit_count, pair_count=len(winning_pairs),
+            pairs_tested=len(self._FOCUS_PAIRS), winning_pairs=winning_pairs,
+        )
+        self.focus_events += 1
+        self.focus_numbers_hit += hit_count
+        self.focus_pairs_hit += len(winning_pairs)
+        self.focus_hit_distribution[str(hit_count)] += 1
+        for pos, _ in present:
+            self.focus_position_hit[str(pos)] += 1
+        for rec in winning_pairs:
+            a,b = rec["posizioni"]
+            self.focus_pair_hit[f"{a:02d}-{b:02d}"] += 1
+        self.focus_last = dict(event)
+        self.focus_recent.append(dict(event))
+        self.focus_recent = self.focus_recent[-100:]
+        return event
+
+    def _focus_summary(self):
+        e = self.focus_events
+        if not e:
+            return ["🎯 POSIZIONI 4/9/13/14/16: nessun 7+ monitorato ancora."]
+        lines = [
+            f"🎯 POSIZIONI 4/9/13/14/16 | 7+ valutati: {e}",
+            f"Totali ipotetici: {self.focus_numbers_hit}/{e * 5} numeri | "
+            f"{self.focus_pairs_hit}/{e * 10} ambi su tutte le 10 coppie per concorso",
+            "Distribuzione 0..5 numeri: " + " | ".join(
+                f"{n}={self.focus_hit_distribution[str(n)]}" for n in range(6)),
+            "Posizioni: " + " | ".join(
+                f"P{p} {self.focus_position_hit[str(p)]}/{e}" for p in self._FOCUS_POSITIONS),
+        ]
+        top_pairs = sorted(self.focus_pair_hit.items(),
+                           key=lambda item: (-item[1], item[0]))
+        lines.append("Coppie di posizioni più frequenti: " +
+                     " | ".join(f"{pair}={count}/{e}" for pair,count in top_pairs[:5]))
+        return lines
 
     def _zone_leaders(self, table, minimum=50):
         """Smoothed hit rate; exposure-normalized, not a future probability."""
@@ -4582,6 +4679,8 @@ class V121LiveShadow:
         self.zone_recent = self.zone_recent[-150:]
 
         if win:
+            result["focus_5"] = self._focus_on_seven(
+                key, h, forecast, actual_set)
             self.zone_successes += 1
             self.zone_total_wait += h
             self.zone_longest_wait = max(self.zone_longest_wait, h)
@@ -4706,6 +4805,7 @@ class V121LiveShadow:
             lines.append(f"Attesa media dei cicli conclusi: "
                          f"{self.zone_total_wait/self.zone_successes:.1f} concorsi "
                          f"dal riavvio del conteggio (max {self.zone_longest_wait})")
+        lines += self._focus_summary()
         return lines
 
     def _format_zone_event(self, evt):
@@ -4727,6 +4827,22 @@ class V121LiveShadow:
         if evt.get("kind") == "HIT7":
             lines.append(f"✅ Almeno 7 numeri al controllo H{evt['h']}: ciclo concluso. "
                          "Dalla prossima previsione riparte H1.")
+            focus = evt.get("focus_5")
+            if isinstance(focus, dict):
+                lines.append("🎯 CONTROLLO POSIZIONI 4 / 9 / 13 / 14 / 16")
+                lines.append("Scelte V121: " + " | ".join(
+                    f"P{r['posizione']}={r['numero']:02d}" +
+                    ("✅" if r['uscito'] else "❌")
+                    for r in focus["selected"]))
+                lines.append(f"Numeri ipotetici: {focus['hit_count']}/5 | "
+                             f"Ambi ipotetici: {focus['pair_count']}/10")
+                if focus["winning_pairs"]:
+                    lines.append("Ambi riusciti: " + " | ".join(
+                        f"{a:02d}-{b:02d} (P{r['posizioni'][0]}+P{r['posizioni'][1]})"
+                        for r in focus["winning_pairs"]
+                        for a,b in [r["numeri"]]))
+                else:
+                    lines.append("Ambi riusciti: nessuno")
             lines += self._zone_summary()[1:]
         return lines
 
@@ -4784,6 +4900,9 @@ class V121LiveShadow:
             lines.append(f"Zone dinamiche: {self.zone_successes} cicli 7+ conclusi | "
                          f"media {self.zone_total_wait/self.zone_successes:.1f} "
                          "estrazioni, partenza controllo a H7/H8")
+            lines.append(f"🎯 5 POSIZIONI: numeri {self.focus_numbers_hit}/{self.focus_events * 5} "
+                         f"| ambi {self.focus_pairs_hit}/{self.focus_events * 10} "
+                         "(simulazione ai soli 7+)")
         lines.append("⚠️ Modello congelato 2025; solo verifica sperimentale, "
                      "nessuna giocata automatica.")
         return "\n".join(lines) if result or armed else None
