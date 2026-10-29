@@ -4499,6 +4499,23 @@ class V121LiveShadow:
                              if isinstance(rec, dict)][-100:]
         self.focus_last = dict(f["last"]) if isinstance(f.get("last"), dict) else None
 
+        # Nuovo studio continuo H1: tutte le 20 posizioni e tutte le 190 coppie.
+        # Non resettare mai i risultati H7+ preesistenti; questo monitor e' separato.
+        # Migrazione di un vecchio state: inizia dal prossimo H1 verificato.
+        raw_all = z.get("all_h1") if isinstance(z.get("all_h1"), dict) else {}
+        self.all_h1_checks = max(0, int(raw_all.get("checks") or 0))
+        self.all_h1_pos = {str(p): max(0,int((raw_all.get("positions") or {}).get(str(p)) or 0))
+                           for p in range(1,21)}
+        self.all_h1_pairs = {f"{i:02d}-{j:02d}":
+                             max(0,int((raw_all.get("pairs") or {}).get(f"{i:02d}-{j:02d}") or 0))
+                             for i,j in combinations(range(1,21),2)}
+        self.all_h1_five_dist = {str(k):
+                                 max(0,int((raw_all.get("five_hit_distribution") or {}).get(str(k)) or 0))
+                                 for k in range(6)}
+        self.all_h1_last = dict(raw_all["last"]) if isinstance(raw_all.get("last"),dict) else None
+        self.all_h1_recent = [dict(d) for d in (raw_all.get("recent") or [])
+                              if isinstance(d,dict)][-90:]
+
     def initialize(self, history):
         if self.start_key or not history:
             return False
@@ -4534,7 +4551,15 @@ class V121LiveShadow:
                     hit_distribution=self.focus_hit_distribution,
                     position_hit=self.focus_position_hit,
                     pair_hit=self.focus_pair_hit,
-                    recent=self.focus_recent[-100:], last=self.focus_last)))
+                    recent=self.focus_recent[-100:], last=self.focus_last),
+                all_h1=dict(
+                    version="V121_TUTTE_20_POSIZIONI_190_AMBI_DA_H1_V1",
+                    checks=self.all_h1_checks,
+                    positions=self.all_h1_pos,
+                    pairs=self.all_h1_pairs,
+                    five_hit_distribution=self.all_h1_five_dist,
+                    last=self.all_h1_last,
+                    recent=self.all_h1_recent[-90:])))
 
     def _focus_on_seven(self, key, h, forecast, actual_set):
         """Only completed cycles: recompute which of five fixed RANK positions hit.
@@ -4577,6 +4602,70 @@ class V121LiveShadow:
         self.focus_recent.append(dict(event))
         self.focus_recent = self.focus_recent[-100:]
         return event
+
+    def _all_h1_on_verified(self, target, forecast, actual_set):
+        """Analisi rigorosamente H1, alla ricezione della vera estrazione target.
+
+        Ogni draw conta una SOLA volta; nessun filtro 7+, nessuna posizione
+        selezionata dopo aver visto l'esito. 20 posizioni e 190 ambi simulati.
+        I cinque posti 4,9,13,14,16 sono soltanto una sottoanalisi fissa.
+        """
+        if self.all_h1_last and self.all_h1_last.get("target") == target:
+            return dict(self.all_h1_last)
+        p = sorted(forecast)
+        found = {i for i,n in enumerate(p,1) if n in actual_set}
+        chosen = [i for i in self._FOCUS_POSITIONS if i in found]
+        pairs_focus = [[i,j] for i,j in combinations(chosen,2)]
+        self.all_h1_checks += 1
+        for i in found:
+            self.all_h1_pos[str(i)] += 1
+        for i,j in combinations(sorted(found),2):
+            self.all_h1_pairs[f"{i:02d}-{j:02d}"] += 1
+        self.all_h1_five_dist[str(len(chosen))] += 1
+        outcome=dict(target=target,
+                     hits_in_20=len(found),
+                     focus_selected={str(i):p[i-1] for i in self._FOCUS_POSITIONS},
+                     focus_matched={str(i):p[i-1] for i in chosen},
+                     focus_hits=len(chosen),
+                     focus_pair_hits=len(pairs_focus),
+                     focus_pairs=[[p[i-1],p[j-1]] for i,j in pairs_focus],
+                     focus_pair_positions=pairs_focus)
+        self.all_h1_last = outcome
+        self.all_h1_recent.append(dict(outcome))
+        self.all_h1_recent = self.all_h1_recent[-90:]
+        return outcome
+
+    def _all_h1_summary(self):
+        n = self.all_h1_checks
+        if not n:
+            return ["📈 V121 H1 POSIZIONI: in attesa dei primi risultati verificati."]
+        singles = sum(self.all_h1_pos[str(i)] for i in self._FOCUS_POSITIONS)
+        pair_ids=[f"{a:02d}-{b:02d}" for a,b in self._FOCUS_PAIRS]
+        pairs = sum(self.all_h1_pairs[k] for k in pair_ids)
+        # Premio ordinario per 1 EUR sul singolo numero=3 EUR;
+        # ambo 2/2 con 1 EUR=14 EUR, senza opzioni Oro/Extra.
+        # Simulazioni per confronto statistico: NON scommesse reali.
+        singles_net=3*singles - 5*n
+        pairs_net=14*pairs - 10*n
+        top_pos=sorted(((v,int(p)) for p,v in self.all_h1_pos.items()),
+                       key=lambda x:(-x[0],x[1]))[:6]
+        top_pairs=sorted(((v,ident) for ident,v in self.all_h1_pairs.items()),
+                         key=lambda x:(-x[0],x[1]))[:6]
+        lines=[f"📈 V121 H1 TUTTE POSIZIONI | verifiche={n} (dal primo colpo, anche 0/20)",
+               f"5 posizioni fisse 4/9/13/14/16: {singles}/{5*n} numeri; "
+               f"{pairs}/{10*n} ambi virtuali",
+               f"Contabilità simulata 1 EUR/numero: {singles_net:+d} EUR "
+               f"su costo {5*n} EUR; 1 EUR/ambo: {pairs_net:+d} EUR "
+               f"su costo {10*n} EUR",
+               "Posizioni migliori (tutte e 20): " + " | ".join(
+                   f"P{p} {hit}/{n} ROI({3*hit-n:+d} EUR)" for hit,p in top_pos),
+               "Coppie migliori (tutte e 190): " + " | ".join(
+                   f"P{ident} {hit}/{n} ROI({14*hit-n:+d} EUR)"
+                   for hit,ident in top_pairs),
+               "⚠️ Sono risultati retrospettivi e premi netti ufficiali simulati; "
+               "la ricerca della coppia migliore su 190 crea selezione a posteriori. "
+               "Nessuna giocata automatica."]
+        return lines
 
     def _focus_summary(self):
         e = self.focus_events
@@ -4723,6 +4812,10 @@ class V121LiveShadow:
                 self.n10 += int(h >= 10)
                 result = dict(status="VERIFICATO", target=key,
                               base_hit=h, v114_hit=h114, diff=h-h114)
+                # Nuovo studio H1 SEMPRE, compresi i primi sei concorsi del ciclo.
+                result["focus_all_h1"] = self._all_h1_on_verified(
+                    key, forecast, actual_set)
+                # Vecchio studio H7/H8 fino a 7+: resta indipendente.
                 result["zone"] = self._zone_on_verified_h1(
                     p, key, actual, forecast)
             else:
@@ -4806,6 +4899,7 @@ class V121LiveShadow:
                          f"{self.zone_total_wait/self.zone_successes:.1f} concorsi "
                          f"dal riavvio del conteggio (max {self.zone_longest_wait})")
         lines += self._focus_summary()
+        lines += self._all_h1_summary()
         return lines
 
     def _format_zone_event(self, evt):
@@ -4885,6 +4979,15 @@ class V121LiveShadow:
                 lines.append(f"Verifica {result['target']}: V121 {result['base_hit']}/20 "
                              f"| V114 +2 {result['v114_hit']}/20 "
                              f"(scarto {result['diff']:+d})")
+                h1 = result.get("focus_all_h1")
+                if isinstance(h1,dict):
+                    lines.append(
+                        f"🎯 POSIZIONI H1 4/9/13/14/16: "
+                        f"{h1['focus_hits']}/5 numeri | {h1['focus_pair_hits']}/10 ambi virtuali "
+                        "(tutti i concorsi, anche <7)")
+                    if h1['focus_matched']:
+                        lines.append("HIT posizioni: "+" ".join(
+                            f"P{p}={n:02d}" for p,n in h1['focus_matched'].items()))
                 lines += self._format_zone_event(result.get("zone"))
             else:
                 lines.append("Verifica precedente non disponibile: nessun HIT attribuito.")
