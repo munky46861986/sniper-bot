@@ -1,4 +1,12 @@
 # ============================================================
+# VERSIONE ATTIVA: DISTANCE ABC ONLY | 2026-11-01
+# A: P3/P19 <=60; B: P7/P12 <=18; C: P1/P7 <=15
+# TUTTI GLI ALTRI METODI: CODICE CONSERVATO, MA IN PAUSA.
+# ESECUZIONE UNICA: abc_main(), non main() precedente.
+# STATO DI QUESTO TEST: distance_abc_state.json SEPARATO.
+# SOLO SIMULAZIONE, NESSUNA PUNTATA AUTOMATICA.
+# ============================================================
+# ============================================================
 # 🎯 10eLOTTO MULTI BD12+ED12+O2F12 — v20.9.2 PRIME + QUATERNA + SETTINA PROFIT FAST + NOVINA LIVE — HARD LOCK
 # ============================================================
 # UNICO RAMO ATTIVO: MULTI
@@ -6739,5 +6747,465 @@ async def main():
         await app.shutdown()
 
 
+
+# ============================================================
+# DISTANCE ABC ONLY — attivo dal 2026-11-01
+# A: P3-P19, distanza <=60, PRINCIPALE
+# B: P7-P12, distanza <=18, PRINCIPALE
+# C: P1-P7, distanza <=15, CONTROLLO
+# TUTTE LE ALTRE STRATEGIE CONSERVATE SOPRA MA MAI ESEGUITE.
+# Nessuna puntata reale; solo segnali e rendiconto virtuale.
+# ============================================================
+
+ABC_VERSION = "DISTANCE_ABC_ONLY_v1.0"
+ABC_STATE_FILE = os.path.join(BASE_DIR, "distance_abc_state.json")
+ABC_STAKE = float(os.getenv("ABC_STAKE_VIRTUAL", "1.0"))
+ABC_RETURN_MULT = float(os.getenv("ABC_RETURN_MULT", "14.0"))
+ABC_NOTIFY_SIGNALS = os.getenv("ABC_NOTIFY_SIGNALS", "1") == "1"
+ABC_NOTIFY_RESULTS = os.getenv("ABC_NOTIFY_RESULTS", "1") == "1"
+ABC_RULES = {
+    "A": {"p1": 3, "p2": 19, "max_distance": 60, "role": "PRINCIPALE"},
+    "B": {"p1": 7, "p2": 12, "max_distance": 18, "role": "PRINCIPALE"},
+    "C": {"p1": 1, "p2": 7, "max_distance": 15, "role": "CONTROLLO"},
+}
+
+
+def abc_empty_counts():
+    return {"signals": 0, "h1_checked": 0, "h1_hits": 0,
+            "h1_cost": 0.0, "h1_return": 0.0,
+            "h4_closed": 0, "h4_hits": 0, "h4_cost": 0.0,
+            "h4_return": 0.0, "interrupted": 0}
+
+
+def abc_default_state():
+    return {"schema": 1, "version": ABC_VERSION, "last_key": None,
+            "last_draw": None, "active": {},
+            "totals": {k: abc_empty_counts() for k in ABC_RULES},
+            "days": {}, "finished": [], "gaps": 0,
+            "started_at": now_txt(), "last_updated": now_txt()}
+
+
+def abc_key(row):
+    return str(row.get("key") or draw_key(row["day"], row["draw_id"]))
+
+
+def abc_numbers(row):
+    nums = sorted(int(x) for x in row["nums"])
+    if len(nums) != 20 or len(set(nums)) != 20 or any(x < 1 or x > 90 for x in nums):
+        raise ValueError("Estrazione Base non valida: servono 20 numeri distinti da 1 a 90")
+    return nums
+
+
+def abc_stamp(row):
+    t = str(row.get("time") or "").replace(".", ":")
+    try:
+        stamp = datetime.fromisoformat(str(row["day"]) + "T" + t)
+        if t == "00:00" and int(row["draw_id"]) > 1:
+            stamp += timedelta(days=1)
+        return stamp
+    except (ValueError, TypeError):
+        return None
+
+
+def abc_consecutive(prev, curr):
+    if not prev:
+        return False
+    if abc_key(prev) == abc_key(curr):
+        return False
+    d1, d2 = str(prev["day"]), str(curr["day"])
+    i1, i2 = int(prev["draw_id"]), int(curr["draw_id"])
+    # Dentro la stessa giornata la sequenza numerica deve essere immediata.
+    if d1 == d2:
+        return i2 == i1 + 1
+    # Il concorso 288 (o 228 di giovedì/domenica) delle 00:00 appartiene
+    # alla giornata estrattiva precedente; #001 successivo deve essere 00:05.
+    a, b = abc_stamp(prev), abc_stamp(curr)
+    if a and b and (b - a) == timedelta(minutes=5) and i2 == 1:
+        return True
+    return False
+
+
+class DistanceABCTracker:
+    """Tracker forward-only per A/B/C. Nessun accesso allo state legacy."""
+
+    def __init__(self, filename=ABC_STATE_FILE):
+        self.filename = filename
+        if os.path.exists(filename):
+            try:
+                with open(filename, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                if d.get("schema") != 1 or not isinstance(d.get("totals"), dict):
+                    raise ValueError("Schema state ABC errato")
+                self.data = d
+            except (OSError, ValueError, TypeError) as exc:
+                raise RuntimeError(f"State ABC non leggibile, non lo sovrascrivo: {exc}") from exc
+        else:
+            self.data = abc_default_state()
+        for k in ABC_RULES:
+            self.data["totals"].setdefault(k, abc_empty_counts())
+        self.data.setdefault("days", {})
+        self.data.setdefault("active", {})
+        self.data.setdefault("finished", [])
+        self.data.setdefault("gaps", 0)
+        self.dirty = False
+        self.last_git = 0.0
+
+    def _counters(self, code, origin_day):
+        daily = self.data["days"].setdefault(origin_day, {})
+        daily.setdefault(code, abc_empty_counts())
+        return self.data["totals"][code], daily[code]
+
+    def _add(self, code, origin_day, field, value=1):
+        for item in self._counters(code, origin_day):
+            item[field] += value
+
+    def _close(self, signal):
+        self.data["finished"].append(dict(signal))
+        if len(self.data["finished"]) > 2400:
+            self.data["finished"] = self.data["finished"][-2400:]
+
+    def _interrupt(self, reason):
+        out = []
+        for sid, sig in list(self.data["active"].items()):
+            if sig["h1"] is None:
+                sig["h1"] = "NON_VERIFICABILE"
+            sig["h4"] = "INTERROTTO"
+            sig["reason"] = reason
+            self._add(sig["method"], sig["origin_day"], "interrupted")
+            self._close(sig)
+            out.append(f"{sig['method']} {sig['pair'][0]:02d}-{sig['pair'][1]:02d}: interrotto, dati mancanti")
+            del self.data["active"][sid]
+        return out
+
+    def _arm(self, row):
+        msgs = []
+        nums = abc_numbers(row)
+        for code, rule in ABC_RULES.items():
+            a, b = nums[rule["p1"] - 1], nums[rule["p2"] - 1]
+            d = b - a
+            if d > rule["max_distance"]:
+                continue
+            sid = abc_key(row) + ":" + code
+            if sid in self.data["active"]:
+                continue
+            sig = {"id": sid, "method": code, "origin_day": row["day"],
+                   "origin_draw": int(row["draw_id"]), "origin_key": abc_key(row),
+                   "pair": [a, b], "distance": d,
+                   "step": 0, "h1": None, "h4": None,
+                   "h4_cost": 0.0, "h1_cost": 0.0,
+                   "first_hit": None, "reason": ""}
+            self.data["active"][sid] = sig
+            self._add(code, row["day"], "signals")
+            msgs.append(f"{code} {rule['role']} | P{rule['p1']}/P{rule['p2']}={a:02d}-{b:02d} | dist={d} <= {rule['max_distance']}")
+        return msgs
+
+    def _advance(self, row):
+        found = set(abc_numbers(row))
+        messages = []
+        for sid, sig in list(self.data["active"].items()):
+            code, origin = sig["method"], sig["origin_day"]
+            sig["step"] += 1
+            step = sig["step"]
+            hit = all(n in found for n in sig["pair"])
+            if step == 1:
+                sig["h1"] = int(hit)
+                sig["h1_cost"] = ABC_STAKE
+                self._add(code, origin, "h1_checked")
+                self._add(code, origin, "h1_cost", ABC_STAKE)
+                if hit:
+                    self._add(code, origin, "h1_hits")
+                    self._add(code, origin, "h1_return", ABC_STAKE * ABC_RETURN_MULT)
+                messages.append(f"{code} {sig['pair'][0]:02d}-{sig['pair'][1]:02d} H1: {'HIT' if hit else 'MISS'}")
+            # Il test H4 e' una seconda contabilita virtuale indipendente:
+            # una puntata per colpo fino al primo HIT o fino a H4.
+            sig["h4_cost"] += ABC_STAKE
+            self._add(code, origin, "h4_cost", ABC_STAKE)
+            if hit:
+                sig["h4"] = 1
+                sig["first_hit"] = step
+                self._add(code, origin, "h4_hits")
+                self._add(code, origin, "h4_return", ABC_STAKE * ABC_RETURN_MULT)
+                self._add(code, origin, "h4_closed")
+                messages.append(f"{code} {sig['pair'][0]:02d}-{sig['pair'][1]:02d}: AMBO al colpo H{step}")
+            elif step == 4:
+                sig["h4"] = 0
+                self._add(code, origin, "h4_closed")
+                messages.append(f"{code} {sig['pair'][0]:02d}-{sig['pair'][1]:02d}: STOP H4")
+            if sig["h4"] is not None:
+                self._close(sig)
+                del self.data["active"][sid]
+        return messages
+
+    def process(self, row, create_new=True):
+        """Incorpora un nuovo concorso; messaggi separati risultati/nuovi segnali."""
+        row = {"day": str(row["day"]), "draw_id": int(row["draw_id"]),
+               "key": abc_key(row), "time": str(row.get("time") or ""),
+               "nums": abc_numbers(row)}
+        old_key = self.data.get("last_key")
+        if old_key and order_key(row["key"]) <= order_key(old_key):
+            return {"new": False, "results": [], "signals": [], "gap": False}
+        prev = self.data.get("last_draw")
+        gap = prev is not None and not abc_consecutive(prev, row)
+        if gap:
+            self.data["gaps"] += 1
+            results = self._interrupt("Interruzione sequenza estrazioni")
+        elif prev is None:
+            results = []
+        else:
+            results = self._advance(row)
+        self.data["last_key"] = row["key"]
+        self.data["last_draw"] = row
+        new_signals = self._arm(row) if create_new else []
+        self.data["last_updated"] = now_txt()
+        self.dirty = True
+        return {"new": True, "results": results, "signals": new_signals, "gap": gap}
+
+    def bootstrap(self, row, arm_if_fresh=True):
+        if self.data.get("last_key"):
+            return []
+        row = {"day": str(row["day"]), "draw_id": int(row["draw_id"]),
+               "key": abc_key(row), "time": str(row.get("time") or ""),
+               "nums": abc_numbers(row)}
+        self.data["last_key"] = row["key"]
+        self.data["last_draw"] = row
+        self.dirty = True
+        a = abc_stamp(row)
+        should_arm = False
+        if a:
+            delta = (now_dt().replace(tzinfo=None) - a).total_seconds()
+            should_arm = -120 <= delta <= 11 * 60
+        return self._arm(row) if arm_if_fresh and should_arm else []
+
+    def _save_local(self):
+        if not self.dirty:
+            return False
+        atomic_write_json(self.filename, self.data)
+        self.dirty = False
+        return True
+
+    def save(self, git=True, force=False):
+        self._save_local()
+        if not git or not PERSIST_GIT_STATE:
+            return "solo locale"
+        if not os.path.isdir(os.path.join(BASE_DIR, ".git")):
+            return "nessun repository git: salvato locale"
+        if not force and time.time() - self.last_git < max(60, GIT_COMMIT_MIN_SECONDS):
+            return "Git rinviato"
+        rel = os.path.relpath(self.filename, BASE_DIR)
+        a = _run_git(["add", "--", rel])
+        if a.returncode:
+            return "ERRORE git add: " + a.stderr.strip()[-160:]
+        diff = _run_git(["diff", "--cached", "--quiet", "--", rel])
+        if diff.returncode == 0:
+            # Potrebbe esistere un commit locale non ancora pubblicato.
+            # Un push esplicito verifica anche questa situazione.
+            branch = _git_remote_branch()
+            p = _run_git(["push", "origin", f"HEAD:{branch}"], timeout=55)
+            if p.returncode:
+                return "ERRORE git push (commit pendente): " + p.stderr.strip()[-220:]
+            self.last_git = time.time()
+            return "Git remoto verificato"
+        c = _run_git(["-c", "user.name=github-actions[bot]",
+                      "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
+                      "commit", "-m", f"state: ABC distance {now_txt()}", "--", rel])
+        if c.returncode:
+            return "ERRORE git commit: " + c.stderr.strip()[-160:]
+        branch = _git_remote_branch()
+        p = _run_git(["push", "origin", f"HEAD:{branch}"], timeout=55)
+        if p.returncode:
+            return "ERRORE git push: " + p.stderr.strip()[-220:] + " (stato locale preservato)"
+        self.last_git = time.time()
+        return "Git pubblicato correttamente"
+
+    def report(self, code=None, day=None):
+        codes = [code] if code in ABC_RULES else list(ABC_RULES)
+        lines = ["📊 DISTANCE ABC ONLY — SOLO SHADOW", "⏸️ Tutti gli altri metodi: IN PAUSA", ""]
+        for k in codes:
+            rule = ABC_RULES[k]
+            counts = (self.data.get("days", {}).get(day, {}) if day else self.data["totals"]).get(k, abc_empty_counts())
+            h1_checked = counts["h1_checked"]
+            h4_closed = counts["h4_closed"]
+            h1_net = counts["h1_return"] - counts["h1_cost"]
+            h4_net = counts["h4_return"] - counts["h4_cost"]
+            lines.extend([
+                f"{k} ({rule['role']}) P{rule['p1']}-P{rule['p2']}, distanza <= {rule['max_distance']}",
+                f"Segnali: {counts['signals']} | H1: {counts['h1_hits']}/{h1_checked} ({safe_pct(counts['h1_hits'],h1_checked):.1f}%)",
+                f"H4: {counts['h4_hits']}/{h4_closed} conclusi ({safe_pct(counts['h4_hits'],h4_closed):.1f}%)",
+                f"H1 virtuale: €{h1_net:+.2f} | H1-H4 virtuale: €{h4_net:+.2f}",
+                f"Interrotti: {counts['interrupted']}", "",
+            ])
+        active = [s for s in self.data["active"].values() if code is None or s["method"] == code]
+        lines.append(f"Attivi in controllo H4: {len(active)} | Gap fonte: {self.data['gaps']}")
+        lines.append(f"Ultima estrazione: {self.data.get('last_key') or 'nessuna'}")
+        lines.append("Premi virtuali: €1 per ambo, ritorno ipotetico €14; nessuna giocata reale.")
+        return "\n".join(lines)
+
+
+async def abc_send(app, message):
+    if CHAT_ID is None:
+        return
+    for chunk in split_telegram_text(message):
+        try:
+            await app.bot.send_message(chat_id=CHAT_ID, text=chunk)
+        except Exception as exc:
+            console_log(f"TELEGRAM ERRORE ABC: {type(exc).__name__}: {exc}")
+
+
+def abc_tracker_from(context):
+    return context.application.bot_data["abc_tracker"]
+
+
+async def abc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    command = update.message.text.split()[0].lstrip("/").split("@")[0].lower()
+    tracker = abc_tracker_from(context)
+    if command in {"a", "b", "c"}:
+        output = tracker.report(code=command.upper())
+    elif command == "oggi":
+        output = tracker.report(day=now_dt().strftime("%Y-%m-%d"))
+    elif command in {"abc", "status"}:
+        output = tracker.report()
+    elif command == "menu":
+        output = "🎯 DISTANCE ABC ONLY\n/abc /a /b /c /oggi /status /pausestato\nAltri comandi: in pausa. Nessuna puntata reale."
+    elif command == "pausestato":
+        output = "⏸️ V27/V28/V38/V52/V55/V56/V67/V70/V72/V114/V121/MULTI/ORDINE: TUTTI IN PAUSA.\n✅ Solo Distance ABC attivo in shadow. State legacy immutato."
+    else:
+        output = "⏸️ Questa strategia e' IN PAUSA. Sono attivi esclusivamente /a /b /c (shadow)."
+    await update.message.reply_text(output)
+
+
+async def abc_setup_commands(app):
+    await app.bot.set_my_commands([
+        BotCommand("abc", "Riepilogo completo distanza A B C"),
+        BotCommand("a", "Metodo A P3-P19 distanza <=60"),
+        BotCommand("b", "Metodo B P7-P12 distanza <=18"),
+        BotCommand("c", "Metodo C P1-P7 distanza <=15"),
+        BotCommand("oggi", "Statistiche della giornata"),
+        BotCommand("status", "Stato e risultati ABC"),
+        BotCommand("pausestato", "Elenco strategie in pausa"),
+        BotCommand("menu", "Comandi disponibili"),
+    ])
+
+
+async def abc_fetch_loop(tracker, app):
+    last_error = ""
+    start = time.monotonic()
+    while True:
+        if BOT_MAX_RUNTIME_SECONDS > 0 and time.monotonic() - start >= BOT_MAX_RUNTIME_SECONDS:
+            st = tracker.save(git=True, force=True)
+            console_log("ABC ROTAZIONE: " + st)
+            if "ERRORE" in st:
+                await abc_send(app, "⚠️ ABC rotazione: stato Git non confermato, controllo necessario. " + st)
+                # Non avviare automaticamente un nuovo runner perdendo il progresso.
+                raise RuntimeError("Salvataggio state ABC non confermato")
+            if BOT_ROTATION_NOTIFY:
+                await abc_send(app, "♻️ DISTANCE ABC — rotazione eseguita. " + st)
+            return
+        try:
+            rows = fetch_multichannel_recent(days=5 if tracker.data.get("last_key") is None else 2)
+            if not rows:
+                raise RuntimeError("Nessuna estrazione disponibile: verifica fonte dati")
+            rows = sorted(rows, key=lambda r: order_key(abc_key(r)) or (-1, -1))
+            if tracker.data.get("last_key") is None:
+                armed = tracker.bootstrap(rows[-1])
+                tracker.save(git=True, force=True)
+                await abc_send(app, "✅ DISTANCE ABC AVVIATO — tutte le strategie precedenti IN PAUSA.\n"
+                               + "A P3-P19 <=60 | B P7-P12 <=18 | C P1-P7 <=15.\n"
+                               + "Solo simulazione: H1, primo HIT entro H4 e saldo virtuale indipendenti.\n"
+                               + ("\n".join(armed) if armed else "In attesa della prossima estrazione."))
+            else:
+                unseen = [r for r in rows if order_key(abc_key(r)) > order_key(tracker.data["last_key"])]
+                if unseen:
+                    newest_key = abc_key(unseen[-1])
+                    all_results, all_signals = [], []
+                    gaps = 0
+                    for r in unseen:
+                        changes = tracker.process(r)
+                        gaps += int(changes["gap"])
+                        if changes["results"]:
+                            all_results.extend(changes["results"])
+                        if changes["signals"]:
+                            all_signals.extend([f"{abc_key(r)}: {m}" for m in changes["signals"]])
+                    save_result = tracker.save(git=True)
+                    console_log(f"ABC {newest_key} | nuovi={len(unseen)} segnali={len(all_signals)} gaps={gaps} | {save_result}")
+                    # Per un catch-up lungo non mandiamo decine di messaggi arretrati.
+                    if len(unseen) > 3:
+                        await abc_send(app, f"📋 ABC recupero di {len(unseen)} estrazioni fino a {newest_key}; "
+                                           f"segnali {len(all_signals)}, gap {gaps}.\n" + tracker.report())
+                    else:
+                        parts = [f"🔎 DISTANCE ABC | {newest_key}"]
+                        if ABC_NOTIFY_RESULTS and all_results:
+                            parts.append("ESITI:\n" + "\n".join(all_results[-25:]))
+                        if ABC_NOTIFY_SIGNALS and all_signals:
+                            parts.append("NUOVI SEGNALI (prossimo H1):\n" + "\n".join(all_signals[-10:]))
+                        if gaps:
+                            parts.append(f"⚠️ Fonte con {gaps} salto/i: segnali H1/H4 sospesi, non classificati MISS")
+                        if len(parts) > 1:
+                            await abc_send(app, "\n\n".join(parts))
+            last_error = ""
+            await asyncio.sleep(max(25, LOOP_SEC))
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            console_log("ABC ERRORE | " + error)
+            if error != last_error:
+                await abc_send(app, "⚠️ DISTANCE ABC | " + error + "\nVerifica fonte/connessione; nessun risultato inventato.")
+                last_error = error
+            await asyncio.sleep(max(30, LOOP_SEC))
+
+
+async def abc_main():
+    if "--abc-self-test" in sys.argv:
+        abc_self_test()
+        return
+    acquire_single_instance_lock()  # blocca ogni altra istanza con lo stesso lock legacy
+    if not TOKEN or CHAT_ID is None:
+        raise RuntimeError("Configura BOT_TOKEN e CHAT_ID; non inserirli nel codice")
+    app = ApplicationBuilder().token(TOKEN).build()
+    tracker = DistanceABCTracker()
+    app.bot_data["abc_tracker"] = tracker
+    for key in ["abc", "a", "b", "c", "oggi", "status", "menu", "pausestato",
+                "multi", "v27", "v28", "v38", "v52", "v55", "v56", "v67",
+                "v70", "v72", "v114", "v121", "verificatutto", "ordineapi",
+                "ambiapi", "ordinecsv"]:
+        app.add_handler(CommandHandler(key, abc_cmd))
+    await app.initialize()
+    await app.start()
+    await abc_setup_commands(app)
+    await app.updater.start_polling(drop_pending_updates=True)
+    try:
+        await abc_fetch_loop(tracker, app)
+    finally:
+        last = tracker.save(git=True, force=True)
+        console_log("ABC CHIUSURA: " + last)
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
+
+
+def abc_self_test():
+    import tempfile
+    with tempfile.TemporaryDirectory() as dirname:
+        tr = DistanceABCTracker(filename=os.path.join(dirname, "state.json"))
+        def mk(n, values, day="2026-10-12"):
+            return {"day": day, "draw_id": n, "key": draw_key(day, n),
+                    "time": "10:00", "nums": values}
+        # P1=1, P3=3, P7=7, P12=12, P19=19: A/B/C selezionati
+        values = list(range(1, 21))
+        tr.process(mk(100, values))
+        assert len(tr.data["active"]) == 3
+        tr.process(mk(101, values))
+        assert all(tr.data["totals"][k]["h1_hits"] == 1 for k in ABC_RULES)
+        assert all(tr.data["totals"][k]["h4_hits"] == 1 for k in ABC_RULES)
+        assert all(tr.data["totals"][k]["h4_closed"] == 1 for k in ABC_RULES)
+        # Non deve riaprire automaticamente segnali sulle estrazioni non idonee.
+        assert abc_consecutive(mk(101, values), mk(102, values))
+        assert not abc_consecutive(mk(101, values), mk(104, values))
+        tr.save(git=False)
+        tr2 = DistanceABCTracker(filename=os.path.join(dirname, "state.json"))
+        assert tr2.data["totals"]["A"]["h1_hits"] == 1
+        assert tr2.data["totals"]["B"]["h4_hits"] == 1
+        tr2.process(mk(104, list(range(71,91))))
+        assert tr2.data["gaps"] == 1
+    print("ABC_SELF_TEST_OK | A/B/C, H1, H4, state persistente, salti sequenza", flush=True)
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(abc_main())
