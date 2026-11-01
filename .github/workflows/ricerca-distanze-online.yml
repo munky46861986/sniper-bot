@@ -1,0 +1,126 @@
+name: "Ricerca P6-P17 online ottobre 2026 (solo shadow)"
+on:
+  push:
+    branches: ["diagnostica/v186-app-route"]
+    paths:
+      - ".github/workflows/ricerca-distanze-online.yml"
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installa dipendenze
+        run: pip install requests beautifulsoup4
+      - name: Backtest online indipendente
+        shell: bash
+        run: |
+          cat > /tmp/ricerca_online.py <<'PY'
+          import csv, json, re, time, random, requests, datetime, concurrent.futures, os
+          from bs4 import BeautifulSoup
+          from collections import Counter
+          
+          BASE="https://www.10elotto.info/10elotto-5-minuti.php"
+          os.makedirs("out",exist_ok=True)
+          def getpage(p):
+              err=""
+              for attempt in range(3):
+                  try:
+                      u=BASE+"?p="+str(p)
+                      q=requests.get(u,headers={"User-Agent":"Mozilla/5.0 (compatible; historical research; +https://github.com/)","Cache-Control":"no-cache"},timeout=22)
+                      q.raise_for_status()
+                      soup=BeautifulSoup(q.text,"html.parser")
+                      rows=[]
+                      for tr in soup.find_all("tr"):
+                          s=" ".join(tr.stripped_strings).replace("·"," ")
+                          m=re.match(r"^(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2})\s+(\d{1,3})\s+(.*)$",s)
+                          if not m: continue
+                          d,t,n,tail=m.groups()
+                          nums=[int(z) for z in re.findall(r"(?<!\d)\d{1,2}(?!\d)",tail)]
+                          if len(nums)!=20 or len(set(nums))!=20 or any(not 1<=x<=90 for x in nums):continue
+                          rows.append((datetime.datetime.strptime(d,"%d/%m/%Y").strftime("%Y-%m-%d"),int(n),t,tuple(sorted(nums))))
+                      return p,rows,err
+                  except Exception as e:
+                      err=str(e)
+                      time.sleep(.5*(attempt+1))
+              return p,[],err
+          
+          # A few pages first to discover the number of historical pages; October 2026 ~8,700 /48 -> 182.
+          test=[getpage(1),getpage(2),getpage(3)]
+          print("PROBE",[(i,len(rr),e[:100]) for i,rr,e in test],flush=True)
+          if max(len(rr) for _,rr,_ in test)==0:
+              raise RuntimeError("Website did not return parseable draw rows; do not fabricate a result.")
+          collected={}; conflicts=0; page_counts={}
+          for i,rr,e in test:
+              page_counts[i]=(len(rr),e)
+              for d,n,t,nums in rr:
+                  key=(d,n)
+                  if key in collected and collected[key][1]!=nums: conflicts+=1
+                  collected[key]=(t,nums)
+          with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+              for i,rr,e in pool.map(getpage,range(4,195)):
+                  page_counts[i]=(len(rr),e)
+                  for d,n,t,nums in rr:
+                      key=(d,n)
+                      if key in collected and collected[key][1]!=nums: conflicts+=1
+                      collected[key]=(t,nums)
+          if not collected:raise RuntimeError("No draws parsed")
+          ordered=sorted((d,n,t,nums) for (d,n),(t,nums) in collected.items() if "2026-10-01"<=d<="2026-10-31")
+          def follows(a,b):
+              da,ia=a[:2]; db,ib=b[:2]
+              if da==db:return ib==ia+1
+              return (datetime.date.fromisoformat(db)-datetime.date.fromisoformat(da)).days==1 and ia==288 and ib==1
+          signals=[]
+          valid_transitions=0
+          for a,b in zip(ordered,ordered[1:]):
+              if not follows(a,b):continue
+              valid_transitions+=1
+              p6,p17=a[3][5],a[3][16]
+              dist=p17-p6
+              if 69<=dist<=73:
+                  hit=p6 in b[3] and p17 in b[3]
+                  signals.append({"origin_date":a[0],"origin_draw":a[1],"verify_date":b[0],"verify_draw":b[1],"p6":p6,"p17":p17,"distance":dist,"ambo_H1":int(hit)})
+          hits=sum(x["ambo_H1"] for x in signals)
+          by_day=Counter()
+          by_month=Counter()
+          for x in signals:
+              by_day[x["origin_date"]]+=1
+              by_month[x["origin_date"][:7]]+=x["ambo_H1"]
+          with open("out/archivio_online_ottobre_2026.csv","w",newline="",encoding="utf8") as f:
+              w=csv.writer(f);w.writerow(["date","draw","time"]+[f"n{i}" for i in range(1,21)])
+              for d,n,t,num in ordered:w.writerow([d,n,t,*num])
+          with open("out/segnali_p6_p17_69_73_ottobre_2026.csv","w",newline="",encoding="utf8") as f:
+              w=csv.DictWriter(f,fieldnames=list(signals[0]) if signals else ["origin_date","origin_draw","verify_date","verify_draw","p6","p17","distance","ambo_H1"]);w.writeheader();w.writerows(signals)
+          daily_complete=len(ordered)
+          s={
+           "source":BASE,
+           "period":"2026-10-01 to 2026-10-31",
+           "draws_unique":daily_complete,
+           "valid_consecutive_transitions":valid_transitions,
+           "signals":len(signals),
+           "hits_H1":hits,
+           "hit_rate_percent":round(100*hits/len(signals),4) if signals else None,
+           "cost_euro":len(signals),
+           "prize_return_assumption_euro":14,
+           "gross_return_euro":14*hits,
+           "net_virtual_euro":14*hits-len(signals),
+           "days_with_signals":len(by_day),
+           "signals_per_month":dict(sorted(by_month.items())),
+           "conflicting_duplicate_rows":conflicts,
+           "pages_parsed":sum(v[0]>0 for v in page_counts.values()),
+           "pages_zero_rows":[i for i,(n,e) in page_counts.items() if n==0],
+           "examples":signals[:30],
+          }
+          with open("out/risultato.json","w",encoding="utf8") as f:json.dump(s,f,ensure_ascii=False,indent=2)
+          print("FINAL",json.dumps(s,ensure_ascii=False),flush=True)
+          
+          PY
+          python /tmp/ricerca_online.py
+      - name: Carica risultati riproducibili
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "RICERCA-P6-P17-ONLINE-OTTOBRE-2026"
+          path: out/
+          if-no-files-found: warn
