@@ -1,47 +1,66 @@
 {
   "schema": 1,
   "version": "DISTANCE_ABC_ONLY_v1.0",
-  "last_key": "2026-11-01#286",
+  "last_key": "2026-11-02#004",
   "last_draw": {
-    "day": "2026-11-01",
-    "draw_id": 286,
-    "key": "2026-11-01#286",
-    "time": "23:50",
+    "day": "2026-11-02",
+    "draw_id": 4,
+    "key": "2026-11-02#004",
+    "time": "00:20",
     "nums": [
       5,
       6,
       7,
-      12,
+      9,
       16,
-      20,
       25,
-      26,
-      31,
-      33,
-      39,
+      27,
+      30,
+      36,
+      37,
+      38,
+      40,
       42,
-      50,
-      59,
-      62,
-      71,
-      77,
-      83,
-      85,
-      87
+      43,
+      44,
+      46,
+      70,
+      80,
+      87,
+      89
     ]
   },
   "active": {
-    "2026-11-01#286:B": {
-      "id": "2026-11-01#286:B",
+    "2026-11-02#003:B": {
+      "id": "2026-11-02#003:B",
       "method": "B",
-      "origin_day": "2026-11-01",
-      "origin_draw": 286,
-      "origin_key": "2026-11-01#286",
+      "origin_day": "2026-11-02",
+      "origin_draw": 3,
+      "origin_key": "2026-11-02#003",
       "pair": [
-        25,
-        42
+        30,
+        45
       ],
-      "distance": 17,
+      "distance": 15,
+      "step": 1,
+      "h1": 0,
+      "h4": null,
+      "h4_cost": 1.0,
+      "h1_cost": 1.0,
+      "first_hit": null,
+      "reason": ""
+    },
+    "2026-11-02#004:B": {
+      "id": "2026-11-02#004:B",
+      "method": "B",
+      "origin_day": "2026-11-02",
+      "origin_draw": 4,
+      "origin_key": "2026-11-02#004",
+      "pair": [
+        27,
+        40
+      ],
+      "distance": 13,
       "step": 0,
       "h1": null,
       "h4": null,
@@ -65,27 +84,27 @@
       "interrupted": 0
     },
     "B": {
-      "signals": 50,
-      "h1_checked": 49,
+      "signals": 52,
+      "h1_checked": 51,
       "h1_hits": 1,
-      "h1_cost": 49.0,
+      "h1_cost": 51.0,
       "h1_return": 14.0,
       "h4_closed": 49,
       "h4_hits": 5,
-      "h4_cost": 191.0,
+      "h4_cost": 193.0,
       "h4_return": 70.0,
-      "interrupted": 0
+      "interrupted": 1
     },
     "C": {
-      "signals": 7,
-      "h1_checked": 7,
-      "h1_hits": 0,
-      "h1_cost": 7.0,
-      "h1_return": 0.0,
-      "h4_closed": 7,
-      "h4_hits": 2,
-      "h4_cost": 27.0,
-      "h4_return": 28.0,
+      "signals": 8,
+      "h1_checked": 8,
+      "h1_hits": 1,
+      "h1_cost": 8.0,
+      "h1_return": 14.0,
+      "h4_closed": 8,
+      "h4_hits": 3,
+      "h4_cost": 28.0,
+      "h4_return": 42.0,
       "interrupted": 0
     }
   },
@@ -93,15 +112,15 @@
     "2026-11-01": {
       "B": {
         "signals": 50,
-        "h1_checked": 49,
+        "h1_checked": 50,
         "h1_hits": 1,
-        "h1_cost": 49.0,
+        "h1_cost": 50.0,
         "h1_return": 14.0,
         "h4_closed": 49,
         "h4_hits": 5,
-        "h4_cost": 191.0,
+        "h4_cost": 192.0,
         "h4_return": 70.0,
-        "interrupted": 0
+        "interrupted": 1
       },
       "C": {
         "signals": 7,
@@ -125,6 +144,32 @@
         "h4_hits": 3,
         "h4_cost": 72.0,
         "h4_return": 42.0,
+        "interrupted": 0
+      }
+    },
+    "2026-11-02": {
+      "C": {
+        "signals": 1,
+        "h1_checked": 1,
+        "h1_hits": 1,
+        "h1_cost": 1.0,
+        "h1_return": 14.0,
+        "h4_closed": 1,
+        "h4_hits": 1,
+        "h4_cost": 1.0,
+        "h4_return": 14.0,
+        "interrupted": 0
+      },
+      "B": {
+        "signals": 2,
+        "h1_checked": 1,
+        "h1_hits": 0,
+        "h1_cost": 1.0,
+        "h1_return": 0.0,
+        "h4_closed": 0,
+        "h4_hits": 0,
+        "h4_cost": 1.0,
+        "h4_return": 0.0,
         "interrupted": 0
       }
     }
@@ -1573,9 +1618,47 @@
       "h1_cost": 1.0,
       "first_hit": null,
       "reason": ""
+    },
+    {
+      "id": "2026-11-01#286:B",
+      "method": "B",
+      "origin_day": "2026-11-01",
+      "origin_draw": 286,
+      "origin_key": "2026-11-01#286",
+      "pair": [
+        25,
+        42
+      ],
+      "distance": 17,
+      "step": 1,
+      "h1": 0,
+      "h4": "INTERROTTO",
+      "h4_cost": 1.0,
+      "h1_cost": 1.0,
+      "first_hit": null,
+      "reason": "Interruzione sequenza estrazioni"
+    },
+    {
+      "id": "2026-11-02#002:C",
+      "method": "C",
+      "origin_day": "2026-11-02",
+      "origin_draw": 2,
+      "origin_key": "2026-11-02#002",
+      "pair": [
+        7,
+        19
+      ],
+      "distance": 12,
+      "step": 1,
+      "h1": 1,
+      "h4": 1,
+      "h4_cost": 1.0,
+      "h1_cost": 1.0,
+      "first_hit": 1,
+      "reason": ""
     }
   ],
-  "gaps": 0,
+  "gaps": 1,
   "started_at": "2026-11-01 11:46:27",
-  "last_updated": "2026-11-01 23:51:27"
+  "last_updated": "2026-11-02 00:20:37"
 }
