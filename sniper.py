@@ -62,6 +62,7 @@ from itertools import combinations
 
 import requests
 from bs4 import BeautifulSoup
+from telegram_archive import archive_message
 from telegram import BotCommand, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from visual_order_v167 import VisualOrderShadow, fetch_recent_draws, merge_visual_states, STATE_KEY as V167_STATE_KEY
@@ -5753,6 +5754,7 @@ class MultiOnlyEngine:
         try:
             for chunk in split_telegram_text(text):
                 await app.bot.send_message(chat_id=CHAT_ID, text=chunk)
+                archive_message("superambo3", chunk)
         except Exception as exc:
             console_log(f"TELEGRAM FAIL | {type(exc).__name__}: {exc}")
 
@@ -5854,6 +5856,7 @@ async def reply(update, text):
     if update and update.message:
         for chunk in split_telegram_text(text):
             await update.message.reply_text(chunk)
+            archive_message("superambo3", chunk)
 
 
 async def cmd_multi(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7047,6 +7050,7 @@ async def abc_send(app, message):
     for chunk in split_telegram_text(message):
         try:
             await app.bot.send_message(chat_id=CHAT_ID, text=chunk)
+            archive_message("superambo3", chunk)
         except Exception as exc:
             console_log(f"TELEGRAM ERRORE ABC: {type(exc).__name__}: {exc}")
 
