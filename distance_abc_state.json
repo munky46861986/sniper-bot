@@ -1,33 +1,33 @@
 {
   "schema": 1,
   "version": "DISTANCE_ABC_ONLY_v1.0",
-  "last_key": "2026-11-03#001",
+  "last_key": "2026-11-03#003",
   "last_draw": {
     "day": "2026-11-03",
-    "draw_id": 1,
-    "key": "2026-11-03#001",
-    "time": "00:05",
+    "draw_id": 3,
+    "key": "2026-11-03#003",
+    "time": "00:15",
     "nums": [
-      6,
+      1,
+      4,
+      9,
       15,
-      16,
-      17,
-      18,
-      20,
-      21,
+      19,
+      26,
+      28,
       30,
-      33,
-      34,
       36,
-      40,
+      39,
+      43,
+      45,
+      47,
       48,
-      51,
-      57,
-      59,
-      61,
-      75,
-      76,
-      85
+      60,
+      69,
+      70,
+      85,
+      86,
+      87
     ]
   },
   "active": {
@@ -42,11 +42,11 @@
         76
       ],
       "distance": 60,
-      "step": 0,
-      "h1": null,
+      "step": 2,
+      "h1": 0,
       "h4": null,
-      "h4_cost": 0.0,
-      "h1_cost": 0.0,
+      "h4_cost": 2.0,
+      "h1_cost": 1.0,
       "first_hit": null,
       "reason": ""
     },
@@ -61,6 +61,44 @@
         21
       ],
       "distance": 15,
+      "step": 2,
+      "h1": 0,
+      "h4": null,
+      "h4_cost": 2.0,
+      "h1_cost": 1.0,
+      "first_hit": null,
+      "reason": ""
+    },
+    "2026-11-03#002:B": {
+      "id": "2026-11-03#002:B",
+      "method": "B",
+      "origin_day": "2026-11-03",
+      "origin_draw": 2,
+      "origin_key": "2026-11-03#002",
+      "pair": [
+        31,
+        49
+      ],
+      "distance": 18,
+      "step": 1,
+      "h1": 0,
+      "h4": null,
+      "h4_cost": 1.0,
+      "h1_cost": 1.0,
+      "first_hit": null,
+      "reason": ""
+    },
+    "2026-11-03#003:B": {
+      "id": "2026-11-03#003:B",
+      "method": "B",
+      "origin_day": "2026-11-03",
+      "origin_draw": 3,
+      "origin_key": "2026-11-03#003",
+      "pair": [
+        28,
+        45
+      ],
+      "distance": 17,
       "step": 0,
       "h1": null,
       "h4": null,
@@ -73,37 +111,37 @@
   "totals": {
     "A": {
       "signals": 55,
-      "h1_checked": 54,
+      "h1_checked": 55,
       "h1_hits": 2,
-      "h1_cost": 54.0,
+      "h1_cost": 55.0,
       "h1_return": 28.0,
       "h4_closed": 54,
       "h4_hits": 10,
-      "h4_cost": 199.0,
+      "h4_cost": 201.0,
       "h4_return": 140.0,
       "interrupted": 0
     },
     "B": {
-      "signals": 137,
-      "h1_checked": 137,
+      "signals": 139,
+      "h1_checked": 138,
       "h1_hits": 5,
-      "h1_cost": 137.0,
+      "h1_cost": 138.0,
       "h1_return": 70.0,
       "h4_closed": 136,
       "h4_hits": 26,
-      "h4_cost": 511.0,
+      "h4_cost": 512.0,
       "h4_return": 364.0,
       "interrupted": 1
     },
     "C": {
       "signals": 27,
-      "h1_checked": 26,
+      "h1_checked": 27,
       "h1_hits": 2,
-      "h1_cost": 26.0,
+      "h1_cost": 27.0,
       "h1_return": 28.0,
       "h4_closed": 25,
       "h4_hits": 6,
-      "h4_cost": 93.0,
+      "h4_cost": 95.0,
       "h4_return": 84.0,
       "interrupted": 1
     }
@@ -188,25 +226,37 @@
     "2026-11-03": {
       "A": {
         "signals": 1,
-        "h1_checked": 0,
+        "h1_checked": 1,
         "h1_hits": 0,
-        "h1_cost": 0.0,
+        "h1_cost": 1.0,
         "h1_return": 0.0,
         "h4_closed": 0,
         "h4_hits": 0,
-        "h4_cost": 0.0,
+        "h4_cost": 2.0,
         "h4_return": 0.0,
         "interrupted": 0
       },
       "C": {
         "signals": 1,
-        "h1_checked": 0,
+        "h1_checked": 1,
         "h1_hits": 0,
-        "h1_cost": 0.0,
+        "h1_cost": 1.0,
         "h1_return": 0.0,
         "h4_closed": 0,
         "h4_hits": 0,
-        "h4_cost": 0.0,
+        "h4_cost": 2.0,
+        "h4_return": 0.0,
+        "interrupted": 0
+      },
+      "B": {
+        "signals": 2,
+        "h1_checked": 1,
+        "h1_hits": 0,
+        "h1_cost": 1.0,
+        "h1_return": 0.0,
+        "h4_closed": 0,
+        "h4_hits": 0,
+        "h4_cost": 1.0,
         "h4_return": 0.0,
         "interrupted": 0
       }
@@ -4339,5 +4389,5 @@
   ],
   "gaps": 2,
   "started_at": "2026-11-01 11:46:27",
-  "last_updated": "2026-11-03 00:07:08"
+  "last_updated": "2026-11-03 00:16:29"
 }
