@@ -1,55 +1,36 @@
 {
   "schema": 1,
   "version": "DISTANCE_ABC_ONLY_v1.0",
-  "last_key": "2026-11-03#098",
+  "last_key": "2026-11-03#099",
   "last_draw": {
     "day": "2026-11-03",
-    "draw_id": 98,
-    "key": "2026-11-03#098",
-    "time": "08:10",
+    "draw_id": 99,
+    "key": "2026-11-03#099",
+    "time": "08:15",
     "nums": [
-      8,
+      2,
+      3,
+      4,
+      5,
+      7,
+      9,
       12,
       13,
-      15,
-      16,
-      18,
-      21,
-      28,
-      30,
-      32,
+      14,
+      17,
+      23,
+      26,
+      35,
+      38,
       43,
-      58,
-      59,
-      60,
-      65,
-      75,
-      76,
-      80,
-      88,
-      90
+      44,
+      52,
+      55,
+      70,
+      88
     ]
   },
   "active": {
-    "2026-11-03#095:B": {
-      "id": "2026-11-03#095:B",
-      "method": "B",
-      "origin_day": "2026-11-03",
-      "origin_draw": 95,
-      "origin_key": "2026-11-03#095",
-      "pair": [
-        44,
-        55
-      ],
-      "distance": 11,
-      "step": 3,
-      "h1": 0,
-      "h4": null,
-      "h4_cost": 3.0,
-      "h1_cost": 1.0,
-      "first_hit": null,
-      "reason": ""
-    },
     "2026-11-03#096:A": {
       "id": "2026-11-03#096:A",
       "method": "A",
@@ -61,29 +42,10 @@
         74
       ],
       "distance": 57,
-      "step": 2,
+      "step": 3,
       "h1": 0,
       "h4": null,
-      "h4_cost": 2.0,
-      "h1_cost": 1.0,
-      "first_hit": null,
-      "reason": ""
-    },
-    "2026-11-03#096:B": {
-      "id": "2026-11-03#096:B",
-      "method": "B",
-      "origin_day": "2026-11-03",
-      "origin_draw": 96,
-      "origin_key": "2026-11-03#096",
-      "pair": [
-        35,
-        43
-      ],
-      "distance": 8,
-      "step": 2,
-      "h1": 0,
-      "h4": null,
-      "h4_cost": 2.0,
+      "h4_cost": 3.0,
       "h1_cost": 1.0,
       "first_hit": null,
       "reason": ""
@@ -99,6 +61,44 @@
         21
       ],
       "distance": 13,
+      "step": 1,
+      "h1": 0,
+      "h4": null,
+      "h4_cost": 1.0,
+      "h1_cost": 1.0,
+      "first_hit": null,
+      "reason": ""
+    },
+    "2026-11-03#099:B": {
+      "id": "2026-11-03#099:B",
+      "method": "B",
+      "origin_day": "2026-11-03",
+      "origin_draw": 99,
+      "origin_key": "2026-11-03#099",
+      "pair": [
+        12,
+        26
+      ],
+      "distance": 14,
+      "step": 0,
+      "h1": null,
+      "h4": null,
+      "h4_cost": 0.0,
+      "h1_cost": 0.0,
+      "first_hit": null,
+      "reason": ""
+    },
+    "2026-11-03#099:C": {
+      "id": "2026-11-03#099:C",
+      "method": "C",
+      "origin_day": "2026-11-03",
+      "origin_draw": 99,
+      "origin_key": "2026-11-03#099",
+      "pair": [
+        2,
+        12
+      ],
+      "distance": 10,
       "step": 0,
       "h1": null,
       "h4": null,
@@ -117,31 +117,31 @@
       "h1_return": 28.0,
       "h4_closed": 60,
       "h4_hits": 10,
-      "h4_cost": 225.0,
+      "h4_cost": 226.0,
       "h4_return": 140.0,
       "interrupted": 0
     },
     "B": {
-      "signals": 175,
+      "signals": 176,
       "h1_checked": 175,
       "h1_hits": 6,
       "h1_cost": 175.0,
       "h1_return": 84.0,
-      "h4_closed": 172,
-      "h4_hits": 29,
-      "h4_cost": 655.0,
-      "h4_return": 406.0,
+      "h4_closed": 174,
+      "h4_hits": 31,
+      "h4_cost": 657.0,
+      "h4_return": 434.0,
       "interrupted": 1
     },
     "C": {
-      "signals": 36,
-      "h1_checked": 35,
+      "signals": 37,
+      "h1_checked": 36,
       "h1_hits": 2,
-      "h1_cost": 35.0,
+      "h1_cost": 36.0,
       "h1_return": 28.0,
       "h4_closed": 34,
       "h4_hits": 6,
-      "h4_cost": 129.0,
+      "h4_cost": 130.0,
       "h4_return": 84.0,
       "interrupted": 1
     }
@@ -232,32 +232,32 @@
         "h1_return": 0.0,
         "h4_closed": 6,
         "h4_hits": 0,
-        "h4_cost": 26.0,
+        "h4_cost": 27.0,
         "h4_return": 0.0,
         "interrupted": 0
       },
       "C": {
-        "signals": 10,
-        "h1_checked": 9,
+        "signals": 11,
+        "h1_checked": 10,
         "h1_hits": 0,
-        "h1_cost": 9.0,
+        "h1_cost": 10.0,
         "h1_return": 0.0,
         "h4_closed": 9,
         "h4_hits": 0,
-        "h4_cost": 36.0,
+        "h4_cost": 37.0,
         "h4_return": 0.0,
         "interrupted": 0
       },
       "B": {
-        "signals": 38,
+        "signals": 39,
         "h1_checked": 38,
         "h1_hits": 1,
         "h1_cost": 38.0,
         "h1_return": 14.0,
-        "h4_closed": 36,
-        "h4_hits": 3,
-        "h4_cost": 144.0,
-        "h4_return": 42.0,
+        "h4_closed": 38,
+        "h4_hits": 5,
+        "h4_cost": 146.0,
+        "h4_return": 70.0,
         "interrupted": 0
       }
     }
@@ -5354,9 +5354,47 @@
       "h1_cost": 1.0,
       "first_hit": null,
       "reason": ""
+    },
+    {
+      "id": "2026-11-03#095:B",
+      "method": "B",
+      "origin_day": "2026-11-03",
+      "origin_draw": 95,
+      "origin_key": "2026-11-03#095",
+      "pair": [
+        44,
+        55
+      ],
+      "distance": 11,
+      "step": 4,
+      "h1": 0,
+      "h4": 1,
+      "h4_cost": 4.0,
+      "h1_cost": 1.0,
+      "first_hit": 4,
+      "reason": ""
+    },
+    {
+      "id": "2026-11-03#096:B",
+      "method": "B",
+      "origin_day": "2026-11-03",
+      "origin_draw": 96,
+      "origin_key": "2026-11-03#096",
+      "pair": [
+        35,
+        43
+      ],
+      "distance": 8,
+      "step": 3,
+      "h1": 0,
+      "h4": 1,
+      "h4_cost": 3.0,
+      "h1_cost": 1.0,
+      "first_hit": 3,
+      "reason": ""
     }
   ],
   "gaps": 2,
   "started_at": "2026-11-01 11:46:27",
-  "last_updated": "2026-11-03 08:10:21"
+  "last_updated": "2026-11-03 08:16:43"
 }
