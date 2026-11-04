@@ -1,4 +1,12 @@
 # ============================================================
+# VERSIONE ATTIVA: DISTANCE ABC + ORARI/CINQUINE SHADOW | v1.1
+# A P3/P19 <= 60; B P7/P12 <= 18; C P1/P7 <= 15, invariati.
+# SOLO MONITOR: lun-gio 08:00-08:59, cinquine/ambi/terni, A 10:00-10:59.
+# ALTRE STRATEGIE PRECEDENTI CONSERVATE E IN PAUSA.
+# STATO UNICO: distance_abc_state.json, senza reset dei risultati ABC.
+# NESSUNA GIOCATA AUTOMATICA.
+# ============================================================
+# ============================================================
 # VERSIONE ATTIVA: DISTANCE ABC ONLY | 2026-11-01
 # A: P3/P19 <=60; B: P7/P12 <=18; C: P1/P7 <=15
 # TUTTI GLI ALTRI METODI: CODICE CONSERVATO, MA IN PAUSA.
@@ -6955,10 +6963,13 @@ class DistanceABCTracker:
             results = self._advance(row)
         self.data["last_key"] = row["key"]
         self.data["last_draw"] = row
+        # Solo monitor ORARI: legge la stessa estrazione ABC, non avvia altri metodi.
+        orari_messages = abc_orari_update(self, prev, row, gap=gap)
         new_signals = self._arm(row) if create_new else []
         self.data["last_updated"] = now_txt()
         self.dirty = True
-        return {"new": True, "results": results, "signals": new_signals, "gap": gap}
+        return {"new": True, "results": results, "signals": new_signals, "gap": gap,
+                "orari": orari_messages}
 
     def bootstrap(self, row, arm_if_fresh=True):
         if self.data.get("last_key"):
@@ -6974,6 +6985,8 @@ class DistanceABCTracker:
         if a:
             delta = (now_dt().replace(tzinfo=None) - a).total_seconds()
             should_arm = -120 <= delta <= 11 * 60
+        if should_arm:
+            abc_orari_update(self, None, row, gap=False)
         return self._arm(row) if arm_if_fresh and should_arm else []
 
     def _save_local(self):
@@ -7041,6 +7054,232 @@ class DistanceABCTracker:
         return "\n".join(lines)
 
 
+# ============================================================
+# ORARI + CINQUINE — SOLO SHADOW | v1.1
+# Abilitato SOLO nell'entrypoint ABC; ogni vecchio motore resta PAUSATO.
+# Le quattro cinquine sono scelte dai dati GEN-GIU 2025; il test LUG-SET
+# e' solo controllo storico, NON una garanzia di ricorrenza.
+# Periodo cinquine: 08:00..08:59, per 12 estrazioni da 5 minuti.
+# ============================================================
+
+ABC_ORARI_VERSION = "ORARI_CINQUINE_v1.1_SHADOW"
+ABC_ORARI_5 = {
+    0: (8, 36, 49, 79, 88),   # lunedi
+    1: (1, 13, 71, 73, 76),   # martedi
+    2: (10, 40, 59, 68, 75),  # mercoledi
+    3: (4, 11, 34, 72, 73),   # giovedi
+}
+ABC_ORARI_NAMES = {0: "LUNEDI", 1: "MARTEDI", 2: "MERCOLEDI", 3: "GIOVEDI"}
+# 2 ambi e 1 terno fissati per giorno usando SOLO la classifica GEN-GIU 2025.
+# Sono separati dal conteggio di tutte le 10+10 combinazioni.
+ABC_ORARI_FIXED = {
+    0: {"ambi": ((36, 79), (36, 88)), "terni": ((36, 79, 88),)},
+    1: {"ambi": ((73, 76), (13, 73)), "terni": ((1, 13, 71),)},
+    2: {"ambi": ((59, 68), (40, 75)), "terni": ((40, 59, 75),)},
+    3: {"ambi": ((4, 72), (11, 73)), "terni": ((11, 72, 73),)},
+}
+ABC_ORARI_EXACT = {
+    (1, "08:15"): ("71_MAR_0815", (71,)),
+    (2, "08:35"): ("40_MER_0835", (40,)),
+    (3, "08:45"): ("58_73_GIO_0845", (58, 73)),
+}
+
+
+def abc_orari_empty_5():
+    return {"estrazioni": 0, "numeri_totali": 0, "zero": 0, "uno": 0,
+            "due": 0, "tre": 0, "quattro": 0, "cinque": 0,
+            "estrazioni_con_ambo": 0, "estrazioni_con_terno": 0,
+            "ambi_combinazioni": 0, "terni_combinazioni": 0,
+            "coppie": {}, "triplette": {}}
+
+
+def abc_orari_empty_single():
+    return {"verifiche": 0, "presenze": 0}
+
+
+def abc_orari_empty_a10():
+    return {"segnali": 0, "h1_verificati": 0, "h1_hit": 0,
+            "interrotti": 0}
+
+
+def abc_orari_default():
+    return {"schema": 1, "version": ABC_ORARI_VERSION,
+            "started_at": now_txt(), "totals": {}, "days": {},
+            "special": {}, "recent": []}
+
+
+def abc_orari_ensure(tracker):
+    state = tracker.data.setdefault("orari_shadow", abc_orari_default())
+    if not isinstance(state, dict) or state.get("schema") != 1:
+        raise ValueError("Formato monitor ORARI non valido: state preservato, non sovrascritto")
+    for key, default in (("totals", {}), ("days", {}), ("special", {}), ("recent", [])):
+        state.setdefault(key, default)
+    return state
+
+
+def abc_orari_stats(state, day, code, kind):
+    """I contatori globali e giornalieri vengono aggiornati insieme."""
+    init = abc_orari_empty_5 if kind == "cinquina" else (abc_orari_empty_a10 if kind == "a10" else abc_orari_empty_single)
+    overall = state["totals"].setdefault(code, init())
+    daily = state["days"].setdefault(day, {}).setdefault(code, init())
+    return overall, daily
+
+
+def abc_orari_upd_counts(stat, found, candidates):
+    from itertools import combinations as abc_combinations
+    matching = tuple(sorted(set(candidates) & found))
+    k = len(matching)
+    stat["estrazioni"] += 1
+    stat["numeri_totali"] += k
+    stat[("zero", "uno", "due", "tre", "quattro", "cinque")[k]] += 1
+    if k >= 2: stat["estrazioni_con_ambo"] += 1
+    if k >= 3: stat["estrazioni_con_terno"] += 1
+    for p in abc_combinations(matching, 2):
+        key = "-".join(f"{n:02d}" for n in p)
+        stat["coppie"][key] = stat["coppie"].get(key, 0) + 1
+        stat["ambi_combinazioni"] += 1
+    for p in abc_combinations(matching, 3):
+        key = "-".join(f"{n:02d}" for n in p)
+        stat["triplette"][key] = stat["triplette"].get(key, 0) + 1
+        stat["terni_combinazioni"] += 1
+    return matching
+
+
+def abc_orari_update(tracker, prev, row, gap=False, count_row=True):
+    """Analizza SOLO estrazioni reali nuove; mai modifica le strategie precedenti.
+
+    A10 H1: origine e verifica consecutive. Se manca la verifica,
+    interrotto e NON MISS. La statistica A10 e' un sottogruppo di A.
+    """
+    state = abc_orari_ensure(tracker)
+    stamp = abc_stamp(row)
+    if not stamp: return []
+    found = set(abc_numbers(row))
+    day = str(row["day"])
+    messages = []
+    hour = stamp.hour
+    weekday = stamp.weekday()
+    text_time = stamp.strftime("%H:%M")
+
+    # Confronto H1 dei segnali A generati fra le ore 10:00 e 10:59.
+    if prev and abc_stamp(prev):
+        origin_time = abc_stamp(prev)
+        origin_nums = abc_numbers(prev)
+        if origin_time.hour == 10 and origin_nums[18] - origin_nums[2] <= 60:
+            for stat in abc_orari_stats(state, str(prev["day"]), "A_10_11", "a10"):
+                if gap:
+                    stat["interrotti"] += 1
+                else:
+                    stat["h1_verificati"] += 1
+                    if origin_nums[2] in found and origin_nums[18] in found:
+                        stat["h1_hit"] += 1
+
+    # Il sorgente iniziale potrebbe essere letto al bootstrap molti minuti dopo.
+    # Non si registra una vecchia estrazione mai verificata come LIVE.
+    if not count_row:
+        return []
+
+    if hour == 10 and abc_numbers(row)[18] - abc_numbers(row)[2] <= 60:
+        for stat in abc_orari_stats(state, day, "A_10_11", "a10"):
+            stat["segnali"] += 1
+
+    if weekday in ABC_ORARI_5 and hour == 8:
+        code = ABC_ORARI_NAMES[weekday]
+        candidates = ABC_ORARI_5[weekday]
+        matching = None
+        for stat in abc_orari_stats(state, day, code, "cinquina"):
+            matching = abc_orari_upd_counts(stat, found, candidates)
+        state["recent"].append({"date": day, "time": text_time, "code": code,
+                                "draw": int(row["draw_id"]), "presenti": list(matching)})
+        if len(state["recent"]) > 120:
+            state["recent"] = state["recent"][-120:]
+        # Focus sulla stessa ora, non soltanto al minuto 08:00.
+        if weekday == 1:
+            for s in abc_orari_stats(state, day, "71_MAR_08", "single"):
+                s["verifiche"] += 1; s["presenze"] += int(71 in found)
+        if weekday == 2:
+            for s in abc_orari_stats(state, day, "40_MER_08", "single"):
+                s["verifiche"] += 1; s["presenze"] += int(40 in found)
+        if weekday == 3:
+            for s in abc_orari_stats(state, day, "58_73_GIO_08", "single"):
+                s["verifiche"] += 1; s["presenze"] += int(58 in found and 73 in found)
+
+        # Candidati prefissati GEN-GIU 2025. Nessuna classifica retroattiva:
+        # contatori prospettici separati, 2 ambi e 1 terno in SHADOW.
+        for kind, items in ABC_ORARI_FIXED[weekday].items():
+            for nums_fixed in items:
+                name_fixed = f"FISSO_{kind}_{code}_" + "_".join(str(n) for n in nums_fixed)
+                for stat in abc_orari_stats(state, day, name_fixed, "single"):
+                    stat["verifiche"] += 1
+                    stat["presenze"] += int(all(n in found for n in nums_fixed))
+
+        # Solo riepilogo alla fine della fascia, non 12 messaggi Telegram.
+        if text_time == "08:55":
+            ds = state["days"][day][code]
+            messages.append(
+                f"🕗 ORARI SHADOW {code} 08:00-08:59 | "
+                f"{ds['estrazioni']} estrazioni\n"
+                f"CINQUINA: {' '.join(f'{x:02d}' for x in candidates)}\n"
+                f"Almeno 2/5: {ds['estrazioni_con_ambo']} | almeno 3/5: {ds['estrazioni_con_terno']}\n"
+                f"Ambi fra le 10 coppie: {ds['ambi_combinazioni']} | "
+                f"terni fra le 10 triplette: {ds['terni_combinazioni']}\n"
+                f"Statistiche aggiornate: /orari /ambiterni"
+            )
+
+    exact = ABC_ORARI_EXACT.get((weekday, text_time))
+    if exact:
+        code, values = exact
+        for stat in abc_orari_stats(state, day, code, "single"):
+            stat["verifiche"] += 1; stat["presenze"] += int(all(n in found for n in values))
+    tracker.dirty = True
+    return messages
+
+
+def abc_orari_report(tracker, day=None, pair_trip=False):
+    state = abc_orari_ensure(tracker)
+    data = state["days"].get(day, {}) if day else state["totals"]
+    prefix = f"del {day}" if day else "cumulativo dall'attivazione"
+    lines = [f"🔎 ORARI + CINQUINE — SHADOW ({prefix})",
+             "A, B, C invariati. Altri metodi precedenti in pausa.", ""]
+    for w in range(4):
+        code = ABC_ORARI_NAMES[w]
+        s = data.get(code, abc_orari_empty_5())
+        n = s["estrazioni"]
+        candidates = " ".join(f"{x:02d}" for x in ABC_ORARI_5[w])
+        lines.append(f"{code} 08:00–08:59 | {candidates}")
+        lines.append(f"Estrazioni {n} | media {s['numeri_totali']/n:.2f}/5" if n else "Estrazioni 0")
+        lines.append(f"2+ numeri {s['estrazioni_con_ambo']} | 3+ numeri {s['estrazioni_con_terno']}")
+        lines.append(f"Ambi-combinazioni {s['ambi_combinazioni']} | terni-combinazioni {s['terni_combinazioni']}")
+        if pair_trip and n:
+            for kind, name in (("coppie", "Ambi"), ("triplette", "Terni")):
+                top = sorted(s[kind].items(), key=lambda item: (-item[1], item[0]))[:5]
+                lines.append(name + " piu' presenti: " + (", ".join(f"{a} ({b})" for a,b in top) if top else "nessuno"))
+            lines.append("CANDIDATI FISSI (GEN-GIU 2025; test SHADOW):")
+            for kind, fixed_list in ABC_ORARI_FIXED[w].items():
+                for nums_fixed in fixed_list:
+                    name_fixed = f"FISSO_{kind}_{code}_" + "_".join(str(n) for n in nums_fixed)
+                    cand = data.get(name_fixed, abc_orari_empty_single())
+                    selected = "-".join(f"{x:02d}" for x in nums_fixed)
+                    lines.append(f"{kind.upper()} {selected}: {cand['presenze']}/{cand['verifiche']}")
+        lines.append("")
+    if not pair_trip:
+        for code, label in (("71_MAR_08", "71 martedì 08:00–08:59"),
+                            ("40_MER_08", "40 mercoledì 08:00–08:59"),
+                            ("58_73_GIO_08", "58–73 giovedì 08:00–08:59"),
+                            ("71_MAR_0815", "71 martedì 08:15"),
+                            ("40_MER_0835", "40 mercoledì 08:35"),
+                            ("58_73_GIO_0845", "58–73 giovedì 08:45")):
+            t = data.get(code, abc_orari_empty_single())
+            lines.append(f"{label}: {t['presenze']}/{t['verifiche']}")
+        a = data.get("A_10_11", abc_orari_empty_a10())
+        saldo = 14*a['h1_hit'] - a['h1_verificati']
+        lines.extend(["", f"A-ORA 10:00–10:59: {a['segnali']} segnali | "
+                      f"H1 {a['h1_hit']}/{a['h1_verificati']} | "
+                      f"simulazione €{saldo:+.0f} | interrotti {a['interrotti']}"])
+    lines.append("Solo osservazione: non si eseguono puntate reali.")
+    return "\n".join(lines)
+
+
 async def abc_send(app, message):
     if CHAT_ID is None:
         return
@@ -7062,14 +7301,20 @@ async def abc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         output = tracker.report(code=command.upper())
     elif command == "oggi":
         output = tracker.report(day=now_dt().strftime("%Y-%m-%d"))
+    elif command == "orari":
+        output = abc_orari_report(tracker)
+    elif command == "orarioggi":
+        output = abc_orari_report(tracker, day=now_dt().strftime("%Y-%m-%d"))
+    elif command in {"ambiterni", "fasce"}:
+        output = abc_orari_report(tracker, pair_trip=True)
     elif command in {"abc", "status"}:
         output = tracker.report()
     elif command == "menu":
-        output = "🎯 DISTANCE ABC ONLY\n/abc /a /b /c /oggi /status /pausestato\nAltri comandi: in pausa. Nessuna puntata reale."
+        output = "🎯 DISTANCE ABC + ORARI/CINQUINE SHADOW\n/abc /a /b /c /oggi /status /orari /orarioggi /ambiterni /fasce /pausestato\nVecchi metodi in pausa, nessuna puntata reale."
     elif command == "pausestato":
-        output = "⏸️ V27/V28/V38/V52/V55/V56/V67/V70/V72/V114/V121/MULTI/ORDINE: TUTTI IN PAUSA.\n✅ Solo Distance ABC attivo in shadow. State legacy immutato."
+        output = "⏸️ V27/V28/V38/V52/V55/V56/V67/V70/V72/V114/V121/MULTI/ORDINE: TUTTI IN PAUSA.\n✅ Solo A/B/C e monitor ORARI-CINQUINE attivi in SHADOW. State legacy immutato."
     else:
-        output = "⏸️ Questa strategia e' IN PAUSA. Sono attivi esclusivamente /a /b /c (shadow)."
+        output = "⏸️ Questa strategia e' IN PAUSA. Sono attivi A/B/C e /orari /ambiterni (solo shadow)."
     await update.message.reply_text(output)
 
 
@@ -7079,6 +7324,10 @@ async def abc_setup_commands(app):
         BotCommand("a", "Metodo A P3-P19 distanza <=60"),
         BotCommand("b", "Metodo B P7-P12 distanza <=18"),
         BotCommand("c", "Metodo C P1-P7 distanza <=15"),
+        BotCommand("orari", "Cinquine 08-09 e test A 10-11"),
+        BotCommand("orarioggi", "Riepilogo orari di oggi"),
+        BotCommand("ambiterni", "Ambi e terni delle cinquine orarie"),
+        BotCommand("fasce", "Graduatorie ambi e terni per fascia"),
         BotCommand("oggi", "Statistiche della giornata"),
         BotCommand("status", "Stato e risultati ABC"),
         BotCommand("pausestato", "Elenco strategie in pausa"),
@@ -7110,13 +7359,13 @@ async def abc_fetch_loop(tracker, app):
                 tracker.save(git=True, force=True)
                 await abc_send(app, "✅ DISTANCE ABC AVVIATO — tutte le strategie precedenti IN PAUSA.\n"
                                + "A P3-P19 <=60 | B P7-P12 <=18 | C P1-P7 <=15.\n"
-                               + "Solo simulazione: H1, primo HIT entro H4 e saldo virtuale indipendenti.\n"
+                               + "Solo simulazione: ABC H1/H4 e monitor ORARI/CINQUINE (08-09) + A-ORA (10-11).\n"
                                + ("\n".join(armed) if armed else "In attesa della prossima estrazione."))
             else:
                 unseen = [r for r in rows if order_key(abc_key(r)) > order_key(tracker.data["last_key"])]
                 if unseen:
                     newest_key = abc_key(unseen[-1])
-                    all_results, all_signals = [], []
+                    all_results, all_signals, all_orari = [], [], []
                     gaps = 0
                     for r in unseen:
                         changes = tracker.process(r)
@@ -7125,12 +7374,17 @@ async def abc_fetch_loop(tracker, app):
                             all_results.extend(changes["results"])
                         if changes["signals"]:
                             all_signals.extend([f"{abc_key(r)}: {m}" for m in changes["signals"]])
+                        if changes.get("orari"):
+                            all_orari.extend(changes["orari"])
                     save_result = tracker.save(git=True)
                     console_log(f"ABC {newest_key} | nuovi={len(unseen)} segnali={len(all_signals)} gaps={gaps} | {save_result}")
                     # Per un catch-up lungo non mandiamo decine di messaggi arretrati.
                     if len(unseen) > 3:
                         await abc_send(app, f"📋 ABC recupero di {len(unseen)} estrazioni fino a {newest_key}; "
                                            f"segnali {len(all_signals)}, gap {gaps}.\n" + tracker.report())
+                        if all_orari:
+                            await abc_send(app, "📊 ORARI SHADOW recupero storico recente:\n" +
+                                           "\n".join(all_orari[-2:]))
                     else:
                         parts = [f"🔎 DISTANCE ABC | {newest_key}"]
                         if ABC_NOTIFY_RESULTS and all_results:
@@ -7139,6 +7393,8 @@ async def abc_fetch_loop(tracker, app):
                             parts.append("NUOVI SEGNALI (prossimo H1):\n" + "\n".join(all_signals[-10:]))
                         if gaps:
                             parts.append(f"⚠️ Fonte con {gaps} salto/i: segnali H1/H4 sospesi, non classificati MISS")
+                        if all_orari:
+                            parts.append("MONITOR ORARI:\n" + "\n".join(all_orari[-3:]))
                         if len(parts) > 1:
                             await abc_send(app, "\n\n".join(parts))
             last_error = ""
@@ -7163,6 +7419,7 @@ async def abc_main():
     tracker = DistanceABCTracker()
     app.bot_data["abc_tracker"] = tracker
     for key in ["abc", "a", "b", "c", "oggi", "status", "menu", "pausestato",
+                "orari", "orarioggi", "ambiterni", "fasce",
                 "multi", "v27", "v28", "v38", "v52", "v55", "v56", "v67",
                 "v70", "v72", "v114", "v121", "verificatutto", "ordineapi",
                 "ambiapi", "ordinecsv"]:
