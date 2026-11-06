@@ -1,55 +1,36 @@
 {
   "schema": 1,
   "version": "DISTANCE_ABC_ONLY_v1.0",
-  "last_key": "2026-11-06#098",
+  "last_key": "2026-11-06#100",
   "last_draw": {
     "day": "2026-11-06",
-    "draw_id": 98,
-    "key": "2026-11-06#098",
-    "time": "08:10",
+    "draw_id": 100,
+    "key": "2026-11-06#100",
+    "time": "08:20",
     "nums": [
+      3,
       7,
+      9,
       11,
-      18,
-      20,
-      24,
-      25,
-      30,
+      26,
+      28,
+      31,
       32,
-      36,
-      39,
       40,
-      41,
-      42,
-      48,
-      49,
-      52,
-      57,
+      45,
+      65,
       68,
-      70,
-      82
+      71,
+      74,
+      79,
+      81,
+      82,
+      83,
+      86,
+      87
     ]
   },
   "active": {
-    "2026-11-06#095:B": {
-      "id": "2026-11-06#095:B",
-      "method": "B",
-      "origin_day": "2026-11-06",
-      "origin_draw": 95,
-      "origin_key": "2026-11-06#095",
-      "pair": [
-        28,
-        46
-      ],
-      "distance": 18,
-      "step": 3,
-      "h1": 0,
-      "h4": null,
-      "h4_cost": 3.0,
-      "h1_cost": 1.0,
-      "first_hit": null,
-      "reason": ""
-    },
     "2026-11-06#097:B": {
       "id": "2026-11-06#097:B",
       "method": "B",
@@ -61,10 +42,10 @@
         46
       ],
       "distance": 10,
-      "step": 1,
+      "step": 3,
       "h1": 0,
       "h4": null,
-      "h4_cost": 1.0,
+      "h4_cost": 3.0,
       "h1_cost": 1.0,
       "first_hit": null,
       "reason": ""
@@ -80,11 +61,11 @@
         70
       ],
       "distance": 52,
-      "step": 0,
-      "h1": null,
+      "step": 2,
+      "h1": 0,
       "h4": null,
-      "h4_cost": 0.0,
-      "h1_cost": 0.0,
+      "h4_cost": 2.0,
+      "h1_cost": 1.0,
       "first_hit": null,
       "reason": ""
     },
@@ -99,11 +80,11 @@
         41
       ],
       "distance": 11,
-      "step": 0,
-      "h1": null,
+      "step": 2,
+      "h1": 0,
       "h4": null,
-      "h4_cost": 0.0,
-      "h1_cost": 0.0,
+      "h4_cost": 2.0,
+      "h1_cost": 1.0,
       "first_hit": null,
       "reason": ""
     }
@@ -111,26 +92,26 @@
   "totals": {
     "A": {
       "signals": 169,
-      "h1_checked": 168,
+      "h1_checked": 169,
       "h1_hits": 5,
-      "h1_cost": 168.0,
+      "h1_cost": 169.0,
       "h1_return": 70.0,
       "h4_closed": 167,
       "h4_hits": 32,
-      "h4_cost": 621.0,
+      "h4_cost": 623.0,
       "h4_return": 448.0,
       "interrupted": 1
     },
     "B": {
       "signals": 483,
-      "h1_checked": 480,
+      "h1_checked": 481,
       "h1_hits": 21,
-      "h1_cost": 480.0,
+      "h1_cost": 481.0,
       "h1_return": 294.0,
-      "h4_closed": 475,
-      "h4_hits": 88,
-      "h4_cost": 1779.0,
-      "h4_return": 1232.0,
+      "h4_closed": 476,
+      "h4_hits": 89,
+      "h4_cost": 1784.0,
+      "h4_return": 1246.0,
       "interrupted": 5
     },
     "C": {
@@ -340,14 +321,14 @@
     "2026-11-06": {
       "B": {
         "signals": 20,
-        "h1_checked": 19,
+        "h1_checked": 20,
         "h1_hits": 0,
-        "h1_cost": 19.0,
+        "h1_cost": 20.0,
         "h1_return": 0.0,
-        "h4_closed": 17,
-        "h4_hits": 1,
-        "h4_cost": 70.0,
-        "h4_return": 14.0,
+        "h4_closed": 18,
+        "h4_hits": 2,
+        "h4_cost": 75.0,
+        "h4_return": 28.0,
         "interrupted": 0
       },
       "C": {
@@ -364,13 +345,13 @@
       },
       "A": {
         "signals": 10,
-        "h1_checked": 9,
+        "h1_checked": 10,
         "h1_hits": 0,
-        "h1_cost": 9.0,
+        "h1_cost": 10.0,
         "h1_return": 0.0,
         "h4_closed": 9,
         "h4_hits": 2,
-        "h4_cost": 32.0,
+        "h4_cost": 34.0,
         "h4_return": 28.0,
         "interrupted": 0
       }
@@ -14683,11 +14664,30 @@
       "h1_cost": 1.0,
       "first_hit": 2,
       "reason": ""
+    },
+    {
+      "id": "2026-11-06#095:B",
+      "method": "B",
+      "origin_day": "2026-11-06",
+      "origin_draw": 95,
+      "origin_key": "2026-11-06#095",
+      "pair": [
+        28,
+        46
+      ],
+      "distance": 18,
+      "step": 4,
+      "h1": 0,
+      "h4": 1,
+      "h4_cost": 4.0,
+      "h1_cost": 1.0,
+      "first_hit": 4,
+      "reason": ""
     }
   ],
   "gaps": 5,
   "started_at": "2026-11-01 11:46:27",
-  "last_updated": "2026-11-06 08:12:00",
+  "last_updated": "2026-11-06 08:21:24",
   "orari_shadow": {
     "schema": 1,
     "version": "ORARI_CINQUINE_v1.1_SHADOW",
