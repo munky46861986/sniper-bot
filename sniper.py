@@ -1,4 +1,11 @@
 # ============================================================
+# VERSIONE ATTIVA: DISTANCE ABC + ORARI/CINQUINE + RITARDI/FREQUENTI v1.2
+# A/B/C INVARIATI | ORARI INVARIATI
+# NUOVO SHADOW H1: R2-F3(80), R2-F2(15) FAST, R2-F3 CONSENSO (80/15)
+# Tutte le altre strategie legacy RESTANO IN PAUSA. NO PUNTATE REALI.
+# STATO: distance_abc_state.json, stessa struttura + nuova chiave rf_shadow
+# ============================================================
+# ============================================================
 # VERSIONE ATTIVA: DISTANCE ABC + ORARI/CINQUINE SHADOW | v1.1
 # A P3/P19 <= 60; B P7/P12 <= 18; C P1/P7 <= 15, invariati.
 # SOLO MONITOR: lun-gio 08:00-08:59, cinquine/ambi/terni, A 10:00-10:59.
@@ -6855,6 +6862,8 @@ class DistanceABCTracker:
         self.data.setdefault("active", {})
         self.data.setdefault("finished", [])
         self.data.setdefault("gaps", 0)
+        # Sottostato nuovo isolato: non modifica ABC, ORARI o storico legacy.
+        rf_ensure(self)
         self.dirty = False
         self.last_git = 0.0
 
@@ -6965,11 +6974,12 @@ class DistanceABCTracker:
         self.data["last_draw"] = row
         # Solo monitor ORARI: legge la stessa estrazione ABC, non avvia altri metodi.
         orari_messages = abc_orari_update(self, prev, row, gap=gap)
+        rf_changes = rf_update(self, row, gap=gap, arm=create_new)
         new_signals = self._arm(row) if create_new else []
         self.data["last_updated"] = now_txt()
         self.dirty = True
         return {"new": True, "results": results, "signals": new_signals, "gap": gap,
-                "orari": orari_messages}
+                "orari": orari_messages, "rf": rf_changes}
 
     def bootstrap(self, row, arm_if_fresh=True):
         if self.data.get("last_key"):
@@ -6979,6 +6989,7 @@ class DistanceABCTracker:
                "nums": abc_numbers(row)}
         self.data["last_key"] = row["key"]
         self.data["last_draw"] = row
+        # Il seed RF e' effettuato con lo storico recente recuperato dal fetch-loop.
         self.dirty = True
         a = abc_stamp(row)
         should_arm = False
@@ -7280,6 +7291,325 @@ def abc_orari_report(tracker, day=None, pair_trip=False):
     return "\n".join(lines)
 
 
+# ============================================================
+# RITARDATARI + FREQUENTI — H1 SOLO SHADOW v1.2
+# Questa sezione NON modifica A/B/C, ORARI o i vecchi motori.
+# R2 = secondo per ritardo decrescente (>=15), numero minore in parita'.
+# Fk = k-esimo per frequenza decrescente nelle ultime W Base,
+#       numero minore in parita'. Finestra include l'estrazione origine.
+# Warmup: 80 estrazioni consecutive e tutti i 90 numeri gia' osservati.
+# No backfill di segnali preesistenti. Salti di fonte => interrotti.
+# ============================================================
+
+RF_VERSION = "R2F3_SHADOW_H1_v1.2"
+RF_CODES = ("BASE", "FAST", "CONSENSO")
+RF_LABELS = {
+    "BASE": "R2-F3 (80)",
+    "FAST": "R2-F2 (15), R2>=20",
+    "CONSENSO": "R2-F3 (80), F3 in TOP5(15)",
+}
+RF_STAKE = float(os.getenv("RF_STAKE_VIRTUAL", "1.0"))
+RF_RETURN_MULT = float(os.getenv("RF_RETURN_MULT", "14.0"))
+
+
+def rf_counts_empty():
+    return {"signals": 0, "h1_checked": 0, "h1_hits": 0,
+            "interrupted": 0, "cost": 0.0, "returned": 0.0}
+
+
+def rf_default():
+    return {"schema": 1, "version": RF_VERSION, "started_at": now_txt(),
+            "last_key": None, "history": [], "active": {}, "totals": {},
+            "days": {}, "recent": [], "gaps": 0, "unique_signals": 0,
+            "duplicate_signals": 0, "last_signal_key": None}
+
+
+def rf_ensure(tracker):
+    rf = tracker.data.setdefault("rf_shadow", rf_default())
+    if not isinstance(rf, dict) or rf.get("schema") != 1:
+        raise ValueError("Schema R2/F3 non valido: lo stato non viene sostituito")
+    for k, empty in (("history", []), ("active", {}), ("totals", {}),
+                     ("days", {}), ("recent", [])):
+        rf.setdefault(k, empty)
+    for k in RF_CODES:
+        rf["totals"].setdefault(k, rf_counts_empty())
+    for k, v in (("gaps", 0), ("unique_signals", 0),
+                 ("duplicate_signals", 0), ("last_key", None)):
+        rf.setdefault(k, v)
+    return rf
+
+
+def rf_incr(rf, method, origin_day, name, amount=1):
+    rf["totals"][method][name] += amount
+    daily = rf["days"].setdefault(origin_day, {})
+    daily.setdefault(method, rf_counts_empty())
+    daily[method][name] += amount
+
+
+def rf_row_compact(row):
+    return {"key": abc_key(row), "day": str(row["day"]),
+            "draw_id": int(row["draw_id"]), "time": str(row.get("time") or ""),
+            "nums": abc_numbers(row)}
+
+
+def rf_append_recent(rf, event):
+    rf["recent"].append(event)
+    if len(rf["recent"]) > 300:
+        rf["recent"] = rf["recent"][-300:]
+
+
+def rf_consecutive(prev, curr):
+    """Adiacenza nel CONCORSO, non necessariamente cinque minuti di orologio.
+
+    Una sospensione programmata fra #288 e #001 del giorno seguente
+    non significa che siano stati saltati dei concorsi. Altri casi
+    vengono accettati solo se gia' riconosciuti consecutivi da ABC.
+    """
+    if abc_consecutive(prev, curr):
+        return True
+    try:
+        a = datetime.fromisoformat(str(prev["day"])).date()
+        b = datetime.fromisoformat(str(curr["day"])).date()
+        return ((b - a).days == 1 and int(prev["draw_id"]) == 288
+                and int(curr["draw_id"]) == 1)
+    except (ValueError, KeyError, TypeError):
+        return False
+
+
+def rf_is_warm(rf):
+    h = rf.get("history", [])
+    if len(h) < 80:
+        return False
+    seen = set()
+    for row in h:
+        seen.update(row["nums"])
+    # Se manca al massimo un numero nelle ultime 80, esso e' sicuramente R1
+    # (ritardo >=80), quindi R2 resta determinabile. Con due numeri non
+    # osservati non si conosce il loro ordinamento: non emettere segnali.
+    return len(seen) >= 89
+
+
+def rf_rankings(rf):
+    hist = rf["history"]
+    if not rf_is_warm(rf):
+        return None
+    recent80 = hist[-80:]
+    c80 = Counter(n for r in recent80 for n in r["nums"])
+    c15 = Counter(n for r in recent80[-15:] for n in r["nums"])
+    f80 = sorted(range(1, 91), key=lambda n: (-c80[n], n))
+    f15 = sorted(range(1, 91), key=lambda n: (-c15[n], n))
+    last_delay = {}
+    for distance, row in enumerate(reversed(recent80)):
+        for n in row["nums"]:
+            if n not in last_delay:
+                last_delay[n] = distance
+    if len(last_delay) < 89:
+        return None
+    # Unico numero non osservato: ritardo almeno 80, certamente R1.
+    for n in range(1, 91):
+        last_delay.setdefault(n, 80)
+    overdue = sorted((n for n in range(1, 91) if last_delay[n] >= 15),
+                     key=lambda n: (-last_delay[n], n))
+    return {"ritardatari": overdue, "ritardi": last_delay,
+            "f80": f80, "f15": f15, "c80": c80, "c15": c15}
+
+
+def rf_candidates(rf):
+    rank = rf_rankings(rf)
+    if rank is None or len(rank["ritardatari"]) < 5:
+        return [], rank
+    r2 = rank["ritardatari"][1]
+    f3_80 = rank["f80"][2]
+    f2_15 = rank["f15"][1]
+    out = []
+    # R2-F3 BASE e CONSENSO condividono volutamente lo stesso ambo
+    # quando il filtro consenso e' soddisfatto: conteggiati per metodo,
+    # ma identificati come una sola coppia distinta nel totale unico.
+    if r2 != f3_80:
+        out.append(("BASE", r2, f3_80))
+        if f3_80 in rank["f15"][:5]:
+            out.append(("CONSENSO", r2, f3_80))
+    if rank["ritardi"][r2] >= 20 and r2 != f2_15:
+        out.append(("FAST", r2, f2_15))
+    return out, rank
+
+
+def rf_seed_from_rows(tracker, rows, allow_arm=False, migrate_to_latest=False):
+    """Inizializza SOLO il nuovo sottostato su storico recente <= last_key ABC.
+
+    Nessun segnale passato viene retroattivamente classificato come successo.
+    Per un'installazione su bot gia' in corso, i segnali partono dal primo
+    concorso nuovo. Bootstrap iniziale: arma l'ultimo concorso solo se fresco.
+    """
+    rf = rf_ensure(tracker)
+    if rf.get("last_key") is not None or rf.get("history"):
+        return "stato R2/F3 gia' presente"
+    # Nuova installazione su ABC gia' in esecuzione: non retrodatare i
+    # nuovi segnali RF. Allinea il monitor all'ultima estrazione disponibile.
+    limit = (abc_key(rows[-1]) if rows and migrate_to_latest
+             else tracker.data.get("last_key"))
+    if not limit:
+        return "ultimo concorso ABC non disponibile"
+    past = []
+    for row in rows:
+        k = abc_key(row)
+        if order_key(k) is not None and order_key(k) <= order_key(limit):
+            past.append(rf_row_compact(row))
+    if not past or past[-1]["key"] != limit:
+        return "nessuno storico continuo fino al checkpoint ABC; attendo nuove estrazioni"
+    contiguous = []
+    for row in past:
+        if contiguous and not rf_consecutive(contiguous[-1], row):
+            contiguous.clear()
+        contiguous.append(row)
+    rf["history"] = contiguous[-80:]
+    rf["last_key"] = contiguous[-1]["key"]
+    tracker.dirty = True
+    ready = rf_is_warm(rf)
+    if ready and allow_arm:
+        stamp = abc_stamp(contiguous[-1])
+        if stamp:
+            seconds = (now_dt().replace(tzinfo=None) - stamp).total_seconds()
+            if -120 <= seconds <= 11*60:
+                rf_arm(rf, contiguous[-1])
+    return (f"pronto: {len(rf['history'])} concorsi continuativi" if ready
+            else f"warmup {len(rf['history'])}/80 concorsi (senza segnali finche' incompleto)")
+
+
+def rf_arm(rf, row):
+    k = abc_key(row)
+    picks, ranks = rf_candidates(rf)
+    messages = []
+    unique_pairs = set()
+    for method, a, b in picks:
+        pair = tuple(sorted((a, b)))
+        sig = {"id": k + ":" + method, "method": method,
+               "origin_day": str(row["day"]), "origin_key": k,
+               "pair": list(pair), "r2": a, "frequente": b,
+               "r2_delay": int(ranks["ritardi"][a]),
+               "f80_count": int(ranks["c80"][b]),
+               "f15_count": int(ranks["c15"][b])}
+        if sig["id"] in rf["active"]:
+            continue
+        rf["active"][sig["id"]] = sig
+        rf_incr(rf, method, sig["origin_day"], "signals")
+        unique_pairs.add(pair)
+        rf_append_recent(rf, dict(sig, event="SEGNALE"))
+        messages.append(f"{method} {pair[0]:02d}-{pair[1]:02d} "
+                        f"(R2={a:02d} rit.{sig['r2_delay']}, F={b:02d} "
+                        f"F80:{sig['f80_count']} F15:{sig['f15_count']})")
+    if picks:
+        rf["unique_signals"] += len(unique_pairs)
+        rf["duplicate_signals"] += max(0, len(picks) - len(unique_pairs))
+        rf["last_signal_key"] = k
+    return messages
+
+
+def rf_finish_pending(rf, row, interrupted=False):
+    found = set(row["nums"])
+    results = []
+    for sid, sig in list(rf["active"].items()):
+        method, origin = sig["method"], sig["origin_day"]
+        pair = sig["pair"]
+        if interrupted:
+            rf_incr(rf, method, origin, "interrupted")
+            status = "INTERROTTO (gap fonte; non e' MISS)"
+        else:
+            hit = pair[0] in found and pair[1] in found
+            rf_incr(rf, method, origin, "h1_checked")
+            rf_incr(rf, method, origin, "cost", RF_STAKE)
+            if hit:
+                rf_incr(rf, method, origin, "h1_hits")
+                rf_incr(rf, method, origin, "returned", RF_STAKE * RF_RETURN_MULT)
+            status = "HIT" if hit else "MISS"
+        rf_append_recent(rf, {"event": "ESITO", "method": method,
+                              "origin_key": sig["origin_key"], "pair": pair,
+                              "result_key": row["key"], "status": status})
+        results.append(f"{method} {pair[0]:02d}-{pair[1]:02d}: {status}")
+        del rf["active"][sid]
+    return results
+
+
+def rf_update(tracker, row, gap=False, arm=True):
+    rf = rf_ensure(tracker)
+    compact = rf_row_compact(row)
+    k = compact["key"]
+    previous = rf.get("last_key")
+    if previous and order_key(k) <= order_key(previous):
+        return {"results": [], "signals": []}
+    # Una sottosequenza corrotta non va interpretata come una sconfitta.
+    own_gap = previous is not None and (
+        not rf.get("history") or not rf_consecutive(rf["history"][-1], compact))
+    # Il monitor RF usa la propria sequenza di concorsi: il modulo ABC puo'
+    # segnalare un gap sul solo orologio durante una pausa programmata.
+    broken = bool(own_gap or (gap and previous is None))
+    results = rf_finish_pending(rf, compact, interrupted=broken)
+    if broken:
+        rf["history"] = []
+        rf["gaps"] += 1
+    rf["history"].append(compact)
+    rf["history"] = rf["history"][-80:]
+    rf["last_key"] = k
+    signals = rf_arm(rf, compact) if arm and rf_is_warm(rf) else []
+    tracker.dirty = True
+    return {"results": results, "signals": signals}
+
+
+def rf_report(tracker, day=None):
+    rf = rf_ensure(tracker)
+    counts = rf["days"].get(day, {}) if day else rf["totals"]
+    title = f"del {day}" if day else "cumulativo dall'attivazione"
+    lines = [f"🧪 RITARDATARI × FREQUENTI — SOLO SHADOW H1 ({title})",
+             "ABC e ORARI invariati. Tutte le altre strategie legacy in pausa.", ""]
+    for method in RF_CODES:
+        x = counts.get(method, rf_counts_empty())
+        net = x["returned"] - x["cost"]
+        lines.extend([f"{method} — {RF_LABELS[method]}",
+                      f"Segnali {x['signals']} | H1 {x['h1_hits']}/{x['h1_checked']} "
+                      f"({safe_pct(x['h1_hits'],x['h1_checked']):.1f}%) | "
+                      f"virtuale €{net:+.2f} | interrotti {x['interrupted']}", ""])
+    w = len(rf["history"])
+    ready = rf_is_warm(rf)
+    rks = rf_rankings(rf)
+    if ready and rks is not None:
+        r2 = rks["ritardatari"][1] if len(rks["ritardatari"]) >= 2 else None
+        if r2 is not None:
+            lines.append(f"Adesso: {len(rks['ritardatari'])} ritardatari >=15 | "
+                         f"R2 {r2:02d} ritardo {rks['ritardi'][r2]} | "
+                         f"F3(80) {rks['f80'][2]:02d} | F2(15) {rks['f15'][1]:02d}")
+        else:
+            lines.append(f"Adesso: {len(rks['ritardatari'])} ritardatari >=15 (nessuna coppia qualificata)")
+    else:
+        lines.append(f"Warmup: {w}/80 estrazioni consecutive; "
+                     "nessun segnale finche' R2 non e' determinabile in modo affidabile")
+    lines.extend([f"In controllo H1: {len(rf['active'])} | gap fonte R2/F3: {rf['gaps']}",
+                  f"Coppie distinte generate: {rf['unique_signals']} "
+                  f"| duplicazioni fra metodi: {rf['duplicate_signals']}",
+                  f"Ultima estrazione R2/F3: {rf.get('last_key') or 'nessuna'}",
+                  f"Premi simulati: €{RF_STAKE:g}/ambo, ritorno €{RF_STAKE*RF_RETURN_MULT:g}; "
+                  "NON si effettuano puntate reali."])
+    return "\n".join(lines)
+
+
+def rf_recent_report(tracker):
+    rf = rf_ensure(tracker)
+    lines = ["🔎 R2/F3 — ULTIMI EVENTI SHADOW H1", ""]
+    for event in rf["recent"][-15:]:
+        pair = event.get("pair", [])
+        pair_str = ("-".join(f"{n:02d}" for n in pair) if len(pair) == 2 else "?")
+        if event.get("event") == "SEGNALE":
+            lines.append(f"{event.get('origin_key')} {event.get('method')} "
+                         f"{pair_str} | R2 rit.{event.get('r2_delay')} "
+                         f"F80={event.get('f80_count')} F15={event.get('f15_count')}")
+        else:
+            lines.append(f"{event.get('result_key')} {event.get('method')} "
+                         f"{pair_str}: {event.get('status')}")
+    if not rf["recent"]:
+        lines.append("Ancora nessun segnale. Verifica lo stato con /ritardi")
+    lines.append("Solo shadow; nessuna giocata reale.")
+    return "\n".join(lines)
+
+
 async def abc_send(app, message):
     if CHAT_ID is None:
         return
@@ -7307,14 +7637,20 @@ async def abc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         output = abc_orari_report(tracker, day=now_dt().strftime("%Y-%m-%d"))
     elif command in {"ambiterni", "fasce"}:
         output = abc_orari_report(tracker, pair_trip=True)
+    elif command in {"ritardi", "r2f3"}:
+        output = rf_report(tracker)
+    elif command == "ritardioggi":
+        output = rf_report(tracker, day=now_dt().strftime("%Y-%m-%d"))
+    elif command == "ritardisegnali":
+        output = rf_recent_report(tracker)
     elif command in {"abc", "status"}:
         output = tracker.report()
     elif command == "menu":
-        output = "🎯 DISTANCE ABC + ORARI/CINQUINE SHADOW\n/abc /a /b /c /oggi /status /orari /orarioggi /ambiterni /fasce /pausestato\nVecchi metodi in pausa, nessuna puntata reale."
+        output = "🎯 DISTANCE ABC + ORARI + R2/F3 SHADOW\n/abc /a /b /c /oggi /orari /orarioggi /ambiterni /fasce\n/ritardi /ritardioggi /ritardisegnali /r2f3 /pausestato\nVecchi metodi in pausa. Nessuna puntata reale."
     elif command == "pausestato":
-        output = "⏸️ V27/V28/V38/V52/V55/V56/V67/V70/V72/V114/V121/MULTI/ORDINE: TUTTI IN PAUSA.\n✅ Solo A/B/C e monitor ORARI-CINQUINE attivi in SHADOW. State legacy immutato."
+        output = "⏸️ V27/V28/V38/V52/V55/V56/V67/V70/V72/V114/V121/MULTI/ORDINE: TUTTI IN PAUSA.\n✅ Attivi solo ABC, monitor ORARI e 3 metodi R2/F3/FAST/CONSENSO in SHADOW. Nessuna puntata reale."
     else:
-        output = "⏸️ Questa strategia e' IN PAUSA. Sono attivi A/B/C e /orari /ambiterni (solo shadow)."
+        output = "⏸️ Questa strategia e' IN PAUSA. Attivi /abc, /orari, /ambiterni, /ritardi (solo shadow)."
     await update.message.reply_text(output)
 
 
@@ -7328,6 +7664,10 @@ async def abc_setup_commands(app):
         BotCommand("orarioggi", "Riepilogo orari di oggi"),
         BotCommand("ambiterni", "Ambi e terni delle cinquine orarie"),
         BotCommand("fasce", "Graduatorie ambi e terni per fascia"),
+        BotCommand("ritardi", "Risultati R2-F3 BASE, FAST, CONSENSO H1"),
+        BotCommand("ritardioggi", "R2-F3: risultati della giornata"),
+        BotCommand("ritardisegnali", "R2-F3: ultimi segnali e verifiche"),
+        BotCommand("r2f3", "Alias del report ritardatari e frequenti"),
         BotCommand("oggi", "Statistiche della giornata"),
         BotCommand("status", "Stato e risultati ABC"),
         BotCommand("pausestato", "Elenco strategie in pausa"),
@@ -7356,16 +7696,20 @@ async def abc_fetch_loop(tracker, app):
             rows = sorted(rows, key=lambda r: order_key(abc_key(r)) or (-1, -1))
             if tracker.data.get("last_key") is None:
                 armed = tracker.bootstrap(rows[-1])
+                seeded = rf_seed_from_rows(tracker, rows, allow_arm=True)
                 tracker.save(git=True, force=True)
                 await abc_send(app, "✅ DISTANCE ABC AVVIATO — tutte le strategie precedenti IN PAUSA.\n"
                                + "A P3-P19 <=60 | B P7-P12 <=18 | C P1-P7 <=15.\n"
-                               + "Solo simulazione: ABC H1/H4 e monitor ORARI/CINQUINE (08-09) + A-ORA (10-11).\n"
+                               + "Solo simulazione: ABC H1/H4, ORARI/CINQUINE e R2/F3 H1.\n"
+                               + f"R2-F3: {seeded}; /ritardi per il report.\n"
                                + ("\n".join(armed) if armed else "In attesa della prossima estrazione."))
             else:
+                rf_seed_from_rows(tracker, rows, allow_arm=False, migrate_to_latest=True)
                 unseen = [r for r in rows if order_key(abc_key(r)) > order_key(tracker.data["last_key"])]
                 if unseen:
                     newest_key = abc_key(unseen[-1])
                     all_results, all_signals, all_orari = [], [], []
+                    all_rf_results, all_rf_signals = [], []
                     gaps = 0
                     for r in unseen:
                         changes = tracker.process(r)
@@ -7376,12 +7720,16 @@ async def abc_fetch_loop(tracker, app):
                             all_signals.extend([f"{abc_key(r)}: {m}" for m in changes["signals"]])
                         if changes.get("orari"):
                             all_orari.extend(changes["orari"])
+                        if changes.get("rf"):
+                            all_rf_results.extend(changes["rf"].get("results", []))
+                            all_rf_signals.extend(changes["rf"].get("signals", []))
                     save_result = tracker.save(git=True)
                     console_log(f"ABC {newest_key} | nuovi={len(unseen)} segnali={len(all_signals)} gaps={gaps} | {save_result}")
                     # Per un catch-up lungo non mandiamo decine di messaggi arretrati.
                     if len(unseen) > 3:
                         await abc_send(app, f"📋 ABC recupero di {len(unseen)} estrazioni fino a {newest_key}; "
-                                           f"segnali {len(all_signals)}, gap {gaps}.\n" + tracker.report())
+                                           f"segnali ABC {len(all_signals)} + R2/F3 {len(all_rf_signals)}, gap {gaps}.\n"
+                                           + tracker.report() + "\n\n" + rf_report(tracker))
                         if all_orari:
                             await abc_send(app, "📊 ORARI SHADOW recupero storico recente:\n" +
                                            "\n".join(all_orari[-2:]))
@@ -7395,6 +7743,10 @@ async def abc_fetch_loop(tracker, app):
                             parts.append(f"⚠️ Fonte con {gaps} salto/i: segnali H1/H4 sospesi, non classificati MISS")
                         if all_orari:
                             parts.append("MONITOR ORARI:\n" + "\n".join(all_orari[-3:]))
+                        if ABC_NOTIFY_RESULTS and all_rf_results:
+                            parts.append("ESITI R2/F3 H1:\n" + "\n".join(all_rf_results[-8:]))
+                        if ABC_NOTIFY_SIGNALS and all_rf_signals:
+                            parts.append("NUOVI AMBI R2/F3 SHADOW (prossimo H1):\n" + "\n".join(all_rf_signals[-8:]))
                         if len(parts) > 1:
                             await abc_send(app, "\n\n".join(parts))
             last_error = ""
@@ -7409,6 +7761,9 @@ async def abc_fetch_loop(tracker, app):
 
 
 async def abc_main():
+    if "--rf-self-test" in sys.argv:
+        rf_self_test()
+        return
     if "--abc-self-test" in sys.argv:
         abc_self_test()
         return
@@ -7420,6 +7775,7 @@ async def abc_main():
     app.bot_data["abc_tracker"] = tracker
     for key in ["abc", "a", "b", "c", "oggi", "status", "menu", "pausestato",
                 "orari", "orarioggi", "ambiterni", "fasce",
+                "ritardi", "ritardioggi", "ritardisegnali", "r2f3",
                 "multi", "v27", "v28", "v38", "v52", "v55", "v56", "v67",
                 "v70", "v72", "v114", "v121", "verificatutto", "ordineapi",
                 "ambiapi", "ordinecsv"]:
@@ -7436,6 +7792,55 @@ async def abc_main():
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
+
+
+def rf_self_test():
+    """Test offline autocontenuto: ranking, H1, salti, salvataggio e riavvio.
+
+    Eseguibile con python sniper.py --rf-self-test nel runner GitHub.
+    """
+    import random
+    import tempfile
+    rng = random.Random(20261107)
+    with tempfile.TemporaryDirectory() as dirname:
+        f = os.path.join(dirname, "distance_abc_state.json")
+        tr = DistanceABCTracker(filename=f)
+        rows = []
+        for draw in range(1, 241):
+            mins = draw * 5
+            row = {"day": "2026-11-03", "draw_id": draw,
+                   "time": f"{mins//60:02d}:{mins%60:02d}",
+                   "nums": rng.sample(range(1, 91), 20)}
+            row["key"] = abc_key(row)
+            rows.append(row)
+        tr.bootstrap(rows[99], arm_if_fresh=False)
+        msg = rf_seed_from_rows(tr, rows[:100])
+        assert rf_is_warm(rf_ensure(tr)), msg
+        total_new = 0
+        for row in rows[100:]:
+            event = tr.process(row)
+            total_new += len(event["rf"]["signals"])
+        rf = rf_ensure(tr)
+        assert total_new > 0, "Nessun segnale generato: controlla il test"
+        assert total_new == sum(rf["totals"][k]["signals"] for k in RF_CODES)
+        assert total_new == rf["unique_signals"] + rf["duplicate_signals"]
+        for method in RF_CODES:
+            c = rf["totals"][method]
+            assert 0 <= c["h1_hits"] <= c["h1_checked"] <= c["signals"]
+            assert abs(c["cost"] - RF_STAKE*c["h1_checked"]) < 1e-6
+            assert abs(c["returned"] - RF_STAKE*RF_RETURN_MULT*c["h1_hits"]) < 1e-6
+        assert not tr.process(rows[-1])["new"], "Un concorso duplicato e' stato rielaborato"
+        tr.save(git=False)
+        after = DistanceABCTracker(filename=f)
+        assert after.data["totals"] == tr.data["totals"], "Contatori ABC alterati"
+        assert after.data["orari_shadow"] == tr.data["orari_shadow"], "Contatori ORARI alterati"
+        assert after.data["rf_shadow"] == rf, "Contatori R2/F3 alterati"
+        fake = {"day": "2026-11-03", "draw_id": 243, "time": "20:15",
+                "nums": list(range(1, 21))}
+        change = after.process(fake)
+        assert change["gap"] and len(rf_ensure(after)["history"]) == 1
+        assert not rf_is_warm(rf_ensure(after))
+        print("RF_SELF_TEST_OK | tre strategie H1, ranking, warmup, stato, gap, dedup", flush=True)
 
 
 def abc_self_test():
