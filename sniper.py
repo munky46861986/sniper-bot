@@ -1,12 +1,13 @@
 # ============================================================
-# VERSIONE ATTIVA: DISTANCE ABC + ORARI/CINQUINE + RITARDI/FREQUENTI v1.2
+# VERSIONE ATTIVA: DISTANCE ABC + ORARI + R2/F3 + LAB STRUTTURE v1.3
 # A/B/C INVARIATI | ORARI INVARIATI
-# NUOVO SHADOW H1: R2-F3(80), R2-F2(15) FAST, R2-F3 CONSENSO (80/15)
+# SHADOW H1: R2-F3(80), R2-F2(15) FAST, R2-F3 CONSENSO (80/15)
+# LAB: decine, colonne, mezzo-gruppi, somma90, modello apprendistato automatico
 # Tutte le altre strategie legacy RESTANO IN PAUSA. NO PUNTATE REALI.
 # STATO: distance_abc_state.json, stessa struttura + nuova chiave rf_shadow
 # ============================================================
 # ============================================================
-# VERSIONE ATTIVA: DISTANCE ABC + ORARI/CINQUINE SHADOW | v1.1
+# VERSIONE ATTIVA: DISTANCE ABC + ORARI + R2F3 + LAB SHADOW | v1.3
 # A P3/P19 <= 60; B P7/P12 <= 18; C P1/P7 <= 15, invariati.
 # SOLO MONITOR: lun-gio 08:00-08:59, cinquine/ambi/terni, A 10:00-10:59.
 # ALTRE STRATEGIE PRECEDENTI CONSERVATE E IN PAUSA.
@@ -6840,6 +6841,270 @@ def abc_consecutive(prev, curr):
     return False
 
 
+# ==============================================================
+# ==============================================================
+# ==============================================================
+# ==============================================================
+# LAB-STRUTTURE v1.4: PRE-ADDESTRATO GEN-SET 2025 + online H1 SHADOW
+# Add-on per DISTANCE ABC + ORARI + R2/F3, altri metodi invariati.
+# Nessuna giocata reale. Non attribuisce ordine di estrazione al CSV.
+# ==============================================================
+import os as _lab_os
+LAB_MODEL = {'coef': [-0.001588336075656116, -0.004541200120002031, 0.000718763330951333, -0.004015025217086077, -0.0032103965058922768, -0.0011355327442288399, -0.003143404610455036, -0.0017404191894456744, -0.0013998907525092363, -0.0015894579701125622, -0.0014464575797319412, -0.0022377667482942343, -0.00329743605107069, -0.00045054731890559196, -0.0007197258528321981, -0.0006914344849064946, -0.002302755368873477, -0.003887403989210725], 'intercept': -1.252762968495368, 'scale_mean': [0.22222222651369164, 0.22222222954426585, 0.22222222143713968, 0.2222222222222222, 0.23298634086875383, 0.2222222221049104, 0.22222222589449386, 0.22222222330800992, 0.22222222624388305, 0.22222222694784707, 0.2222222233233102, 0.22222222421912155, 0.22222222606745543, 0.21976156933244598, 0.21976253690315464, 0.21974255956933222, 0.2222222222222222, 0.22222222207357362], 'mean_std': [0.18588392136897985, 0.10726166941883312, 0.046509697354819975, 0.41573970964134965, 0.16641610773646942, 0.05572981432048347, 0.03211961275578849, 0.08130033679357619, 0.04687224552793607, 0.05906029404975367, 0.034142099690814706, 0.0858166216653436, 0.04953200240430804, 0.41408504196239426, 0.1091840627126223, 0.1310483394888803, 0.41573970964134965, 0.03282319175814908], 'features': ['f5', 'f15', 'f80', 'last_draw', 'delay', 'dec5', 'dec15', 'halfdec5', 'halfdec15', 'col5', 'col15', 'halfcol5', 'step2_15', 'mirror_last', 'mirror_f15', 'neighbor5', 'prev2', 'f160'], 'trained_from': '2025-01-01', 'trained_through': '2025-09-28', 'training_origins': 77134, 'source_rows': 77565, 'model_id': 'LAB_STRUTTURE_2025_01_01__09_28_FULL_V2'}
+LAB_OLD_2025_APR_BASE = {'coef': [-0.008556224405765533, 0.005281261168420315, 0.0005778368795290589, -0.004354937933385372, -0.009647875092923641, 0.005893825553357601, -0.0015817093662917614, -0.0001649712212383747, -0.0024695969186723232, 0.008216138929128647, -0.00730271078646183, -0.002848634961992502, 0.0043995575979352, -0.0007802190375514328, -0.004692486487329006, -0.006188295315951109, -0.0013518545310944319, 7.020757766440511e-05], 'intercept': -1.258471131324768}
+LAB_MODEL_ID = LAB_MODEL["model_id"]
+LAB_VERSION = 'LAB_DECINE_COLONNE_SPECCHIO_v1.4_FULL_2025'
+LAB_NAME_RETURN = {'MODEL_AMBATA':3.0, 'MODEL_AMBO':14.0,
+                   'MEZZA_DECINA_AMBO':14.0,'FREQ5_AMBO':14.0,
+                   'SOMMA90_AMBO':14.0,'FREQ80_AMBO':14.0}
+
+
+def lab_default():
+    return {'schema':1, 'version':LAB_VERSION,'history':[],'last_key':None,
+            'pretrained_model_id': LAB_MODEL_ID,
+            'pretrained_through': LAB_MODEL['trained_through'],
+            'historical_training_origins': LAB_MODEL['training_origins'],
+            'active':None,'latest':None,'online_w':list(LAB_MODEL['coef']),
+            'online_b':LAB_MODEL['intercept'],'learned_draws':0,
+            'stats':{k:{'signals':0,'checked':0,'hits':0,'unverifiable':0}
+                     for k in LAB_NAME_RETURN},
+            'gaps':0,'recent':[],'observations':0,'updates':0}
+
+
+def lab_ensure(tracker):
+    lab=tracker.data.get('lab_strutture')
+    if lab is None:
+        lab=lab_default()
+        tracker.data['lab_strutture']=lab
+        tracker.dirty=True
+    if lab.get('schema')!=1 or not isinstance(lab.get('stats'),dict):
+        raise RuntimeError('LAB: schema stato non valido; dati mantenuti, non sovrascritti')
+    # Migrazione una sola volta: vecchio modello addestrato fino ad aprile 2025
+    # -> modello completo fino a settembre 2025. Preserva esiti, history e
+    # gli aggiornamenti online già maturati nel 2026 come delta dei pesi.
+    if lab.get('pretrained_model_id') != LAB_MODEL_ID:
+        old_w=lab.get('online_w')
+        old_b=lab.get('online_b')
+        if (lab.get('version')=='LAB_DECINE_COLONNE_SPECCHIO_v1.0'
+                and isinstance(old_w,list) and len(old_w)==len(LAB_MODEL['coef'])
+                and isinstance(old_b,(int,float))):
+            old_model=LAB_OLD_2025_APR_BASE
+            lab['online_w']=[float(new)+float(now)-float(prev)
+                    for new,now,prev in zip(LAB_MODEL['coef'],old_w,old_model['coef'])]
+            lab['online_b']=float(LAB_MODEL['intercept'])+float(old_b)-float(old_model['intercept'])
+            lab['pretrain_migrated_from']='2025-04-30 + delta apprendimento live conservato'
+            lab['version']=LAB_VERSION
+            lab['pretrained_model_id']=LAB_MODEL_ID
+            lab['pretrained_through']=LAB_MODEL['trained_through']
+            lab['historical_training_origins']=LAB_MODEL['training_origins']
+            tracker.dirty=True
+        else:
+            raise RuntimeError('LAB: versione precedente non riconosciuta; stato non alterato. Backup e migrazione manuale necessari.')
+    for k in LAB_NAME_RETURN:
+        lab['stats'].setdefault(k,{'signals':0,'checked':0,'hits':0,'unverifiable':0})
+    return lab
+
+def lab_row(row):
+    nums=sorted(set(abc_numbers(row)))
+    if len(nums)!=20 or any(x<1 or x>90 for x in nums):
+        raise ValueError('LAB: la riga non ha esattamente 20 numeri Base validi')
+    return {'key':abc_key(row),'day':str(row['day']),
+            'draw_id':int(row['draw_id']),'nums':nums}
+
+
+def lab_seed_from_rows(tracker, rows):
+    lab=lab_ensure(tracker)
+    if lab['history']:return len(lab['history'])
+    last_key=tracker.data.get('last_key')
+    if not last_key:return 0
+    uniq={}
+    for r in rows:
+        key=abc_key(r)
+        if order_key(key)<=order_key(last_key):
+            try:uniq[key]=lab_row(r)
+            except (ValueError, KeyError):continue
+    hist=[uniq[k] for k in sorted(uniq,key=order_key)]
+    lab['history']=hist[-240:]
+    if hist:lab['last_key']=hist[-1]['key']
+    tracker.dirty=True
+    return len(lab['history'])
+
+
+def lab_features(history):
+    # Le 18 feature corrispondono esattamente a quelle del backtest storico.
+    # Utilizza solo estrazioni GIA' avvenute.
+    from math import log1p
+    cnt={w:[0]*91 for w in (5,15,80,160)}
+    for w in (5,15,80,160):
+        for r in history[-w:]:
+            for n in r['nums']:cnt[w][n]+=1
+    prev=set(history[-1]['nums']) if history else set()
+    prev2=set(history[-2]['nums']) if len(history)>1 else set()
+    age=[200]*91
+    for delta,r in enumerate(reversed(history[-200:])):
+        for n in r['nums']:
+            if age[n]==200:age[n]=delta
+    def dgroup(n):return 0 if n==90 or n<10 else n//10
+    def hgroup(n):return 2*dgroup(n)+int(n!=90 and n%10>=5)
+    def cgroup(n):return n%10
+    def hcgroup(n):return 2*(n%10)+((min((n-1)//10,8))//5)
+    def sgroup(n):return 2*(n%10)+(((n-1)//10)%2)
+    def avg_arr(w,group):
+        totals={};size={}
+        for n in range(1,91):
+            g=group(n);totals[g]=totals.get(g,0)+cnt[w][n];size[g]=size.get(g,0)+1
+        return {g:totals[g]/size[g] for g in totals}
+    dg5=avg_arr(5,dgroup);dg15=avg_arr(15,dgroup)
+    hg5=avg_arr(5,hgroup);hg15=avg_arr(15,hgroup)
+    cg5=avg_arr(5,cgroup);cg15=avg_arr(15,cgroup)
+    hc5=avg_arr(5,hcgroup);sc15=avg_arr(15,sgroup)
+    features=[]
+    for n in range(1,91):
+        mir=90-n
+        features.append([
+            cnt[5][n]/5.,cnt[15][n]/15.,cnt[80][n]/80.,float(n in prev),
+            log1p(age[n])/5.,dg5[dgroup(n)]/5.,dg15[dgroup(n)]/15.,
+            hg5[hgroup(n)]/5.,hg15[hgroup(n)]/15.,
+            cg5[cgroup(n)]/5.,cg15[cgroup(n)]/15.,
+            hc5[hcgroup(n)]/5.,sc15[sgroup(n)]/15.,
+            float(mir in prev) if mir>0 else 0.,
+            cnt[15][mir]/15. if mir>0 else 0.,
+            ((cnt[5][n-1] if n>1 else 0)+(cnt[5][n+1] if n<90 else 0))/10.,
+            float(n in prev2), cnt[160][n]/160.
+        ])
+    return features,cnt
+
+
+def lab_predict(history,lab):
+    feat,cnt=lab_features(history)
+    mean=LAB_MODEL['scale_mean'];std=LAB_MODEL['mean_std']
+    w=lab['online_w'];bias=lab['online_b']
+    standardized=[[(v-m)/s if s>1e-9 else 0. for v,m,s in zip(row,mean,std)] for row in feat]
+    scores=[sum(a*b for a,b in zip(z,w))+bias for z in standardized]
+    top=sorted(range(1,91),key=lambda n:(-scores[n-1],n))
+    group=lambda n:2*(0 if n==90 or n<10 else n//10)+int(n!=90 and n%10>=5)
+    # Classifica del gruppo in base alla frequenza MEDIA nelle ultime 15 estrazioni.
+    freq15=cnt[15];freq80=cnt[80];freq5=cnt[5]
+    av={}
+    for n in range(1,91):
+        g=group(n);av.setdefault(g,[]).append(freq15[n])
+    best=max(av,key=lambda g:(sum(av[g])/len(av[g]),-g))
+    candidates=[n for n in range(1,91) if group(n)==best]
+    half=sorted(candidates,key=lambda n:(-freq80[n],n))[:2]
+    f5=sorted(range(1,91),key=lambda n:(-freq5[n],n))[:2]
+    f80=sorted(range(1,91),key=lambda n:(-freq80[n],n))[:2]
+    mirrors=[(a,90-a) for a in range(1,45)]
+    mirror_pair=max(mirrors,key=lambda z:(freq15[z[0]]+freq15[z[1]],-z[0]))
+    choices={'MODEL_AMBATA':[top[0]], 'MODEL_AMBO':sorted(top[:2]),
+             'MEZZA_DECINA_AMBO':sorted(half), 'FREQ5_AMBO':sorted(f5),
+             'SOMMA90_AMBO':list(mirror_pair),'FREQ80_AMBO':sorted(f80)}
+    return {'choices':choices,'top20':top[:20], 'model_scores':scores,
+            'features':standardized}
+
+
+def lab_learn(lab,features,extracted):
+    # SGD per estrazione verificata, con aggiornamento DOPO l'esito (anti-leakage).
+    from math import exp
+    w=lab['online_w'];b=lab['online_b'];grad=[0.]*len(w);intercept_grad=0.
+    goal=set(extracted)
+    for n,feat in enumerate(features,1):
+        z=max(-25,min(25,sum(a*bb for a,bb in zip(feat,w))+b))
+        p=1./(1.+exp(-z))
+        e=float(n in goal)-p
+        intercept_grad+=e
+        for j in range(len(w)):grad[j]+=e*feat[j]
+    lr=0.0015
+    for j in range(len(w)):
+        w[j]=max(-5.,min(5.,w[j]+lr*grad[j]/90.))
+    lab['online_b']=max(-5.,min(5.,b+lr*intercept_grad/90.))
+    lab['learned_draws']+=1
+
+
+def lab_update(tracker,row,gap=False,arm=True):
+    lab=lab_ensure(tracker);data=lab_row(row)
+    if lab['last_key'] and order_key(data['key'])<=order_key(lab['last_key']):
+        return {'new':False,'results':[],'signals':[],'digest':False}
+    out={'new':True,'results':[],'signals':[],'digest':False}
+    old=lab['active']
+    if old:
+        if gap or not lab['history'] or old['origin_key']!=lab['history'][-1]['key']:
+            for k in old['choices']:
+                lab['stats'][k]['unverifiable']+=1
+            lab['gaps']+=1
+            out['results'].append('LAB: concorso non consecutivo; segnale sospeso, non contato come perdita')
+        else:
+            extracted=set(data['nums'])
+            for k,numbers in old['choices'].items():
+                hit=all(n in extracted for n in numbers)
+                lab['stats'][k]['checked']+=1
+                lab['stats'][k]['hits']+=int(hit)
+                if hit:out['results'].append(k+' HIT '+ '-'.join(f'{n:02}' for n in numbers))
+                lab['recent'].append({'origin':old['origin_key'],'target':data['key'],
+                                      'method':k,'numbers':numbers,'hit':hit})
+            if len(lab['history'])>=160:
+                prevpred=lab_predict(lab['history'],lab)
+                lab_learn(lab,prevpred['features'],data['nums'])
+    lab['history'].append(data);lab['history']=lab['history'][-240:]
+    lab['last_key']=data['key'];lab['observations']+=1
+    if arm and len(lab['history'])>=160:
+        p=lab_predict(lab['history'],lab)
+        lab['active']={'origin_key':data['key'],'choices':p['choices']}
+        lab['latest']={'origin_key':data['key'],'choices':p['choices'],'top20':p['top20']}
+        for k,numbers in p['choices'].items():
+            lab['stats'][k]['signals']+=1
+        out['signals']=['LAB '+k+': '+'-'.join(f'{n:02}' for n in v)
+                        for k,v in p['choices'].items()]
+    else:
+        lab['active']=None
+    lab['recent']=lab['recent'][-150:]
+    lab['updates']+=1
+    try:
+        notify_every=max(1,min(288,int(_lab_os.getenv('LAB_NOTIFY_EVERY','12'))))
+    except (ValueError,TypeError):
+        notify_every=12
+    out['digest']=(lab['updates']%notify_every==0 and len(lab['history'])>=160)
+    tracker.dirty=True
+    return out
+
+
+def lab_report(tracker):
+    lab=lab_ensure(tracker)
+    lines=['🧠 LAB DECINE/COLONNE/SOMMA90 — PRE-ADDESTRATO 2025 + SHADOW',
+           f"Storico addestrato: {LAB_MODEL['trained_from']} → {lab['pretrained_through']} | "
+           f"{lab['historical_training_origins']:,} esempi H1 storici",
+           f"Dati recenti: {len(lab['history'])}/160 | aggiornamenti online dal 2026: {lab['learned_draws']} | gap: {lab['gaps']}"]
+    if lab['latest']:
+        x=lab['latest'];lines.append('Ultimo input: '+x['origin_key'])
+        for k,pair in x['choices'].items():
+            lines.append(k+': '+'-'.join(f'{n:02}' for n in pair))
+        lines.append('Top20 modello: '+' '.join(f'{n:02}' for n in x['top20']))
+    else:
+        lines.append('Raccolta storico recente; nessun segnale anticipato.')
+    lines.extend(['','VERIFICHE H1 CUMULATIVE:'])
+    for k,st in lab['stats'].items():
+        rate=100*st['hits']/st['checked'] if st['checked'] else 0.
+        pnl=LAB_NAME_RETURN[k]*st['hits']-st['checked']
+        lines.append(f"{k}: {st['hits']}/{st['checked']} ({rate:.2f}%) | virtuale {pnl:+.0f} EUR")
+    lines.append('Solo ricerca; nessuna giocata reale. Soglie di utile NON convalidate.')
+    return '\n'.join(lines)
+
+
+def lab_self_test():
+    import tempfile
+    from pathlib import Path
+    # Testing predictors via deterministic draw series; ensure no training on future before outcome.
+    lab=lab_default();hist=[]
+    for t in range(170):
+        nums=sorted({1+(t*11+i*7)%90 for i in range(20)})
+        assert len(nums)==20
+        hist.append({'key':f'2100-01-01#{t+1:03}','day':'2100-01-01','draw_id':t+1,'nums':nums})
+    z=lab_predict(hist,lab)
+    assert all(len(v)==(1 if k=='MODEL_AMBATA' else 2) for k,v in z['choices'].items())
+    assert z['choices']['SOMMA90_AMBO'][0]+z['choices']['SOMMA90_AMBO'][1]==90
+    assert len(z['top20'])==20 and len(set(z['top20']))==20
+    print('LAB_SELF_TEST_OK: feature/ranking/somma90/top20',flush=True)
+
+
 class DistanceABCTracker:
     """Tracker forward-only per A/B/C. Nessun accesso allo state legacy."""
 
@@ -6864,7 +7129,8 @@ class DistanceABCTracker:
         self.data.setdefault("gaps", 0)
         # Sottostato nuovo isolato: non modifica ABC, ORARI o storico legacy.
         rf_ensure(self)
-        self.dirty = False
+        lab_ensure(self)  # nuovo sottostato separato, ABC/RF/orari invariati
+        self.dirty = bool(getattr(self, "dirty", False))
         self.last_git = 0.0
 
     def _counters(self, code, origin_day):
@@ -6975,11 +7241,12 @@ class DistanceABCTracker:
         # Solo monitor ORARI: legge la stessa estrazione ABC, non avvia altri metodi.
         orari_messages = abc_orari_update(self, prev, row, gap=gap)
         rf_changes = rf_update(self, row, gap=gap, arm=create_new)
+        lab_changes = lab_update(self, row, gap=gap, arm=create_new)
         new_signals = self._arm(row) if create_new else []
         self.data["last_updated"] = now_txt()
         self.dirty = True
         return {"new": True, "results": results, "signals": new_signals, "gap": gap,
-                "orari": orari_messages, "rf": rf_changes}
+                "orari": orari_messages, "rf": rf_changes, "lab": lab_changes}
 
     def bootstrap(self, row, arm_if_fresh=True):
         if self.data.get("last_key"):
@@ -7643,12 +7910,14 @@ async def abc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         output = rf_report(tracker, day=now_dt().strftime("%Y-%m-%d"))
     elif command == "ritardisegnali":
         output = rf_recent_report(tracker)
+    elif command in {"lab", "laboratorio", "labstats", "laboggi"}:
+        output = lab_report(tracker)
     elif command in {"abc", "status"}:
         output = tracker.report()
     elif command == "menu":
-        output = "🎯 DISTANCE ABC + ORARI + R2/F3 SHADOW\n/abc /a /b /c /oggi /orari /orarioggi /ambiterni /fasce\n/ritardi /ritardioggi /ritardisegnali /r2f3 /pausestato\nVecchi metodi in pausa. Nessuna puntata reale."
+        output = "🎯 DISTANCE ABC + ORARI + R2/F3 SHADOW\n/abc /a /b /c /oggi /orari /orarioggi /ambiterni /fasce\n/ritardi /ritardioggi /ritardisegnali /r2f3\n/lab /laboratorio /labstats /pausestato\nVecchi metodi in pausa. Nessuna puntata reale."
     elif command == "pausestato":
-        output = "⏸️ V27/V28/V38/V52/V55/V56/V67/V70/V72/V114/V121/MULTI/ORDINE: TUTTI IN PAUSA.\n✅ Attivi solo ABC, monitor ORARI e 3 metodi R2/F3/FAST/CONSENSO in SHADOW. Nessuna puntata reale."
+        output = "⏸️ V27/V28/V38/V52/V55/V56/V67/V70/V72/V114/V121/MULTI/ORDINE: TUTTI IN PAUSA.\n✅ Attivi ABC, monitor ORARI, 3 metodi R2/F3 e LAB STRUTTURE in SHADOW. Nessuna puntata reale."
     else:
         output = "⏸️ Questa strategia e' IN PAUSA. Attivi /abc, /orari, /ambiterni, /ritardi (solo shadow)."
     await update.message.reply_text(output)
@@ -7668,6 +7937,8 @@ async def abc_setup_commands(app):
         BotCommand("ritardioggi", "R2-F3: risultati della giornata"),
         BotCommand("ritardisegnali", "R2-F3: ultimi segnali e verifiche"),
         BotCommand("r2f3", "Alias del report ritardatari e frequenti"),
+        BotCommand("lab", "Lab automatico decine, colonne, somma 90"),
+        BotCommand("labstats", "Risultati modello e strutture H1"),
         BotCommand("oggi", "Statistiche della giornata"),
         BotCommand("status", "Stato e risultati ABC"),
         BotCommand("pausestato", "Elenco strategie in pausa"),
@@ -7697,19 +7968,22 @@ async def abc_fetch_loop(tracker, app):
             if tracker.data.get("last_key") is None:
                 armed = tracker.bootstrap(rows[-1])
                 seeded = rf_seed_from_rows(tracker, rows, allow_arm=True)
+                lab_seed_from_rows(tracker, rows)
                 tracker.save(git=True, force=True)
                 await abc_send(app, "✅ DISTANCE ABC AVVIATO — tutte le strategie precedenti IN PAUSA.\n"
                                + "A P3-P19 <=60 | B P7-P12 <=18 | C P1-P7 <=15.\n"
-                               + "Solo simulazione: ABC H1/H4, ORARI/CINQUINE e R2/F3 H1.\n"
+                               + "Solo simulazione: ABC H1/H4, ORARI/CINQUINE, R2/F3 H1 e LAB STRUTTURE H1.\n"
                                + f"R2-F3: {seeded}; /ritardi per il report.\n"
                                + ("\n".join(armed) if armed else "In attesa della prossima estrazione."))
             else:
                 rf_seed_from_rows(tracker, rows, allow_arm=False, migrate_to_latest=True)
+                lab_seed_from_rows(tracker, rows)
                 unseen = [r for r in rows if order_key(abc_key(r)) > order_key(tracker.data["last_key"])]
                 if unseen:
                     newest_key = abc_key(unseen[-1])
                     all_results, all_signals, all_orari = [], [], []
                     all_rf_results, all_rf_signals = [], []
+                    lab_digest = False
                     gaps = 0
                     for r in unseen:
                         changes = tracker.process(r)
@@ -7720,6 +7994,8 @@ async def abc_fetch_loop(tracker, app):
                             all_signals.extend([f"{abc_key(r)}: {m}" for m in changes["signals"]])
                         if changes.get("orari"):
                             all_orari.extend(changes["orari"])
+                        if changes.get("lab"):
+                            lab_digest = lab_digest or bool(changes["lab"].get("digest"))
                         if changes.get("rf"):
                             all_rf_results.extend(changes["rf"].get("results", []))
                             all_rf_signals.extend(changes["rf"].get("signals", []))
@@ -7733,6 +8009,8 @@ async def abc_fetch_loop(tracker, app):
                         if all_orari:
                             await abc_send(app, "📊 ORARI SHADOW recupero storico recente:\n" +
                                            "\n".join(all_orari[-2:]))
+                        if lab_digest:
+                            await abc_send(app, lab_report(tracker))
                     else:
                         parts = [f"🔎 DISTANCE ABC | {newest_key}"]
                         if ABC_NOTIFY_RESULTS and all_results:
@@ -7747,6 +8025,8 @@ async def abc_fetch_loop(tracker, app):
                             parts.append("ESITI R2/F3 H1:\n" + "\n".join(all_rf_results[-8:]))
                         if ABC_NOTIFY_SIGNALS and all_rf_signals:
                             parts.append("NUOVI AMBI R2/F3 SHADOW (prossimo H1):\n" + "\n".join(all_rf_signals[-8:]))
+                        if lab_digest:
+                            parts.append(lab_report(tracker))
                         if len(parts) > 1:
                             await abc_send(app, "\n\n".join(parts))
             last_error = ""
@@ -7761,6 +8041,9 @@ async def abc_fetch_loop(tracker, app):
 
 
 async def abc_main():
+    if "--lab-self-test" in sys.argv:
+        lab_self_test()
+        return
     if "--rf-self-test" in sys.argv:
         rf_self_test()
         return
@@ -7776,6 +8059,7 @@ async def abc_main():
     for key in ["abc", "a", "b", "c", "oggi", "status", "menu", "pausestato",
                 "orari", "orarioggi", "ambiterni", "fasce",
                 "ritardi", "ritardioggi", "ritardisegnali", "r2f3",
+                "lab", "laboratorio", "labstats", "laboggi",
                 "multi", "v27", "v28", "v38", "v52", "v55", "v56", "v67",
                 "v70", "v72", "v114", "v121", "verificatutto", "ordineapi",
                 "ambiapi", "ordinecsv"]:
