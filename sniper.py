@@ -1,4 +1,4 @@
-# NOVITA LAB v1.5: warmup automatico LIVE da ultime 160 estrazioni, anche con memoria LAB parziale.
+# NOVITA LAB v1.6: warmup archivio GIORNATA INTERA + fonte LIVE; memoria LAB anche parziale.
 # ============================================================
 # VERSIONE ATTIVA: DISTANCE ABC + ORARI + R2/F3 + LAB STRUTTURE v1.5
 # A/B/C INVARIATI | ORARI INVARIATI
@@ -423,6 +423,83 @@ def fetch_multichannel_recent(days=5):
         for row in rows:
             merged[str(row["key"])] = row
     return sorted(merged.values(), key=lambda r: (r["day"], int(r["draw_id"])))
+
+
+# LAB v1.6: Lottologia /estrazioni/ puo' esporre solo gli ultimi concorsi
+# della giornata. Per il warmup utilizziamo anche /tutte-le-estrazioni.
+# NON alimentare ABC/R2-F3 con questo backfill; serve SOLO a lab_warmup_from_rows.
+LAB_ARCHIVE_FETCH_SEC = max(90, int(os.getenv("LAB_ARCHIVE_FETCH_SEC", "300")))
+_LAB_ARCHIVE_CACHE_AT = 0.0
+_LAB_ARCHIVE_CACHE_ROWS = []
+
+
+def lab_fetch_complete_history(live_rows=None, force=False):
+    """Ritorna concorsi recenti da archivio completo e fonti live.
+
+    - La pagina /tutte-le-estrazioni include l'intera giornata;
+      /estrazioni/ da sola puo' fermarsi a poche decine di record.
+    - Mantiene la chiave data#concorso e confronta i 20 numeri Base.
+    - Non modifica tracker, statistiche, pesi, segnali o cursori del bot.
+    - Il warmup verifica poi che gli ultimi 160 concorsi siano contigui.
+    """
+    global _LAB_ARCHIVE_CACHE_AT, _LAB_ARCHIVE_CACHE_ROWS
+    now = time.monotonic()
+    merged = {}
+    conflicts = []
+    def add_records(records, label):
+        for raw in records or []:
+            try:
+                compact = lab_row(raw)
+                key = compact['key']
+                old = merged.get(key)
+                if old is not None and old['nums'] != compact['nums']:
+                    conflicts.append((key,label))
+                    continue
+                # Normalizza i 20 Base: le pagine possono mostrarli in ordine diverso.
+                if old is None:
+                    merged[key] = compact
+            except (KeyError, ValueError, TypeError):
+                continue
+
+    # Prendi sempre la fonte LIVE piu' recente prima del recupero storico.
+    add_records(live_rows, 'live')
+    cache_valid = (_LAB_ARCHIVE_CACHE_ROWS and not force and
+                   now - _LAB_ARCHIVE_CACHE_AT < LAB_ARCHIVE_FETCH_SEC)
+    if cache_valid:
+        add_records(_LAB_ARCHIVE_CACHE_ROWS, 'cache')
+    else:
+        today = now_dt().date()
+        historic = []
+        sources = [
+            (f"{LOTTOLOGIA_BASE}/tutte-le-estrazioni", 0),
+            (lottologia_url_for_offset(1), 1),
+        ]
+        # La prima coppia di pagine normalmente basta a ricostruire 160
+        # concorsi. In caso di storico parziale interroga anche giorni prima.
+        for idx in range(5):
+            if idx >= len(sources):
+                sources.append((lottologia_url_for_offset(idx), idx))
+            url, offset = sources[idx]
+            expected = (today - timedelta(days=offset)).strftime('%Y-%m-%d')
+            try:
+                found = parse_lottologia_multichannel_records(url, expected_day=expected)
+                historic.extend(found)
+                add_records(found, url)
+                console_log(f"LAB ARCHIVIO {expected}: {len(found)} concorsi validi")
+            except Exception as exc:
+                console_log(f"LAB ARCHIVIO {expected}: {type(exc).__name__}: {exc}")
+            if idx >= 1 and len(merged) >= 220:
+                break
+        # Cache solo delle righe effettivamente lette dall'archivio.
+        if historic:
+            _LAB_ARCHIVE_CACHE_ROWS = historic
+            _LAB_ARCHIVE_CACHE_AT = now
+    if conflicts:
+        # Non silenziare differenze tra pagine diverse. La funzione di
+        # warmup riusera' lo state gia' validato, ma qui blocchiamo il merge.
+        raise ValueError(f"LAB ARCHIVIO: {len(conflicts)} concorsi discordanti, "
+                         f"esempio {conflicts[0][0]}; warmup sospeso")
+    return sorted(merged.values(), key=lambda r: order_key(abc_key(r)))
 
 
 # ============================================================
@@ -6846,7 +6923,7 @@ def abc_consecutive(prev, curr):
 # ==============================================================
 # ==============================================================
 # ==============================================================
-# LAB-STRUTTURE v1.5: PRE-ADDESTRATO GEN-SET 2025 + WARMUP LIVE
+# LAB-STRUTTURE v1.6: PRE-ADDESTRATO GEN-SET 2025 + WARMUP ARCHIVIO
 # Add-on per DISTANCE ABC + ORARI + R2/F3, altri metodi invariati.
 # Nessuna giocata reale. Non attribuisce ordine di estrazione al CSV.
 # ==============================================================
@@ -6854,7 +6931,7 @@ import os as _lab_os
 LAB_MODEL = {'coef': [-0.001588336075656116, -0.004541200120002031, 0.000718763330951333, -0.004015025217086077, -0.0032103965058922768, -0.0011355327442288399, -0.003143404610455036, -0.0017404191894456744, -0.0013998907525092363, -0.0015894579701125622, -0.0014464575797319412, -0.0022377667482942343, -0.00329743605107069, -0.00045054731890559196, -0.0007197258528321981, -0.0006914344849064946, -0.002302755368873477, -0.003887403989210725], 'intercept': -1.252762968495368, 'scale_mean': [0.22222222651369164, 0.22222222954426585, 0.22222222143713968, 0.2222222222222222, 0.23298634086875383, 0.2222222221049104, 0.22222222589449386, 0.22222222330800992, 0.22222222624388305, 0.22222222694784707, 0.2222222233233102, 0.22222222421912155, 0.22222222606745543, 0.21976156933244598, 0.21976253690315464, 0.21974255956933222, 0.2222222222222222, 0.22222222207357362], 'mean_std': [0.18588392136897985, 0.10726166941883312, 0.046509697354819975, 0.41573970964134965, 0.16641610773646942, 0.05572981432048347, 0.03211961275578849, 0.08130033679357619, 0.04687224552793607, 0.05906029404975367, 0.034142099690814706, 0.0858166216653436, 0.04953200240430804, 0.41408504196239426, 0.1091840627126223, 0.1310483394888803, 0.41573970964134965, 0.03282319175814908], 'features': ['f5', 'f15', 'f80', 'last_draw', 'delay', 'dec5', 'dec15', 'halfdec5', 'halfdec15', 'col5', 'col15', 'halfcol5', 'step2_15', 'mirror_last', 'mirror_f15', 'neighbor5', 'prev2', 'f160'], 'trained_from': '2025-01-01', 'trained_through': '2025-09-28', 'training_origins': 77134, 'source_rows': 77565, 'model_id': 'LAB_STRUTTURE_2025_01_01__09_28_FULL_V2'}
 LAB_OLD_2025_APR_BASE = {'coef': [-0.008556224405765533, 0.005281261168420315, 0.0005778368795290589, -0.004354937933385372, -0.009647875092923641, 0.005893825553357601, -0.0015817093662917614, -0.0001649712212383747, -0.0024695969186723232, 0.008216138929128647, -0.00730271078646183, -0.002848634961992502, 0.0043995575979352, -0.0007802190375514328, -0.004692486487329006, -0.006188295315951109, -0.0013518545310944319, 7.020757766440511e-05], 'intercept': -1.258471131324768}
 LAB_MODEL_ID = LAB_MODEL["model_id"]
-LAB_VERSION = 'LAB_DECINE_COLONNE_SPECCHIO_v1.5_FULL_2025_WARMUP'
+LAB_VERSION = 'LAB_DECINE_COLONNE_SPECCHIO_v1.6_FULL_2025_WARMUP_ARCHIVIO'
 LAB_NAME_RETURN = {'MODEL_AMBATA':3.0, 'MODEL_AMBO':14.0,
                    'MEZZA_DECINA_AMBO':14.0,'FREQ5_AMBO':14.0,
                    'SOMMA90_AMBO':14.0,'FREQ80_AMBO':14.0}
@@ -7160,9 +7237,9 @@ def lab_report(tracker):
            f"{lab['historical_training_origins']:,} esempi H1 storici",
            f"Dati recenti: {min(160,len(lab['history']))}/160 | aggiornamenti online dal 2026: {lab['learned_draws']} | gap: {lab['gaps']}"]
     if len(lab['history']) >= 160:
-        lines.append('Warmup LIVE: PRONTO; storico ricostruito da concorsi verificati.')
+        lines.append('Warmup ARCHIVIO: PRONTO; storico ricostruito da concorsi verificati.')
     else:
-        lines.append('Warmup LIVE: automatico; in attesa di 160 concorsi consecutivi dalla fonte.')
+        lines.append('Warmup ARCHIVIO: automatico; attesa 160 concorsi consecutivi validi dalla fonte.')
     if lab['latest']:
         x=lab['latest'];lines.append('Ultimo input: '+x['origin_key'])
         for k,pair in x['choices'].items():
@@ -8003,9 +8080,11 @@ async def abc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif command == "labwarmup":
         try:
             rows = fetch_multichannel_recent(days=5)
-            result = lab_warmup_from_rows(tracker, rows, arm_if_fresh=True)
+            rows_lab = lab_fetch_complete_history(live_rows=rows, force=True)
+            result = lab_warmup_from_rows(tracker, rows_lab, arm_if_fresh=True)
             tracker.save(git=True)
-            output = '🧠 LAB WARMUP LIVE\n' + result['message'] + '\n\n' + lab_report(tracker)
+            output = ('🧠 LAB WARMUP ARCHIVIO COMPLETO\n' + result['message'] +
+                      f" | concorsi disponibili da fonti: {len(rows_lab)}" + '\n\n' + lab_report(tracker))
         except Exception as exc:
             output = 'LAB warmup non completato: ' + type(exc).__name__ + ': ' + str(exc)[:240]
     elif command in {"lab", "laboratorio", "labstats", "laboggi"}:
@@ -8037,7 +8116,7 @@ async def abc_setup_commands(app):
         BotCommand("r2f3", "Alias del report ritardatari e frequenti"),
         BotCommand("lab", "Lab automatico decine, colonne, somma 90"),
         BotCommand("labstats", "Risultati modello e strutture H1"),
-        BotCommand("labwarmup", "Recupera automaticamente 160 estrazioni live"),
+        BotCommand("labwarmup", "Recupera 160 estrazioni dall archivio completo"),
         BotCommand("oggi", "Statistiche della giornata"),
         BotCommand("status", "Stato e risultati ABC"),
         BotCommand("pausestato", "Elenco strategie in pausa"),
@@ -8064,10 +8143,17 @@ async def abc_fetch_loop(tracker, app):
             if not rows:
                 raise RuntimeError("Nessuna estrazione disponibile: verifica fonte dati")
             rows = sorted(rows, key=lambda r: order_key(abc_key(r)) or (-1, -1))
+            lab_rows = rows
+            if len(lab_ensure(tracker)['history']) < 160:
+                try:
+                    lab_rows = lab_fetch_complete_history(live_rows=rows)
+                except Exception as exc:
+                    console_log(f"LAB ARCHIVIO: {type(exc).__name__}: {exc}; "
+                                "uso fonte LIVE corrente e conservazione storico LAB")
             if tracker.data.get("last_key") is None:
                 armed = tracker.bootstrap(rows[-1])
                 seeded = rf_seed_from_rows(tracker, rows, allow_arm=True)
-                lab_init = lab_warmup_from_rows(tracker, rows, arm_if_fresh=True)
+                lab_init = lab_warmup_from_rows(tracker, lab_rows, arm_if_fresh=True)
                 tracker.save(git=True, force=True)
                 await abc_send(app, "✅ DISTANCE ABC AVVIATO — tutte le strategie precedenti IN PAUSA.\n"
                                + "A P3-P19 <=60 | B P7-P12 <=18 | C P1-P7 <=15.\n"
@@ -8078,7 +8164,7 @@ async def abc_fetch_loop(tracker, app):
             else:
                 rf_seed_from_rows(tracker, rows, allow_arm=False, migrate_to_latest=True)
                 unseen = [r for r in rows if order_key(abc_key(r)) > order_key(tracker.data["last_key"])]
-                lab_init = lab_warmup_from_rows(tracker, rows, arm_if_fresh=(not unseen))
+                lab_init = lab_warmup_from_rows(tracker, lab_rows, arm_if_fresh=(not unseen))
                 if lab_init.get('became_ready'):
                     await abc_send(app, '🧠 LAB WARMUP LIVE COMPLETATO: ' +
                                    lab_init['message'] +
