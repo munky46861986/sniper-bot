@@ -1,33 +1,33 @@
 {
   "schema": 1,
   "version": "DISTANCE_ABC_ONLY_v1.0",
-  "last_key": "2026-11-08#084",
+  "last_key": "2026-11-08#085",
   "last_draw": {
     "day": "2026-11-08",
-    "draw_id": 84,
-    "key": "2026-11-08#084",
-    "time": "07:00",
+    "draw_id": 85,
+    "key": "2026-11-08#085",
+    "time": "07:05",
     "nums": [
-      1,
+      2,
+      3,
+      4,
+      6,
       8,
-      14,
-      22,
-      23,
-      24,
-      25,
-      39,
-      41,
+      15,
+      19,
+      21,
+      29,
+      38,
+      44,
       49,
       52,
-      54,
+      55,
+      57,
       61,
-      76,
-      79,
-      80,
-      82,
-      83,
-      88,
-      90
+      67,
+      68,
+      78,
+      80
     ]
   },
   "active": {
@@ -42,10 +42,10 @@
         34
       ],
       "distance": 12,
-      "step": 1,
+      "step": 2,
       "h1": 0,
       "h4": null,
-      "h4_cost": 1.0,
+      "h4_cost": 2.0,
       "h1_cost": 1.0,
       "first_hit": null,
       "reason": ""
@@ -72,7 +72,7 @@
       "h1_return": 420.0,
       "h4_closed": 679,
       "h4_hits": 124,
-      "h4_cost": 2546.0,
+      "h4_cost": 2547.0,
       "h4_return": 1736.0,
       "interrupted": 7
     },
@@ -377,7 +377,7 @@
         "h1_return": 14.0,
         "h4_closed": 38,
         "h4_hits": 5,
-        "h4_cost": 147.0,
+        "h4_cost": 148.0,
         "h4_return": 70.0,
         "interrupted": 0
       },
@@ -20862,7 +20862,7 @@
   ],
   "gaps": 7,
   "started_at": "2026-11-01 11:46:27",
-  "last_updated": "2026-11-08 07:00:53",
+  "last_updated": "2026-11-08 07:06:06",
   "orari_shadow": {
     "schema": 1,
     "version": "ORARI_CINQUINE_v1.1_SHADOW",
@@ -21085,36 +21085,8 @@
     "schema": 1,
     "version": "R2F3_SHADOW_H1_v1.2",
     "started_at": "2026-11-07 16:04:58",
-    "last_key": "2026-11-08#084",
+    "last_key": "2026-11-08#085",
     "history": [
-      {
-        "key": "2026-11-08#005",
-        "day": "2026-11-08",
-        "draw_id": 5,
-        "time": "00:25",
-        "nums": [
-          1,
-          6,
-          19,
-          25,
-          38,
-          39,
-          45,
-          48,
-          49,
-          50,
-          52,
-          53,
-          57,
-          63,
-          68,
-          72,
-          78,
-          86,
-          88,
-          90
-        ]
-      },
       {
         "key": "2026-11-08#006",
         "day": "2026-11-08",
@@ -23326,12 +23298,71 @@
           88,
           90
         ]
+      },
+      {
+        "key": "2026-11-08#085",
+        "day": "2026-11-08",
+        "draw_id": 85,
+        "time": "07:05",
+        "nums": [
+          2,
+          3,
+          4,
+          6,
+          8,
+          15,
+          19,
+          21,
+          29,
+          38,
+          44,
+          49,
+          52,
+          55,
+          57,
+          61,
+          67,
+          68,
+          78,
+          80
+        ]
       }
     ],
-    "active": {},
+    "active": {
+      "2026-11-08#085:BASE": {
+        "id": "2026-11-08#085:BASE",
+        "method": "BASE",
+        "origin_day": "2026-11-08",
+        "origin_key": "2026-11-08#085",
+        "pair": [
+          17,
+          57
+        ],
+        "r2": 17,
+        "frequente": 57,
+        "r2_delay": 18,
+        "f80_count": 26,
+        "f15_count": 7
+      },
+      "2026-11-08#085:CONSENSO": {
+        "id": "2026-11-08#085:CONSENSO",
+        "method": "CONSENSO",
+        "origin_day": "2026-11-08",
+        "origin_key": "2026-11-08#085",
+        "pair": [
+          17,
+          57
+        ],
+        "r2": 17,
+        "frequente": 57,
+        "r2_delay": 18,
+        "f80_count": 26,
+        "f15_count": 7
+      }
+    },
     "totals": {
       "BASE": {
-        "signals": 5,
+        "signals": 6,
         "h1_checked": 5,
         "h1_hits": 0,
         "interrupted": 0,
@@ -23347,7 +23378,7 @@
         "returned": 0.0
       },
       "CONSENSO": {
-        "signals": 0,
+        "signals": 1,
         "h1_checked": 0,
         "h1_hits": 0,
         "interrupted": 0,
@@ -23371,6 +23402,24 @@
           "h1_hits": 0,
           "interrupted": 0,
           "cost": 1.0,
+          "returned": 0.0
+        }
+      },
+      "2026-11-08": {
+        "BASE": {
+          "signals": 1,
+          "h1_checked": 0,
+          "h1_hits": 0,
+          "interrupted": 0,
+          "cost": 0.0,
+          "returned": 0.0
+        },
+        "CONSENSO": {
+          "signals": 1,
+          "h1_checked": 0,
+          "h1_hits": 0,
+          "interrupted": 0,
+          "cost": 0.0,
           "returned": 0.0
         }
       }
@@ -23537,11 +23586,43 @@
         ],
         "result_key": "2026-11-07#274",
         "status": "MISS"
+      },
+      {
+        "id": "2026-11-08#085:BASE",
+        "method": "BASE",
+        "origin_day": "2026-11-08",
+        "origin_key": "2026-11-08#085",
+        "pair": [
+          17,
+          57
+        ],
+        "r2": 17,
+        "frequente": 57,
+        "r2_delay": 18,
+        "f80_count": 26,
+        "f15_count": 7,
+        "event": "SEGNALE"
+      },
+      {
+        "id": "2026-11-08#085:CONSENSO",
+        "method": "CONSENSO",
+        "origin_day": "2026-11-08",
+        "origin_key": "2026-11-08#085",
+        "pair": [
+          17,
+          57
+        ],
+        "r2": 17,
+        "frequente": 57,
+        "r2_delay": 18,
+        "f80_count": 26,
+        "f15_count": 7,
+        "event": "SEGNALE"
       }
     ],
     "gaps": 1,
-    "unique_signals": 6,
-    "duplicate_signals": 0,
-    "last_signal_key": "2026-11-07#273"
+    "unique_signals": 7,
+    "duplicate_signals": 1,
+    "last_signal_key": "2026-11-08#085"
   }
 }
