@@ -1,33 +1,33 @@
 {
   "schema": 1,
   "version": "DISTANCE_ABC_ONLY_v1.0",
-  "last_key": "2026-11-08#085",
+  "last_key": "2026-11-08#086",
   "last_draw": {
     "day": "2026-11-08",
-    "draw_id": 85,
-    "key": "2026-11-08#085",
-    "time": "07:05",
+    "draw_id": 86,
+    "key": "2026-11-08#086",
+    "time": "07:10",
     "nums": [
-      2,
-      3,
       4,
-      6,
       8,
-      15,
-      19,
-      21,
-      29,
-      38,
-      44,
+      9,
+      10,
+      11,
+      13,
+      24,
+      26,
+      30,
+      36,
+      37,
+      39,
       49,
-      52,
-      55,
-      57,
+      51,
+      59,
       61,
-      67,
-      68,
+      64,
+      65,
       78,
-      80
+      86
     ]
   },
   "active": {
@@ -42,11 +42,30 @@
         34
       ],
       "distance": 12,
-      "step": 2,
+      "step": 3,
       "h1": 0,
       "h4": null,
-      "h4_cost": 2.0,
+      "h4_cost": 3.0,
       "h1_cost": 1.0,
+      "first_hit": null,
+      "reason": ""
+    },
+    "2026-11-08#086:B": {
+      "id": "2026-11-08#086:B",
+      "method": "B",
+      "origin_day": "2026-11-08",
+      "origin_draw": 86,
+      "origin_key": "2026-11-08#086",
+      "pair": [
+        24,
+        39
+      ],
+      "distance": 15,
+      "step": 0,
+      "h1": null,
+      "h4": null,
+      "h4_cost": 0.0,
+      "h1_cost": 0.0,
       "first_hit": null,
       "reason": ""
     }
@@ -65,14 +84,14 @@
       "interrupted": 4
     },
     "B": {
-      "signals": 687,
+      "signals": 688,
       "h1_checked": 685,
       "h1_hits": 30,
       "h1_cost": 685.0,
       "h1_return": 420.0,
       "h4_closed": 679,
       "h4_hits": 124,
-      "h4_cost": 2547.0,
+      "h4_cost": 2548.0,
       "h4_return": 1736.0,
       "interrupted": 7
     },
@@ -370,14 +389,14 @@
         "interrupted": 0
       },
       "B": {
-        "signals": 39,
+        "signals": 40,
         "h1_checked": 39,
         "h1_hits": 1,
         "h1_cost": 39.0,
         "h1_return": 14.0,
         "h4_closed": 38,
         "h4_hits": 5,
-        "h4_cost": 148.0,
+        "h4_cost": 149.0,
         "h4_return": 70.0,
         "interrupted": 0
       },
@@ -20862,7 +20881,7 @@
   ],
   "gaps": 7,
   "started_at": "2026-11-01 11:46:27",
-  "last_updated": "2026-11-08 07:06:06",
+  "last_updated": "2026-11-08 07:11:19",
   "orari_shadow": {
     "schema": 1,
     "version": "ORARI_CINQUINE_v1.1_SHADOW",
@@ -21085,36 +21104,8 @@
     "schema": 1,
     "version": "R2F3_SHADOW_H1_v1.2",
     "started_at": "2026-11-07 16:04:58",
-    "last_key": "2026-11-08#085",
+    "last_key": "2026-11-08#086",
     "history": [
-      {
-        "key": "2026-11-08#006",
-        "day": "2026-11-08",
-        "draw_id": 6,
-        "time": "00:30",
-        "nums": [
-          3,
-          4,
-          8,
-          13,
-          16,
-          19,
-          23,
-          29,
-          34,
-          36,
-          41,
-          59,
-          60,
-          61,
-          70,
-          73,
-          78,
-          81,
-          86,
-          90
-        ]
-      },
       {
         "key": "2026-11-08#007",
         "day": "2026-11-08",
@@ -23326,47 +23317,44 @@
           78,
           80
         ]
+      },
+      {
+        "key": "2026-11-08#086",
+        "day": "2026-11-08",
+        "draw_id": 86,
+        "time": "07:10",
+        "nums": [
+          4,
+          8,
+          9,
+          10,
+          11,
+          13,
+          24,
+          26,
+          30,
+          36,
+          37,
+          39,
+          49,
+          51,
+          59,
+          61,
+          64,
+          65,
+          78,
+          86
+        ]
       }
     ],
-    "active": {
-      "2026-11-08#085:BASE": {
-        "id": "2026-11-08#085:BASE",
-        "method": "BASE",
-        "origin_day": "2026-11-08",
-        "origin_key": "2026-11-08#085",
-        "pair": [
-          17,
-          57
-        ],
-        "r2": 17,
-        "frequente": 57,
-        "r2_delay": 18,
-        "f80_count": 26,
-        "f15_count": 7
-      },
-      "2026-11-08#085:CONSENSO": {
-        "id": "2026-11-08#085:CONSENSO",
-        "method": "CONSENSO",
-        "origin_day": "2026-11-08",
-        "origin_key": "2026-11-08#085",
-        "pair": [
-          17,
-          57
-        ],
-        "r2": 17,
-        "frequente": 57,
-        "r2_delay": 18,
-        "f80_count": 26,
-        "f15_count": 7
-      }
-    },
+    "active": {},
     "totals": {
       "BASE": {
         "signals": 6,
-        "h1_checked": 5,
+        "h1_checked": 6,
         "h1_hits": 0,
         "interrupted": 0,
-        "cost": 5.0,
+        "cost": 6.0,
         "returned": 0.0
       },
       "FAST": {
@@ -23379,10 +23367,10 @@
       },
       "CONSENSO": {
         "signals": 1,
-        "h1_checked": 0,
+        "h1_checked": 1,
         "h1_hits": 0,
         "interrupted": 0,
-        "cost": 0.0,
+        "cost": 1.0,
         "returned": 0.0
       }
     },
@@ -23408,18 +23396,18 @@
       "2026-11-08": {
         "BASE": {
           "signals": 1,
-          "h1_checked": 0,
+          "h1_checked": 1,
           "h1_hits": 0,
           "interrupted": 0,
-          "cost": 0.0,
+          "cost": 1.0,
           "returned": 0.0
         },
         "CONSENSO": {
           "signals": 1,
-          "h1_checked": 0,
+          "h1_checked": 1,
           "h1_hits": 0,
           "interrupted": 0,
-          "cost": 0.0,
+          "cost": 1.0,
           "returned": 0.0
         }
       }
@@ -23618,6 +23606,28 @@
         "f80_count": 26,
         "f15_count": 7,
         "event": "SEGNALE"
+      },
+      {
+        "event": "ESITO",
+        "method": "BASE",
+        "origin_key": "2026-11-08#085",
+        "pair": [
+          17,
+          57
+        ],
+        "result_key": "2026-11-08#086",
+        "status": "MISS"
+      },
+      {
+        "event": "ESITO",
+        "method": "CONSENSO",
+        "origin_key": "2026-11-08#085",
+        "pair": [
+          17,
+          57
+        ],
+        "result_key": "2026-11-08#086",
+        "status": "MISS"
       }
     ],
     "gaps": 1,
