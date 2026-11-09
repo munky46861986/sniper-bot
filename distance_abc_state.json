@@ -1,33 +1,33 @@
 {
   "schema": 1,
   "version": "DISTANCE_ABC_ONLY_v1.0",
-  "last_key": "2026-11-09#092",
+  "last_key": "2026-11-09#093",
   "last_draw": {
     "day": "2026-11-09",
-    "draw_id": 92,
-    "key": "2026-11-09#092",
-    "time": "07:40",
+    "draw_id": 93,
+    "key": "2026-11-09#093",
+    "time": "07:45",
     "nums": [
-      1,
-      3,
-      9,
-      10,
-      14,
-      17,
-      20,
+      4,
+      13,
+      18,
       24,
-      28,
+      29,
+      31,
+      32,
       35,
-      41,
-      44,
-      46,
-      55,
-      56,
-      62,
-      70,
-      76,
+      37,
+      42,
+      49,
+      53,
+      57,
+      59,
+      60,
+      69,
+      71,
       79,
-      84
+      87,
+      88
     ]
   },
   "active": {
@@ -42,10 +42,10 @@
         39
       ],
       "distance": 14,
-      "step": 1,
+      "step": 2,
       "h1": 0,
       "h4": null,
-      "h4_cost": 1.0,
+      "h4_cost": 2.0,
       "h1_cost": 1.0,
       "first_hit": null,
       "reason": ""
@@ -72,7 +72,7 @@
       "h1_return": 490.0,
       "h4_closed": 792,
       "h4_hits": 141,
-      "h4_cost": 2974.0,
+      "h4_cost": 2975.0,
       "h4_return": 1974.0,
       "interrupted": 7
     },
@@ -403,7 +403,7 @@
         "h1_return": 42.0,
         "h4_closed": 32,
         "h4_hits": 8,
-        "h4_cost": 115.0,
+        "h4_cost": 116.0,
         "h4_return": 112.0,
         "interrupted": 0
       },
@@ -24111,7 +24111,7 @@
   ],
   "gaps": 8,
   "started_at": "2026-11-01 11:46:27",
-  "last_updated": "2026-11-09 07:41:08",
+  "last_updated": "2026-11-09 07:46:22",
   "orari_shadow": {
     "schema": 1,
     "version": "ORARI_CINQUINE_v1.1_SHADOW",
@@ -24342,36 +24342,8 @@
     "schema": 1,
     "version": "R2F3_SHADOW_H1_v1.2",
     "started_at": "2026-11-07 16:04:58",
-    "last_key": "2026-11-09#092",
+    "last_key": "2026-11-09#093",
     "history": [
-      {
-        "key": "2026-11-09#013",
-        "day": "2026-11-09",
-        "draw_id": 13,
-        "time": "01:05",
-        "nums": [
-          1,
-          3,
-          18,
-          24,
-          32,
-          33,
-          36,
-          38,
-          41,
-          46,
-          50,
-          54,
-          62,
-          64,
-          74,
-          75,
-          76,
-          78,
-          79,
-          85
-        ]
-      },
       {
         "key": "2026-11-09#014",
         "day": "2026-11-09",
@@ -26583,32 +26555,60 @@
           79,
           84
         ]
+      },
+      {
+        "key": "2026-11-09#093",
+        "day": "2026-11-09",
+        "draw_id": 93,
+        "time": "07:45",
+        "nums": [
+          4,
+          13,
+          18,
+          24,
+          29,
+          31,
+          32,
+          35,
+          37,
+          42,
+          49,
+          53,
+          57,
+          59,
+          60,
+          69,
+          71,
+          79,
+          87,
+          88
+        ]
       }
     ],
     "active": {
-      "2026-11-09#092:BASE": {
-        "id": "2026-11-09#092:BASE",
+      "2026-11-09#093:BASE": {
+        "id": "2026-11-09#093:BASE",
         "method": "BASE",
         "origin_day": "2026-11-09",
-        "origin_key": "2026-11-09#092",
+        "origin_key": "2026-11-09#093",
         "pair": [
-          6,
-          45
+          45,
+          79
         ],
         "r2": 45,
-        "frequente": 6,
-        "r2_delay": 17,
-        "f80_count": 25,
-        "f15_count": 5
+        "frequente": 79,
+        "r2_delay": 18,
+        "f80_count": 26,
+        "f15_count": 6
       }
     },
     "totals": {
       "BASE": {
-        "signals": 12,
-        "h1_checked": 11,
+        "signals": 13,
+        "h1_checked": 12,
         "h1_hits": 0,
         "interrupted": 0,
-        "cost": 11.0,
+        "cost": 12.0,
         "returned": 0.0
       },
       "FAST": {
@@ -26675,11 +26675,11 @@
       },
       "2026-11-09": {
         "BASE": {
-          "signals": 1,
-          "h1_checked": 0,
+          "signals": 2,
+          "h1_checked": 1,
           "h1_hits": 0,
           "interrupted": 0,
-          "cost": 0.0,
+          "cost": 1.0,
           "returned": 0.0
         }
       }
@@ -27159,44 +27159,44 @@
         "f80_count": 25,
         "f15_count": 5,
         "event": "SEGNALE"
+      },
+      {
+        "event": "ESITO",
+        "method": "BASE",
+        "origin_key": "2026-11-09#092",
+        "pair": [
+          6,
+          45
+        ],
+        "result_key": "2026-11-09#093",
+        "status": "MISS"
+      },
+      {
+        "id": "2026-11-09#093:BASE",
+        "method": "BASE",
+        "origin_day": "2026-11-09",
+        "origin_key": "2026-11-09#093",
+        "pair": [
+          45,
+          79
+        ],
+        "r2": 45,
+        "frequente": 79,
+        "r2_delay": 18,
+        "f80_count": 26,
+        "f15_count": 6,
+        "event": "SEGNALE"
       }
     ],
     "gaps": 2,
-    "unique_signals": 16,
+    "unique_signals": 17,
     "duplicate_signals": 2,
-    "last_signal_key": "2026-11-09#092"
+    "last_signal_key": "2026-11-09#093"
   },
   "lab_strutture": {
     "schema": 1,
     "version": "LAB_DECINE_COLONNE_SPECCHIO_v1.6_FULL_2025_WARMUP_ARCHIVIO",
     "history": [
-      {
-        "key": "2026-11-08#140",
-        "day": "2026-11-08",
-        "draw_id": 140,
-        "nums": [
-          5,
-          6,
-          9,
-          10,
-          12,
-          19,
-          21,
-          25,
-          28,
-          38,
-          45,
-          46,
-          49,
-          55,
-          68,
-          70,
-          74,
-          78,
-          83,
-          90
-        ]
-      },
       {
         "key": "2026-11-08#141",
         "day": "2026-11-08",
@@ -33649,29 +33649,56 @@
           79,
           84
         ]
+      },
+      {
+        "key": "2026-11-09#093",
+        "day": "2026-11-09",
+        "draw_id": 93,
+        "nums": [
+          4,
+          13,
+          18,
+          24,
+          29,
+          31,
+          32,
+          35,
+          37,
+          42,
+          49,
+          53,
+          57,
+          59,
+          60,
+          69,
+          71,
+          79,
+          87,
+          88
+        ]
       }
     ],
-    "last_key": "2026-11-09#092",
+    "last_key": "2026-11-09#093",
     "pretrained_model_id": "LAB_STRUTTURE_2025_01_01__09_28_FULL_V2",
     "pretrained_through": "2025-09-28",
     "historical_training_origins": 77134,
     "active": {
-      "origin_key": "2026-11-09#092",
+      "origin_key": "2026-11-09#093",
       "choices": {
         "MODEL_AMBATA": [
-          87
+          1
         ],
         "MODEL_AMBO": [
-          53,
-          87
+          1,
+          53
         ],
         "MEZZA_DECINA_AMBO": [
-          11,
-          12
+          35,
+          36
         ],
         "FREQ5_AMBO": [
-          3,
-          12
+          14,
+          35
         ],
         "SOMMA90_AMBO": [
           12,
@@ -33679,27 +33706,27 @@
         ],
         "FREQ80_AMBO": [
           11,
-          79
+          35
         ]
       }
     },
     "latest": {
-      "origin_key": "2026-11-09#092",
+      "origin_key": "2026-11-09#093",
       "choices": {
         "MODEL_AMBATA": [
-          87
+          1
         ],
         "MODEL_AMBO": [
-          53,
-          87
+          1,
+          53
         ],
         "MEZZA_DECINA_AMBO": [
-          11,
-          12
+          35,
+          36
         ],
         "FREQ5_AMBO": [
-          3,
-          12
+          14,
+          35
         ],
         "SOMMA90_AMBO": [
           12,
@@ -33707,153 +33734,94 @@
         ],
         "FREQ80_AMBO": [
           11,
-          79
+          35
         ]
       },
       "top20": [
-        87,
-        53,
-        51,
         1,
-        89,
-        81,
-        88,
-        49,
-        54,
-        61,
-        21,
-        27,
-        73,
+        53,
         83,
-        63,
-        46,
-        67,
+        81,
+        51,
+        3,
+        90,
         7,
-        69,
-        50
+        63,
+        61,
+        54,
+        73,
+        86,
+        21,
+        67,
+        50,
+        46,
+        17,
+        27,
+        66
       ]
     },
     "online_w": [
-      -0.0005702581070985116,
-      -0.003857283522904191,
-      0.0018483584997349349,
-      -0.0033919610824430842,
-      -0.0038203934403170385,
-      -0.001518614215387565,
-      -0.003168489470152785,
-      -0.0029662685935671674,
-      -0.0025609465647939323,
-      -0.0008194784226813323,
-      -0.0006478660469663099,
-      -0.0007902230214864712,
-      -0.0032025516580712616,
-      0.0012866297040524553,
-      0.00022157326165445285,
-      -0.0013136812209821095,
-      -0.001660638031577177,
-      -0.0014484881914762588
+      -0.000608692183096956,
+      -0.003944808115033547,
+      0.0018018991242762367,
+      -0.0034491888072836333,
+      -0.0037706926735822707,
+      -0.0015067552062364947,
+      -0.003106957564353053,
+      -0.0029656050544919718,
+      -0.0025226426625493416,
+      -0.0009122838402142121,
+      -0.0007724021247658671,
+      -0.000855826690154474,
+      -0.0032713590467970534,
+      0.0012284627906944696,
+      0.0002359905867437406,
+      -0.0012779675103913092,
+      -0.0016374582846285996,
+      -0.0014958417531674604
     ],
-    "online_b": -1.2527652777367713,
-    "learned_draws": 218,
+    "online_b": -1.252765282088292,
+    "learned_draws": 219,
     "stats": {
       "MODEL_AMBATA": {
-        "signals": 220,
-        "checked": 218,
-        "hits": 56,
+        "signals": 221,
+        "checked": 219,
+        "hits": 57,
         "unverifiable": 1
       },
       "MODEL_AMBO": {
-        "signals": 220,
-        "checked": 218,
-        "hits": 16,
+        "signals": 221,
+        "checked": 219,
+        "hits": 17,
         "unverifiable": 1
       },
       "MEZZA_DECINA_AMBO": {
-        "signals": 220,
-        "checked": 218,
+        "signals": 221,
+        "checked": 219,
         "hits": 12,
         "unverifiable": 1
       },
       "FREQ5_AMBO": {
-        "signals": 220,
-        "checked": 218,
+        "signals": 221,
+        "checked": 219,
         "hits": 9,
         "unverifiable": 1
       },
       "SOMMA90_AMBO": {
-        "signals": 220,
-        "checked": 218,
+        "signals": 221,
+        "checked": 219,
         "hits": 13,
         "unverifiable": 1
       },
       "FREQ80_AMBO": {
-        "signals": 220,
-        "checked": 218,
+        "signals": 221,
+        "checked": 219,
         "hits": 11,
         "unverifiable": 1
       }
     },
     "gaps": 1,
     "recent": [
-      {
-        "origin": "2026-11-09#067",
-        "target": "2026-11-09#068",
-        "method": "MODEL_AMBATA",
-        "numbers": [
-          65
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-09#067",
-        "target": "2026-11-09#068",
-        "method": "MODEL_AMBO",
-        "numbers": [
-          65,
-          85
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-09#067",
-        "target": "2026-11-09#068",
-        "method": "MEZZA_DECINA_AMBO",
-        "numbers": [
-          5,
-          6
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-09#067",
-        "target": "2026-11-09#068",
-        "method": "FREQ5_AMBO",
-        "numbers": [
-          7,
-          73
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-09#067",
-        "target": "2026-11-09#068",
-        "method": "SOMMA90_AMBO",
-        "numbers": [
-          28,
-          62
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-09#067",
-        "target": "2026-11-09#068",
-        "method": "FREQ80_AMBO",
-        "numbers": [
-          40,
-          46
-        ],
-        "hit": false
-      },
       {
         "origin": "2026-11-09#068",
         "target": "2026-11-09#069",
@@ -35269,10 +35237,69 @@
           11
         ],
         "hit": false
+      },
+      {
+        "origin": "2026-11-09#092",
+        "target": "2026-11-09#093",
+        "method": "MODEL_AMBATA",
+        "numbers": [
+          87
+        ],
+        "hit": true
+      },
+      {
+        "origin": "2026-11-09#092",
+        "target": "2026-11-09#093",
+        "method": "MODEL_AMBO",
+        "numbers": [
+          53,
+          87
+        ],
+        "hit": true
+      },
+      {
+        "origin": "2026-11-09#092",
+        "target": "2026-11-09#093",
+        "method": "MEZZA_DECINA_AMBO",
+        "numbers": [
+          11,
+          12
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-09#092",
+        "target": "2026-11-09#093",
+        "method": "FREQ5_AMBO",
+        "numbers": [
+          3,
+          12
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-09#092",
+        "target": "2026-11-09#093",
+        "method": "SOMMA90_AMBO",
+        "numbers": [
+          12,
+          78
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-09#092",
+        "target": "2026-11-09#093",
+        "method": "FREQ80_AMBO",
+        "numbers": [
+          11,
+          79
+        ],
+        "hit": false
       }
     ],
-    "observations": 245,
-    "updates": 245,
+    "observations": 246,
+    "updates": 246,
     "warmup_info": {
       "mode": "live_verified",
       "count": 154,
