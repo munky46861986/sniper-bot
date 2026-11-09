@@ -1,51 +1,51 @@
 {
   "schema": 1,
   "version": "DISTANCE_ABC_ONLY_v1.0",
-  "last_key": "2026-11-09#106",
+  "last_key": "2026-11-09#108",
   "last_draw": {
     "day": "2026-11-09",
-    "draw_id": 106,
-    "key": "2026-11-09#106",
-    "time": "08:50",
+    "draw_id": 108,
+    "key": "2026-11-09#108",
+    "time": "09:00",
     "nums": [
-      3,
+      4,
       7,
-      12,
+      10,
+      13,
       21,
-      23,
-      26,
-      33,
+      22,
+      27,
+      38,
       39,
-      40,
-      46,
+      45,
+      48,
       50,
-      52,
-      53,
       54,
-      61,
-      68,
-      75,
-      81,
-      88,
-      90
+      55,
+      58,
+      63,
+      65,
+      66,
+      83,
+      87
     ]
   },
   "active": {
-    "2026-11-09#103:B": {
-      "id": "2026-11-09#103:B",
+    "2026-11-09#107:B": {
+      "id": "2026-11-09#107:B",
       "method": "B",
       "origin_day": "2026-11-09",
-      "origin_draw": 103,
-      "origin_key": "2026-11-09#103",
+      "origin_draw": 107,
+      "origin_key": "2026-11-09#107",
       "pair": [
-        27,
-        35
+        29,
+        41
       ],
-      "distance": 8,
-      "step": 3,
+      "distance": 12,
+      "step": 1,
       "h1": 0,
       "h4": null,
-      "h4_cost": 3.0,
+      "h4_cost": 1.0,
       "h1_cost": 1.0,
       "first_hit": null,
       "reason": ""
@@ -65,14 +65,14 @@
       "interrupted": 4
     },
     "B": {
-      "signals": 803,
-      "h1_checked": 801,
+      "signals": 804,
+      "h1_checked": 802,
       "h1_hits": 35,
-      "h1_cost": 801.0,
+      "h1_cost": 802.0,
       "h1_return": 490.0,
-      "h4_closed": 795,
+      "h4_closed": 796,
       "h4_hits": 141,
-      "h4_cost": 2988.0,
+      "h4_cost": 2990.0,
       "h4_return": 1974.0,
       "interrupted": 7
     },
@@ -396,14 +396,14 @@
     },
     "2026-11-09": {
       "B": {
-        "signals": 36,
-        "h1_checked": 36,
+        "signals": 37,
+        "h1_checked": 37,
         "h1_hits": 3,
-        "h1_cost": 36.0,
+        "h1_cost": 37.0,
         "h1_return": 42.0,
-        "h4_closed": 35,
+        "h4_closed": 36,
         "h4_hits": 8,
-        "h4_cost": 129.0,
+        "h4_cost": 131.0,
         "h4_return": 112.0,
         "interrupted": 0
       },
@@ -24183,11 +24183,30 @@
       "h1_cost": 1.0,
       "first_hit": null,
       "reason": ""
+    },
+    {
+      "id": "2026-11-09#103:B",
+      "method": "B",
+      "origin_day": "2026-11-09",
+      "origin_draw": 103,
+      "origin_key": "2026-11-09#103",
+      "pair": [
+        27,
+        35
+      ],
+      "distance": 8,
+      "step": 4,
+      "h1": 0,
+      "h4": 0,
+      "h4_cost": 4.0,
+      "h1_cost": 1.0,
+      "first_hit": null,
+      "reason": ""
     }
   ],
   "gaps": 8,
   "started_at": "2026-11-01 11:46:27",
-  "last_updated": "2026-11-09 08:51:12",
+  "last_updated": "2026-11-09 09:00:37",
   "orari_shadow": {
     "schema": 1,
     "version": "ORARI_CINQUINE_v1.1_SHADOW",
@@ -24239,35 +24258,40 @@
         "interrotti": 0
       },
       "LUNEDI": {
-        "estrazioni": 11,
-        "numeri_totali": 12,
+        "estrazioni": 12,
+        "numeri_totali": 15,
         "zero": 2,
         "uno": 6,
         "due": 3,
-        "tre": 0,
+        "tre": 1,
         "quattro": 0,
         "cinque": 0,
-        "estrazioni_con_ambo": 3,
-        "estrazioni_con_terno": 0,
-        "ambi_combinazioni": 3,
-        "terni_combinazioni": 0,
+        "estrazioni_con_ambo": 4,
+        "estrazioni_con_terno": 1,
+        "ambi_combinazioni": 6,
+        "terni_combinazioni": 1,
         "coppie": {
           "49-79": 1,
           "08-36": 1,
-          "08-79": 1
+          "08-79": 1,
+          "36-49": 1,
+          "36-88": 1,
+          "49-88": 1
         },
-        "triplette": {}
+        "triplette": {
+          "36-49-88": 1
+        }
       },
       "FISSO_ambi_LUNEDI_36_79": {
-        "verifiche": 11,
+        "verifiche": 12,
         "presenze": 0
       },
       "FISSO_ambi_LUNEDI_36_88": {
-        "verifiche": 11,
-        "presenze": 0
+        "verifiche": 12,
+        "presenze": 1
       },
       "FISSO_terni_LUNEDI_36_79_88": {
-        "verifiche": 11,
+        "verifiche": 12,
         "presenze": 0
       }
     },
@@ -24345,35 +24369,40 @@
       },
       "2026-11-09": {
         "LUNEDI": {
-          "estrazioni": 11,
-          "numeri_totali": 12,
+          "estrazioni": 12,
+          "numeri_totali": 15,
           "zero": 2,
           "uno": 6,
           "due": 3,
-          "tre": 0,
+          "tre": 1,
           "quattro": 0,
           "cinque": 0,
-          "estrazioni_con_ambo": 3,
-          "estrazioni_con_terno": 0,
-          "ambi_combinazioni": 3,
-          "terni_combinazioni": 0,
+          "estrazioni_con_ambo": 4,
+          "estrazioni_con_terno": 1,
+          "ambi_combinazioni": 6,
+          "terni_combinazioni": 1,
           "coppie": {
             "49-79": 1,
             "08-36": 1,
-            "08-79": 1
+            "08-79": 1,
+            "36-49": 1,
+            "36-88": 1,
+            "49-88": 1
           },
-          "triplette": {}
+          "triplette": {
+            "36-49-88": 1
+          }
         },
         "FISSO_ambi_LUNEDI_36_79": {
-          "verifiche": 11,
+          "verifiche": 12,
           "presenze": 0
         },
         "FISSO_ambi_LUNEDI_36_88": {
-          "verifiche": 11,
-          "presenze": 0
+          "verifiche": 12,
+          "presenze": 1
         },
         "FISSO_terni_LUNEDI_36_79_88": {
-          "verifiche": 11,
+          "verifiche": 12,
           "presenze": 0
         }
       }
@@ -24575,6 +24604,17 @@
         "presenti": [
           88
         ]
+      },
+      {
+        "date": "2026-11-09",
+        "time": "08:55",
+        "code": "LUNEDI",
+        "draw": 107,
+        "presenti": [
+          36,
+          49,
+          88
+        ]
       }
     ]
   },
@@ -24582,64 +24622,8 @@
     "schema": 1,
     "version": "R2F3_SHADOW_H1_v1.2",
     "started_at": "2026-11-07 16:04:58",
-    "last_key": "2026-11-09#106",
+    "last_key": "2026-11-09#108",
     "history": [
-      {
-        "key": "2026-11-09#027",
-        "day": "2026-11-09",
-        "draw_id": 27,
-        "time": "02:15",
-        "nums": [
-          4,
-          6,
-          7,
-          9,
-          11,
-          13,
-          24,
-          26,
-          30,
-          31,
-          34,
-          38,
-          39,
-          42,
-          43,
-          44,
-          46,
-          47,
-          62,
-          86
-        ]
-      },
-      {
-        "key": "2026-11-09#028",
-        "day": "2026-11-09",
-        "draw_id": 28,
-        "time": "02:20",
-        "nums": [
-          1,
-          4,
-          7,
-          11,
-          16,
-          20,
-          22,
-          24,
-          26,
-          29,
-          35,
-          36,
-          46,
-          50,
-          52,
-          58,
-          70,
-          78,
-          86,
-          87
-        ]
-      },
       {
         "key": "2026-11-09#029",
         "day": "2026-11-09",
@@ -26823,6 +26807,62 @@
           88,
           90
         ]
+      },
+      {
+        "key": "2026-11-09#107",
+        "day": "2026-11-09",
+        "draw_id": 107,
+        "time": "08:55",
+        "nums": [
+          1,
+          9,
+          11,
+          13,
+          18,
+          22,
+          29,
+          33,
+          35,
+          36,
+          39,
+          41,
+          45,
+          49,
+          55,
+          58,
+          65,
+          87,
+          88,
+          89
+        ]
+      },
+      {
+        "key": "2026-11-09#108",
+        "day": "2026-11-09",
+        "draw_id": 108,
+        "time": "09:00",
+        "nums": [
+          4,
+          7,
+          10,
+          13,
+          21,
+          22,
+          27,
+          38,
+          39,
+          45,
+          48,
+          50,
+          54,
+          55,
+          58,
+          63,
+          65,
+          66,
+          83,
+          87
+        ]
       }
     ],
     "active": {},
@@ -27494,60 +27534,6 @@
     "schema": 1,
     "version": "LAB_DECINE_COLONNE_SPECCHIO_v1.6_FULL_2025_WARMUP_ARCHIVIO",
     "history": [
-      {
-        "key": "2026-11-08#154",
-        "day": "2026-11-08",
-        "draw_id": 154,
-        "nums": [
-          2,
-          5,
-          7,
-          14,
-          17,
-          19,
-          21,
-          27,
-          29,
-          35,
-          38,
-          43,
-          44,
-          50,
-          64,
-          76,
-          83,
-          84,
-          85,
-          89
-        ]
-      },
-      {
-        "key": "2026-11-08#155",
-        "day": "2026-11-08",
-        "draw_id": 155,
-        "nums": [
-          3,
-          4,
-          11,
-          15,
-          19,
-          30,
-          31,
-          37,
-          40,
-          60,
-          66,
-          67,
-          70,
-          75,
-          76,
-          78,
-          79,
-          84,
-          87,
-          88
-        ]
-      },
       {
         "key": "2026-11-08#156",
         "day": "2026-11-08",
@@ -33973,270 +33959,206 @@
           88,
           90
         ]
+      },
+      {
+        "key": "2026-11-09#107",
+        "day": "2026-11-09",
+        "draw_id": 107,
+        "nums": [
+          1,
+          9,
+          11,
+          13,
+          18,
+          22,
+          29,
+          33,
+          35,
+          36,
+          39,
+          41,
+          45,
+          49,
+          55,
+          58,
+          65,
+          87,
+          88,
+          89
+        ]
+      },
+      {
+        "key": "2026-11-09#108",
+        "day": "2026-11-09",
+        "draw_id": 108,
+        "nums": [
+          4,
+          7,
+          10,
+          13,
+          21,
+          22,
+          27,
+          38,
+          39,
+          45,
+          48,
+          50,
+          54,
+          55,
+          58,
+          63,
+          65,
+          66,
+          83,
+          87
+        ]
       }
     ],
-    "last_key": "2026-11-09#106",
+    "last_key": "2026-11-09#108",
     "pretrained_model_id": "LAB_STRUTTURE_2025_01_01__09_28_FULL_V2",
     "pretrained_through": "2025-09-28",
     "historical_training_origins": 77134,
     "active": {
-      "origin_key": "2026-11-09#106",
+      "origin_key": "2026-11-09#108",
       "choices": {
         "MODEL_AMBATA": [
-          65
+          41
         ],
         "MODEL_AMBO": [
-          65,
-          85
+          41,
+          71
         ],
         "MEZZA_DECINA_AMBO": [
-          3,
-          4
+          26,
+          29
         ],
         "FREQ5_AMBO": [
-          2,
-          26
+          13,
+          33
         ],
         "SOMMA90_AMBO": [
           13,
           77
         ],
         "FREQ80_AMBO": [
-          77,
-          84
+          33,
+          77
         ]
       }
     },
     "latest": {
-      "origin_key": "2026-11-09#106",
+      "origin_key": "2026-11-09#108",
       "choices": {
         "MODEL_AMBATA": [
-          65
+          41
         ],
         "MODEL_AMBO": [
-          65,
-          85
+          41,
+          71
         ],
         "MEZZA_DECINA_AMBO": [
-          3,
-          4
+          26,
+          29
         ],
         "FREQ5_AMBO": [
-          2,
-          26
+          13,
+          33
         ],
         "SOMMA90_AMBO": [
           13,
           77
         ],
         "FREQ80_AMBO": [
-          77,
-          84
+          33,
+          77
         ]
       },
       "top20": [
-        65,
-        85,
-        87,
-        67,
+        41,
+        71,
+        44,
         61,
-        66,
+        31,
+        70,
+        81,
+        42,
+        72,
+        40,
+        43,
+        63,
         11,
+        74,
+        16,
         86,
         69,
-        41,
-        5,
-        83,
-        88,
-        81,
-        44,
-        64,
-        68,
-        63,
         15,
-        31
+        64,
+        83
       ]
     },
     "online_w": [
-      -0.0006415518539369876,
-      -0.003905377776327491,
-      0.002097196494277948,
-      -0.0032291059141455556,
-      -0.003828314219103747,
-      -0.0017333764988428633,
-      -0.0031803042056087628,
-      -0.0031373766229366644,
-      -0.002666563374973178,
-      -0.0006730266737856193,
-      -0.0006268129269587577,
-      -0.0006459192427940379,
-      -0.0030827931502683953,
-      0.001387433051891102,
-      7.399089183211105e-05,
-      -0.0012449341342731872,
-      -0.0015388267065303098,
-      -0.001180527107846757
+      -0.0006997333775516502,
+      -0.003966755549434038,
+      0.0019323544404059628,
+      -0.0031430669980379447,
+      -0.0038338690182006703,
+      -0.0017263425428864143,
+      -0.0031577322902533694,
+      -0.0031837291870675426,
+      -0.0026568975699770942,
+      -0.0007277212566914138,
+      -0.000688602745201123,
+      -0.0006919637540721441,
+      -0.0031725604078456067,
+      0.001359725948955004,
+      6.1447786678283e-05,
+      -0.0012979698601287247,
+      -0.001612672251471777,
+      -0.0013289996213810508
     ],
-    "online_b": -1.2527653722383922,
-    "learned_draws": 232,
+    "online_b": -1.252765453589906,
+    "learned_draws": 234,
     "stats": {
       "MODEL_AMBATA": {
-        "signals": 234,
-        "checked": 232,
-        "hits": 60,
+        "signals": 236,
+        "checked": 234,
+        "hits": 61,
         "unverifiable": 1
       },
       "MODEL_AMBO": {
-        "signals": 234,
-        "checked": 232,
+        "signals": 236,
+        "checked": 234,
         "hits": 17,
         "unverifiable": 1
       },
       "MEZZA_DECINA_AMBO": {
-        "signals": 234,
-        "checked": 232,
+        "signals": 236,
+        "checked": 234,
         "hits": 13,
         "unverifiable": 1
       },
       "FREQ5_AMBO": {
-        "signals": 234,
-        "checked": 232,
+        "signals": 236,
+        "checked": 234,
         "hits": 9,
         "unverifiable": 1
       },
       "SOMMA90_AMBO": {
-        "signals": 234,
-        "checked": 232,
+        "signals": 236,
+        "checked": 234,
         "hits": 13,
         "unverifiable": 1
       },
       "FREQ80_AMBO": {
-        "signals": 234,
-        "checked": 232,
+        "signals": 236,
+        "checked": 234,
         "hits": 11,
         "unverifiable": 1
       }
     },
     "gaps": 1,
     "recent": [
-      {
-        "origin": "2026-11-09#081",
-        "target": "2026-11-09#082",
-        "method": "MODEL_AMBATA",
-        "numbers": [
-          8
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-09#081",
-        "target": "2026-11-09#082",
-        "method": "MODEL_AMBO",
-        "numbers": [
-          5,
-          8
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-09#081",
-        "target": "2026-11-09#082",
-        "method": "MEZZA_DECINA_AMBO",
-        "numbers": [
-          77,
-          79
-        ],
-        "hit": true
-      },
-      {
-        "origin": "2026-11-09#081",
-        "target": "2026-11-09#082",
-        "method": "FREQ5_AMBO",
-        "numbers": [
-          12,
-          16
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-09#081",
-        "target": "2026-11-09#082",
-        "method": "SOMMA90_AMBO",
-        "numbers": [
-          11,
-          79
-        ],
-        "hit": true
-      },
-      {
-        "origin": "2026-11-09#081",
-        "target": "2026-11-09#082",
-        "method": "FREQ80_AMBO",
-        "numbers": [
-          11,
-          36
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-09#082",
-        "target": "2026-11-09#083",
-        "method": "MODEL_AMBATA",
-        "numbers": [
-          8
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-09#082",
-        "target": "2026-11-09#083",
-        "method": "MODEL_AMBO",
-        "numbers": [
-          8,
-          88
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-09#082",
-        "target": "2026-11-09#083",
-        "method": "MEZZA_DECINA_AMBO",
-        "numbers": [
-          77,
-          79
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-09#082",
-        "target": "2026-11-09#083",
-        "method": "FREQ5_AMBO",
-        "numbers": [
-          12,
-          16
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-09#082",
-        "target": "2026-11-09#083",
-        "method": "SOMMA90_AMBO",
-        "numbers": [
-          11,
-          79
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-09#082",
-        "target": "2026-11-09#083",
-        "method": "FREQ80_AMBO",
-        "numbers": [
-          11,
-          36
-        ],
-        "hit": false
-      },
       {
         "origin": "2026-11-09#083",
         "target": "2026-11-09#084",
@@ -35593,10 +35515,128 @@
           62
         ],
         "hit": false
+      },
+      {
+        "origin": "2026-11-09#106",
+        "target": "2026-11-09#107",
+        "method": "MODEL_AMBATA",
+        "numbers": [
+          65
+        ],
+        "hit": true
+      },
+      {
+        "origin": "2026-11-09#106",
+        "target": "2026-11-09#107",
+        "method": "MODEL_AMBO",
+        "numbers": [
+          65,
+          85
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-09#106",
+        "target": "2026-11-09#107",
+        "method": "MEZZA_DECINA_AMBO",
+        "numbers": [
+          3,
+          4
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-09#106",
+        "target": "2026-11-09#107",
+        "method": "FREQ5_AMBO",
+        "numbers": [
+          2,
+          26
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-09#106",
+        "target": "2026-11-09#107",
+        "method": "SOMMA90_AMBO",
+        "numbers": [
+          13,
+          77
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-09#106",
+        "target": "2026-11-09#107",
+        "method": "FREQ80_AMBO",
+        "numbers": [
+          77,
+          84
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-09#107",
+        "target": "2026-11-09#108",
+        "method": "MODEL_AMBATA",
+        "numbers": [
+          41
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-09#107",
+        "target": "2026-11-09#108",
+        "method": "MODEL_AMBO",
+        "numbers": [
+          41,
+          61
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-09#107",
+        "target": "2026-11-09#108",
+        "method": "MEZZA_DECINA_AMBO",
+        "numbers": [
+          26,
+          29
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-09#107",
+        "target": "2026-11-09#108",
+        "method": "FREQ5_AMBO",
+        "numbers": [
+          3,
+          33
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-09#107",
+        "target": "2026-11-09#108",
+        "method": "SOMMA90_AMBO",
+        "numbers": [
+          13,
+          77
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-09#107",
+        "target": "2026-11-09#108",
+        "method": "FREQ80_AMBO",
+        "numbers": [
+          33,
+          77
+        ],
+        "hit": false
       }
     ],
-    "observations": 259,
-    "updates": 259,
+    "observations": 261,
+    "updates": 261,
     "warmup_info": {
       "mode": "live_verified",
       "count": 154,
