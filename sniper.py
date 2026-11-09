@@ -1,3 +1,4 @@
+# FIX v1.7 — Retry Telegram Bot API su timeout in fase initialize; LAB 2025 e metodi invariati.
 # NOVITA LAB v1.6: warmup archivio GIORNATA INTERA + fonte LIVE; memoria LAB anche parziale.
 # ============================================================
 # VERSIONE ATTIVA: DISTANCE ABC + ORARI + R2/F3 + LAB STRUTTURE v1.5
@@ -8231,6 +8232,29 @@ async def abc_fetch_loop(tracker, app):
             await asyncio.sleep(max(30, LOOP_SEC))
 
 
+async def abc_initialize_telegram_with_retry(app, max_attempts=12):
+    """Non arrestare Superambo3 per un timeout transitorio di Telegram getMe.
+
+    Riutilizza la stessa Application; NON tocca file di stato o pesi del LAB.
+    Gli errori di credenziali e gli errori di programmazione NON vengono nascosti.
+    """
+    from telegram.error import NetworkError
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await app.initialize()
+            console_log(f"TELEGRAM STARTUP: inizializzazione OK al tentativo {attempt}")
+            return
+        except NetworkError as exc:
+            if attempt == max_attempts:
+                console_log(f"TELEGRAM STARTUP: rete ancora non disponibile dopo {max_attempts} tentativi")
+                raise
+            delay = min(12 * attempt, 90)
+            console_log(f"TELEGRAM STARTUP: {type(exc).__name__}: {exc}; "
+                        f"tentativo {attempt}/{max_attempts}; nuovo tentativo tra {delay}s")
+            await asyncio.sleep(delay)
+
+
 async def abc_main():
     if "--lab-self-test" in sys.argv:
         lab_self_test()
@@ -8244,7 +8268,11 @@ async def abc_main():
     acquire_single_instance_lock()  # blocca ogni altra istanza con lo stesso lock legacy
     if not TOKEN or CHAT_ID is None:
         raise RuntimeError("Configura BOT_TOKEN e CHAT_ID; non inserirli nel codice")
-    app = ApplicationBuilder().token(TOKEN).build()
+    # Timeout maggiori per i runner GitHub Actions: default 5s troppo aggressivo.
+    app = (ApplicationBuilder().token(TOKEN)
+           .connect_timeout(25).read_timeout(35)
+           .write_timeout(35).pool_timeout(35)
+           .build())
     tracker = DistanceABCTracker()
     app.bot_data["abc_tracker"] = tracker
     for key in ["abc", "a", "b", "c", "oggi", "status", "menu", "pausestato",
@@ -8255,17 +8283,26 @@ async def abc_main():
                 "v70", "v72", "v114", "v121", "verificatutto", "ordineapi",
                 "ambiapi", "ordinecsv"]:
         app.add_handler(CommandHandler(key, abc_cmd))
-    await app.initialize()
-    await app.start()
-    await abc_setup_commands(app)
-    await app.updater.start_polling(drop_pending_updates=True)
+    await abc_initialize_telegram_with_retry(app)
     try:
+        await app.start()
+        # I menu Telegram sono utili ma non devono bloccare il motore se Telegram tarda.
+        try:
+            await abc_setup_commands(app)
+        except Exception as exc:
+            from telegram.error import NetworkError
+            if not isinstance(exc, NetworkError):
+                raise
+            console_log(f"TELEGRAM SET_COMMANDS: rete non disponibile, proseguo: {exc}")
+        await app.updater.start_polling(drop_pending_updates=True)
         await abc_fetch_loop(tracker, app)
     finally:
         last = tracker.save(git=True, force=True)
         console_log("ABC CHIUSURA: " + last)
-        await app.updater.stop()
-        await app.stop()
+        if app.updater and app.updater.running:
+            await app.updater.stop()
+        if app.running:
+            await app.stop()
         await app.shutdown()
 
 
