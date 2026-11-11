@@ -7273,6 +7273,9 @@ def lab_self_test():
     print('LAB_SELF_TEST_OK: feature/ranking/somma90/top20',flush=True)
 
 
+from v212_shadow import v212_process, v212_report
+
+
 class DistanceABCTracker:
     """Tracker forward-only per A/B/C. Nessun accesso allo state legacy."""
 
@@ -7410,11 +7413,13 @@ class DistanceABCTracker:
         orari_messages = abc_orari_update(self, prev, row, gap=gap)
         rf_changes = rf_update(self, row, gap=gap, arm=create_new)
         lab_changes = lab_update(self, row, gap=gap, arm=create_new)
+        v212_changes = v212_process(self, row, gap=gap)
         new_signals = self._arm(row) if create_new else []
         self.data["last_updated"] = now_txt()
         self.dirty = True
         return {"new": True, "results": results, "signals": new_signals, "gap": gap,
-                "orari": orari_messages, "rf": rf_changes, "lab": lab_changes}
+                "orari": orari_messages, "rf": rf_changes, "lab": lab_changes,
+                "v212": v212_changes}
 
     def bootstrap(self, row, arm_if_fresh=True):
         if self.data.get("last_key"):
@@ -8090,10 +8095,16 @@ async def abc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             output = 'LAB warmup non completato: ' + type(exc).__name__ + ': ' + str(exc)[:240]
     elif command in {"lab", "laboratorio", "labstats", "laboggi"}:
         output = lab_report(tracker)
+    elif command == "v212":
+        output = v212_report(tracker)
+    elif command == "v212oggi":
+        output = v212_report(tracker, day=now_dt().strftime("%Y-%m-%d"))
+    elif command == "v212segnali":
+        output = v212_report(tracker, recent=True)
     elif command in {"abc", "status"}:
         output = tracker.report()
     elif command == "menu":
-        output = "🎯 DISTANCE ABC + ORARI + R2/F3 SHADOW\n/abc /a /b /c /oggi /orari /orarioggi /ambiterni /fasce\n/ritardi /ritardioggi /ritardisegnali /r2f3\n/lab /labwarmup /laboratorio /labstats /pausestato\nVecchi metodi in pausa. Nessuna puntata reale."
+        output = "🎯 DISTANCE ABC + ORARI + R2/F3 + V212 SHADOW\n/abc /a /b /c /oggi /orari /orarioggi /ambiterni /fasce\n/ritardi /ritardioggi /ritardisegnali /r2f3\n/lab /labwarmup /laboratorio /labstats /pausestato\nVecchi metodi in pausa. Nessuna puntata reale."
     elif command == "pausestato":
         output = "⏸️ V27/V28/V38/V52/V55/V56/V67/V70/V72/V114/V121/MULTI/ORDINE: TUTTI IN PAUSA.\n✅ Attivi ABC, monitor ORARI, 3 metodi R2/F3 e LAB STRUTTURE in SHADOW. Nessuna puntata reale."
     else:
@@ -8104,6 +8115,9 @@ async def abc_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def abc_setup_commands(app):
     await app.bot.set_my_commands([
         BotCommand("abc", "Riepilogo completo distanza A B C"),
+        BotCommand("v212", "Nuovo selettore ambi V212 SHADOW"),
+        BotCommand("v212oggi", "V212 risultati di oggi"),
+        BotCommand("v212segnali", "V212 ultimi segnali"),
         BotCommand("a", "Metodo A P3-P19 distanza <=60"),
         BotCommand("b", "Metodo B P7-P12 distanza <=18"),
         BotCommand("c", "Metodo C P1-P7 distanza <=15"),
@@ -8175,6 +8189,8 @@ async def abc_fetch_loop(tracker, app):
                     newest_key = abc_key(unseen[-1])
                     all_results, all_signals, all_orari = [], [], []
                     all_rf_results, all_rf_signals = [], []
+                    v212_results, v212_signals = [], []
+                    v212_digest = False
                     lab_digest = False
                     gaps = 0
                     for r in unseen:
@@ -8191,6 +8207,10 @@ async def abc_fetch_loop(tracker, app):
                         if changes.get("rf"):
                             all_rf_results.extend(changes["rf"].get("results", []))
                             all_rf_signals.extend(changes["rf"].get("signals", []))
+                        if changes.get("v212"):
+                            v212_results.extend(changes["v212"].get("results", []))
+                            v212_signals.extend(changes["v212"].get("signals", []))
+                            v212_digest = v212_digest or changes["v212"].get("digest", False)
                     save_result = tracker.save(git=True)
                     console_log(f"ABC {newest_key} | nuovi={len(unseen)} segnali={len(all_signals)} gaps={gaps} | {save_result}")
                     # Per un catch-up lungo non mandiamo decine di messaggi arretrati.
@@ -8203,6 +8223,8 @@ async def abc_fetch_loop(tracker, app):
                                            "\n".join(all_orari[-2:]))
                         if lab_digest:
                             await abc_send(app, lab_report(tracker))
+                        if v212_results or v212_signals or v212_digest:
+                            await abc_send(app, v212_report(tracker))
                     else:
                         parts = [f"🔎 DISTANCE ABC | {newest_key}"]
                         if ABC_NOTIFY_RESULTS and all_results:
@@ -8219,6 +8241,12 @@ async def abc_fetch_loop(tracker, app):
                             parts.append("NUOVI AMBI R2/F3 SHADOW (prossimo H1):\n" + "\n".join(all_rf_signals[-8:]))
                         if lab_digest:
                             parts.append(lab_report(tracker))
+                        if v212_results:
+                            parts.append("V212 ESITI SHADOW:\n" + "\n".join(v212_results[-5:]))
+                        if v212_signals:
+                            parts.append("V212 NUOVI AMBI SHADOW:\n" + "\n".join(v212_signals[-5:]))
+                        if v212_digest:
+                            parts.append(v212_report(tracker))
                         if len(parts) > 1:
                             await abc_send(app, "\n\n".join(parts))
             last_error = ""
@@ -8276,6 +8304,7 @@ async def abc_main():
     tracker = DistanceABCTracker()
     app.bot_data["abc_tracker"] = tracker
     for key in ["abc", "a", "b", "c", "oggi", "status", "menu", "pausestato",
+                "v212", "v212oggi", "v212segnali",
                 "orari", "orarioggi", "ambiterni", "fasce",
                 "ritardi", "ritardioggi", "ritardisegnali", "r2f3",
                 "lab", "laboratorio", "labstats", "laboggi", "labwarmup",
