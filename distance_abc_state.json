@@ -1,52 +1,71 @@
 {
   "schema": 1,
   "version": "DISTANCE_ABC_ONLY_v1.0",
-  "last_key": "2026-11-12#012",
+  "last_key": "2026-11-12#014",
   "last_draw": {
     "day": "2026-11-12",
-    "draw_id": 12,
-    "key": "2026-11-12#012",
-    "time": "01:00",
+    "draw_id": 14,
+    "key": "2026-11-12#014",
+    "time": "01:10",
     "nums": [
+      3,
       6,
-      7,
-      8,
-      15,
+      9,
+      10,
+      13,
+      16,
+      25,
       26,
-      29,
-      34,
-      38,
+      30,
+      33,
       39,
-      48,
-      53,
-      57,
-      63,
-      64,
-      65,
-      69,
+      41,
+      43,
+      59,
+      61,
+      62,
       70,
       80,
       81,
-      83
+      89
     ]
   },
   "active": {
-    "2026-11-12#009:A": {
-      "id": "2026-11-12#009:A",
-      "method": "A",
+    "2026-11-12#013:B": {
+      "id": "2026-11-12#013:B",
+      "method": "B",
       "origin_day": "2026-11-12",
-      "origin_draw": 9,
-      "origin_key": "2026-11-12#009",
+      "origin_draw": 13,
+      "origin_key": "2026-11-12#013",
       "pair": [
-        25,
-        80
+        21,
+        34
       ],
-      "distance": 55,
-      "step": 3,
+      "distance": 13,
+      "step": 1,
       "h1": 0,
       "h4": null,
-      "h4_cost": 3.0,
+      "h4_cost": 1.0,
       "h1_cost": 1.0,
+      "first_hit": null,
+      "reason": ""
+    },
+    "2026-11-12#014:B": {
+      "id": "2026-11-12#014:B",
+      "method": "B",
+      "origin_day": "2026-11-12",
+      "origin_draw": 14,
+      "origin_key": "2026-11-12#014",
+      "pair": [
+        25,
+        41
+      ],
+      "distance": 16,
+      "step": 0,
+      "h1": null,
+      "h4": null,
+      "h4_cost": 0.0,
+      "h1_cost": 0.0,
       "first_hit": null,
       "reason": ""
     }
@@ -58,21 +77,21 @@
       "h1_hits": 16,
       "h1_cost": 373.0,
       "h1_return": 224.0,
-      "h4_closed": 369,
+      "h4_closed": 370,
       "h4_hits": 68,
-      "h4_cost": 1378.0,
+      "h4_cost": 1379.0,
       "h4_return": 952.0,
       "interrupted": 4
     },
     "B": {
-      "signals": 1085,
-      "h1_checked": 1081,
+      "signals": 1087,
+      "h1_checked": 1082,
       "h1_hits": 53,
-      "h1_cost": 1081.0,
+      "h1_cost": 1082.0,
       "h1_return": 742.0,
       "h4_closed": 1071,
       "h4_hits": 188,
-      "h4_cost": 4013.0,
+      "h4_cost": 4014.0,
       "h4_return": 2632.0,
       "interrupted": 14
     },
@@ -515,9 +534,21 @@
         "h1_hits": 0,
         "h1_cost": 2.0,
         "h1_return": 0.0,
-        "h4_closed": 1,
+        "h4_closed": 2,
         "h4_hits": 0,
-        "h4_cost": 7.0,
+        "h4_cost": 8.0,
+        "h4_return": 0.0,
+        "interrupted": 0
+      },
+      "B": {
+        "signals": 2,
+        "h1_checked": 1,
+        "h1_hits": 0,
+        "h1_cost": 1.0,
+        "h1_return": 0.0,
+        "h4_closed": 0,
+        "h4_hits": 0,
+        "h4_cost": 1.0,
         "h4_return": 0.0,
         "interrupted": 0
       }
@@ -32747,11 +32778,30 @@
       "h1_cost": 1.0,
       "first_hit": null,
       "reason": ""
+    },
+    {
+      "id": "2026-11-12#009:A",
+      "method": "A",
+      "origin_day": "2026-11-12",
+      "origin_draw": 9,
+      "origin_key": "2026-11-12#009",
+      "pair": [
+        25,
+        80
+      ],
+      "distance": 55,
+      "step": 4,
+      "h1": 0,
+      "h4": 0,
+      "h4_cost": 4.0,
+      "h1_cost": 1.0,
+      "first_hit": null,
+      "reason": ""
     }
   ],
   "gaps": 11,
   "started_at": "2026-11-01 11:46:27",
-  "last_updated": "2026-11-12 01:01:30",
+  "last_updated": "2026-11-12 01:11:53",
   "orari_shadow": {
     "schema": 1,
     "version": "ORARI_CINQUINE_v1.1_SHADOW",
@@ -33583,7 +33633,7 @@
     "schema": 1,
     "version": "R2F3_SHADOW_H1_v1.2",
     "started_at": "2026-11-07 16:04:58",
-    "last_key": "2026-11-12#012",
+    "last_key": "2026-11-12#014",
     "history": [
       {
         "key": "2026-11-12#001",
@@ -33919,6 +33969,62 @@
           80,
           81,
           83
+        ]
+      },
+      {
+        "key": "2026-11-12#013",
+        "day": "2026-11-12",
+        "draw_id": 13,
+        "time": "01:05",
+        "nums": [
+          2,
+          3,
+          4,
+          5,
+          10,
+          11,
+          21,
+          26,
+          27,
+          28,
+          33,
+          34,
+          42,
+          43,
+          48,
+          56,
+          61,
+          85,
+          88,
+          90
+        ]
+      },
+      {
+        "key": "2026-11-12#014",
+        "day": "2026-11-12",
+        "draw_id": 14,
+        "time": "01:10",
+        "nums": [
+          3,
+          6,
+          9,
+          10,
+          13,
+          16,
+          25,
+          26,
+          30,
+          33,
+          39,
+          41,
+          43,
+          59,
+          61,
+          62,
+          70,
+          80,
+          81,
+          89
         ]
       }
     ],
@@ -36120,60 +36226,6 @@
     "schema": 1,
     "version": "LAB_DECINE_COLONNE_SPECCHIO_v1.6_FULL_2025_WARMUP_ARCHIVIO",
     "history": [
-      {
-        "key": "2026-11-11#060",
-        "day": "2026-11-11",
-        "draw_id": 60,
-        "nums": [
-          2,
-          4,
-          12,
-          18,
-          19,
-          23,
-          34,
-          35,
-          36,
-          40,
-          42,
-          53,
-          60,
-          63,
-          64,
-          73,
-          78,
-          82,
-          88,
-          89
-        ]
-      },
-      {
-        "key": "2026-11-11#061",
-        "day": "2026-11-11",
-        "draw_id": 61,
-        "nums": [
-          3,
-          5,
-          6,
-          8,
-          10,
-          11,
-          13,
-          15,
-          20,
-          26,
-          27,
-          42,
-          46,
-          47,
-          50,
-          53,
-          54,
-          55,
-          62,
-          84
-        ]
-      },
       {
         "key": "2026-11-11#062",
         "day": "2026-11-11",
@@ -42599,270 +42651,206 @@
           81,
           83
         ]
+      },
+      {
+        "key": "2026-11-12#013",
+        "day": "2026-11-12",
+        "draw_id": 13,
+        "nums": [
+          2,
+          3,
+          4,
+          5,
+          10,
+          11,
+          21,
+          26,
+          27,
+          28,
+          33,
+          34,
+          42,
+          43,
+          48,
+          56,
+          61,
+          85,
+          88,
+          90
+        ]
+      },
+      {
+        "key": "2026-11-12#014",
+        "day": "2026-11-12",
+        "draw_id": 14,
+        "nums": [
+          3,
+          6,
+          9,
+          10,
+          13,
+          16,
+          25,
+          26,
+          30,
+          33,
+          39,
+          41,
+          43,
+          59,
+          61,
+          62,
+          70,
+          80,
+          81,
+          89
+        ]
       }
     ],
-    "last_key": "2026-11-12#012",
+    "last_key": "2026-11-12#014",
     "pretrained_model_id": "LAB_STRUTTURE_2025_01_01__09_28_FULL_V2",
     "pretrained_through": "2025-09-28",
     "historical_training_origins": 77134,
     "active": {
-      "origin_key": "2026-11-12#012",
+      "origin_key": "2026-11-12#014",
       "choices": {
         "MODEL_AMBATA": [
-          18
+          53
         ],
         "MODEL_AMBO": [
-          18,
-          38
+          38,
+          53
         ],
         "MEZZA_DECINA_AMBO": [
-          23,
-          24
+          56,
+          59
         ],
         "FREQ5_AMBO": [
-          63,
-          69
+          10,
+          26
         ],
         "SOMMA90_AMBO": [
-          6,
-          84
+          28,
+          62
         ],
         "FREQ80_AMBO": [
-          14,
-          84
+          10,
+          41
         ]
       }
     },
     "latest": {
-      "origin_key": "2026-11-12#012",
+      "origin_key": "2026-11-12#014",
       "choices": {
         "MODEL_AMBATA": [
-          18
+          53
         ],
         "MODEL_AMBO": [
-          18,
-          38
+          38,
+          53
         ],
         "MEZZA_DECINA_AMBO": [
-          23,
-          24
+          56,
+          59
         ],
         "FREQ5_AMBO": [
-          63,
-          69
+          10,
+          26
         ],
         "SOMMA90_AMBO": [
-          6,
-          84
+          28,
+          62
         ],
         "FREQ80_AMBO": [
-          14,
-          84
+          10,
+          41
         ]
       },
       "top20": [
-        18,
+        53,
         38,
-        4,
-        88,
-        13,
+        78,
+        79,
+        52,
+        48,
+        46,
+        75,
+        50,
+        76,
         19,
-        12,
-        89,
+        18,
+        73,
         83,
-        3,
-        82,
+        51,
         36,
-        1,
+        49,
+        15,
         44,
-        14,
-        86,
-        2,
-        5,
-        35,
-        73
+        54
       ]
     },
     "online_w": [
-      -0.0007757770376914411,
-      -0.0021872991272973968,
-      0.00036324396775059826,
-      -0.0032371277247931936,
-      -0.003132430938750712,
-      -0.0018591959143626213,
-      0.00012635501564100401,
-      -0.0038288614898998406,
-      0.0004176210573918465,
-      0.0001792978840931212,
-      0.002316664276419792,
-      0.001486057367901645,
-      0.0008366811310498009,
-      6.808653167922789e-06,
-      -0.0003561921818407305,
-      -0.0011501774677820599,
-      -0.0004368866997338519,
-      -0.001084667791510667
+      -0.0008012374870540564,
+      -0.0021284610422831803,
+      0.0003808825510233392,
+      -0.003231621351129965,
+      -0.0031430810582803183,
+      -0.0019202373978360245,
+      8.791702199722971e-05,
+      -0.00377960103625059,
+      0.0004104809515182378,
+      0.00027828142806664714,
+      0.0023073767584225373,
+      0.0014561772045279156,
+      0.0009121115482163588,
+      6.106132210975569e-05,
+      -0.00041471599934039593,
+      -0.0011687919755676878,
+      -0.0003926735642469301,
+      -0.0010756341831221134
     ],
-    "online_b": -1.2527680295526875,
-    "learned_draws": 996,
+    "online_b": -1.2527681831690096,
+    "learned_draws": 998,
     "stats": {
       "MODEL_AMBATA": {
-        "signals": 1001,
-        "checked": 996,
+        "signals": 1003,
+        "checked": 998,
         "hits": 224,
         "unverifiable": 4
       },
       "MODEL_AMBO": {
-        "signals": 1001,
-        "checked": 996,
+        "signals": 1003,
+        "checked": 998,
         "hits": 47,
         "unverifiable": 4
       },
       "MEZZA_DECINA_AMBO": {
-        "signals": 1001,
-        "checked": 996,
+        "signals": 1003,
+        "checked": 998,
         "hits": 51,
         "unverifiable": 4
       },
       "FREQ5_AMBO": {
-        "signals": 1001,
-        "checked": 996,
+        "signals": 1003,
+        "checked": 998,
         "hits": 52,
         "unverifiable": 4
       },
       "SOMMA90_AMBO": {
-        "signals": 1001,
-        "checked": 996,
+        "signals": 1003,
+        "checked": 998,
         "hits": 59,
         "unverifiable": 4
       },
       "FREQ80_AMBO": {
-        "signals": 1001,
-        "checked": 996,
+        "signals": 1003,
+        "checked": 998,
         "hits": 43,
         "unverifiable": 4
       }
     },
     "gaps": 4,
     "recent": [
-      {
-        "origin": "2026-11-11#273",
-        "target": "2026-11-11#274",
-        "method": "MODEL_AMBATA",
-        "numbers": [
-          43
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-11#273",
-        "target": "2026-11-11#274",
-        "method": "MODEL_AMBO",
-        "numbers": [
-          7,
-          43
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-11#273",
-        "target": "2026-11-11#274",
-        "method": "MEZZA_DECINA_AMBO",
-        "numbers": [
-          48,
-          49
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-11#273",
-        "target": "2026-11-11#274",
-        "method": "FREQ5_AMBO",
-        "numbers": [
-          13,
-          38
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-11#273",
-        "target": "2026-11-11#274",
-        "method": "SOMMA90_AMBO",
-        "numbers": [
-          11,
-          79
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-11#273",
-        "target": "2026-11-11#274",
-        "method": "FREQ80_AMBO",
-        "numbers": [
-          32,
-          86
-        ],
-        "hit": true
-      },
-      {
-        "origin": "2026-11-11#274",
-        "target": "2026-11-11#275",
-        "method": "MODEL_AMBATA",
-        "numbers": [
-          7
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-11#274",
-        "target": "2026-11-11#275",
-        "method": "MODEL_AMBO",
-        "numbers": [
-          7,
-          44
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-11#274",
-        "target": "2026-11-11#275",
-        "method": "MEZZA_DECINA_AMBO",
-        "numbers": [
-          48,
-          49
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-11#274",
-        "target": "2026-11-11#275",
-        "method": "FREQ5_AMBO",
-        "numbers": [
-          13,
-          38
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-11#274",
-        "target": "2026-11-11#275",
-        "method": "SOMMA90_AMBO",
-        "numbers": [
-          11,
-          79
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-11#274",
-        "target": "2026-11-11#275",
-        "method": "FREQ80_AMBO",
-        "numbers": [
-          32,
-          86
-        ],
-        "hit": false
-      },
       {
         "origin": "2026-11-11#275",
         "target": "2026-11-11#276",
@@ -44219,10 +44207,128 @@
           86
         ],
         "hit": false
+      },
+      {
+        "origin": "2026-11-12#012",
+        "target": "2026-11-12#013",
+        "method": "MODEL_AMBATA",
+        "numbers": [
+          18
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-12#012",
+        "target": "2026-11-12#013",
+        "method": "MODEL_AMBO",
+        "numbers": [
+          18,
+          38
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-12#012",
+        "target": "2026-11-12#013",
+        "method": "MEZZA_DECINA_AMBO",
+        "numbers": [
+          23,
+          24
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-12#012",
+        "target": "2026-11-12#013",
+        "method": "FREQ5_AMBO",
+        "numbers": [
+          63,
+          69
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-12#012",
+        "target": "2026-11-12#013",
+        "method": "SOMMA90_AMBO",
+        "numbers": [
+          6,
+          84
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-12#012",
+        "target": "2026-11-12#013",
+        "method": "FREQ80_AMBO",
+        "numbers": [
+          14,
+          84
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-12#013",
+        "target": "2026-11-12#014",
+        "method": "MODEL_AMBATA",
+        "numbers": [
+          38
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-12#013",
+        "target": "2026-11-12#014",
+        "method": "MODEL_AMBO",
+        "numbers": [
+          18,
+          38
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-12#013",
+        "target": "2026-11-12#014",
+        "method": "MEZZA_DECINA_AMBO",
+        "numbers": [
+          86,
+          87
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-12#013",
+        "target": "2026-11-12#014",
+        "method": "FREQ5_AMBO",
+        "numbers": [
+          26,
+          34
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-12#013",
+        "target": "2026-11-12#014",
+        "method": "SOMMA90_AMBO",
+        "numbers": [
+          24,
+          66
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-12#013",
+        "target": "2026-11-12#014",
+        "method": "FREQ80_AMBO",
+        "numbers": [
+          41,
+          84
+        ],
+        "hit": false
       }
     ],
-    "observations": 1026,
-    "updates": 1026,
+    "observations": 1028,
+    "updates": 1028,
     "warmup_info": {
       "mode": "live_verified",
       "count": 240,
@@ -44233,7 +44339,7 @@
   "v212_shadow": {
     "schema": 1,
     "version": "V212_SHADOW_2026_11",
-    "last_key": "2026-11-12#012",
+    "last_key": "2026-11-12#014",
     "active": {},
     "finished": [
       {
@@ -45044,6 +45150,6 @@
       "first_hit": null,
       "status": "OPEN"
     },
-    "processed": 129
+    "processed": 131
   }
 }
