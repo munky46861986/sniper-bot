@@ -1,0 +1,23 @@
+name: V214 coverage shadow tests
+on:
+  pull_request:
+    paths:
+      - 'sniper.py'
+      - 'v214_coverage_shadow.py'
+      - 'test_v214_shadow.py'
+      - '.github/workflows/v214-shadow-ci.yml'
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python compile
+        run: python -m py_compile sniper.py v212_shadow.py v214_coverage_shadow.py test_v214_shadow.py
+      - name: Offline tests
+        run: python test_v214_shadow.py
