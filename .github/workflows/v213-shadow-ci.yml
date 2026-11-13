@@ -1,0 +1,23 @@
+name: V213 shadow tests
+on:
+  pull_request:
+    paths:
+      - 'sniper.py'
+      - 'v213_shadow.py'
+      - 'test_v213_shadow.py'
+      - '.github/workflows/v213-shadow-ci.yml'
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile Python
+        run: python -m py_compile sniper.py v212_shadow.py v213_shadow.py test_v213_shadow.py
+      - name: Test V213 shadow
+        run: python test_v213_shadow.py
