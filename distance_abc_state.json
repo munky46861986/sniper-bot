@@ -1,55 +1,36 @@
 {
   "schema": 1,
   "version": "DISTANCE_ABC_ONLY_v1.0",
-  "last_key": "2026-11-14#198",
+  "last_key": "2026-11-14#200",
   "last_draw": {
     "day": "2026-11-14",
-    "draw_id": 198,
-    "key": "2026-11-14#198",
-    "time": "16:30",
+    "draw_id": 200,
+    "key": "2026-11-14#200",
+    "time": "16:40",
     "nums": [
-      13,
+      2,
+      11,
+      12,
       15,
-      22,
-      24,
-      27,
-      31,
-      33,
-      39,
+      21,
       40,
-      42,
-      46,
-      49,
+      43,
       50,
-      51,
       53,
       55,
-      68,
-      82,
-      83,
-      84
+      56,
+      57,
+      59,
+      62,
+      69,
+      71,
+      76,
+      84,
+      85,
+      90
     ]
   },
   "active": {
-    "2026-11-14#195:C": {
-      "id": "2026-11-14#195:C",
-      "method": "C",
-      "origin_day": "2026-11-14",
-      "origin_draw": 195,
-      "origin_key": "2026-11-14#195",
-      "pair": [
-        2,
-        14
-      ],
-      "distance": 12,
-      "step": 3,
-      "h1": 0,
-      "h4": null,
-      "h4_cost": 3.0,
-      "h1_cost": 1.0,
-      "first_hit": null,
-      "reason": ""
-    },
     "2026-11-14#197:B": {
       "id": "2026-11-14#197:B",
       "method": "B",
@@ -61,10 +42,10 @@
         53
       ],
       "distance": 17,
-      "step": 1,
+      "step": 3,
       "h1": 0,
       "h4": null,
-      "h4_cost": 1.0,
+      "h4_cost": 3.0,
       "h1_cost": 1.0,
       "first_hit": null,
       "reason": ""
@@ -80,6 +61,25 @@
         49
       ],
       "distance": 16,
+      "step": 2,
+      "h1": 0,
+      "h4": null,
+      "h4_cost": 2.0,
+      "h1_cost": 1.0,
+      "first_hit": null,
+      "reason": ""
+    },
+    "2026-11-14#200:B": {
+      "id": "2026-11-14#200:B",
+      "method": "B",
+      "origin_day": "2026-11-14",
+      "origin_draw": 200,
+      "origin_key": "2026-11-14#200",
+      "pair": [
+        43,
+        57
+      ],
+      "distance": 14,
       "step": 0,
       "h1": null,
       "h4": null,
@@ -103,14 +103,14 @@
       "interrupted": 8
     },
     "B": {
-      "signals": 1365,
-      "h1_checked": 1359,
+      "signals": 1366,
+      "h1_checked": 1360,
       "h1_hits": 67,
-      "h1_cost": 1359.0,
+      "h1_cost": 1360.0,
       "h1_return": 938.0,
       "h4_closed": 1346,
       "h4_hits": 240,
-      "h4_cost": 5036.0,
+      "h4_cost": 5040.0,
       "h4_return": 3360.0,
       "interrupted": 17
     },
@@ -120,9 +120,9 @@
       "h1_hits": 15,
       "h1_cost": 307.0,
       "h1_return": 210.0,
-      "h4_closed": 303,
+      "h4_closed": 304,
       "h4_hits": 45,
-      "h4_cost": 1148.0,
+      "h4_cost": 1149.0,
       "h4_return": 630.0,
       "interrupted": 4
     }
@@ -636,14 +636,14 @@
         "interrupted": 0
       },
       "B": {
-        "signals": 66,
-        "h1_checked": 65,
+        "signals": 67,
+        "h1_checked": 66,
         "h1_hits": 4,
-        "h1_cost": 65.0,
+        "h1_cost": 66.0,
         "h1_return": 56.0,
         "h4_closed": 64,
         "h4_hits": 12,
-        "h4_cost": 234.0,
+        "h4_cost": 238.0,
         "h4_return": 168.0,
         "interrupted": 0
       },
@@ -653,9 +653,9 @@
         "h1_hits": 0,
         "h1_cost": 18.0,
         "h1_return": 0.0,
-        "h4_closed": 17,
+        "h4_closed": 18,
         "h4_hits": 1,
-        "h4_cost": 71.0,
+        "h4_cost": 72.0,
         "h4_return": 14.0,
         "interrupted": 0
       }
@@ -41682,11 +41682,30 @@
       "h1_cost": 1.0,
       "first_hit": null,
       "reason": ""
+    },
+    {
+      "id": "2026-11-14#195:C",
+      "method": "C",
+      "origin_day": "2026-11-14",
+      "origin_draw": 195,
+      "origin_key": "2026-11-14#195",
+      "pair": [
+        2,
+        14
+      ],
+      "distance": 12,
+      "step": 4,
+      "h1": 0,
+      "h4": 0,
+      "h4_cost": 4.0,
+      "h1_cost": 1.0,
+      "first_hit": null,
+      "reason": ""
     }
   ],
   "gaps": 13,
   "started_at": "2026-11-01 11:46:27",
-  "last_updated": "2026-11-14 16:32:07",
+  "last_updated": "2026-11-14 16:40:31",
   "orari_shadow": {
     "schema": 1,
     "version": "ORARI_CINQUINE_v1.1_SHADOW",
@@ -42687,64 +42706,8 @@
     "schema": 1,
     "version": "R2F3_SHADOW_H1_v1.2",
     "started_at": "2026-11-07 16:04:58",
-    "last_key": "2026-11-14#198",
+    "last_key": "2026-11-14#200",
     "history": [
-      {
-        "key": "2026-11-14#119",
-        "day": "2026-11-14",
-        "draw_id": 119,
-        "time": "09:55",
-        "nums": [
-          2,
-          9,
-          11,
-          15,
-          22,
-          27,
-          29,
-          33,
-          34,
-          39,
-          40,
-          44,
-          45,
-          55,
-          56,
-          66,
-          76,
-          82,
-          86,
-          89
-        ]
-      },
-      {
-        "key": "2026-11-14#120",
-        "day": "2026-11-14",
-        "draw_id": 120,
-        "time": "10:00",
-        "nums": [
-          3,
-          15,
-          23,
-          24,
-          27,
-          34,
-          37,
-          43,
-          48,
-          50,
-          52,
-          57,
-          66,
-          68,
-          73,
-          77,
-          80,
-          81,
-          83,
-          84
-        ]
-      },
       {
         "key": "2026-11-14#121",
         "day": "2026-11-14",
@@ -44927,6 +44890,62 @@
           82,
           83,
           84
+        ]
+      },
+      {
+        "key": "2026-11-14#199",
+        "day": "2026-11-14",
+        "draw_id": 199,
+        "time": "16:35",
+        "nums": [
+          4,
+          9,
+          19,
+          22,
+          25,
+          26,
+          27,
+          43,
+          46,
+          49,
+          50,
+          54,
+          55,
+          59,
+          60,
+          69,
+          73,
+          83,
+          86,
+          90
+        ]
+      },
+      {
+        "key": "2026-11-14#200",
+        "day": "2026-11-14",
+        "draw_id": 200,
+        "time": "16:40",
+        "nums": [
+          2,
+          11,
+          12,
+          15,
+          21,
+          40,
+          43,
+          50,
+          53,
+          55,
+          56,
+          57,
+          59,
+          62,
+          69,
+          71,
+          76,
+          84,
+          85,
+          90
         ]
       }
     ],
@@ -48313,60 +48332,6 @@
     "schema": 1,
     "version": "LAB_DECINE_COLONNE_SPECCHIO_v1.6_FULL_2025_WARMUP_ARCHIVIO",
     "history": [
-      {
-        "key": "2026-11-13#246",
-        "day": "2026-11-13",
-        "draw_id": 246,
-        "nums": [
-          3,
-          16,
-          19,
-          22,
-          31,
-          35,
-          40,
-          41,
-          45,
-          52,
-          62,
-          70,
-          71,
-          73,
-          74,
-          79,
-          80,
-          81,
-          88,
-          90
-        ]
-      },
-      {
-        "key": "2026-11-13#247",
-        "day": "2026-11-13",
-        "draw_id": 247,
-        "nums": [
-          1,
-          5,
-          7,
-          29,
-          32,
-          33,
-          38,
-          48,
-          52,
-          53,
-          55,
-          67,
-          70,
-          73,
-          77,
-          80,
-          81,
-          83,
-          85,
-          88
-        ]
-      },
       {
         "key": "2026-11-13#248",
         "day": "2026-11-13",
@@ -54792,33 +54757,87 @@
           83,
           84
         ]
+      },
+      {
+        "key": "2026-11-14#199",
+        "day": "2026-11-14",
+        "draw_id": 199,
+        "nums": [
+          4,
+          9,
+          19,
+          22,
+          25,
+          26,
+          27,
+          43,
+          46,
+          49,
+          50,
+          54,
+          55,
+          59,
+          60,
+          69,
+          73,
+          83,
+          86,
+          90
+        ]
+      },
+      {
+        "key": "2026-11-14#200",
+        "day": "2026-11-14",
+        "draw_id": 200,
+        "nums": [
+          2,
+          11,
+          12,
+          15,
+          21,
+          40,
+          43,
+          50,
+          53,
+          55,
+          56,
+          57,
+          59,
+          62,
+          69,
+          71,
+          76,
+          84,
+          85,
+          90
+        ]
       }
     ],
-    "last_key": "2026-11-14#198",
+    "last_key": "2026-11-14#200",
     "pretrained_model_id": "LAB_STRUTTURE_2025_01_01__09_28_FULL_V2",
     "pretrained_through": "2025-09-28",
     "historical_training_origins": 77134,
     "active": {
-      "origin_key": "2026-11-14#198",
+      "origin_key": "2026-11-14#200",
       "choices": {
         "MODEL_AMBATA": [
-          61
+          79
         ],
         "MODEL_AMBO": [
-          61,
-          69
+          69,
+          79
         ],
         "MEZZA_DECINA_AMBO": [
-          36,
-          37
+          51,
+          53
         ],
         "FREQ5_AMBO": [
-          8,
-          51
+          43,
+          55
         ],
         "SOMMA90_AMBO": [
-          39,
-          51
+          41,
+          49
         ],
         "FREQ80_AMBO": [
           41,
@@ -54827,26 +54846,26 @@
       }
     },
     "latest": {
-      "origin_key": "2026-11-14#198",
+      "origin_key": "2026-11-14#200",
       "choices": {
         "MODEL_AMBATA": [
-          61
+          79
         ],
         "MODEL_AMBO": [
-          61,
-          69
+          69,
+          79
         ],
         "MEZZA_DECINA_AMBO": [
-          36,
-          37
+          51,
+          53
         ],
         "FREQ5_AMBO": [
-          8,
-          51
+          43,
+          55
         ],
         "SOMMA90_AMBO": [
-          39,
-          51
+          41,
+          49
         ],
         "FREQ80_AMBO": [
           41,
@@ -54854,208 +54873,90 @@
         ]
       },
       "top20": [
-        61,
+        79,
         69,
         63,
+        19,
+        29,
+        73,
         60,
-        64,
-        89,
-        21,
+        9,
+        71,
+        33,
+        31,
         62,
         65,
-        2,
-        58,
-        49,
-        51,
+        76,
         90,
-        81,
-        88,
-        68,
-        4,
-        29,
-        1
+        78,
+        74,
+        61,
+        89,
+        75
       ]
     },
     "online_w": [
-      0.00022598567017478418,
-      -0.0003406358367987217,
-      -0.000254200279121075,
-      -0.002668515142317432,
-      -0.0036553210653855546,
-      -0.00510007657438591,
-      -0.0008860592730720716,
-      -0.004918963689685247,
-      -0.0005779273982260986,
-      0.0011219769695969735,
-      0.0020450643959321812,
-      0.001965522554086626,
-      0.0015507058126519326,
-      -0.0005619878307799406,
-      1.568422243702257e-05,
-      -0.003637469682685124,
-      -0.0007473285802111547,
-      0.0019905522957696753
+      0.00027147801379525993,
+      -0.00037579859621565155,
+      -0.00028689751740344126,
+      -0.0025037477523211717,
+      -0.0038025912611760267,
+      -0.005152563189422826,
+      -0.0008915228535749567,
+      -0.004981783681022013,
+      -0.0006247059813206898,
+      0.0011754222207711485,
+      0.002143422432463891,
+      0.0019582241937412914,
+      0.0016342404977220865,
+      -0.0006686058307491002,
+      -4.743600627454029e-05,
+      -0.0036232422570778616,
+      -0.0006625659853230827,
+      0.00197303912821733
     ],
-    "online_b": -1.2527723347865112,
-    "learned_draws": 1753,
+    "online_b": -1.2527722989973804,
+    "learned_draws": 1755,
     "stats": {
       "MODEL_AMBATA": {
-        "signals": 1760,
-        "checked": 1753,
+        "signals": 1762,
+        "checked": 1755,
         "hits": 397,
         "unverifiable": 6
       },
       "MODEL_AMBO": {
-        "signals": 1760,
-        "checked": 1753,
+        "signals": 1762,
+        "checked": 1755,
         "hits": 88,
         "unverifiable": 6
       },
       "MEZZA_DECINA_AMBO": {
-        "signals": 1760,
-        "checked": 1753,
+        "signals": 1762,
+        "checked": 1755,
         "hits": 82,
         "unverifiable": 6
       },
       "FREQ5_AMBO": {
-        "signals": 1760,
-        "checked": 1753,
+        "signals": 1762,
+        "checked": 1755,
         "hits": 92,
         "unverifiable": 6
       },
       "SOMMA90_AMBO": {
-        "signals": 1760,
-        "checked": 1753,
+        "signals": 1762,
+        "checked": 1755,
         "hits": 98,
         "unverifiable": 6
       },
       "FREQ80_AMBO": {
-        "signals": 1760,
-        "checked": 1753,
+        "signals": 1762,
+        "checked": 1755,
         "hits": 83,
         "unverifiable": 6
       }
     },
     "gaps": 6,
     "recent": [
-      {
-        "origin": "2026-11-14#173",
-        "target": "2026-11-14#174",
-        "method": "MODEL_AMBATA",
-        "numbers": [
-          13
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-14#173",
-        "target": "2026-11-14#174",
-        "method": "MODEL_AMBO",
-        "numbers": [
-          3,
-          13
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-14#173",
-        "target": "2026-11-14#174",
-        "method": "MEZZA_DECINA_AMBO",
-        "numbers": [
-          46,
-          47
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-14#173",
-        "target": "2026-11-14#174",
-        "method": "FREQ5_AMBO",
-        "numbers": [
-          15,
-          73
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-14#173",
-        "target": "2026-11-14#174",
-        "method": "SOMMA90_AMBO",
-        "numbers": [
-          37,
-          53
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-14#173",
-        "target": "2026-11-14#174",
-        "method": "FREQ80_AMBO",
-        "numbers": [
-          41,
-          83
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-14#174",
-        "target": "2026-11-14#175",
-        "method": "MODEL_AMBATA",
-        "numbers": [
-          3
-        ],
-        "hit": true
-      },
-      {
-        "origin": "2026-11-14#174",
-        "target": "2026-11-14#175",
-        "method": "MODEL_AMBO",
-        "numbers": [
-          3,
-          5
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-14#174",
-        "target": "2026-11-14#175",
-        "method": "MEZZA_DECINA_AMBO",
-        "numbers": [
-          40,
-          41
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-14#174",
-        "target": "2026-11-14#175",
-        "method": "FREQ5_AMBO",
-        "numbers": [
-          15,
-          51
-        ],
-        "hit": true
-      },
-      {
-        "origin": "2026-11-14#174",
-        "target": "2026-11-14#175",
-        "method": "SOMMA90_AMBO",
-        "numbers": [
-          37,
-          53
-        ],
-        "hit": false
-      },
-      {
-        "origin": "2026-11-14#174",
-        "target": "2026-11-14#175",
-        "method": "FREQ80_AMBO",
-        "numbers": [
-          41,
-          83
-        ],
-        "hit": false
-      },
       {
         "origin": "2026-11-14#175",
         "target": "2026-11-14#176",
@@ -56412,10 +56313,128 @@
           51
         ],
         "hit": false
+      },
+      {
+        "origin": "2026-11-14#198",
+        "target": "2026-11-14#199",
+        "method": "MODEL_AMBATA",
+        "numbers": [
+          61
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-14#198",
+        "target": "2026-11-14#199",
+        "method": "MODEL_AMBO",
+        "numbers": [
+          61,
+          69
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-14#198",
+        "target": "2026-11-14#199",
+        "method": "MEZZA_DECINA_AMBO",
+        "numbers": [
+          36,
+          37
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-14#198",
+        "target": "2026-11-14#199",
+        "method": "FREQ5_AMBO",
+        "numbers": [
+          8,
+          51
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-14#198",
+        "target": "2026-11-14#199",
+        "method": "SOMMA90_AMBO",
+        "numbers": [
+          39,
+          51
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-14#198",
+        "target": "2026-11-14#199",
+        "method": "FREQ80_AMBO",
+        "numbers": [
+          41,
+          51
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-14#199",
+        "target": "2026-11-14#200",
+        "method": "MODEL_AMBATA",
+        "numbers": [
+          79
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-14#199",
+        "target": "2026-11-14#200",
+        "method": "MODEL_AMBO",
+        "numbers": [
+          63,
+          79
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-14#199",
+        "target": "2026-11-14#200",
+        "method": "MEZZA_DECINA_AMBO",
+        "numbers": [
+          36,
+          37
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-14#199",
+        "target": "2026-11-14#200",
+        "method": "FREQ5_AMBO",
+        "numbers": [
+          8,
+          41
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-14#199",
+        "target": "2026-11-14#200",
+        "method": "SOMMA90_AMBO",
+        "numbers": [
+          41,
+          49
+        ],
+        "hit": false
+      },
+      {
+        "origin": "2026-11-14#199",
+        "target": "2026-11-14#200",
+        "method": "FREQ80_AMBO",
+        "numbers": [
+          41,
+          51
+        ],
+        "hit": false
       }
     ],
-    "observations": 1785,
-    "updates": 1785,
+    "observations": 1787,
+    "updates": 1787,
     "warmup_info": {
       "mode": "live_verified",
       "count": 240,
@@ -56426,25 +56445,8 @@
   "v212_shadow": {
     "schema": 1,
     "version": "V212_SHADOW_2026_11",
-    "last_key": "2026-11-14#198",
+    "last_key": "2026-11-14#200",
     "active": {
-      "2026-11-14#195:V212": {
-        "id": "2026-11-14#195:V212",
-        "origin_key": "2026-11-14#195",
-        "day": "2026-11-14",
-        "method": "C",
-        "pair": [
-          2,
-          14
-        ],
-        "distance": 12,
-        "score": 0.058198557,
-        "step": 3,
-        "h1": 0,
-        "h4": null,
-        "first_hit": null,
-        "status": "OPEN"
-      },
       "2026-11-14#197:V212": {
         "id": "2026-11-14#197:V212",
         "origin_key": "2026-11-14#197",
@@ -56456,8 +56458,25 @@
         ],
         "distance": 17,
         "score": 0.056360697,
-        "step": 1,
+        "step": 3,
         "h1": 0,
+        "h4": null,
+        "first_hit": null,
+        "status": "OPEN"
+      },
+      "2026-11-14#200:V212": {
+        "id": "2026-11-14#200:V212",
+        "origin_key": "2026-11-14#200",
+        "day": "2026-11-14",
+        "method": "B",
+        "pair": [
+          43,
+          57
+        ],
+        "distance": 14,
+        "score": 0.055855952,
+        "step": 0,
+        "h1": null,
         "h4": null,
         "first_hit": null,
         "status": "OPEN"
@@ -58571,19 +58590,26 @@
         "h4": 0,
         "first_hit": null,
         "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#195:V212",
+        "origin_key": "2026-11-14#195",
+        "day": "2026-11-14",
+        "method": "C",
+        "pair": [
+          2,
+          14
+        ],
+        "distance": 12,
+        "score": 0.058198557,
+        "step": 4,
+        "h1": 0,
+        "h4": 0,
+        "first_hit": null,
+        "status": "CLOSED"
       }
     ],
     "recent": [
-      {
-        "origin": "2026-11-13#256",
-        "type": "signal",
-        "message": "A 27-86 score=0.0569 | H1/H4 SHADOW"
-      },
-      {
-        "origin": "2026-11-13#257",
-        "type": "signal",
-        "message": "A 28-87 score=0.0603 | H1/H4 SHADOW"
-      },
       {
         "origin": "2026-11-13#260",
         "type": "result",
@@ -58873,21 +58899,31 @@
         "origin": "2026-11-14#197",
         "type": "signal",
         "message": "B 36-53 score=0.0564 | H1/H4 SHADOW"
+      },
+      {
+        "origin": "2026-11-14#199",
+        "type": "result",
+        "message": "02-14 MISS H4"
+      },
+      {
+        "origin": "2026-11-14#200",
+        "type": "signal",
+        "message": "B 43-57 score=0.0559 | H1/H4 SHADOW"
       }
     ],
     "totals": {
-      "signals": 126,
+      "signals": 127,
       "h1_checked": 125,
       "h1_hits": 6,
       "h1_cost": 125.0,
       "h1_return": 84.0,
-      "h4_closed": 121,
+      "h4_closed": 122,
       "h4_hits": 21,
-      "h4_cost": 460.0,
+      "h4_cost": 463.0,
       "h4_return": 294.0,
       "interrupted": 3,
       "skipped": 204,
-      "eligible": 330
+      "eligible": 331
     },
     "days": {
       "2026-11-11": {
@@ -58933,617 +58969,265 @@
         "eligible": 97
       },
       "2026-11-14": {
-        "signals": 23,
+        "signals": 24,
         "h1_checked": 23,
         "h1_hits": 0,
         "h1_cost": 23.0,
         "h1_return": 0.0,
-        "h4_closed": 21,
+        "h4_closed": 22,
         "h4_hits": 1,
-        "h4_cost": 86.0,
+        "h4_cost": 89.0,
         "h4_return": 14.0,
         "interrupted": 0,
         "skipped": 35,
-        "eligible": 58
+        "eligible": 59
       }
     },
     "gap_count": 3,
     "warmup": 80,
     "latest": {
-      "id": "2026-11-14#197:V212",
-      "origin_key": "2026-11-14#197",
+      "id": "2026-11-14#200:V212",
+      "origin_key": "2026-11-14#200",
       "day": "2026-11-14",
       "method": "B",
       "pair": [
-        36,
-        53
+        43,
+        57
       ],
-      "distance": 17,
-      "score": 0.056360697,
+      "distance": 14,
+      "score": 0.055855952,
       "step": 0,
       "h1": null,
       "h4": null,
       "first_hit": null,
       "status": "OPEN"
     },
-    "processed": 888
+    "processed": 890
   },
   "v214_shadow": {
     "schema": 1,
     "version": "V214_DIVERSIFIED_SHADOW_2026_11",
-    "last_key": "2026-11-14#198",
-    "processed": 198,
+    "last_key": "2026-11-14#200",
+    "processed": 200,
     "warmup": 80,
     "gap_count": 1,
     "totals": {
       "3": {
-        "signals": 119,
-        "h1_checked": 118,
-        "h1_cycles_hit": 5,
-        "h1_tickets_hit": 6,
-        "h1_cost": 354.0,
-        "h1_return": 84.0,
-        "h4_checked": 116,
-        "h4_cycles_hit": 45,
-        "h4_tickets_hit": 47,
-        "h4_cost": 1227.0,
-        "h4_return": 658.0,
+        "signals": 121,
+        "h1_checked": 120,
+        "h1_cycles_hit": 7,
+        "h1_tickets_hit": 8,
+        "h1_cost": 360.0,
+        "h1_return": 112.0,
+        "h4_checked": 120,
+        "h4_cycles_hit": 48,
+        "h4_tickets_hit": 50,
+        "h4_cost": 1245.0,
+        "h4_return": 700.0,
         "interrupted": 0
       },
       "5": {
-        "signals": 119,
-        "h1_checked": 118,
-        "h1_cycles_hit": 14,
-        "h1_tickets_hit": 15,
-        "h1_cost": 590.0,
-        "h1_return": 210.0,
-        "h4_checked": 116,
-        "h4_cycles_hit": 69,
-        "h4_tickets_hit": 76,
-        "h4_cost": 1780.0,
-        "h4_return": 1064.0,
+        "signals": 121,
+        "h1_checked": 120,
+        "h1_cycles_hit": 16,
+        "h1_tickets_hit": 17,
+        "h1_cost": 600.0,
+        "h1_return": 238.0,
+        "h4_checked": 120,
+        "h4_cycles_hit": 72,
+        "h4_tickets_hit": 79,
+        "h4_cost": 1810.0,
+        "h4_return": 1106.0,
         "interrupted": 0
       },
       "10": {
-        "signals": 119,
-        "h1_checked": 118,
-        "h1_cycles_hit": 43,
-        "h1_tickets_hit": 48,
-        "h1_cost": 1180.0,
-        "h1_return": 672.0,
-        "h4_checked": 116,
-        "h4_cycles_hit": 99,
-        "h4_tickets_hit": 123,
-        "h4_cost": 2630.0,
-        "h4_return": 1722.0,
+        "signals": 121,
+        "h1_checked": 120,
+        "h1_cycles_hit": 45,
+        "h1_tickets_hit": 50,
+        "h1_cost": 1200.0,
+        "h1_return": 700.0,
+        "h4_checked": 120,
+        "h4_cycles_hit": 102,
+        "h4_tickets_hit": 126,
+        "h4_cost": 2690.0,
+        "h4_return": 1764.0,
         "interrupted": 0
       },
       "15": {
-        "signals": 119,
-        "h1_checked": 118,
-        "h1_cycles_hit": 62,
-        "h1_tickets_hit": 77,
-        "h1_cost": 1770.0,
-        "h1_return": 1078.0,
-        "h4_checked": 116,
-        "h4_cycles_hit": 111,
-        "h4_tickets_hit": 145,
-        "h4_cost": 3165.0,
-        "h4_return": 2030.0,
+        "signals": 121,
+        "h1_checked": 120,
+        "h1_cycles_hit": 64,
+        "h1_tickets_hit": 80,
+        "h1_cost": 1800.0,
+        "h1_return": 1120.0,
+        "h4_checked": 120,
+        "h4_cycles_hit": 114,
+        "h4_tickets_hit": 149,
+        "h4_cost": 3240.0,
+        "h4_return": 2086.0,
         "interrupted": 0
       }
     },
     "days": {
       "2026-11-14": {
         "3": {
-          "signals": 119,
-          "h1_checked": 118,
-          "h1_cycles_hit": 5,
-          "h1_tickets_hit": 6,
-          "h1_cost": 354.0,
-          "h1_return": 84.0,
-          "h4_checked": 116,
-          "h4_cycles_hit": 45,
-          "h4_tickets_hit": 47,
-          "h4_cost": 1227.0,
-          "h4_return": 658.0,
+          "signals": 121,
+          "h1_checked": 120,
+          "h1_cycles_hit": 7,
+          "h1_tickets_hit": 8,
+          "h1_cost": 360.0,
+          "h1_return": 112.0,
+          "h4_checked": 120,
+          "h4_cycles_hit": 48,
+          "h4_tickets_hit": 50,
+          "h4_cost": 1245.0,
+          "h4_return": 700.0,
           "interrupted": 0
         },
         "5": {
-          "signals": 119,
-          "h1_checked": 118,
-          "h1_cycles_hit": 14,
-          "h1_tickets_hit": 15,
-          "h1_cost": 590.0,
-          "h1_return": 210.0,
-          "h4_checked": 116,
-          "h4_cycles_hit": 69,
-          "h4_tickets_hit": 76,
-          "h4_cost": 1780.0,
-          "h4_return": 1064.0,
+          "signals": 121,
+          "h1_checked": 120,
+          "h1_cycles_hit": 16,
+          "h1_tickets_hit": 17,
+          "h1_cost": 600.0,
+          "h1_return": 238.0,
+          "h4_checked": 120,
+          "h4_cycles_hit": 72,
+          "h4_tickets_hit": 79,
+          "h4_cost": 1810.0,
+          "h4_return": 1106.0,
           "interrupted": 0
         },
         "10": {
-          "signals": 119,
-          "h1_checked": 118,
-          "h1_cycles_hit": 43,
-          "h1_tickets_hit": 48,
-          "h1_cost": 1180.0,
-          "h1_return": 672.0,
-          "h4_checked": 116,
-          "h4_cycles_hit": 99,
-          "h4_tickets_hit": 123,
-          "h4_cost": 2630.0,
-          "h4_return": 1722.0,
+          "signals": 121,
+          "h1_checked": 120,
+          "h1_cycles_hit": 45,
+          "h1_tickets_hit": 50,
+          "h1_cost": 1200.0,
+          "h1_return": 700.0,
+          "h4_checked": 120,
+          "h4_cycles_hit": 102,
+          "h4_tickets_hit": 126,
+          "h4_cost": 2690.0,
+          "h4_return": 1764.0,
           "interrupted": 0
         },
         "15": {
-          "signals": 119,
-          "h1_checked": 118,
-          "h1_cycles_hit": 62,
-          "h1_tickets_hit": 77,
-          "h1_cost": 1770.0,
-          "h1_return": 1078.0,
-          "h4_checked": 116,
-          "h4_cycles_hit": 111,
-          "h4_tickets_hit": 145,
-          "h4_cost": 3165.0,
-          "h4_return": 2030.0,
+          "signals": 121,
+          "h1_checked": 120,
+          "h1_cycles_hit": 64,
+          "h1_tickets_hit": 80,
+          "h1_cost": 1800.0,
+          "h1_return": 1120.0,
+          "h4_checked": 120,
+          "h4_cycles_hit": 114,
+          "h4_tickets_hit": 149,
+          "h4_cost": 3240.0,
+          "h4_return": 2086.0,
           "interrupted": 0
         }
       }
     },
     "active": {
-      "2026-11-14#196:V214:3": {
-        "id": "2026-11-14#196:V214:3",
-        "origin_key": "2026-11-14#196",
+      "2026-11-14#200:V214:3": {
+        "id": "2026-11-14#200:V214:3",
+        "origin_key": "2026-11-14#200",
         "day": "2026-11-14",
         "profile": "3",
         "pairs": [
           [
-            51,
-            90
+            12,
+            69
           ],
           [
-            6,
-            41
-          ],
-          [
-            8,
-            60
-          ]
-        ],
-        "step": 2,
-        "first_hit": null,
-        "status": "OPEN"
-      },
-      "2026-11-14#196:V214:5": {
-        "id": "2026-11-14#196:V214:5",
-        "origin_key": "2026-11-14#196",
-        "day": "2026-11-14",
-        "profile": "5",
-        "pairs": [
-          [
-            51,
-            90
-          ],
-          [
-            6,
-            41
-          ],
-          [
-            8,
-            60
-          ],
-          [
-            42,
-            70
-          ],
-          [
-            23,
-            43
-          ]
-        ],
-        "step": 2,
-        "first_hit": null,
-        "status": "OPEN"
-      },
-      "2026-11-14#196:V214:10": {
-        "id": "2026-11-14#196:V214:10",
-        "origin_key": "2026-11-14#196",
-        "day": "2026-11-14",
-        "profile": "10",
-        "pairs": [
-          [
-            51,
-            90
-          ],
-          [
-            6,
-            41
-          ],
-          [
-            8,
-            60
-          ],
-          [
-            42,
-            70
-          ],
-          [
-            23,
-            43
-          ],
-          [
-            38,
-            74
-          ],
-          [
-            78,
-            88
-          ],
-          [
-            18,
-            81
-          ],
-          [
-            32,
-            36
-          ],
-          [
-            14,
-            35
-          ]
-        ],
-        "step": 2,
-        "first_hit": null,
-        "status": "OPEN"
-      },
-      "2026-11-14#196:V214:15": {
-        "id": "2026-11-14#196:V214:15",
-        "origin_key": "2026-11-14#196",
-        "day": "2026-11-14",
-        "profile": "15",
-        "pairs": [
-          [
-            51,
-            90
-          ],
-          [
-            6,
-            41
-          ],
-          [
-            8,
-            60
-          ],
-          [
-            42,
-            70
-          ],
-          [
-            23,
-            43
-          ],
-          [
-            38,
-            74
-          ],
-          [
-            78,
-            88
-          ],
-          [
-            18,
-            81
-          ],
-          [
-            32,
-            36
-          ],
-          [
-            14,
-            35
-          ],
-          [
-            2,
-            61
-          ],
-          [
-            19,
-            72
-          ],
-          [
-            46,
-            47
-          ],
-          [
-            9,
+            11,
             21
           ],
           [
-            13,
-            69
-          ]
-        ],
-        "step": 2,
-        "first_hit": null,
-        "status": "OPEN"
-      },
-      "2026-11-14#197:V214:3": {
-        "id": "2026-11-14#197:V214:3",
-        "origin_key": "2026-11-14#197",
-        "day": "2026-11-14",
-        "profile": "3",
-        "pairs": [
-          [
-            41,
-            79
-          ],
-          [
-            11,
-            69
-          ],
-          [
             2,
-            86
-          ]
-        ],
-        "step": 1,
-        "first_hit": null,
-        "status": "OPEN"
-      },
-      "2026-11-14#197:V214:5": {
-        "id": "2026-11-14#197:V214:5",
-        "origin_key": "2026-11-14#197",
-        "day": "2026-11-14",
-        "profile": "5",
-        "pairs": [
-          [
-            41,
-            79
-          ],
-          [
-            11,
-            69
-          ],
-          [
-            2,
-            86
-          ],
-          [
-            10,
-            71
-          ],
-          [
-            36,
-            49
-          ]
-        ],
-        "step": 1,
-        "first_hit": null,
-        "status": "OPEN"
-      },
-      "2026-11-14#197:V214:10": {
-        "id": "2026-11-14#197:V214:10",
-        "origin_key": "2026-11-14#197",
-        "day": "2026-11-14",
-        "profile": "10",
-        "pairs": [
-          [
-            41,
-            79
-          ],
-          [
-            11,
-            69
-          ],
-          [
-            2,
-            86
-          ],
-          [
-            10,
-            71
-          ],
-          [
-            36,
-            49
-          ],
-          [
-            37,
-            58
-          ],
-          [
-            35,
-            55
-          ],
-          [
-            53,
-            80
-          ],
-          [
-            29,
-            43
-          ],
-          [
-            8,
-            63
-          ]
-        ],
-        "step": 1,
-        "first_hit": null,
-        "status": "OPEN"
-      },
-      "2026-11-14#197:V214:15": {
-        "id": "2026-11-14#197:V214:15",
-        "origin_key": "2026-11-14#197",
-        "day": "2026-11-14",
-        "profile": "15",
-        "pairs": [
-          [
-            41,
-            79
-          ],
-          [
-            11,
-            69
-          ],
-          [
-            2,
-            86
-          ],
-          [
-            10,
-            71
-          ],
-          [
-            36,
-            49
-          ],
-          [
-            37,
-            58
-          ],
-          [
-            35,
-            55
-          ],
-          [
-            53,
-            80
-          ],
-          [
-            29,
-            43
-          ],
-          [
-            8,
-            63
-          ],
-          [
-            19,
-            51
-          ],
-          [
-            23,
-            61
-          ],
-          [
-            21,
-            72
-          ],
-          [
-            9,
-            60
-          ],
-          [
-            46,
-            70
-          ]
-        ],
-        "step": 1,
-        "first_hit": null,
-        "status": "OPEN"
-      },
-      "2026-11-14#198:V214:3": {
-        "id": "2026-11-14#198:V214:3",
-        "origin_key": "2026-11-14#198",
-        "day": "2026-11-14",
-        "profile": "3",
-        "pairs": [
-          [
-            50,
-            51
-          ],
-          [
-            46,
-            49
-          ],
-          [
-            13,
-            68
+            85
           ]
         ],
         "step": 0,
         "first_hit": null,
         "status": "OPEN"
       },
-      "2026-11-14#198:V214:5": {
-        "id": "2026-11-14#198:V214:5",
-        "origin_key": "2026-11-14#198",
+      "2026-11-14#200:V214:5": {
+        "id": "2026-11-14#200:V214:5",
+        "origin_key": "2026-11-14#200",
         "day": "2026-11-14",
         "profile": "5",
         "pairs": [
           [
+            12,
+            69
+          ],
+          [
+            11,
+            21
+          ],
+          [
+            2,
+            85
+          ],
+          [
             50,
-            51
-          ],
-          [
-            46,
-            49
-          ],
-          [
-            13,
-            68
-          ],
-          [
-            22,
             84
           ],
           [
-            31,
-            82
+            57,
+            71
           ]
         ],
         "step": 0,
         "first_hit": null,
         "status": "OPEN"
       },
-      "2026-11-14#198:V214:10": {
-        "id": "2026-11-14#198:V214:10",
-        "origin_key": "2026-11-14#198",
+      "2026-11-14#200:V214:10": {
+        "id": "2026-11-14#200:V214:10",
+        "origin_key": "2026-11-14#200",
         "day": "2026-11-14",
         "profile": "10",
         "pairs": [
           [
+            12,
+            69
+          ],
+          [
+            11,
+            21
+          ],
+          [
+            2,
+            85
+          ],
+          [
             50,
-            51
-          ],
-          [
-            46,
-            49
-          ],
-          [
-            13,
-            68
-          ],
-          [
-            22,
             84
           ],
           [
-            31,
-            82
+            57,
+            71
+          ],
+          [
+            56,
+            59
           ],
           [
             40,
             53
           ],
           [
-            39,
-            83
+            62,
+            76
+          ],
+          [
+            43,
+            90
           ],
           [
             15,
-            27
-          ],
-          [
-            33,
-            42
-          ],
-          [
-            24,
             55
           ]
         ],
@@ -59551,71 +59235,71 @@
         "first_hit": null,
         "status": "OPEN"
       },
-      "2026-11-14#198:V214:15": {
-        "id": "2026-11-14#198:V214:15",
-        "origin_key": "2026-11-14#198",
+      "2026-11-14#200:V214:15": {
+        "id": "2026-11-14#200:V214:15",
+        "origin_key": "2026-11-14#200",
         "day": "2026-11-14",
         "profile": "15",
         "pairs": [
           [
+            12,
+            69
+          ],
+          [
+            11,
+            21
+          ],
+          [
+            2,
+            85
+          ],
+          [
             50,
-            51
-          ],
-          [
-            46,
-            49
-          ],
-          [
-            13,
-            68
-          ],
-          [
-            22,
             84
           ],
           [
-            31,
-            82
+            57,
+            71
+          ],
+          [
+            56,
+            59
           ],
           [
             40,
             53
           ],
           [
-            39,
-            83
+            62,
+            76
+          ],
+          [
+            43,
+            90
           ],
           [
             15,
-            27
-          ],
-          [
-            33,
-            42
-          ],
-          [
-            24,
             55
+          ],
+          [
+            13,
+            51
           ],
           [
             25,
             41
           ],
           [
+            9,
+            46
+          ],
+          [
             19,
-            72
+            60
           ],
           [
             61,
-            70
-          ],
-          [
-            2,
-            69
-          ],
-          [
-            9,
-            60
+            72
           ]
         ],
         "step": 0,
@@ -80039,99 +79723,713 @@
         "step": 4,
         "first_hit": null,
         "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#197:V214:15",
+        "origin_key": "2026-11-14#197",
+        "day": "2026-11-14",
+        "profile": "15",
+        "pairs": [
+          [
+            41,
+            79
+          ],
+          [
+            11,
+            69
+          ],
+          [
+            2,
+            86
+          ],
+          [
+            10,
+            71
+          ],
+          [
+            36,
+            49
+          ],
+          [
+            37,
+            58
+          ],
+          [
+            35,
+            55
+          ],
+          [
+            53,
+            80
+          ],
+          [
+            29,
+            43
+          ],
+          [
+            8,
+            63
+          ],
+          [
+            19,
+            51
+          ],
+          [
+            23,
+            61
+          ],
+          [
+            21,
+            72
+          ],
+          [
+            9,
+            60
+          ],
+          [
+            46,
+            70
+          ]
+        ],
+        "step": 2,
+        "first_hit": 2,
+        "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#198:V214:3",
+        "origin_key": "2026-11-14#198",
+        "day": "2026-11-14",
+        "profile": "3",
+        "pairs": [
+          [
+            50,
+            51
+          ],
+          [
+            46,
+            49
+          ],
+          [
+            13,
+            68
+          ]
+        ],
+        "step": 1,
+        "first_hit": 1,
+        "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#198:V214:5",
+        "origin_key": "2026-11-14#198",
+        "day": "2026-11-14",
+        "profile": "5",
+        "pairs": [
+          [
+            50,
+            51
+          ],
+          [
+            46,
+            49
+          ],
+          [
+            13,
+            68
+          ],
+          [
+            22,
+            84
+          ],
+          [
+            31,
+            82
+          ]
+        ],
+        "step": 1,
+        "first_hit": 1,
+        "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#198:V214:10",
+        "origin_key": "2026-11-14#198",
+        "day": "2026-11-14",
+        "profile": "10",
+        "pairs": [
+          [
+            50,
+            51
+          ],
+          [
+            46,
+            49
+          ],
+          [
+            13,
+            68
+          ],
+          [
+            22,
+            84
+          ],
+          [
+            31,
+            82
+          ],
+          [
+            40,
+            53
+          ],
+          [
+            39,
+            83
+          ],
+          [
+            15,
+            27
+          ],
+          [
+            33,
+            42
+          ],
+          [
+            24,
+            55
+          ]
+        ],
+        "step": 1,
+        "first_hit": 1,
+        "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#198:V214:15",
+        "origin_key": "2026-11-14#198",
+        "day": "2026-11-14",
+        "profile": "15",
+        "pairs": [
+          [
+            50,
+            51
+          ],
+          [
+            46,
+            49
+          ],
+          [
+            13,
+            68
+          ],
+          [
+            22,
+            84
+          ],
+          [
+            31,
+            82
+          ],
+          [
+            40,
+            53
+          ],
+          [
+            39,
+            83
+          ],
+          [
+            15,
+            27
+          ],
+          [
+            33,
+            42
+          ],
+          [
+            24,
+            55
+          ],
+          [
+            25,
+            41
+          ],
+          [
+            19,
+            72
+          ],
+          [
+            61,
+            70
+          ],
+          [
+            2,
+            69
+          ],
+          [
+            9,
+            60
+          ]
+        ],
+        "step": 1,
+        "first_hit": 1,
+        "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#196:V214:3",
+        "origin_key": "2026-11-14#196",
+        "day": "2026-11-14",
+        "profile": "3",
+        "pairs": [
+          [
+            51,
+            90
+          ],
+          [
+            6,
+            41
+          ],
+          [
+            8,
+            60
+          ]
+        ],
+        "step": 4,
+        "first_hit": null,
+        "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#196:V214:5",
+        "origin_key": "2026-11-14#196",
+        "day": "2026-11-14",
+        "profile": "5",
+        "pairs": [
+          [
+            51,
+            90
+          ],
+          [
+            6,
+            41
+          ],
+          [
+            8,
+            60
+          ],
+          [
+            42,
+            70
+          ],
+          [
+            23,
+            43
+          ]
+        ],
+        "step": 4,
+        "first_hit": null,
+        "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#196:V214:10",
+        "origin_key": "2026-11-14#196",
+        "day": "2026-11-14",
+        "profile": "10",
+        "pairs": [
+          [
+            51,
+            90
+          ],
+          [
+            6,
+            41
+          ],
+          [
+            8,
+            60
+          ],
+          [
+            42,
+            70
+          ],
+          [
+            23,
+            43
+          ],
+          [
+            38,
+            74
+          ],
+          [
+            78,
+            88
+          ],
+          [
+            18,
+            81
+          ],
+          [
+            32,
+            36
+          ],
+          [
+            14,
+            35
+          ]
+        ],
+        "step": 4,
+        "first_hit": null,
+        "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#196:V214:15",
+        "origin_key": "2026-11-14#196",
+        "day": "2026-11-14",
+        "profile": "15",
+        "pairs": [
+          [
+            51,
+            90
+          ],
+          [
+            6,
+            41
+          ],
+          [
+            8,
+            60
+          ],
+          [
+            42,
+            70
+          ],
+          [
+            23,
+            43
+          ],
+          [
+            38,
+            74
+          ],
+          [
+            78,
+            88
+          ],
+          [
+            18,
+            81
+          ],
+          [
+            32,
+            36
+          ],
+          [
+            14,
+            35
+          ],
+          [
+            2,
+            61
+          ],
+          [
+            19,
+            72
+          ],
+          [
+            46,
+            47
+          ],
+          [
+            9,
+            21
+          ],
+          [
+            13,
+            69
+          ]
+        ],
+        "step": 4,
+        "first_hit": null,
+        "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#197:V214:3",
+        "origin_key": "2026-11-14#197",
+        "day": "2026-11-14",
+        "profile": "3",
+        "pairs": [
+          [
+            41,
+            79
+          ],
+          [
+            11,
+            69
+          ],
+          [
+            2,
+            86
+          ]
+        ],
+        "step": 3,
+        "first_hit": 3,
+        "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#197:V214:5",
+        "origin_key": "2026-11-14#197",
+        "day": "2026-11-14",
+        "profile": "5",
+        "pairs": [
+          [
+            41,
+            79
+          ],
+          [
+            11,
+            69
+          ],
+          [
+            2,
+            86
+          ],
+          [
+            10,
+            71
+          ],
+          [
+            36,
+            49
+          ]
+        ],
+        "step": 3,
+        "first_hit": 3,
+        "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#197:V214:10",
+        "origin_key": "2026-11-14#197",
+        "day": "2026-11-14",
+        "profile": "10",
+        "pairs": [
+          [
+            41,
+            79
+          ],
+          [
+            11,
+            69
+          ],
+          [
+            2,
+            86
+          ],
+          [
+            10,
+            71
+          ],
+          [
+            36,
+            49
+          ],
+          [
+            37,
+            58
+          ],
+          [
+            35,
+            55
+          ],
+          [
+            53,
+            80
+          ],
+          [
+            29,
+            43
+          ],
+          [
+            8,
+            63
+          ]
+        ],
+        "step": 3,
+        "first_hit": 3,
+        "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#199:V214:3",
+        "origin_key": "2026-11-14#199",
+        "day": "2026-11-14",
+        "profile": "3",
+        "pairs": [
+          [
+            46,
+            86
+          ],
+          [
+            59,
+            69
+          ],
+          [
+            50,
+            60
+          ]
+        ],
+        "step": 1,
+        "first_hit": 1,
+        "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#199:V214:5",
+        "origin_key": "2026-11-14#199",
+        "day": "2026-11-14",
+        "profile": "5",
+        "pairs": [
+          [
+            46,
+            86
+          ],
+          [
+            59,
+            69
+          ],
+          [
+            50,
+            60
+          ],
+          [
+            19,
+            49
+          ],
+          [
+            9,
+            73
+          ]
+        ],
+        "step": 1,
+        "first_hit": 1,
+        "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#199:V214:10",
+        "origin_key": "2026-11-14#199",
+        "day": "2026-11-14",
+        "profile": "10",
+        "pairs": [
+          [
+            46,
+            86
+          ],
+          [
+            59,
+            69
+          ],
+          [
+            50,
+            60
+          ],
+          [
+            19,
+            49
+          ],
+          [
+            9,
+            73
+          ],
+          [
+            25,
+            90
+          ],
+          [
+            22,
+            54
+          ],
+          [
+            27,
+            83
+          ],
+          [
+            4,
+            55
+          ],
+          [
+            26,
+            43
+          ]
+        ],
+        "step": 1,
+        "first_hit": 1,
+        "status": "CLOSED"
+      },
+      {
+        "id": "2026-11-14#199:V214:15",
+        "origin_key": "2026-11-14#199",
+        "day": "2026-11-14",
+        "profile": "15",
+        "pairs": [
+          [
+            46,
+            86
+          ],
+          [
+            59,
+            69
+          ],
+          [
+            50,
+            60
+          ],
+          [
+            19,
+            49
+          ],
+          [
+            9,
+            73
+          ],
+          [
+            25,
+            90
+          ],
+          [
+            22,
+            54
+          ],
+          [
+            27,
+            83
+          ],
+          [
+            4,
+            55
+          ],
+          [
+            26,
+            43
+          ],
+          [
+            23,
+            51
+          ],
+          [
+            21,
+            41
+          ],
+          [
+            57,
+            72
+          ],
+          [
+            61,
+            84
+          ],
+          [
+            13,
+            70
+          ]
+        ],
+        "step": 1,
+        "first_hit": 1,
+        "status": "CLOSED"
       }
     ],
     "recent": [
-      {
-        "key": "2026-11-14#189",
-        "event": "result",
-        "text": "10 AMBI: HIT almeno uno H4"
-      },
-      {
-        "key": "2026-11-14#189",
-        "event": "result",
-        "text": "15 AMBI: HIT almeno uno H4"
-      },
-      {
-        "key": "2026-11-14#189",
-        "event": "result",
-        "text": "3 AMBI: HIT almeno uno H1"
-      },
-      {
-        "key": "2026-11-14#189",
-        "event": "result",
-        "text": "5 AMBI: HIT almeno uno H1"
-      },
-      {
-        "key": "2026-11-14#189",
-        "event": "result",
-        "text": "10 AMBI: HIT almeno uno H1"
-      },
-      {
-        "key": "2026-11-14#189",
-        "event": "result",
-        "text": "15 AMBI: HIT almeno uno H1"
-      },
-      {
-        "key": "2026-11-14#189",
-        "event": "signal",
-        "text": "Coperture 3,5,10,15 ambi disgiunti | H1/H4 virtuali"
-      },
-      {
-        "key": "2026-11-14#190",
-        "event": "result",
-        "text": "3 AMBI: MISS H4"
-      },
-      {
-        "key": "2026-11-14#190",
-        "event": "result",
-        "text": "5 AMBI: MISS H4"
-      },
-      {
-        "key": "2026-11-14#190",
-        "event": "result",
-        "text": "10 AMBI: MISS H4"
-      },
-      {
-        "key": "2026-11-14#190",
-        "event": "result",
-        "text": "3 AMBI: HIT almeno uno H3"
-      },
-      {
-        "key": "2026-11-14#190",
-        "event": "result",
-        "text": "5 AMBI: HIT almeno uno H3"
-      },
-      {
-        "key": "2026-11-14#190",
-        "event": "result",
-        "text": "10 AMBI: HIT almeno uno H3"
-      },
-      {
-        "key": "2026-11-14#190",
-        "event": "result",
-        "text": "15 AMBI: HIT almeno uno H1"
-      },
-      {
-        "key": "2026-11-14#190",
-        "event": "signal",
-        "text": "Coperture 3,5,10,15 ambi disgiunti | H1/H4 virtuali"
-      },
-      {
-        "key": "2026-11-14#191",
-        "event": "signal",
-        "text": "Coperture 3,5,10,15 ambi disgiunti | H1/H4 virtuali"
-      },
-      {
-        "key": "2026-11-14#192",
-        "event": "result",
-        "text": "3 AMBI: HIT almeno uno H3"
-      },
-      {
-        "key": "2026-11-14#192",
-        "event": "result",
-        "text": "5 AMBI: HIT almeno uno H3"
-      },
       {
         "key": "2026-11-14#192",
         "event": "result",
@@ -80291,70 +80589,160 @@
         "key": "2026-11-14#198",
         "event": "signal",
         "text": "Coperture 3,5,10,15 ambi disgiunti | H1/H4 virtuali"
+      },
+      {
+        "key": "2026-11-14#199",
+        "event": "result",
+        "text": "15 AMBI: HIT almeno uno H2"
+      },
+      {
+        "key": "2026-11-14#199",
+        "event": "result",
+        "text": "3 AMBI: HIT almeno uno H1"
+      },
+      {
+        "key": "2026-11-14#199",
+        "event": "result",
+        "text": "5 AMBI: HIT almeno uno H1"
+      },
+      {
+        "key": "2026-11-14#199",
+        "event": "result",
+        "text": "10 AMBI: HIT almeno uno H1"
+      },
+      {
+        "key": "2026-11-14#199",
+        "event": "result",
+        "text": "15 AMBI: HIT almeno uno H1"
+      },
+      {
+        "key": "2026-11-14#199",
+        "event": "signal",
+        "text": "Coperture 3,5,10,15 ambi disgiunti | H1/H4 virtuali"
+      },
+      {
+        "key": "2026-11-14#200",
+        "event": "result",
+        "text": "3 AMBI: MISS H4"
+      },
+      {
+        "key": "2026-11-14#200",
+        "event": "result",
+        "text": "5 AMBI: MISS H4"
+      },
+      {
+        "key": "2026-11-14#200",
+        "event": "result",
+        "text": "10 AMBI: MISS H4"
+      },
+      {
+        "key": "2026-11-14#200",
+        "event": "result",
+        "text": "15 AMBI: MISS H4"
+      },
+      {
+        "key": "2026-11-14#200",
+        "event": "result",
+        "text": "3 AMBI: HIT almeno uno H3"
+      },
+      {
+        "key": "2026-11-14#200",
+        "event": "result",
+        "text": "5 AMBI: HIT almeno uno H3"
+      },
+      {
+        "key": "2026-11-14#200",
+        "event": "result",
+        "text": "10 AMBI: HIT almeno uno H3"
+      },
+      {
+        "key": "2026-11-14#200",
+        "event": "result",
+        "text": "3 AMBI: HIT almeno uno H1"
+      },
+      {
+        "key": "2026-11-14#200",
+        "event": "result",
+        "text": "5 AMBI: HIT almeno uno H1"
+      },
+      {
+        "key": "2026-11-14#200",
+        "event": "result",
+        "text": "10 AMBI: HIT almeno uno H1"
+      },
+      {
+        "key": "2026-11-14#200",
+        "event": "result",
+        "text": "15 AMBI: HIT almeno uno H1"
+      },
+      {
+        "key": "2026-11-14#200",
+        "event": "signal",
+        "text": "Coperture 3,5,10,15 ambi disgiunti | H1/H4 virtuali"
       }
     ],
     "latest": {
-      "key": "2026-11-14#198",
+      "key": "2026-11-14#200",
       "pairs": [
         [
+          12,
+          69
+        ],
+        [
+          11,
+          21
+        ],
+        [
+          2,
+          85
+        ],
+        [
           50,
-          51
-        ],
-        [
-          46,
-          49
-        ],
-        [
-          13,
-          68
-        ],
-        [
-          22,
           84
         ],
         [
-          31,
-          82
+          57,
+          71
+        ],
+        [
+          56,
+          59
         ],
         [
           40,
           53
         ],
         [
-          39,
-          83
+          62,
+          76
+        ],
+        [
+          43,
+          90
         ],
         [
           15,
-          27
-        ],
-        [
-          33,
-          42
-        ],
-        [
-          24,
           55
+        ],
+        [
+          13,
+          51
         ],
         [
           25,
           41
         ],
         [
+          9,
+          46
+        ],
+        [
           19,
-          72
+          60
         ],
         [
           61,
-          70
-        ],
-        [
-          2,
-          69
-        ],
-        [
-          9,
-          60
+          72
         ]
       ]
     }
