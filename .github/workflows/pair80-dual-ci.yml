@@ -1,0 +1,25 @@
+name: PAIR80 DUAL - tests
+on:
+  push:
+    paths:
+      - 'pair80_dual.py'
+      - 'pair80_dual_runtime.py'
+      - 'test_pair80_dual.py'
+      - '.github/workflows/pair80-dual-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Controlla sintassi
+        run: python -m py_compile pair80_dual.py pair80_dual_runtime.py
+      - name: Test dei due metodi
+        run: python -m unittest -v test_pair80_dual

@@ -53,7 +53,7 @@ jobs:
           GIT_COMMIT_MIN_SECONDS: "300"
           BOT_MAX_RUNTIME_SECONDS: "19800"
           BOT_ROTATION_NOTIFY: "1"
-        run: python sniper.py
+        run: python pair80_dual_runtime.py
 
       - name: Start next runner after clean rotation
         # sniper.py termina con codice 0 dopo la rotazione programmata a 5h30.
