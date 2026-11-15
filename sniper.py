@@ -8430,4 +8430,10 @@ def abc_self_test():
     print("ABC_SELF_TEST_OK | A/B/C, H1, H4, state persistente, salti sequenza", flush=True)
 
 if __name__ == "__main__":
-    asyncio.run(abc_main())
+    # SUPERAMBO3: PAIR80_SOURCE solo SHADOW, warmup 80; legacy mantenuto in pausa.
+    # SUPERAMBO3_MODE=LEGACY_ABC ripristina il vecchio avvio SENZA eliminare il suo stato.
+    if os.getenv("SUPERAMBO3_MODE", "PAIR80_ONLY").strip().upper() == "PAIR80_ONLY":
+        from pair80_runtime import main as pair80_main
+        asyncio.run(pair80_main(sys.modules[__name__]))
+    else:
+        asyncio.run(abc_main())
