@@ -11,16 +11,40 @@ import os
 from pathlib import Path
 
 import requests
+from datetime import datetime, timedelta
+from twin90_advance import MIN_LEAD_SECONDS, ROME, confirm_sent, ts
 
 
 def as_nums(vals):
     return " ".join(f"{int(x):02d}" for x in vals)
 
 
+def format_preview(item):
+    forecasts=item["simulations"]
+    expected=ts(item["due_at"])
+    lines=[
+        f"🔭 TWIN90 — SIMULAZIONE PREVENTIVA #{int(item['key'].split('#')[-1]):03d}",
+        f"📅 {expected:%Y-%m-%d} | concorso previsto alle {expected:%H:%M} (Italia)",
+        f"Basata sull'ultimo concorso reale: {item['source_key']}",
+        "⚠️ NUMERI SIMULATI, NON ESTRAZIONI REALI E NON CONSIGLI DI GIOCO",
+    ]
+    for mode in ("HYBRID","UNIFORM"):
+        r=forecasts[mode]
+        lines.extend([
+            "",
+            f"🧪 {mode} — estrazione virtuale",
+            "BASE: "+as_nums(r["base"]),
+            f"ORO: {r['oro1']:02d} | DOPPIO ORO: {r['oro2']:02d}",
+            "EXTRA: "+as_nums(r["extra"]),
+        ])
+    lines.append("")
+    lines.append("Dopo il concorso confronterò SOLO questi numeri già comunicati.")
+    return "\n".join(lines)
+
+
 def format_draw(item):
     real=item["actual"]
-    simulations=item["simulations"]
-    stats=item["comparison"]
+    advance=bool(item.get("pre_issued"))
     lines=[
         f"📊 TWIN90 LIVE — 10eLotto #{real['draw']:03d}",
         f"📅 {real['day']} | 🕒 {real.get('time','')}",
@@ -29,19 +53,24 @@ def format_draw(item):
         "BASE: "+as_nums(real["base"]),
         f"ORO: {real['oro1']:02d} | DOPPIO ORO: {real['oro2']:02d}",
         "EXTRA: "+as_nums(real["extra"]),
-        "",
-        "🧪 CONFRONTO SIMULAZIONI (nessuna giocata)",
     ]
+    if not advance:
+        lines+=["", "⚠️ Nessuna simulazione preventiva verificata per questo concorso.",
+                "Non ricostruisco una previsione dopo aver visto il risultato."]
+        return "\n".join(lines)
+    simulations=item["simulations"]
+    stats=item["comparison"]
+    lines.extend(["", "🎯 RISULTATO DELLE SIMULAZIONI INVIATE PRIMA DEL CONCORSO",
+                  "Inviate su Telegram: "+str(item.get("issued_at",""))])
     for mode in ("HYBRID","UNIFORM"):
-        if mode not in simulations or mode not in stats:
-            continue
         generated=simulations[mode]
         comparison=stats[mode]
+        matches=sorted(set(generated["base"]) & set(real["base"]))
         lines.append(f"{mode}: Base {comparison['base']}/20 | Extra {comparison['extra']}/15")
-        lines.append("  Simulati Base: "+as_nums(generated["base"]))
-        lines.append(f"  Simulati Oro: {generated['oro1']:02d}-{generated['oro2']:02d}")
-        lines.append("  Simulati Extra: "+as_nums(generated["extra"]))
-    lines.append("Confronto statistico, non previsione certa.")
+        lines.append("  Base coincidenti: "+(as_nums(matches) if matches else "nessuno"))
+        lines.append(f"  Oro 1 esatto: {'SI' if comparison['gold1'] else 'NO'} | "
+                     f"Oro 2 esatto: {'SI' if comparison['gold2'] else 'NO'}")
+    lines.append("Test statistico virtuale. Nessuna giocata automatica.")
     return "\n".join(lines)
 
 
@@ -54,8 +83,10 @@ def format_summary(item):
 
 
 def format_message(item):
-    if item["type"]=="DRAW":
+    if item["type"] in ("DRAW","DRAW_NOT_PREVIEWED"):
         return format_draw(item)
+    if item["type"]=="PREVIEW":
+        return format_preview(item)
     if item["type"]=="SUMMARY":
         return format_summary(item)
     raise ValueError("Notifica sconosciuta: invio bloccato")
@@ -84,22 +115,38 @@ def send_message(token,chat_id,message):
     return True
 
 
-def publish(state,send_fn):
-    """Persistenza gestita dal chiamante, anche se un invio successivo fallisce."""
+def publish(state,send_fn,now_fn=None,persist_fn=None):
+    """Send queued reports, confirming preview before the draw and checkpointing."""
+    now_fn=now_fn or (lambda:datetime.now(ROME))
+    checkpoint=persist_fn or (lambda:None)
     count=0
     if not state.get("telegram_welcome_sent"):
         send_fn("✅ TWIN90 LIVE collegato a Superambo3.\n"
-                "Da ora invio automaticamente le estrazioni REALI nuove "
-                "con Base, Oro, Doppio Oro, Extra e confronto HYBRID/UNIFORM.\n"
-                "Il controllo GitHub è programmato ogni 5 minuti. "
-                "Nessuna giocata automatica.")
+                "Le nuove simulazioni vengono inviate PRIMA del concorso, "
+                "quando la fonte e l'orario lo permettono.\n"
+                "Dopo il concorso mostro solo confronti già registrati. "
+                "Nessuna giocata.")
         state["telegram_welcome_sent"]=True
+        checkpoint()
         count+=1
     pending=state.setdefault("pending_notifications",[])
     while pending:
         item=pending[0]
+        if item["type"]=="PREVIEW" and (
+            now_fn()>=ts(item["due_at"])-timedelta(seconds=MIN_LEAD_SECONDS)
+        ):
+            # Never send an expired preview as if it were a pre-draw signal.
+            record=state.get("advance_forecasts",{}).get(item["key"])
+            if record and not record.get("sent_at"):
+                record["status"]="EXPIRED_UNDELIVERED"
+            pending.pop(0)
+            checkpoint()
+            continue
         send_fn(format_message(item))
+        if item["type"]=="PREVIEW":
+            confirm_sent(state,item["key"],when=now_fn())
         pending.pop(0)
+        checkpoint()
         count+=1
     return count
 
@@ -119,18 +166,17 @@ def main():
     if state.get("schema")!=1:
         raise RuntimeError("Stato non riconosciuto; invio bloccato")
     calls=0
+    def _save():
+        state_path.write_text(json.dumps(state,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     def _send(msg):
         nonlocal calls
         send_message(token,chat_id,msg)
         calls+=1
-        # Salva l'avanzamento solo dopo conferma. In caso di fallimento
-        # successivo, il workflow potrà conservare i messaggi rimanenti.
-        state_path.write_text(json.dumps(state,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     try:
-        publish(state,_send)
+        publish(state,_send,persist_fn=_save)
     finally:
-        # Anche su errore, conservare il progresso degli invii già confermati.
-        state_path.write_text(json.dumps(state,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+        # Keep every delivery acknowledgement and any remaining pending messages.
+        _save()
     print(f"TWIN90 Telegram: {calls} messaggi confermati, "
           f"coda {len(state.get('pending_notifications',[]))}")
 
