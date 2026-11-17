@@ -5,27 +5,29 @@ on:
   push:
     paths:
       - 'TWIN90/twin90_live.py'
-      - 'TWIN90/test_twin90_live.py'
+      - 'TWIN90/twin90_runner.py'
       - 'TWIN90/twin90_telegram.py'
+      - 'TWIN90/test_twin90_live.py'
       - 'TWIN90/test_twin90_telegram.py'
       - '.github/workflows/twin90_live.yml'
   schedule:
-    # Each 5 minutes, offset 2 minutes after the scheduled draw.
-    # GitHub scheduled execution is best effort and may be delayed.
-    - cron: '2-59/5 * * * *'
+    # Recovery watchdog. Regular 5-min cadence is maintained by the running
+    # supervisor itself, NOT by unreliable GitHub scheduled triggers.
+    - cron: '17 * * * *'
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
-  group: twin90-live
+  group: twin90-live-supervisor
   cancel-in-progress: false
 
 jobs:
   observe:
-    name: TWIN90 - feed reale, confronto, salvataggio
+    name: TWIN90 - LIVE supervision ogni 5 minuti
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 355
     env:
       PYTHONPATH: TWIN90
     steps:
@@ -33,12 +35,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
+          persist-credentials: true
 
       - name: Checkout ramo dati separato
         uses: actions/checkout@v4
         with:
           ref: twin90-live-state
           path: _twin90_state
+          persist-credentials: true
 
       - name: Python 3.12
         uses: actions/setup-python@v5
@@ -48,56 +52,32 @@ jobs:
       - name: Installa librerie
         run: python -m pip install -r TWIN90/requirements.txt requests beautifulsoup4
 
-      - name: Undici test automatici
+      - name: Undici test automatici prima del LIVE
         run: |
           python -m unittest discover -s TWIN90 -p 'test_twin90_live.py' -v
           python -m unittest discover -s TWIN90 -p 'test_twin90_telegram.py' -v
 
-      - name: Leggi estrazioni REALI e confronta solo i concorsi nuovi
-        shell: bash
-        run: |
-          set -euo pipefail
-          python TWIN90/twin90_live.py \
-            --model TWIN90/twin90_model_2025_2026.json \
-            --state _twin90_state/twin90_live_state.json \
-            --output TWIN90/output_live/last_run.json
-          python - <<'PY'
-          import json, os
-          v=json.load(open('TWIN90/output_live/last_run.json'))
-          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
-              f.write('## TWIN90 LIVE - nessuna giocata\n\n')
-              f.write('Stato: **'+v['status']+'** | ultimo concorso: **'+v['latest']+'**\n\n')
-              f.write('Nuove estrazioni: **'+str(v['new_draws'])+'** | confronti totali: **'+str(v['evaluated'])+'**\n\n')
-              for name, r in v.get('models',{}).items():
-                  f.write('- '+name+': '+str(r['draws'])+' test; Base medi in comune: '+str(r['avg_base_overlap'])+'/20\n')
-              if v.get('source_warnings'):
-                  f.write('\nFonte parziale, controllare il log.\n')
-          PY
-
-      - name: Invia nuove estrazioni reali su Telegram Superambo3
-        continue-on-error: true
+      - name: Segui le estrazioni reali e invia Telegram ogni 5 minuti
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: |
-          python TWIN90/twin90_telegram.py --state _twin90_state/twin90_live_state.json
+          TWIN90_RUNTIME_SECONDS: "19500"
+        run: python TWIN90/twin90_runner.py --interval 300
 
-      - name: Salva dati SOLO sul branch twin90-live-state
+      - name: Avvia automaticamente il runner successivo
+        if: ${{ success() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          cd _twin90_state
-          git add twin90_live_state.json
-          if git diff --cached --quiet; then
-            echo "Nessuna modifica allo stato."
-          else
-            git -c user.name='github-actions[bot]' \
-                -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-                commit -m 'state: TWIN90 read-only live observations'
-            git push origin HEAD:twin90-live-state
-          fi
+          gh api --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/twin90_live.yml/dispatches" \
+            -f ref="main"
+          echo "TWIN90: nuova istanza LIVE richiesta."
 
-      - name: Esporta report del controllo
+      - name: Rapporto di diagnostica
         if: always()
         uses: actions/upload-artifact@v4
         with:
