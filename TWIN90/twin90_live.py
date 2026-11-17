@@ -16,6 +16,7 @@ from lotto_twin90 import CANDIDATES, dynamic_score, load_model, pick_weighted
 ROME = ZoneInfo("Europe/Rome")
 ROOT = "https://lottologia.com/10elotto5minuti"
 MONTHS = dict(zip(("gennaio febbraio marzo aprile maggio giugno luglio agosto settembre ottobre novembre dicembre").split(),range(1,13)))
+MONTHS.update({"gen":1,"feb":2,"mar":3,"apr":4,"mag":5,"giu":6,"lug":7,"ago":8,"set":9,"sett":9,"ott":10,"nov":11,"dic":12})
 HEAD = re.compile(r"#\s*(\d{1,3})\s+(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\.?\s+(\d{4})\s+(\d{1,2}:\d{2})",re.I)
 SECT = re.compile(r"\bNumeri\b(.*?)\bOro\b(.*?)\bDoppio\s+Oro\b(.*?)\bExtra\b(.*)$",re.I|re.S)
 NUMS = re.compile(r"(?<!\d)(\d{1,2})(?!\d)")
