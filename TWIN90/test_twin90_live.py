@@ -44,7 +44,8 @@ class LiveTests(unittest.TestCase):
         self.assertEqual(s["advance_no_preview"],1)
         self.assertEqual(s["stats"]["HYBRID"]["n"],0)
         self.assertEqual(ingest(s,[example(1),example(2)],model())["new_draws"],0)
-        self.assertEqual(s["evaluated"],1)
+        self.assertEqual(s["evaluated"],0)
+        self.assertEqual(s["advance_checked"],0)
     def test_forecast_published_before_draw_counts(self):
         s=empty()
         ing=ingest(s,[example(1)],model(),stamp="2026-11-17T10:01:00+01:00")
