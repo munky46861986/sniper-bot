@@ -158,8 +158,10 @@ def ingest(state,rows,model,stamp=None):
                 state["source_gaps"]+=1
         if state["history"]:
             results={}
+            virtual_details={}
             for mode in ("UNIFORM","HYBRID"):
                 synthetic=generate_virtual(state["history"],model,target_key,mode)
+                virtual_details[mode]=synthetic
                 match=compare(actual,synthetic)
                 tally=state["stats"][mode]
                 tally["n"]+=1
@@ -169,6 +171,10 @@ def ingest(state,rows,model,stamp=None):
                 tally["gold2_hits"]+=match["gold2"]
                 tally["both_gold_hits"]+=match["both"]
                 results[mode]=match
+            state.setdefault("pending_notifications",[]).append({
+                "type":"DRAW", "key":target_key, "actual":actual,
+                "simulations":virtual_details,"comparison":results
+            })
             state["recent"].append({"key":target_key,"comparison":results})
             state["recent"]=state["recent"][-30:]
             state["evaluated"]+=1
@@ -176,6 +182,18 @@ def ingest(state,rows,model,stamp=None):
         state["history"]=state["history"][-288:]
         state["latest"]=target_key
         previous=actual
+    # In case of delayed runners, summarize the older notifications rather than
+    # sending dozens of Telegram messages at once. All statistical observations
+    # remain in history and cumulative counters.
+    pending=state.get("pending_notifications",[])
+    if len(pending)>12:
+        older=pending[:-3]
+        count=sum(int(item.get("count",1)) for item in older)
+        start=older[0].get("first_key",older[0].get("key"))
+        end=older[-1].get("last_key",older[-1].get("key"))
+        state["pending_notifications"]=[
+            {"type":"SUMMARY","count":count,"first_key":start,"last_key":end}
+        ]+pending[-3:]
     return {"status":"LIVE" if unseen else "NO_NEW_DATA",
             "latest":state["latest"],"source_latest":state["source_latest"],
             "new_draws":len(unseen),"evaluated":state["evaluated"],
