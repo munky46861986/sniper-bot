@@ -1,0 +1,179 @@
+{
+  "metrics": [
+    {
+      "metric": "base_frequency_mean",
+      "real": 0.2222222,
+      "synthetic": 0.2222222,
+      "relative_error_pct": 0.0,
+      "similarity_pct": 100.0
+    },
+    {
+      "metric": "base_frequency_std",
+      "real": 0.0034843,
+      "synthetic": 0.003722,
+      "relative_error_pct": 6.821,
+      "similarity_pct": 93.179
+    },
+    {
+      "metric": "base_frequency_range",
+      "real": 0.0175833,
+      "synthetic": 0.0210833,
+      "relative_error_pct": 19.905,
+      "similarity_pct": 80.095
+    },
+    {
+      "metric": "mean_overlap_next",
+      "real": 4.4646221,
+      "synthetic": 4.4703725,
+      "relative_error_pct": 0.129,
+      "similarity_pct": 99.871
+    },
+    {
+      "metric": "overlap_next_std",
+      "real": 1.6661209,
+      "synthetic": 1.652875,
+      "relative_error_pct": 0.795,
+      "similarity_pct": 99.205
+    },
+    {
+      "metric": "mean_even",
+      "real": 10.01225,
+      "synthetic": 10.0149167,
+      "relative_error_pct": 0.027,
+      "similarity_pct": 99.973
+    },
+    {
+      "metric": "mean_sum20",
+      "real": 910.7320833,
+      "synthetic": 909.2050833,
+      "relative_error_pct": 0.168,
+      "similarity_pct": 99.832
+    },
+    {
+      "metric": "mean_decade_count",
+      "real": 2.2222222,
+      "synthetic": 2.2222222,
+      "relative_error_pct": 0.0,
+      "similarity_pct": 100.0
+    },
+    {
+      "metric": "decade_5plus_rate",
+      "real": 0.0402685,
+      "synthetic": 0.0407315,
+      "relative_error_pct": 1.15,
+      "similarity_pct": 98.85
+    },
+    {
+      "metric": "oro1_frequency_std",
+      "real": 0.0010737,
+      "synthetic": 0.000958,
+      "relative_error_pct": 10.781,
+      "similarity_pct": 89.219
+    },
+    {
+      "metric": "oro2_frequency_std",
+      "real": 0.0009859,
+      "synthetic": 0.0009467,
+      "relative_error_pct": 3.969,
+      "similarity_pct": 96.031
+    },
+    {
+      "metric": "extra_frequency_mean_valid_only",
+      "real": 0.1666667,
+      "synthetic": 0.1666667,
+      "relative_error_pct": 0.0,
+      "similarity_pct": 100.0
+    },
+    {
+      "metric": "extra_frequency_std_valid_only",
+      "real": 0.0037149,
+      "synthetic": 0.0032427,
+      "relative_error_pct": 12.71,
+      "similarity_pct": 87.29
+    }
+  ],
+  "mean_relative_similarity_pct": 95.657,
+  "warning": "Statistic similarity is NOT percentage of actual numbers predicted.",
+  "sample_size": 12000,
+  "holdout_2026": {
+    "UNIFORM": {
+      "draws": 82280,
+      "brier": 0.172839493,
+      "logloss": 0.52970618,
+      "top20_mean_hits": 4.44537,
+      "top2_ambo_H1_pct": 4.80797
+    },
+    "HYBRID": {
+      "draws": 82280,
+      "brier": 0.173498556,
+      "logloss": 0.531595826,
+      "top20_mean_hits": 4.44161,
+      "top2_ambo_H1_pct": 4.80676
+    },
+    "TRANSITION": {
+      "draws": 82280,
+      "brier": 0.172841072,
+      "logloss": 0.52971077,
+      "top20_mean_hits": 4.44897,
+      "top2_ambo_H1_pct": 4.81526
+    },
+    "HOT80": {
+      "draws": 82280,
+      "brier": 0.174512401,
+      "logloss": 0.53445828,
+      "top20_mean_hits": 4.44601,
+      "top2_ambo_H1_pct": 4.73748
+    },
+    "COLD80": {
+      "draws": 82280,
+      "brier": 0.174408108,
+      "logloss": 0.534276068,
+      "top20_mean_hits": 4.44621,
+      "top2_ambo_H1_pct": 4.80676
+    }
+  },
+  "selection_2025": {
+    "selected": "UNIFORM",
+    "best_unpenalized": "UNIFORM",
+    "validation_loss_uniform": 0.52970618,
+    "validation_loss_best": 0.52970618
+  },
+  "quality": {
+    "archive_2025_rows": 77565,
+    "archive_2026_rows": 82568,
+    "2025_bad_extra": [
+      {
+        "date": "2025-09-16",
+        "draw": 258,
+        "reason": "missing/invalid/overlap Extra"
+      },
+      {
+        "date": "2025-09-16",
+        "draw": 259,
+        "reason": "missing/invalid/overlap Extra"
+      },
+      {
+        "date": "2025-09-19",
+        "draw": 256,
+        "reason": "missing/invalid/overlap Extra"
+      },
+      {
+        "date": "2025-09-19",
+        "draw": 257,
+        "reason": "missing/invalid/overlap Extra"
+      }
+    ],
+    "2026_bad_extra": [
+      {
+        "date": "2026-07-08",
+        "draw": 1,
+        "reason": "missing/invalid/overlap Extra"
+      },
+      {
+        "date": "2026-07-08",
+        "draw": 2,
+        "reason": "missing/invalid/overlap Extra"
+      }
+    ]
+  }
+}
