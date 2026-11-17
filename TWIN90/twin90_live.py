@@ -12,6 +12,7 @@ import numpy as np
 import requests
 from bs4 import BeautifulSoup
 from lotto_twin90 import CANDIDATES, dynamic_score, load_model, pick_weighted
+from twin90_advance import expire_undelivered, make_preview, reconcile, ensure as advance_ensure
 
 ROME = ZoneInfo("Europe/Rome")
 ROOT = "https://lottologia.com/10elotto5minuti"
@@ -135,18 +136,25 @@ def compare(a,b):
 
 def ingest(state,rows,model,stamp=None):
     stamp=stamp or datetime.now(ROME).isoformat(timespec="seconds")
+    now=datetime.fromisoformat(stamp)
+    if now.tzinfo is None:
+        now=now.replace(tzinfo=ROME)
     if state.get("schema")!=1 or not isinstance(state.get("history"),list):
         raise ValueError("Stato TWIN90 non compatibile; scrittura bloccata")
+    advance_ensure(state)
     rows=sorted(rows,key=lambda r:mark_order(marker(r)))
     if not rows:raise ValueError("Nessun dato")
     for row in rows:check(row)
+    expire_undelivered(state,now)
     state["checked_at"]=stamp
     state["source_latest"]=marker(rows[-1])
     if state["latest"] is None:
         state["history"]=rows[-288:]
         state["latest"]=marker(rows[-1])
         state["initialized_at"]=stamp
-        return {"status":"BOOTSTRAP","latest":state["latest"],"new_draws":0,"evaluated":0,"history_count":len(state["history"])}
+        preview=make_preview(state,model,generate_virtual,now=now)
+        return {"status":"BOOTSTRAP","latest":state["latest"],"new_draws":0,
+                "advance_checked":0,"next_preview":preview,"history_count":len(state["history"])}
     unseen=[r for r in rows if mark_order(marker(r))>mark_order(state["latest"])]
     previous=state["history"][-1] if state["history"] else None
     for actual in unseen:
@@ -156,35 +164,22 @@ def ingest(state,rows,model,stamp=None):
             d1=datetime.fromisoformat(actual["day"])
             if (d0==d1 and actual["draw"]>previous["draw"]+1) or (d1-d0).days>1:
                 state["source_gaps"]+=1
-        if state["history"]:
-            results={}
-            virtual_details={}
-            for mode in ("UNIFORM","HYBRID"):
-                synthetic=generate_virtual(state["history"],model,target_key,mode)
-                virtual_details[mode]=synthetic
-                match=compare(actual,synthetic)
-                tally=state["stats"][mode]
-                tally["n"]+=1
-                tally["base_sum"]+=match["base"]
-                tally["extra_sum"]+=match["extra"]
-                tally["gold1_hits"]+=match["gold1"]
-                tally["gold2_hits"]+=match["gold2"]
-                tally["both_gold_hits"]+=match["both"]
-                results[mode]=match
-            state.setdefault("pending_notifications",[]).append({
-                "type":"DRAW", "key":target_key, "actual":actual,
-                "simulations":virtual_details,"comparison":results
-            })
-            state["recent"].append({"key":target_key,"comparison":results})
-            state["recent"]=state["recent"][-30:]
-            state["evaluated"]+=1
+        # Do NOT regenerate a virtual draw after its actual result is known.
+        # Score only the pre-announced simulation stored in our persistent
+        # state and acknowledged by Telegram before the scheduled draw.
+        notification=reconcile(state,actual,target_key,compare)
+        state.setdefault("pending_notifications",[]).append(notification)
+        state["recent"].append({"key":target_key,
+                                "advance_verified":notification["type"]=="DRAW",
+                                "comparison":notification.get("comparison",{})})
+        state["recent"]=state["recent"][-30:]
         state["history"].append(actual)
         state["history"]=state["history"][-288:]
         state["latest"]=target_key
         previous=actual
-    # In case of delayed runners, summarize the older notifications rather than
-    # sending dozens of Telegram messages at once. All statistical observations
-    # remain in history and cumulative counters.
+    expire_undelivered(state,now)
+    preview=make_preview(state,model,generate_virtual,now=now)
+    # Digest old messages after long outages. Keep the newest preview intact.
     pending=state.get("pending_notifications",[])
     if len(pending)>12:
         older=pending[:-3]
@@ -196,11 +191,14 @@ def ingest(state,rows,model,stamp=None):
         ]+pending[-3:]
     return {"status":"LIVE" if unseen else "NO_NEW_DATA",
             "latest":state["latest"],"source_latest":state["source_latest"],
-            "new_draws":len(unseen),"evaluated":state["evaluated"],
+            "new_draws":len(unseen),"advance_checked":state["advance_checked"],
+            "advance_no_preview":state["advance_no_preview"],
+            "next_preview":preview,
             "source_gaps":state["source_gaps"],
-            "models":{k:{"draws":v["n"],"avg_base_overlap":round(v["base_sum"]/v["n"],3) if v["n"] else None,
-                          "avg_extra_overlap":round(v["extra_sum"]/v["n"],3) if v["n"] else None}
-                      for k,v in state["stats"].items()}}
+            "advance_models":{k:{"draws":v["n"],
+                                "avg_base_overlap":round(v["base_sum"]/v["n"],3) if v["n"] else None,
+                                "avg_extra_overlap":round(v["extra_sum"]/v["n"],3) if v["n"] else None}
+                              for k,v in state["advance_stats"].items()}}
 
 
 def main():
