@@ -6,6 +6,8 @@ on:
     paths:
       - 'TWIN90/twin90_live.py'
       - 'TWIN90/test_twin90_live.py'
+      - 'TWIN90/twin90_telegram.py'
+      - 'TWIN90/test_twin90_telegram.py'
       - '.github/workflows/twin90_live.yml'
   schedule:
     # Each 5 minutes, offset 2 minutes after the scheduled draw.
@@ -46,8 +48,10 @@ jobs:
       - name: Installa librerie
         run: python -m pip install -r TWIN90/requirements.txt requests beautifulsoup4
 
-      - name: Sei test automatici
-        run: python -m unittest discover -s TWIN90 -p 'test_twin90_live.py' -v
+      - name: Undici test automatici
+        run: |
+          python -m unittest discover -s TWIN90 -p 'test_twin90_live.py' -v
+          python -m unittest discover -s TWIN90 -p 'test_twin90_telegram.py' -v
 
       - name: Leggi estrazioni REALI e confronta solo i concorsi nuovi
         shell: bash
@@ -69,6 +73,14 @@ jobs:
               if v.get('source_warnings'):
                   f.write('\nFonte parziale, controllare il log.\n')
           PY
+
+      - name: Invia nuove estrazioni reali su Telegram Superambo3
+        continue-on-error: true
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          python TWIN90/twin90_telegram.py --state _twin90_state/twin90_live_state.json
 
       - name: Salva dati SOLO sul branch twin90-live-state
         shell: bash
