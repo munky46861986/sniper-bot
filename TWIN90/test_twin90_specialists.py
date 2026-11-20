@@ -24,7 +24,9 @@ def fixture():
     pending={"type":"PREVIEW","key":"2026-11-20#002",
              "source_key":"2026-11-20#001",
              "due_at":"2026-11-20T10:05:00+01:00",
-             "simulations":{}}
+             "simulations":{m:{"base":source["base"],"oro1":source["oro1"],
+                               "oro2":source["oro2"],"extra":source["extra"]}
+                            for m in ("HYBRID","UNIFORM")}}
     state={"schema":1,"latest":"2026-11-20#001","history":[source],
            "telegram_welcome_sent":True,"pending_notifications":[pending],
            "advance_forecasts":{"2026-11-20#002":{
