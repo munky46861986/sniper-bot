@@ -13,6 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 from lotto_twin90 import CANDIDATES, dynamic_score, load_model, pick_weighted
 from twin90_advance import expire_undelivered, make_preview, reconcile, ensure as advance_ensure
+from twin90_specialists import prepare as specialist_prepare, reconcile as specialist_reconcile, describe as specialist_describe
 
 ROME = ZoneInfo("Europe/Rome")
 ROOT = "https://lottologia.com/10elotto5minuti"
@@ -153,6 +154,7 @@ def ingest(state,rows,model,stamp=None):
         state["latest"]=marker(rows[-1])
         state["initialized_at"]=stamp
         preview=make_preview(state,model,generate_virtual,now=now)
+        specialist_prepare(state,now=now)
         return {"status":"BOOTSTRAP","latest":state["latest"],"new_draws":0,
                 "advance_checked":0,"next_preview":preview,"history_count":len(state["history"])}
     unseen=[r for r in rows if mark_order(marker(r))>mark_order(state["latest"])]
@@ -168,6 +170,9 @@ def ingest(state,rows,model,stamp=None):
         # Score only the pre-announced simulation stored in our persistent
         # state and acknowledged by Telegram before the scheduled draw.
         notification=reconcile(state,actual,target_key,compare)
+        specialist_report=specialist_reconcile(state,actual,target_key)
+        if specialist_report is not None:
+            notification["specialist_report"]=specialist_report
         state.setdefault("pending_notifications",[]).append(notification)
         state["recent"].append({"key":target_key,
                                 "advance_verified":notification["type"]=="DRAW",
@@ -179,6 +184,7 @@ def ingest(state,rows,model,stamp=None):
         previous=actual
     expire_undelivered(state,now)
     preview=make_preview(state,model,generate_virtual,now=now)
+    specialist_prepare(state,now=now)
     # Digest old messages after long outages. Keep the newest preview intact.
     pending=state.get("pending_notifications",[])
     if len(pending)>12:
@@ -194,6 +200,7 @@ def ingest(state,rows,model,stamp=None):
             "new_draws":len(unseen),"advance_checked":state["advance_checked"],
             "advance_no_preview":state["advance_no_preview"],
             "next_preview":preview,
+            "specialist_lab":specialist_describe(state),
             "source_gaps":state["source_gaps"],
             "advance_models":{k:{"draws":v["n"],
                                 "avg_base_overlap":round(v["base_sum"]/v["n"],3) if v["n"] else None,
