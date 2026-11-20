@@ -206,6 +206,8 @@ def reconcile(state, actual, key):
     """Record results against the previously Telegram-confirmed 20-number sets."""
     lab = _root(state)
     rec = lab["forecasts"].get(key)
+    if rec and rec.get("status") == "SCORED_PREANNOUNCED":
+        return None  # Idempotent even if a draw is seen twice.
     if not _valid_preview(rec, key):
         lab["not_preannounced"] += 1
         if rec:
