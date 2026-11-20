@@ -13,6 +13,7 @@ from pathlib import Path
 import requests
 from datetime import datetime, timedelta
 from twin90_advance import MIN_LEAD_SECONDS, ROME, confirm_sent, ts
+from twin90_specialists import confirm_sent as specialist_confirm_sent
 
 
 def as_nums(vals):
@@ -37,6 +38,13 @@ def format_preview(item):
             f"ORO: {r['oro1']:02d} | DOPPIO ORO: {r['oro2']:02d}",
             "EXTRA: "+as_nums(r["extra"]),
         ])
+    if item.get("specialists"):
+        lines.extend(["", "🔬 TWIN90 SPECIALIST LAB — 20 NUMERI BASE"])
+        for mode in ("RITARDATARI","FREQUENTI","DECINE","CONTROLLO"):
+            nums=item["specialists"].get(mode)
+            if nums:
+                lines.append(mode+": "+as_nums(nums))
+        lines.append("Modelli sperimentali indipendenti, nessuna giocata.")
     lines.append("")
     lines.append("Dopo il concorso confronterò SOLO questi numeri già comunicati.")
     return "\n".join(lines)
@@ -70,6 +78,15 @@ def format_draw(item):
         lines.append("  Base coincidenti: "+(as_nums(matches) if matches else "nessuno"))
         lines.append(f"  Oro 1 esatto: {'SI' if comparison['gold1'] else 'NO'} | "
                      f"Oro 2 esatto: {'SI' if comparison['gold2'] else 'NO'}")
+    if item.get("specialist_report"):
+        report=item["specialist_report"]
+        lines.extend(["", "🔬 SPECIALIST LAB — RISULTATI PREVENTIVI VERIFICATI"])
+        for mode in ("RITARDATARI","FREQUENTI","DECINE","CONTROLLO"):
+            result=report["results"].get(mode)
+            if result:
+                lines.append(f"{mode}: {result['hits']}/20 | Base comuni: "+
+                             (as_nums(result["numbers"]) if result["numbers"] else "nessuno"))
+        lines.append(f"Confronti SPECIALIST LIVE confermati: {report['total']}")
     lines.append("Test statistico virtuale. Nessuna giocata automatica.")
     return "\n".join(lines)
 
@@ -144,7 +161,10 @@ def publish(state,send_fn,now_fn=None,persist_fn=None):
             continue
         send_fn(format_message(item))
         if item["type"]=="PREVIEW":
-            confirm_sent(state,item["key"],when=now_fn())
+            confirmed_at=now_fn()
+            confirm_sent(state,item["key"],when=confirmed_at)
+            if item.get("specialists"):
+                specialist_confirm_sent(state,item["key"],when=confirmed_at)
         pending.pop(0)
         checkpoint()
         count+=1
