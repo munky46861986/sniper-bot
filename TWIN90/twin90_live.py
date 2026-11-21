@@ -13,6 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 from lotto_twin90 import CANDIDATES, dynamic_score, load_model, pick_weighted
 from twin90_advance import expire_undelivered, make_preview, reconcile, ensure as advance_ensure
+from twin90_dna_master import tick as dna_master_tick
 from twin90_specialists import prepare as specialist_prepare, reconcile as specialist_reconcile, describe as specialist_describe
 
 ROME = ZoneInfo("Europe/Rome")
@@ -218,6 +219,11 @@ def main():
     state=json.loads(sp.read_text(encoding="utf-8")) if sp.exists() else empty()
     real,warnings=fetch_real()
     result=ingest(state,real,model)
+    try:
+        result["dna_master"]=dna_master_tick(state,real)
+    except Exception as exc:
+        # Fail closed for DNA MASTER, keep existing TWIN90 operation.
+        result["dna_master"]={"status":"ERROR","error":type(exc).__name__}
     result["source_warnings"]=warnings
     sp.parent.mkdir(parents=True,exist_ok=True)
     sp.write_text(json.dumps(state,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")

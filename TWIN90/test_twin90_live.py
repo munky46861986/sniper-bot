@@ -92,4 +92,55 @@ class LiveTests(unittest.TestCase):
         check(a)
         self.assertEqual(compare(a,b)["base"],20)
 
+
+
+class DnaMasterTests(unittest.TestCase):
+    def test_frozen_rules_and_warmup(self):
+        from twin90_dna_master import fresh, signals, PAIRS, _observe, index
+        from datetime import date, timedelta
+        lab=fresh()
+        origin=date(2026,11,14)
+        for i in range(575):
+            row={"day":str(origin+timedelta(days=i//288)),"draw":i%288+1,
+                 "base":list(range(1,21))}
+            _observe(lab,row)
+        self.assertEqual(signals(lab,"2026-11-16#001"),{})
+        _observe(lab,{"day":"2026-11-15","draw":288,"base":list(range(1,21))})
+        self.assertEqual(len(lab["history"]),576)
+        self.assertEqual(len(PAIRS),100)
+        self.assertEqual(len(lab["occ"][0]),6)
+        self.assertEqual(signals(lab,"2026-11-16#001"),signals(lab,"2026-11-16#001"))
+
+    def test_ack_outcomes_and_gap(self):
+        from twin90_dna_master import fresh, confirm, _observe, index, MODES
+        from datetime import timedelta
+        target="2026-11-17#002"
+        lab=fresh(); state={"dna_master":lab}
+        lab["last_index"]=index("2026-11-17#001")
+        base={"created_at":"2026-11-17T10:00:00+01:00","due_at":"2026-11-17T10:05:00+01:00",
+              "sent_at":None,"candidates":{"15":{"modes":list(MODES)}},"seen":[]}
+        lab["active"][target]=base
+        self.assertTrue(confirm(state,target,datetime(2026,11,17,10,1,tzinfo=ROME)))
+        for i in range(2,12):
+            _observe(lab,{"day":"2026-11-17","draw":i,"base":list(range(1,21))})
+        for mode in MODES:
+            self.assertEqual(lab["stats"][mode]["published"],1)
+            for h in (1,2,5,10):
+                self.assertEqual(lab["stats"][mode][str(h)],{"n":1,"hit":1})
+        self.assertFalse(lab["active"])
+        self.assertEqual(_observe(lab,{"day":"2026-11-17","draw":11,"base":list(range(1,21))}),[])
+        _observe(lab,{"day":"2026-11-17","draw":13,"base":list(range(1,21))})
+        self.assertEqual(len(lab["history"]),1)
+        self.assertEqual(lab["gaps"],1)
+
+    def test_undelivered_never_scores(self):
+        from twin90_dna_master import fresh, _observe, index, MODES
+        lab=fresh(); lab["last_index"]=index("2026-11-17#001")
+        lab["active"]["2026-11-17#002"]={"created_at":"2026-11-17T10:00:00+01:00",
+            "due_at":"2026-11-17T10:05:00+01:00","sent_at":None,
+            "candidates":{"15":{"modes":list(MODES)}},"seen":[]}
+        _observe(lab,{"day":"2026-11-17","draw":2,"base":list(range(1,21))})
+        self.assertEqual(lab["stats"][MODES[0]]["1"]["n"],0)
+        self.assertFalse(lab["active"])
+
 if __name__=="__main__":unittest.main()

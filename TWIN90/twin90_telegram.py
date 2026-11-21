@@ -14,6 +14,7 @@ import requests
 from datetime import datetime, timedelta
 from twin90_advance import MIN_LEAD_SECONDS, ROME, confirm_sent, ts
 from twin90_specialists import confirm_sent as specialist_confirm_sent
+from twin90_dna_master import confirm as dna_master_confirm, format_extra as dna_master_extra
 
 
 def as_nums(vals):
@@ -159,12 +160,18 @@ def publish(state,send_fn,now_fn=None,persist_fn=None):
             pending.pop(0)
             checkpoint()
             continue
-        send_fn(format_message(item))
+        message=format_message(item)
+        extra=dna_master_extra(item)
+        if extra:
+            message += "\n"+extra
+        send_fn(message)
         if item["type"]=="PREVIEW":
             confirmed_at=now_fn()
             confirm_sent(state,item["key"],when=confirmed_at)
             if item.get("specialists"):
                 specialist_confirm_sent(state,item["key"],when=confirmed_at)
+            if item.get("dna_master"):
+                dna_master_confirm(state,item["key"],confirmed_at)
         pending.pop(0)
         checkpoint()
         count+=1
