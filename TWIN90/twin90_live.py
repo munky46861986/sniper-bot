@@ -101,6 +101,18 @@ def fetch_real():
     return rows,errors
 
 
+def fetch_dna_archive(today=None):
+    """Extra archive only for DNA warmup; date and draw integrity are checked."""
+    today=today or datetime.now(ROME).date()
+    expected=str(today-timedelta(days=2))
+    try:
+        res=requests.get(ROOT+"/estrazioni-2gg-fa",headers=HEADERS,timeout=18)
+        res.raise_for_status()
+        return parse_page(res.text,expected)
+    except (requests.RequestException,ValueError):
+        return []
+
+
 def empty():
     return {"schema":1,"latest":None,"history":[],"checked_at":None,
             "source_latest":None,"evaluated":0,"source_gaps":0,
@@ -220,7 +232,11 @@ def main():
     real,warnings=fetch_real()
     result=ingest(state,real,model)
     try:
-        result["dna_master"]=dna_master_tick(state,real)
+        dna_rows=real
+        if len(state.get("dna_master",{}).get("history",[]))<576:
+            # Supplement warmup without replaying historical TWIN90 forecasts.
+            dna_rows=fetch_dna_archive()+real
+        result["dna_master"]=dna_master_tick(state,dna_rows)
     except Exception as exc:
         # Fail closed for DNA MASTER, keep existing TWIN90 operation.
         result["dna_master"]={"status":"ERROR","error":type(exc).__name__}

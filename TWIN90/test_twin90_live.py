@@ -143,4 +143,35 @@ class DnaMasterTests(unittest.TestCase):
         self.assertEqual(lab["stats"][MODES[0]]["1"]["n"],0)
         self.assertFalse(lab["active"])
 
+
+    def test_dna_bootstrap_extends_backwards_without_scoring(self):
+        from twin90_dna_master import fresh, tick, _observe, MODES
+        from datetime import date, timedelta
+        start=date(2026,11,19)
+        rows=[{"day":str(start+timedelta(days=i//288)),
+               "draw":i%288+1,"time":"00:05","base":list(range(1,21))}
+              for i in range(576)]
+        lab=fresh()
+        for row in rows[-6:]: _observe(lab,row)
+        state={"dna_master":lab,"history":rows[-1:],"pending_notifications":[]}
+        result=tick(state,rows,now=datetime(2026,11,22,0,5,tzinfo=ROME))
+        self.assertEqual(result["warmup"],576)
+        for m in MODES:
+            self.assertEqual(result["stats"][m]["published"],0)
+            self.assertEqual(result["stats"][m]["1"]["n"],0)
+
+    def test_dna_bootstrap_does_not_fill_missing_draw(self):
+        from twin90_dna_master import fresh, tick, _observe
+        from datetime import date, timedelta
+        start=date(2026,11,19)
+        rows=[{"day":str(start+timedelta(days=i//288)),
+               "draw":i%288+1,"time":"00:05","base":list(range(1,21))}
+              for i in range(576)]
+        lab=fresh()
+        for row in rows[-6:]: _observe(lab,row)
+        state={"dna_master":lab,"history":rows[-1:],"pending_notifications":[]}
+        result=tick(state,rows[:500]+rows[501:],now=datetime(2026,11,22,0,5,tzinfo=ROME))
+        self.assertEqual(result["warmup"],75)
+
+
 if __name__=="__main__":unittest.main()

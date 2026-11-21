@@ -162,9 +162,37 @@ def tick(state, rows, now=None):
     pending=state.setdefault("pending_notifications",[])
     historical={rowkey(r):r for r in state.get("history",[])}
     historical.update({rowkey(r):r for r in rows})
+    # Keep already validated BASE draws while extending the window backwards.
+    # During normal operation this reconstruction does not touch live scores.
+    saved={index(k):r["base"] for k,r in historical.items()}
+    old_end=lab["last_index"]
+    if old_end is not None:
+        for offset,base in enumerate(reversed(lab["history"])):
+            pos=old_end-offset
+            if pos in saved and sorted(saved[pos])!=sorted(base):
+                raise ValueError("Conflicting historic BASE")
+            saved[pos]=base
     notes=[]
     for key,row in sorted(historical.items(), key=lambda x:index(x[0])):
         notes.extend(_observe(lab,row))
+    # _observe ignores older draws already passed by the live cursor.
+    # Rebuild only the unscored warmup from a contiguous, validated suffix.
+    # Never clear counters, and never reconstruct forecasts in the past.
+    end=lab["last_index"]
+    if end is not None and len(lab["history"])<WARMUP and not lab["active"]:
+        suffix=[]
+        for pos in range(end,end-WARMUP,-1):
+            if pos not in saved: break
+            suffix.append((pos,saved[pos]))
+        if len(suffix)>len(lab["history"]):
+            lab["history"]=[]
+            lab["occ"]=[[] for _ in range(90)]
+            lab["last_index"]=None
+            for pos,base in reversed(suffix):
+                # Inverse of index(); valid concorsi 1..288.
+                ordinal,number=divmod(pos-1,288)
+                _observe(lab,{"day":date.fromordinal(ordinal).isoformat(),
+                              "draw":number+1,"base":base})
     preview=None
     if state.get("history") and len(lab["history"])>=WARMUP:
         last=state["history"][-1]
