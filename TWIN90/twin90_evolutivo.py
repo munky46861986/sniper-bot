@@ -191,6 +191,8 @@ def reconcile(state, actual):
         h = current - draw_index(key) + 1
         if h < 1:
             continue
+        if h <= record["last_h"]:
+            continue  # Duplicate real draw: never score or invalidate twice.
         if not valid_delivery(record) or h > max(HORIZONS) or h != record["last_h"] + 1:
             lab["missed"] += 1
             record["status"] = "INCOMPLETE"
