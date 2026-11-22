@@ -174,4 +174,28 @@ class DnaMasterTests(unittest.TestCase):
         self.assertEqual(result["warmup"],75)
 
 
+
+    def test_dna_archive_parser_and_verified_midnight_recovery(self):
+        from dna_master_archive import parse_day,collect
+        from datetime import date,timedelta
+        nums=" ".join(map(str,range(1,21)))
+        day="2027-01-02"
+        start=date(2027,1,1)
+        rows=[{"day":str(start+timedelta(days=i//288)),"draw":i%288+1,"base":list(range(1,21))} for i in range(576)]
+        feed=[r for r in rows if not (r["day"]=="2027-01-01" and r["draw"]==288)]
+        archive_day="2027-01-01"
+        html="<title>Estrazioni 1 Gennaio 2027</title><table>"+ "".join(
+            f"<tr><td>{i} - {(i*5//60)%24:02d}:{i*5%60:02d}</td><td>{nums}</td></tr>" for i in range(1,289))+"</table>"
+        self.assertEqual(len(parse_day(html,archive_day)),288)
+        self.assertEqual(parse_day(html,day),[])
+        result,report=collect({"history":feed},feed,fetch=lambda url:html,seed_rows=[])
+        self.assertEqual(report["verified_rows"],576)
+        self.assertEqual(report["missing"],[])
+        self.assertEqual(len(result),576)
+        bad=html.replace(nums," ".join(map(str,range(2,22))),1)
+        result,report=collect({"history":feed},feed,fetch=lambda url:bad,seed_rows=[])
+        self.assertEqual(report["verified_rows"],575)
+        self.assertEqual(report["missing"],["2027-01-01#288"])
+
+
 if __name__=="__main__":unittest.main()
