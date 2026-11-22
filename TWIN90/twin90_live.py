@@ -232,11 +232,11 @@ def main():
     real,warnings=fetch_real()
     result=ingest(state,real,model)
     try:
-        dna_rows=real
-        if len(state.get("dna_master",{}).get("history",[]))<576:
-            # Supplement warmup without replaying historical TWIN90 forecasts.
-            dna_rows=fetch_dna_archive()+real
+        from dna_master_archive import collect as collect_dna_history
+        dna_rows,archive_report=collect_dna_history(state,real)
         result["dna_master"]=dna_master_tick(state,dna_rows)
+        result["dna_master"]["archive"]=archive_report
+        state["dna_master"]["archive"]=archive_report
     except Exception as exc:
         # Fail closed for DNA MASTER, keep existing TWIN90 operation.
         result["dna_master"]={"status":"ERROR","error":type(exc).__name__}
