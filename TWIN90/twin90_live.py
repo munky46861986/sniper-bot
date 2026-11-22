@@ -14,6 +14,8 @@ from bs4 import BeautifulSoup
 from lotto_twin90 import CANDIDATES, dynamic_score, load_model, pick_weighted
 from twin90_advance import expire_undelivered, make_preview, reconcile, ensure as advance_ensure
 from twin90_dna_master import tick as dna_master_tick
+from twin90_evolutivo import (prepare as evolutivo_prepare, reconcile as evolutivo_reconcile,
+                            describe as evolutivo_describe)
 from twin90_specialists import prepare as specialist_prepare, reconcile as specialist_reconcile, describe as specialist_describe
 
 ROME = ZoneInfo("Europe/Rome")
@@ -168,6 +170,7 @@ def ingest(state,rows,model,stamp=None):
         state["initialized_at"]=stamp
         preview=make_preview(state,model,generate_virtual,now=now)
         specialist_prepare(state,now=now)
+        evolutivo_prepare(state,now=now)
         return {"status":"BOOTSTRAP","latest":state["latest"],"new_draws":0,
                 "advance_checked":0,"next_preview":preview,"history_count":len(state["history"])}
     unseen=[r for r in rows if mark_order(marker(r))>mark_order(state["latest"])]
@@ -186,6 +189,9 @@ def ingest(state,rows,model,stamp=None):
         specialist_report=specialist_reconcile(state,actual,target_key)
         if specialist_report is not None:
             notification["specialist_report"]=specialist_report
+        evolutivo_notes=evolutivo_reconcile(state,actual)
+        if evolutivo_notes:
+            notification["ritardatari_evolutivo_results"]=evolutivo_notes
         state.setdefault("pending_notifications",[]).append(notification)
         state["recent"].append({"key":target_key,
                                 "advance_verified":notification["type"]=="DRAW",
@@ -198,6 +204,7 @@ def ingest(state,rows,model,stamp=None):
     expire_undelivered(state,now)
     preview=make_preview(state,model,generate_virtual,now=now)
     specialist_prepare(state,now=now)
+    evolutivo_prepare(state,now=now)
     # Digest old messages after long outages. Keep the newest preview intact.
     pending=state.get("pending_notifications",[])
     if len(pending)>12:
@@ -240,6 +247,7 @@ def main():
     except Exception as exc:
         # Fail closed for DNA MASTER, keep existing TWIN90 operation.
         result["dna_master"]={"status":"ERROR","error":type(exc).__name__}
+    result["ritardatari_evolutivo"]=evolutivo_describe(state)
     result["source_warnings"]=warnings
     sp.parent.mkdir(parents=True,exist_ok=True)
     sp.write_text(json.dumps(state,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
