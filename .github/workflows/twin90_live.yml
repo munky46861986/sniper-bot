@@ -7,6 +7,8 @@ on:
       - 'TWIN90/twin90_live.py'
       - 'TWIN90/twin90_advance.py'
       - 'TWIN90/twin90_specialists.py'
+      - 'TWIN90/twin90_evolutivo.py'
+      - 'TWIN90/test_twin90_evolutivo.py'
       - 'TWIN90/test_twin90_specialists.py'
       - 'TWIN90/twin90_runner.py'
       - 'TWIN90/twin90_telegram.py'
@@ -60,6 +62,7 @@ jobs:
           python -m unittest discover -s TWIN90 -p 'test_twin90_live.py' -v
           python -m unittest discover -s TWIN90 -p 'test_twin90_telegram.py' -v
           python -m unittest discover -s TWIN90 -p 'test_twin90_specialists.py' -v
+          python -m unittest discover -s TWIN90 -p 'test_twin90_evolutivo.py' -v
 
       - name: Segui le estrazioni reali e invia Telegram ogni 5 minuti
         env:
