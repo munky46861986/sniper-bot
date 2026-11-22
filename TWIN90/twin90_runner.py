@@ -105,11 +105,21 @@ def main():
         if opt.once:
             return
         elapsed=time.monotonic()-launch
-        if elapsed+opt.interval>=opt.seconds:
+        if opt.interval == 300:
+            # Synchronize to the REAL 5-minute draw clock, not job-start time.
+            # Fetch a draw about 65s after it occurs, giving >3m before
+            # the NEXT draw for Telegram's minimum 30-second lead.
+            wall=time.time()
+            offset=65
+            next_tick=(int(wall//300))*300+offset
+            if next_tick<=wall+5:
+                next_tick+=300
+            delay=max(0.0,next_tick-wall)
+        else:
+            delay=max(0.0,began+opt.interval-time.monotonic())
+        if elapsed+delay>=opt.seconds:
             log(f"Rotazione programmata dopo {n} controlli, {int(elapsed)} secondi")
             return
-        until=began+opt.interval
-        delay=max(0,until-time.monotonic())
         if delay:
             time.sleep(delay)
 
