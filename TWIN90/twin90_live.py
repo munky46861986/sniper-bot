@@ -16,6 +16,7 @@ from twin90_advance import expire_undelivered, make_preview, reconcile, ensure a
 from twin90_dna_master import tick as dna_master_tick
 from twin90_evolutivo import (prepare as evolutivo_prepare, reconcile as evolutivo_reconcile,
                             describe as evolutivo_describe)
+from twin90_fusion import prepare as fusion_prepare, reconcile as fusion_reconcile
 from twin90_specialists import prepare as specialist_prepare, reconcile as specialist_reconcile, describe as specialist_describe
 
 ROME = ZoneInfo("Europe/Rome")
@@ -192,6 +193,9 @@ def ingest(state,rows,model,stamp=None):
         evolutivo_notes=evolutivo_reconcile(state,actual)
         if evolutivo_notes:
             notification["ritardatari_evolutivo_results"]=evolutivo_notes
+        fusion_notes=fusion_reconcile(state,actual)
+        if fusion_notes:
+            notification["superambo_fusion_results"]=fusion_notes
         state.setdefault("pending_notifications",[]).append(notification)
         state["recent"].append({"key":target_key,
                                 "advance_verified":notification["type"]=="DRAW",
@@ -247,6 +251,11 @@ def main():
     except Exception as exc:
         # Fail closed for DNA MASTER, keep existing TWIN90 operation.
         result["dna_master"]={"status":"ERROR","error":type(exc).__name__}
+    try:
+        result["superambo_fusion"]=fusion_prepare(state)
+    except Exception as exc:
+        # Fail closed only for the additional SHADOW experiment.
+        result["superambo_fusion"]={"status":"ERROR","error":type(exc).__name__}
     result["ritardatari_evolutivo"]=evolutivo_describe(state)
     result["source_warnings"]=warnings
     sp.parent.mkdir(parents=True,exist_ok=True)

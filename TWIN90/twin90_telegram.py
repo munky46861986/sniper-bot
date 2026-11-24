@@ -16,6 +16,7 @@ from twin90_advance import MIN_LEAD_SECONDS, ROME, confirm_sent, ts
 from twin90_specialists import confirm_sent as specialist_confirm_sent
 from twin90_dna_master import confirm as dna_master_confirm, format_extra as dna_master_extra
 from twin90_evolutivo import confirm as evolutivo_confirm, format_extra as evolutivo_extra
+from twin90_fusion import confirm as fusion_confirm, format_extra as fusion_extra
 
 
 def as_nums(vals):
@@ -168,6 +169,9 @@ def publish(state,send_fn,now_fn=None,persist_fn=None):
         evol_text=evolutivo_extra(item)
         if evol_text:
             message += "\n"+evol_text
+        fusion_text=fusion_extra(item)
+        if fusion_text:
+            message += "\n"+fusion_text
         send_fn(message)
         if item["type"]=="PREVIEW":
             confirmed_at=now_fn()
@@ -178,6 +182,8 @@ def publish(state,send_fn,now_fn=None,persist_fn=None):
                 dna_master_confirm(state,item["key"],confirmed_at)
             if item.get("ritardatari_evolutivo"):
                 evolutivo_confirm(state,item["key"],confirmed_at)
+            if item.get("superambo_fusion"):
+                fusion_confirm(state,item["key"],confirmed_at)
         pending.pop(0)
         checkpoint()
         count+=1
