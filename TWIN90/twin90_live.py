@@ -17,6 +17,7 @@ from twin90_dna_master import tick as dna_master_tick
 from twin90_evolutivo import (prepare as evolutivo_prepare, reconcile as evolutivo_reconcile,
                             describe as evolutivo_describe)
 from twin90_fusion import prepare as fusion_prepare, reconcile as fusion_reconcile
+from twin90_multi import prepare as multi_prepare, reconcile as multi_reconcile
 from twin90_specialists import prepare as specialist_prepare, reconcile as specialist_reconcile, describe as specialist_describe
 
 ROME = ZoneInfo("Europe/Rome")
@@ -196,6 +197,9 @@ def ingest(state,rows,model,stamp=None):
         fusion_notes=fusion_reconcile(state,actual)
         if fusion_notes:
             notification["superambo_fusion_results"]=fusion_notes
+        multi_notes=multi_reconcile(state,actual)
+        if multi_notes:
+            notification["superambo_multi_results"]=multi_notes
         state.setdefault("pending_notifications",[]).append(notification)
         state["recent"].append({"key":target_key,
                                 "advance_verified":notification["type"]=="DRAW",
@@ -253,6 +257,7 @@ def main():
         result["dna_master"]={"status":"ERROR","error":type(exc).__name__}
     try:
         result["superambo_fusion"]=fusion_prepare(state)
+        result["superambo_multi"]=multi_prepare(state)
     except Exception as exc:
         # Fail closed only for the additional SHADOW experiment.
         result["superambo_fusion"]={"status":"ERROR","error":type(exc).__name__}
