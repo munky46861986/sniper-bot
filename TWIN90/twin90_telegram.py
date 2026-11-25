@@ -18,6 +18,7 @@ from twin90_dna_master import confirm as dna_master_confirm, format_extra as dna
 from twin90_evolutivo import confirm as evolutivo_confirm, format_extra as evolutivo_extra
 from twin90_fusion import confirm as fusion_confirm, format_extra as fusion_extra
 from twin90_multi import confirm as multi_confirm, format_extra as multi_extra
+from twin90_cashflow import format_extra as cashflow_extra
 
 
 def as_nums(vals):
@@ -176,6 +177,9 @@ def publish(state,send_fn,now_fn=None,persist_fn=None):
         multi_text=multi_extra(item)
         if multi_text:
             message += "\n"+multi_text
+        cashflow_text=cashflow_extra(item)
+        if cashflow_text:
+            message += "\n"+cashflow_text
         send_fn(message)
         if item["type"]=="PREVIEW":
             confirmed_at=now_fn()

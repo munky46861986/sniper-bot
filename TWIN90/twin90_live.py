@@ -18,6 +18,7 @@ from twin90_evolutivo import (prepare as evolutivo_prepare, reconcile as evoluti
                             describe as evolutivo_describe)
 from twin90_fusion import prepare as fusion_prepare, reconcile as fusion_reconcile
 from twin90_multi import prepare as multi_prepare, reconcile as multi_reconcile
+from twin90_cashflow import refresh as cashflow_refresh, describe as cashflow_describe
 from twin90_specialists import prepare as specialist_prepare, reconcile as specialist_reconcile, describe as specialist_describe
 
 ROME = ZoneInfo("Europe/Rome")
@@ -200,6 +201,9 @@ def ingest(state,rows,model,stamp=None):
         multi_notes=multi_reconcile(state,actual)
         if multi_notes:
             notification["superambo_multi_results"]=multi_notes
+        cashflow_notes=cashflow_refresh(state)
+        if cashflow_notes:
+            notification["superambo_cashflow_results"]=cashflow_notes
         state.setdefault("pending_notifications",[]).append(notification)
         state["recent"].append({"key":target_key,
                                 "advance_verified":notification["type"]=="DRAW",
@@ -244,6 +248,8 @@ def main():
     model,_=load_model(a.model)
     sp=Path(a.state)
     state=json.loads(sp.read_text(encoding="utf-8")) if sp.exists() else empty()
+    # Historical completed cases are imported as REPLAY before new observations.
+    cashflow_refresh(state)
     real,warnings=fetch_real()
     result=ingest(state,real,model)
     try:
@@ -262,6 +268,7 @@ def main():
         # Fail closed only for the additional SHADOW experiment.
         result["superambo_fusion"]={"status":"ERROR","error":type(exc).__name__}
     result["ritardatari_evolutivo"]=evolutivo_describe(state)
+    result["superambo_cashflow"]=cashflow_describe(state)
     result["source_warnings"]=warnings
     sp.parent.mkdir(parents=True,exist_ok=True)
     sp.write_text(json.dumps(state,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
