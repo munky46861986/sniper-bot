@@ -11,6 +11,9 @@ on:
       - 'TWIN90/twin90_fusion.py'
       - 'TWIN90/twin90_multi.py'
       - 'TWIN90/twin90_cashflow.py'
+      - 'TWIN90/twin90_ambata_guida.py'
+      - 'TWIN90/test_twin90_ambata_guida.py'
+      - 'TWIN90/README_AMBATA_GUIDA.md'
       - 'TWIN90/test_twin90_cashflow.py'
       - 'TWIN90/test_twin90_multi.py'
       - 'TWIN90/test_twin90_fusion.py'
@@ -73,6 +76,7 @@ jobs:
           python -m unittest discover -s TWIN90 -p 'test_twin90_fusion.py' -v
           python -m unittest discover -s TWIN90 -p 'test_twin90_multi.py' -v
           python -m unittest discover -s TWIN90 -p 'test_twin90_cashflow.py' -v
+          python -m unittest discover -s TWIN90 -p 'test_twin90_ambata_guida.py' -v
 
       - name: Segui le estrazioni reali e invia Telegram ogni 5 minuti
         env:

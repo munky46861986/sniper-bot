@@ -19,6 +19,7 @@ from twin90_evolutivo import confirm as evolutivo_confirm, format_extra as evolu
 from twin90_fusion import confirm as fusion_confirm, format_extra as fusion_extra
 from twin90_multi import confirm as multi_confirm, format_extra as multi_extra
 from twin90_cashflow import format_extra as cashflow_extra
+from twin90_ambata_guida import confirm as guida_confirm, format_extra as guida_extra
 
 
 def as_nums(vals):
@@ -180,6 +181,9 @@ def publish(state,send_fn,now_fn=None,persist_fn=None):
         cashflow_text=cashflow_extra(item)
         if cashflow_text:
             message += "\n"+cashflow_text
+        guida_text=guida_extra(item)
+        if guida_text:
+            message += "\n"+guida_text
         send_fn(message)
         if item["type"]=="PREVIEW":
             confirmed_at=now_fn()
@@ -194,6 +198,8 @@ def publish(state,send_fn,now_fn=None,persist_fn=None):
                 fusion_confirm(state,item["key"],confirmed_at)
             if item.get("superambo_multi"):
                 multi_confirm(state,item["key"],confirmed_at)
+            if item.get("ambata_guida"):
+                guida_confirm(state,item["key"],confirmed_at)
         pending.pop(0)
         checkpoint()
         count+=1

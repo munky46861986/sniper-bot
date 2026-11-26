@@ -19,6 +19,8 @@ from twin90_evolutivo import (prepare as evolutivo_prepare, reconcile as evoluti
 from twin90_fusion import prepare as fusion_prepare, reconcile as fusion_reconcile
 from twin90_multi import prepare as multi_prepare, reconcile as multi_reconcile
 from twin90_cashflow import refresh as cashflow_refresh, describe as cashflow_describe
+from twin90_ambata_guida import (prepare as guida_prepare, reconcile as guida_reconcile,
+                                 describe as guida_describe)
 from twin90_specialists import prepare as specialist_prepare, reconcile as specialist_reconcile, describe as specialist_describe
 
 ROME = ZoneInfo("Europe/Rome")
@@ -204,6 +206,9 @@ def ingest(state,rows,model,stamp=None):
         cashflow_notes=cashflow_refresh(state)
         if cashflow_notes:
             notification["superambo_cashflow_results"]=cashflow_notes
+        guida_notes=guida_reconcile(state,actual)
+        if guida_notes:
+            notification["ambata_guida_results"]=guida_notes
         state.setdefault("pending_notifications",[]).append(notification)
         state["recent"].append({"key":target_key,
                                 "advance_verified":notification["type"]=="DRAW",
@@ -267,7 +272,13 @@ def main():
     except Exception as exc:
         # Fail closed only for the additional SHADOW experiment.
         result["superambo_fusion"]={"status":"ERROR","error":type(exc).__name__}
+    try:
+        result["ambata_guida"]=guida_prepare(state)
+    except Exception as exc:
+        # Fail closed for this isolated research module, keep main runner alive.
+        result["ambata_guida"]={"status":"ERROR","error":type(exc).__name__}
     result["ritardatari_evolutivo"]=evolutivo_describe(state)
+    result["ambata_guida"]=guida_describe(state) if result["ambata_guida"].get("status") != "ERROR" else result["ambata_guida"]
     result["superambo_cashflow"]=cashflow_describe(state)
     result["source_warnings"]=warnings
     sp.parent.mkdir(parents=True,exist_ok=True)
