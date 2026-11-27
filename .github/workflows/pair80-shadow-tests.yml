@@ -1,0 +1,32 @@
+name: PAIR80 Shadow - test senza puntate
+on:
+  push:
+    branches:
+      - feature/pair80-shadow-w80-20261115
+    paths:
+      - sniper.py
+      - pair80_shadow.py
+      - pair80_runtime.py
+      - test_pair80_shadow.py
+      - .github/workflows/pair80-shadow-tests.yml
+  pull_request:
+    paths:
+      - sniper.py
+      - pair80_shadow.py
+      - pair80_runtime.py
+      - test_pair80_shadow.py
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sintassi e test PAIR80
+        run: |
+          python -m py_compile sniper.py pair80_shadow.py pair80_runtime.py
+          python test_pair80_shadow.py
